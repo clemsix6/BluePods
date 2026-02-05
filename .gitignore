@@ -1,0 +1,26 @@
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude
+.claude/
+
+# Go binaries
+/node
+*.exe
+
+# Runtime data
+data/
+
+# Rust build artifacts
+target/
+build/
+*.wasm
+
+# Cargo lock (keep for reproducible builds in bin crates, ignore in libs)
+# pods/pod-sdk/Cargo.lock

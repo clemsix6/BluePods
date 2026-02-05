@@ -1,0 +1,18 @@
+// BluePods Validator Types
+// FlatBuffers schema for validator singleton
+
+namespace types;
+
+// Validator is a singleton representing a network validator.
+table Validator {
+    // pubkey is the validator's Ed25519 public key (32 bytes).
+    pubkey:[ubyte];
+
+    // http_address is the HTTP API endpoint.
+    http_address:[ubyte];
+
+    // quic_address is the QUIC attestation endpoint.
+    quic_address:[ubyte];
+}
+
+root_type Validator;

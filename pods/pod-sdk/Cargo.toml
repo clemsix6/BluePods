@@ -1,0 +1,10 @@
+[package]
+name = "pod-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "SDK for building BluePods WASM pods"
+
+[dependencies]
+flatbuffers = { version = "25", default-features = false }
+borsh = { version = "1", default-features = false, features = ["derive"] }
+wee_alloc = "0.4"

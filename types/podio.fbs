@@ -1,0 +1,37 @@
+// BluePods Pod I/O Types
+// FlatBuffers schema for pod execution input/output
+
+include "object.fbs";
+include "transaction.fbs";
+
+namespace types;
+
+// PodExecuteInput contains the input data for a pod's execute function.
+table PodExecuteInput {
+    // transaction is the transaction being executed.
+    transaction:Transaction;
+
+    // sender is the 32-byte Ed25519 public key of the transaction sender.
+    sender:[ubyte];
+
+    // local_objects are the objects referenced by the transaction.
+    local_objects:[Object];
+}
+
+// PodExecuteOutput contains the output data from a pod's execute function.
+table PodExecuteOutput {
+    // error contains the error code if execution failed.
+    error:uint32;
+
+    // updated_objects are objects that were modified.
+    updated_objects:[Object];
+
+    // created_objects are new objects created by the transaction.
+    created_objects:[Object];
+
+    // deleted_objects are 32-byte IDs of objects that were deleted.
+    deleted_objects:[ubyte];
+
+    // logs contains debug messages from the pod execution.
+    logs:[string];
+}

@@ -1,0 +1,66 @@
+// BluePods Vertex Types
+// FlatBuffers schema for DAG vertex serialization
+
+include "transaction.fbs";
+include "object.fbs";
+
+namespace types;
+
+// QuorumProof certifies that 67%+ of holders attested an object.
+table QuorumProof {
+    // object_id is the 32-byte identifier of the attested object.
+    object_id:[ubyte];
+
+    // bls_signature is the 96-byte aggregated BLS signature.
+    bls_signature:[ubyte];
+
+    // signer_bitmap indicates which holders signed (bit N = holder N in Rendezvous order).
+    signer_bitmap:[ubyte];
+}
+
+// AttestedTransaction bundles a transaction with its collected objects and proofs.
+table AttestedTransaction {
+    // transaction is the original transaction.
+    transaction:Transaction;
+
+    // objects are the standard objects collected from holders (not singletons).
+    objects:[Object];
+
+    // proofs are the quorum proofs for each collected object.
+    proofs:[QuorumProof];
+}
+
+// VertexLink references a parent vertex in the DAG.
+table VertexLink {
+    // hash is the 32-byte vertex hash.
+    hash:[ubyte];
+
+    // producer is the 32-byte pubkey of the vertex producer.
+    producer:[ubyte];
+}
+
+// Vertex is a unit in the DAG produced by a validator.
+table Vertex {
+    // hash is the 32-byte unique identifier of this vertex.
+    hash:[ubyte];
+
+    // round is the DAG round number (must reference 67%+ of round-1 validators).
+    round:uint64;
+
+    // producer is the 32-byte Ed25519 pubkey of the producing validator.
+    producer:[ubyte];
+
+    // signature is the 64-byte Ed25519 signature of the vertex content.
+    signature:[ubyte];
+
+    // parents are links to vertices from the previous round.
+    parents:[VertexLink];
+
+    // transactions are the attested transactions included in this vertex.
+    transactions:[AttestedTransaction];
+
+    // epoch is the current epoch number for validator set identification.
+    epoch:uint64;
+}
+
+root_type Vertex;

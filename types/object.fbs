@@ -1,0 +1,24 @@
+// BluePods Object Types
+// FlatBuffers schema for network object serialization
+
+namespace types;
+
+// Object represents a stored object in the network.
+table Object {
+    // id is the unique 32-byte identifier of the object.
+    id:[ubyte];
+
+    // version is the current version number, incremented on each update.
+    version:uint64;
+
+    // owner is the 32-byte Ed25519 public key of the object's owner.
+    owner:[ubyte];
+
+    // replication defines holder count: 0 = singleton (all validators), >= 10 = standard.
+    replication:uint16;
+
+    // content holds the serialized object data (max 4 KB).
+    content:[ubyte];
+}
+
+root_type Object;

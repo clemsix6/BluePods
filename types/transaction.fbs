@@ -1,0 +1,39 @@
+// BluePods Transaction Types
+// FlatBuffers schema for network transaction serialization
+
+include "object.fbs";
+
+namespace types;
+
+// Transaction represents a transaction to be executed on the network.
+// Uses a flat structure for easier API integration.
+table Transaction {
+    // hash is the unique 32-byte transaction identifier.
+    hash:[ubyte];
+
+    // read_objects are 32-byte hashes of objects accessed in read-only mode.
+    read_objects:[ubyte];
+
+    // mutable_objects are 32-byte hashes of objects that may be modified or deleted.
+    mutable_objects:[ubyte];
+
+    // creates_objects indicates if this transaction creates new objects.
+    creates_objects:bool;
+
+    // sender is the 32-byte Ed25519 public key of the transaction sender.
+    sender:[ubyte];
+
+    // signature is the 64-byte Ed25519 signature of the transaction.
+    signature:[ubyte];
+
+    // pod is the 32-byte hash of the pod that will execute this transaction.
+    pod:[ubyte];
+
+    // function_name is the name of the function to call in the pod.
+    function_name:string;
+
+    // args contains the serialized function arguments.
+    args:[ubyte];
+}
+
+root_type Transaction;

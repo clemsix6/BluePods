@@ -1,0 +1,9 @@
+[package]
+name = "wasm-gas"
+version = "0.1.0"
+edition = "2021"
+description = "CLI to instrument WASM modules with gas metering"
+
+[dependencies]
+walrus = "0.23"
+anyhow = "1.0"
