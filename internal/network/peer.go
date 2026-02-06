@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+
+	"BluePods/internal/logger"
 )
 
 const (
@@ -103,18 +105,26 @@ func (p *Peer) Request(ctx context.Context, data []byte) ([]byte, error) {
 
 // receiveLoop accepts incoming streams and processes messages.
 func (p *Peer) receiveLoop() {
-	ctx := context.Background()
-
 	// Accept both unidirectional and bidirectional streams concurrently
-	go p.acceptBidiStreams(ctx)
+	go p.acceptBidiStreams(context.Background())
 
+	uniCount := 0
 	for {
+		// Use timeout to detect stuck connections
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		stream, err := p.conn.AcceptUniStream(ctx)
+		cancel()
+
 		if err != nil {
-			// Connection closed
+			if ctx.Err() == context.DeadlineExceeded {
+				logger.Debug("no uni streams received", "peer", p.address, "total", uniCount)
+				continue // Try again
+			}
+			logger.Debug("receiveLoop ended", "peer", p.address, "error", err, "uniStreams", uniCount)
 			break
 		}
 
+		uniCount++
 		go p.handleUniStream(stream)
 	}
 
@@ -157,11 +167,15 @@ func (p *Peer) handleBidiStream(stream *quic.Stream) {
 func (p *Peer) handleUniStream(stream *quic.ReceiveStream) {
 	data, err := readMessage(stream)
 	if err != nil {
+		logger.Debug("stream read error", "peer", p.address, "error", err)
 		return
 	}
 
+	logger.Debug("uni data received", "peer", p.address, "bytes", len(data))
+
 	// Check for duplicate message
 	if !p.node.dedup.Check(data) {
+		logger.Debug("dedup filtered", "peer", p.address, "bytes", len(data))
 		return
 	}
 

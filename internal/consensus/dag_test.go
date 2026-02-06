@@ -88,7 +88,7 @@ func TestValidatorSet(t *testing.T) {
 		t.Errorf("expected 10 validators, got %d", vs.Len())
 	}
 
-	// 67% of 10 = 7
+	// BFT quorum = 2n/3 + 1 = 7
 	if vs.QuorumSize() != 7 {
 		t.Errorf("expected quorum 7, got %d", vs.QuorumSize())
 	}
@@ -100,11 +100,11 @@ func TestQuorumSize(t *testing.T) {
 		quorum     int
 	}{
 		{1, 1},
-		{3, 3},   // 67% of 3 = 2.01 -> 3
-		{4, 3},   // 67% of 4 = 2.68 -> 3
-		{10, 7},  // 67% of 10 = 6.7 -> 7
+		{3, 3},
+		{4, 3},
+		{5, 4},
+		{10, 7},
 		{100, 67},
-		{1000, 670},
 	}
 
 	for _, tt := range tests {

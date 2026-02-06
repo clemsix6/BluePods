@@ -1,11 +1,17 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"os"
+
+	"BluePods/internal/logger"
 )
 
 func main() {
+	logger.Init()
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -34,17 +40,19 @@ func run() error {
 
 // printStartupInfo displays node configuration at startup.
 func printStartupInfo(cfg *Config) {
-	pubKey := cfg.PrivateKey.Public()
-	fmt.Printf("BluePods Node\n")
-	fmt.Printf("  Pubkey:    %x\n", pubKey)
-	fmt.Printf("  HTTP:      %s\n", cfg.HTTPAddress)
-	fmt.Printf("  QUIC:      %s\n", cfg.QUICAddress)
-	fmt.Printf("  Data:      %s\n", cfg.DataPath)
-	fmt.Printf("  Bootstrap: %v\n", cfg.Bootstrap)
+	pubKey := cfg.PrivateKey.Public().(ed25519.PublicKey)
+	pubKeyHex := hex.EncodeToString(pubKey)
+
+	logger.Info("starting BluePods node",
+		"pubkey", pubKeyHex,
+		"http", cfg.HTTPAddress,
+		"quic", cfg.QUICAddress,
+		"data", cfg.DataPath,
+		"bootstrap", cfg.Bootstrap,
+		"listener", cfg.Listener,
+	)
 
 	if cfg.Bootstrap {
-		fmt.Printf("  Initial mint: %d\n", cfg.InitialMint)
+		logger.Info("genesis configuration", "initial_mint", cfg.InitialMint)
 	}
-
-	fmt.Println()
 }

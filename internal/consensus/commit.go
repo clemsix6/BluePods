@@ -2,28 +2,40 @@ package consensus
 
 import (
 	"bytes"
-	"fmt"
+	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/genesis"
+	"BluePods/internal/logger"
 	"BluePods/internal/types"
+)
+
+const (
+	// commitCheckInterval is how often to check for new commits.
+	commitCheckInterval = 50 * time.Millisecond
 )
 
 // commitLoop runs in background and detects committed vertices.
 func (d *DAG) commitLoop() {
 	defer d.wg.Done()
 
+	ticker := time.NewTicker(commitCheckInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-d.stop:
 			return
-		default:
+		case <-ticker.C:
 			d.checkCommits()
 		}
 	}
 }
 
 // checkCommits looks for newly committed vertices.
+// Processes rounds sequentially: stops at the first uncommitted round
+// to avoid skipping rounds and losing them permanently.
 func (d *DAG) checkCommits() {
 	d.commitMu.Lock()
 	defer d.commitMu.Unlock()
@@ -34,38 +46,59 @@ func (d *DAG) checkCommits() {
 	}
 
 	for round := d.lastCommitted; round <= currentRound-2; round++ {
-		if d.committedRound[round] {
-			continue
+		if !d.isRoundCommitted(round) {
+			break
 		}
 
-		if d.isRoundCommitted(round) {
-			fmt.Printf("[DAG] committing round=%d\n", round)
-			d.commitRound(round)
-			d.committedRound[round] = true
-			d.lastCommitted = round + 1
-		}
+		logger.Debug("committing round", "round", round)
+		d.commitRound(round)
+		d.lastCommitted = round + 1
 	}
 }
 
 // isRoundCommitted checks if a round has reached commit (referenced by N+2 quorum).
+// Only vertices from known validators are counted toward quorum.
 func (d *DAG) isRoundCommitted(round uint64) bool {
 	round2Hashes := d.store.getByRound(round + 2)
 
-	if len(round2Hashes) < d.validators.QuorumSize() {
+	// Determine required quorum for commit
+	requiredQuorum := d.validators.QuorumSize()
+
+	// During init (before minValidators), use quorum=1 to observe bootstrap's chain.
+	// This allows all nodes to see registrations and reach minValidators together.
+	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
+		requiredQuorum = 1
+	}
+
+	// During transition + convergence, use quorum=1 for commit.
+	// Matches the isRoundInTransitionOrBuffer logic.
+	if d.isRoundInTransitionOrBuffer(round + 2) {
+		requiredQuorum = 1
+	}
+
+	if len(round2Hashes) < requiredQuorum {
 		return false
 	}
 
+	// Count unique producers that are valid validators
 	producers := make(map[Hash]bool)
 	for _, h := range round2Hashes {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
+
 		producer := extractProducer(v)
+
+		// Security: only count vertices from known validators
+		if !d.validators.Contains(producer) {
+			continue
+		}
+
 		producers[producer] = true
 	}
 
-	return len(producers) >= d.validators.QuorumSize()
+	return len(producers) >= requiredQuorum
 }
 
 // commitRound processes all transactions from a committed round.
@@ -78,12 +111,12 @@ func (d *DAG) commitRound(round uint64) {
 			continue
 		}
 
-		d.processTransactions(v)
+		d.processTransactions(v, round)
 	}
 }
 
 // processTransactions handles committed transactions from a vertex.
-func (d *DAG) processTransactions(v *types.Vertex) {
+func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) {
 	var atx types.AttestedTransaction
 
 	for i := 0; i < v.TransactionsLength(); i++ {
@@ -91,30 +124,30 @@ func (d *DAG) processTransactions(v *types.Vertex) {
 			continue
 		}
 
-		d.executeTx(&atx)
+		d.executeTx(&atx, commitRound)
 	}
 }
 
 // executeTx checks version conflicts and executes a transaction.
-func (d *DAG) executeTx(atx *types.AttestedTransaction) {
+func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	tx := atx.Transaction(nil)
 	if tx == nil {
-		fmt.Printf("[executeTx] tx is nil, skipping\n")
+		logger.Warn("tx is nil, skipping")
 		return
 	}
 
 	funcName := string(tx.FunctionName())
-	fmt.Printf("[executeTx] processing tx func=%s\n", funcName)
+	logger.Debug("processing tx", "func", funcName)
 
 	// Check and update versions atomically
 	if !d.versions.checkAndUpdate(tx) {
-		fmt.Printf("[executeTx] version conflict for func=%s\n", funcName)
+		logger.Debug("version conflict", "func", funcName)
 		d.emitTransaction(tx, false) // conflict
 		return
 	}
 
 	// Handle system transactions (register_validator)
-	d.handleRegisterValidator(tx)
+	d.handleRegisterValidator(tx, commitRound)
 
 	// Execute via state (objects are in AttestedTransaction)
 	var success bool
@@ -124,19 +157,20 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction) {
 		err := d.executor.Execute(atxBytes)
 		success = err == nil
 		if err != nil {
-			fmt.Printf("[executeTx] executor error for func=%s: %v\n", funcName, err)
+			logger.Error("executor error", "func", funcName, "error", err)
 		}
 	} else {
 		success = true // no executor = skip execution
 	}
 
-	fmt.Printf("[executeTx] completed func=%s success=%v\n", funcName, success)
+	logger.Debug("tx completed", "func", funcName, "success", success)
 	d.emitTransaction(tx, success)
 }
 
 // handleRegisterValidator checks if TX is register_validator and adds the validator.
 // The validator pubkey is taken from tx.Sender (matching the Rust pod behavior).
-func (d *DAG) handleRegisterValidator(tx *types.Transaction) {
+// Network addresses are parsed from tx.Args.
+func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64) {
 	if !d.isRegisterValidatorTx(tx) {
 		return
 	}
@@ -149,7 +183,17 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction) {
 	var pubkey Hash
 	copy(pubkey[:], sender)
 
-	d.validators.Add(pubkey)
+	// Parse network addresses from transaction args
+	httpAddr, quicAddr := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
+
+	d.validators.Add(pubkey, httpAddr, quicAddr)
+
+	// Enter transition immediately when minValidators is reached.
+	// This prevents producing vertices with cross-references before transition
+	// parent filtering kicks in.
+	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
+		d.enterTransition(commitRound)
+	}
 }
 
 // isRegisterValidatorTx checks if a transaction calls register_validator on system pod.
@@ -174,8 +218,20 @@ func (d *DAG) emitTransaction(tx *types.Transaction, success bool) {
 		copy(txHash[:], hashBytes)
 	}
 
+	var sender Hash
+	if senderBytes := tx.SenderBytes(); len(senderBytes) == 32 {
+		copy(sender[:], senderBytes)
+	}
+
+	committed := CommittedTx{
+		Hash:     txHash,
+		Success:  success,
+		Function: string(tx.FunctionName()),
+		Sender:   sender,
+	}
+
 	select {
-	case d.committed <- CommittedTx{Hash: txHash, Success: success}:
+	case d.committed <- committed:
 	case <-d.stop:
 	}
 }

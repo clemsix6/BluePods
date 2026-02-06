@@ -42,11 +42,11 @@ func BuildTransactions(cfg Config) ([][]byte, error) {
 	mintTx := buildMintTx(cfg.PrivateKey, cfg.SystemPodID, cfg.InitialMint, owner)
 
 	// Build register_validator transaction
-	registerTx := buildRegisterValidatorTx(
+	registerTx := BuildRegisterValidatorTx(
 		cfg.PrivateKey,
 		cfg.SystemPodID,
-		[]byte(cfg.HTTPAddress),
-		[]byte(cfg.QUICAddress),
+		cfg.HTTPAddress,
+		cfg.QUICAddress,
 	)
 
 	return [][]byte{mintTx, registerTx}, nil

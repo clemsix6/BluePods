@@ -13,7 +13,8 @@ flatc --go -o "$PROJECT_ROOT/internal" \
     "$SCRIPT_DIR/podio.fbs" \
     "$SCRIPT_DIR/validator.fbs" \
     "$SCRIPT_DIR/domain.fbs" \
-    "$SCRIPT_DIR/vertex.fbs"
+    "$SCRIPT_DIR/vertex.fbs" \
+    "$SCRIPT_DIR/snapshot.fbs"
 
 echo "Generated Go files in internal/types/"
 

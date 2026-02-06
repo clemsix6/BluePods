@@ -31,3 +31,31 @@ func encodeRegisterValidatorArgs(httpAddr, quicAddr []byte) []byte {
 
 	return buf
 }
+
+// DecodeRegisterValidatorArgs decodes register_validator arguments from Borsh format.
+// Returns httpAddr and quicAddr as strings.
+// Returns empty strings if data is malformed.
+func DecodeRegisterValidatorArgs(data []byte) (httpAddr, quicAddr string) {
+	if len(data) < 4 {
+		return "", ""
+	}
+
+	// Read http_address length
+	httpLen := binary.LittleEndian.Uint32(data[0:4])
+	if len(data) < int(4+httpLen+4) {
+		return "", ""
+	}
+
+	httpAddr = string(data[4 : 4+httpLen])
+
+	// Read quic_address length
+	offset := 4 + httpLen
+	quicLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	if len(data) < int(offset+4+quicLen) {
+		return "", ""
+	}
+
+	quicAddr = string(data[offset+4 : offset+4+quicLen])
+
+	return httpAddr, quicAddr
+}

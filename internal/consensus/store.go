@@ -155,3 +155,82 @@ func makeRoundKey(round uint64, hash Hash) []byte {
 	copy(key[len(prefixRound)+8:], hash[:])
 	return key
 }
+
+// VertexEntry represents a vertex with its round for snapshot serialization.
+type VertexEntry struct {
+	Round uint64
+	Data  []byte
+}
+
+// ExportVertices returns all vertices from the given round range.
+// Used for snapshot creation.
+func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var entries []VertexEntry
+
+	for round := fromRound; round <= toRound; round++ {
+		hashes := s.byRound[round]
+		for _, hash := range hashes {
+			data := s.getRaw(hash)
+			if data != nil {
+				entries = append(entries, VertexEntry{
+					Round: round,
+					Data:  data,
+				})
+			}
+		}
+	}
+
+	return entries
+}
+
+// ImportVertices loads vertices from snapshot data and rebuilds the index.
+// Returns the highest round imported.
+func (s *store) ImportVertices(entries []VertexEntry) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var maxRound uint64
+
+	for _, entry := range entries {
+		// Parse vertex to get hash and producer
+		vertex := types.GetRootAsVertex(entry.Data, 0)
+		hashBytes := vertex.HashBytes()
+		producerBytes := vertex.ProducerBytes()
+
+		var hash, producer Hash
+		copy(hash[:], hashBytes)
+		copy(producer[:], producerBytes)
+
+		// Check if already exists
+		if s.hasLocked(hash) {
+			continue
+		}
+
+		// Store vertex data
+		vertexKey := makeVertexKey(hash)
+		_ = s.db.Set(vertexKey, entry.Data)
+
+		// Store round index entry
+		roundKey := makeRoundKey(entry.Round, hash)
+		_ = s.db.Set(roundKey, producer[:])
+
+		// Update in-memory index
+		s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
+
+		// Track max round
+		if entry.Round > maxRound {
+			maxRound = entry.Round
+		}
+	}
+
+	// Update latest round if needed
+	if maxRound > s.latestRound {
+		s.latestRound = maxRound
+		s.saveLatestRound(maxRound)
+	}
+
+	return maxRound
+}

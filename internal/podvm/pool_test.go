@@ -98,8 +98,11 @@ func findPodSystemWasm(t *testing.T) string {
 func buildTestInput() []byte {
 	builder := flatbuffers.NewBuilder(512)
 
-	// Create MintArgs { amount: 100 } in borsh format (u64 little-endian)
-	mintArgs := []byte{100, 0, 0, 0, 0, 0, 0, 0}
+	// Create MintArgs { amount: 100, owner: [32]byte } in borsh format
+	// amount: u64 little-endian (8 bytes) + owner: [u8; 32] (32 bytes)
+	mintArgs := make([]byte, 40)
+	mintArgs[0] = 100 // amount = 100 (little-endian u64)
+	// owner remains all zeros (bytes 8-39)
 	txArgs := builder.CreateByteVector(mintArgs)
 
 	// Create transaction

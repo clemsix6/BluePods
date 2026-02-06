@@ -1,0 +1,76 @@
+// BluePods Snapshot Types
+// FlatBuffers schema for state snapshot serialization and sync protocol
+
+namespace types;
+
+// SnapshotObject represents a single object in the snapshot.
+table SnapshotObject {
+    // id is the 32-byte object identifier.
+    id:[ubyte];
+
+    // data is the serialized object (FlatBuffers Object).
+    data:[ubyte];
+}
+
+// SnapshotVertex represents a vertex in the DAG snapshot.
+table SnapshotVertex {
+    // round is the vertex round number.
+    round:uint64;
+
+    // data is the serialized vertex (FlatBuffers Vertex).
+    data:[ubyte];
+}
+
+// ObjectVersion tracks the current version of an object.
+table ObjectVersion {
+    // id is the 32-byte object identifier.
+    id:[ubyte];
+
+    // version is the current version number.
+    version:uint64;
+}
+
+// Snapshot represents the committed state at a point in time.
+table Snapshot {
+    // version is the snapshot format version for future migrations.
+    version:uint32;
+
+    // last_committed_round is the last round whose transactions are in this state.
+    last_committed_round:uint64;
+
+    // objects contains all committed objects.
+    objects:[SnapshotObject];
+
+    // validators contains all validator pubkeys (concatenated 32-byte keys).
+    // Length must be a multiple of 32.
+    validators:[ubyte];
+
+    // checksum is a 32-byte Blake3 hash for integrity verification.
+    checksum:[ubyte];
+
+    // vertices contains recent DAG vertices needed for consensus continuity.
+    vertices:[SnapshotVertex];
+
+    // object_versions contains the current version of each object.
+    object_versions:[ObjectVersion];
+}
+
+// SnapshotRequest is sent by a node to request the current snapshot.
+table SnapshotRequest {
+    // request_id correlates the response.
+    request_id:uint64;
+}
+
+// SnapshotResponse contains the compressed snapshot data.
+table SnapshotResponse {
+    // request_id correlates with the request.
+    request_id:uint64;
+
+    // data contains the compressed snapshot bytes.
+    data:[ubyte];
+
+    // uncompressed_size is the original size before compression.
+    uncompressed_size:uint64;
+}
+
+root_type Snapshot;

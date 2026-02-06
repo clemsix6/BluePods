@@ -15,9 +15,10 @@ func buildMintTx(privKey ed25519.PrivateKey, systemPod [32]byte, amount uint64, 
 	return buildAttestedTx(privKey, systemPod, "mint", args, true)
 }
 
-// buildRegisterValidatorTx creates a signed register_validator transaction.
-func buildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr []byte) []byte {
-	args := encodeRegisterValidatorArgs(httpAddr, quicAddr)
+// BuildRegisterValidatorTx creates a signed register_validator transaction.
+// This is used both for genesis and for new validators joining the network.
+func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr string) []byte {
+	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr))
 	return buildAttestedTx(privKey, systemPod, "register_validator", args, true)
 }
 

@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
+
+	"BluePods/internal/logger"
 )
 
 const (
@@ -39,7 +42,8 @@ type Node struct {
 	tlsConfig  *tls.Config        // tlsConfig is the TLS configuration
 	quicConfig *quic.Config       // quicConfig is the QUIC configuration
 
-	listener *quic.Listener // listener is the QUIC listener
+	transport *quic.Transport // transport is the shared QUIC transport (single UDP socket)
+	listener  *quic.Listener  // listener is the QUIC listener
 
 	peers   map[string]*Peer // peers maps public key hex to peer
 	peersMu sync.RWMutex     // peersMu protects peers map
@@ -94,6 +98,21 @@ func NewNode(cfg Config) (*Node, error) {
 		KeepAlivePeriod: 10 * time.Second,
 	}
 
+	// Create shared UDP socket and QUIC transport.
+	// Using a single transport for both listening and dialing ensures all
+	// connections share the same UDP socket, which is the recommended quic-go pattern.
+	udpAddr, err := net.ResolveUDPAddr("udp", cfg.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve listen address: %w", err)
+	}
+
+	udpConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, fmt.Errorf("bind UDP socket: %w", err)
+	}
+
+	transport := &quic.Transport{Conn: udpConn}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Node{
@@ -102,6 +121,7 @@ func NewNode(cfg Config) (*Node, error) {
 		listenAddr:     cfg.ListenAddr,
 		tlsConfig:      tlsConfig,
 		quicConfig:     quicConfig,
+		transport:      transport,
 		peers:          make(map[string]*Peer),
 		knownAddrs:     make(map[string]string),
 		reconnectDelay: reconnectDelay,
@@ -116,18 +136,18 @@ func (n *Node) PublicKey() ed25519.PublicKey {
 	return n.publicKey
 }
 
-// Addr returns the listener's address. Returns empty string if not started.
+// Addr returns the node's network address.
 func (n *Node) Addr() string {
-	if n.listener == nil {
+	if n.transport == nil {
 		return ""
 	}
 
-	return n.listener.Addr().String()
+	return n.transport.Conn.LocalAddr().String()
 }
 
 // Start starts the node and begins accepting connections.
 func (n *Node) Start() error {
-	listener, err := quic.ListenAddr(n.listenAddr, n.tlsConfig, n.quicConfig)
+	listener, err := n.transport.Listen(n.tlsConfig, n.quicConfig)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -142,7 +162,12 @@ func (n *Node) Start() error {
 
 // Connect connects to a remote node at the given address.
 func (n *Node) Connect(addr string) (*Peer, error) {
-	conn, err := quic.DialAddr(n.ctx, addr, n.tlsConfig, n.quicConfig)
+	remoteAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve address: %w", err)
+	}
+
+	conn, err := n.transport.Dial(n.ctx, remoteAddr, n.tlsConfig, n.quicConfig)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -186,13 +211,25 @@ func (n *Node) Gossip(data []byte, fanout int) error {
 	}
 	n.peersMu.RUnlock()
 
+	if len(peers) == 0 {
+		return nil // No peers to send to
+	}
+
 	selected := selectRandomPeers(peers, fanout)
 
+	logger.Debug("gossip sending", "totalPeers", len(peers), "selected", len(selected), "fanout", fanout)
+
 	var lastErr error
+	sent := 0
+	failed := 0
 
 	for _, p := range selected {
 		if err := p.Send(data); err != nil {
 			lastErr = err
+			failed++
+			logger.Debug("gossip send failed", "peer", p.address, "error", err)
+		} else {
+			sent++
 		}
 	}
 
@@ -283,6 +320,10 @@ func (n *Node) Close() error {
 	n.peers = make(map[string]*Peer)
 	n.peersMu.Unlock()
 
+	if n.transport != nil {
+		n.transport.Close()
+	}
+
 	n.dedup.Close()
 	n.wg.Wait()
 
@@ -334,7 +375,10 @@ func (n *Node) setupPeer(conn *quic.Conn, addr string) (*Peer, error) {
 
 	n.peersMu.Lock()
 	n.peers[keyHex] = peer
+	peerCount := len(n.peers)
 	n.peersMu.Unlock()
+
+	logger.Info("peer added", "pubkey", keyHex[:16], "total", peerCount)
 
 	n.knownAddrsMu.Lock()
 	n.knownAddrs[keyHex] = addr
@@ -355,7 +399,10 @@ func (n *Node) handlePeerDisconnect(p *Peer) {
 
 	n.peersMu.Lock()
 	delete(n.peers, keyHex)
+	peerCount := len(n.peers)
 	n.peersMu.Unlock()
+
+	logger.Info("peer disconnected", "pubkey", keyHex[:16], "remaining", peerCount)
 
 	n.callOnDisconnect(p)
 

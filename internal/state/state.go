@@ -5,6 +5,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/logger"
 	"BluePods/internal/podvm"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
@@ -181,7 +182,7 @@ func (s *State) processOutput(outputData []byte) error {
 
 	// Print pod logs
 	for i := 0; i < output.LogsLength(); i++ {
-		fmt.Printf("[pod] %s\n", string(output.Logs(i)))
+		logger.Debug("pod log", "msg", string(output.Logs(i)))
 	}
 
 	if errCode := output.Error(); errCode != 0 {

@@ -1,9 +1,9 @@
 package consensus
 
 import (
-	"fmt"
 	"sync"
 
+	"BluePods/internal/logger"
 	"BluePods/internal/types"
 )
 
@@ -28,12 +28,12 @@ func (vt *versionTracker) checkAndUpdate(tx *types.Transaction) bool {
 	defer vt.mu.Unlock()
 
 	if !vt.checkVersions(tx) {
-		fmt.Printf("[versions] checkAndUpdate returning false (checkVersions failed)\n")
+		logger.Debug("version check failed")
 		return false
 	}
 
 	vt.incrementMutableObjects(tx)
-	fmt.Printf("[versions] checkAndUpdate returning true\n")
+
 	return true
 }
 
@@ -42,17 +42,15 @@ func (vt *versionTracker) checkVersions(tx *types.Transaction) bool {
 	readObjs := tx.ReadObjectsBytes()
 	mutObjs := tx.MutableObjectsBytes()
 
-	fmt.Printf("[versions] checkVersions: readLen=%d mutLen=%d\n", len(readObjs), len(mutObjs))
-
 	// Check read objects
 	if !vt.checkObjectList(readObjs) {
-		fmt.Printf("[versions] checkVersions failed on readObjects\n")
+		logger.Debug("version mismatch on read objects", "count", len(readObjs)/40)
 		return false
 	}
 
 	// Check mutable objects
 	if !vt.checkObjectList(mutObjs) {
-		fmt.Printf("[versions] checkVersions failed on mutableObjects\n")
+		logger.Debug("version mismatch on mutable objects", "count", len(mutObjs)/40)
 		return false
 	}
 
@@ -65,7 +63,7 @@ func (vt *versionTracker) checkObjectList(data []byte) bool {
 	const refSize = 40 // 32 bytes ID + 8 bytes version
 
 	if len(data)%refSize != 0 {
-		fmt.Printf("[versions] checkObjectList failed: len=%d not multiple of %d\n", len(data), refSize)
+		logger.Warn("invalid object list length", "len", len(data), "expected_multiple", refSize)
 		return false
 	}
 
@@ -111,6 +109,38 @@ func (vt *versionTracker) getVersion(objectID Hash) uint64 {
 	defer vt.mu.RUnlock()
 
 	return vt.versions[objectID]
+}
+
+// ObjectVersionEntry represents an object ID and its version.
+type ObjectVersionEntry struct {
+	ID      Hash
+	Version uint64
+}
+
+// Export returns all object versions for snapshot serialization.
+func (vt *versionTracker) Export() []ObjectVersionEntry {
+	vt.mu.RLock()
+	defer vt.mu.RUnlock()
+
+	entries := make([]ObjectVersionEntry, 0, len(vt.versions))
+	for id, version := range vt.versions {
+		entries = append(entries, ObjectVersionEntry{
+			ID:      id,
+			Version: version,
+		})
+	}
+
+	return entries
+}
+
+// Import loads object versions from snapshot data.
+func (vt *versionTracker) Import(entries []ObjectVersionEntry) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	for _, entry := range entries {
+		vt.versions[entry.ID] = entry.Version
+	}
 }
 
 // decodeVersion decodes a little-endian uint64 from 8 bytes.
