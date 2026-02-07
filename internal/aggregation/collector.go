@@ -54,7 +54,7 @@ func (c *Collector) CollectObject(ctx context.Context, obj ObjectRef) *Collectio
 			}
 
 			// Non-singleton exists locally → use local data, only collect attestations
-			return c.collectAttestationsOnly(ctx, obj, localData, replication)
+			return c.collectAttestationsOnly(ctx, obj, localData, replication, fbObj.Version())
 		}
 	}
 
@@ -72,7 +72,8 @@ func (c *Collector) CollectObject(ctx context.Context, obj ObjectRef) *Collectio
 	}
 
 	// Step 4: Parallel collection from remaining holders
-	return c.collectFromRemainingHolders(ctx, obj, top1Att, replication)
+	remoteObj := types.GetRootAsObject(top1Att.ObjectData, 0)
+	return c.collectFromRemainingHolders(ctx, obj, top1Att, replication, remoteObj.Version())
 }
 
 // fetchFromTop1 requests the full object from the top-1 holder.
@@ -111,10 +112,12 @@ func (c *Collector) collectFromRemainingHolders(
 	obj ObjectRef,
 	top1Att *HolderAttestation,
 	replication uint16,
+	version uint64,
 ) *CollectionResult {
 	result := &CollectionResult{
 		ObjectID:    obj.ID,
 		ObjectData:  top1Att.ObjectData,
+		Version:     version,
 		Replication: replication,
 	}
 
@@ -132,7 +135,7 @@ func (c *Collector) collectFromRemainingHolders(
 
 	// If we only need 1 attestation (quorum=1), we're done
 	if quorum <= 1 {
-		return c.finalizeResult(result, attestations, quorum)
+		return c.finalizeResult(result, attestations, quorum, holders)
 	}
 
 	// Parallel collection from remaining holders (top-2 to top-N)
@@ -192,7 +195,7 @@ func (c *Collector) collectFromRemainingHolders(
 		}
 	}
 
-	return c.finalizeResult(result, attestations, quorum)
+	return c.finalizeResult(result, attestations, quorum, holders)
 }
 
 // collectAttestationsOnly collects attestations when we already have the object locally.
@@ -202,10 +205,12 @@ func (c *Collector) collectAttestationsOnly(
 	obj ObjectRef,
 	localData []byte,
 	replication uint16,
+	version uint64,
 ) *CollectionResult {
 	result := &CollectionResult{
 		ObjectID:    obj.ID,
 		ObjectData:  localData,
+		Version:     version,
 		Replication: replication,
 	}
 
@@ -268,7 +273,7 @@ func (c *Collector) collectAttestationsOnly(
 		}
 	}
 
-	return c.finalizeResult(result, attestations, quorum)
+	return c.finalizeResult(result, attestations, quorum, holders)
 }
 
 // requestAttestation sends an attestation request to a holder.
@@ -340,10 +345,12 @@ func (c *Collector) parseResponse(data []byte, objectID [32]byte, holderIndex in
 }
 
 // finalizeResult aggregates attestations into the final CollectionResult.
+// Verifies each individual BLS signature and validates object hash integrity.
 func (c *Collector) finalizeResult(
 	result *CollectionResult,
 	attestations []*HolderAttestation,
 	quorum int,
+	holders []consensus.Hash,
 ) *CollectionResult {
 	// Filter positive attestations
 	var positives []*HolderAttestation
@@ -368,6 +375,34 @@ func (c *Collector) finalizeResult(
 				result.Error = fmt.Errorf("hash mismatch between holders")
 				return result
 			}
+		}
+	}
+
+	// Verify each individual BLS signature against the holder's known BLS pubkey
+	for _, att := range positives {
+		if att.HolderIndex >= len(holders) {
+			result.Error = fmt.Errorf("holder index %d out of range", att.HolderIndex)
+			return result
+		}
+
+		holderInfo := c.validators.Get(holders[att.HolderIndex])
+		if holderInfo == nil || holderInfo.BLSPubkey == [48]byte{} {
+			// Skip verification if BLS pubkey not yet known (backward compat)
+			continue
+		}
+
+		if !Verify(att.Signature, att.Hash[:], holderInfo.BLSPubkey[:]) {
+			result.Error = fmt.Errorf("BLS signature from holder %d is invalid", att.HolderIndex)
+			return result
+		}
+	}
+
+	// Verify object data matches the attested hash
+	if len(result.ObjectData) > 0 && len(positives) > 0 {
+		expectedHash := ComputeObjectHash(result.ObjectData, result.Version)
+		if expectedHash != positives[0].Hash {
+			result.Error = fmt.Errorf("object data does not match attested hash")
+			return result
 		}
 	}
 

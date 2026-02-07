@@ -1,10 +1,12 @@
 package aggregation
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
 
 	blst "github.com/supranational/blst/bindings/go"
+	"github.com/zeebo/blake3"
 )
 
 const (
@@ -22,6 +24,20 @@ var blsDST = []byte("BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_")
 type BLSKeyPair struct {
 	secret *blst.SecretKey  // secret is the private key
 	public *blst.P1Affine   // public is the public key
+}
+
+// DeriveFromED25519 derives a deterministic BLS key pair from an ED25519 private key.
+// The BLS key is bound to the validator's identity via BLAKE3("bluepods-bls-keygen" || seed).
+func DeriveFromED25519(privKey ed25519.PrivateKey) (*BLSKeyPair, error) {
+	seed := privKey.Seed()
+	h := blake3.New()
+	h.Write([]byte("bluepods-bls-keygen"))
+	h.Write(seed)
+
+	var derived [32]byte
+	h.Sum(derived[:0])
+
+	return GenerateBLSKeyFromSeed(derived[:])
 }
 
 // GenerateBLSKey creates a new BLS key pair from random seed.

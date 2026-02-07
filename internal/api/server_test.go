@@ -24,7 +24,7 @@ func (m *mockSubmitter) SubmitTx(tx []byte) {
 
 func TestHealthEndpoint(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -47,10 +47,10 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestSubmitTx_Success(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil)
 
-	// Build a valid AttestedTransaction
-	txData := buildTestAttestedTx()
+	// Build a valid raw Transaction (API now expects raw tx, not ATX)
+	txData := buildTestRawTx()
 
 	req := httptest.NewRequest("POST", "/tx", bytes.NewReader(txData))
 	w := httptest.NewRecorder()
@@ -77,7 +77,7 @@ func TestSubmitTx_Success(t *testing.T) {
 
 func TestSubmitTx_EmptyBody(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("POST", "/tx", nil)
 	w := httptest.NewRecorder()
@@ -95,7 +95,7 @@ func TestSubmitTx_EmptyBody(t *testing.T) {
 
 func TestSubmitTx_InvalidData(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("POST", "/tx", bytes.NewReader([]byte("invalid")))
 	w := httptest.NewRecorder()
@@ -107,11 +107,10 @@ func TestSubmitTx_InvalidData(t *testing.T) {
 	}
 }
 
-// buildTestAttestedTx creates a minimal valid AttestedTransaction for testing.
-func buildTestAttestedTx() []byte {
+// buildTestRawTx creates a minimal valid raw Transaction for testing.
+func buildTestRawTx() []byte {
 	builder := flatbuffers.NewBuilder(512)
 
-	// Create a minimal transaction
 	hash := blake3.Sum256([]byte("test"))
 	hashVec := builder.CreateByteVector(hash[:])
 	senderVec := builder.CreateByteVector(make([]byte, 32))
@@ -129,20 +128,7 @@ func buildTestAttestedTx() []byte {
 	types.TransactionAddArgs(builder, argsVec)
 	txOffset := types.TransactionEnd(builder)
 
-	// Empty objects and proofs
-	types.AttestedTransactionStartObjectsVector(builder, 0)
-	objectsVec := builder.EndVector(0)
-
-	types.AttestedTransactionStartProofsVector(builder, 0)
-	proofsVec := builder.EndVector(0)
-
-	types.AttestedTransactionStart(builder)
-	types.AttestedTransactionAddTransaction(builder, txOffset)
-	types.AttestedTransactionAddObjects(builder, objectsVec)
-	types.AttestedTransactionAddProofs(builder, proofsVec)
-	atxOffset := types.AttestedTransactionEnd(builder)
-
-	builder.Finish(atxOffset)
+	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
 }

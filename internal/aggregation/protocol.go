@@ -164,3 +164,10 @@ func GetMessageType(data []byte) (byte, error) {
 
 	return data[0], nil
 }
+
+// IsAttestationRequest returns true if data is an attestation request.
+// Check: data[0] == 0x01. No conflict with sync (FlatBuffers starts with
+// a 4-byte offset, never 0x01 as first byte for valid messages).
+func IsAttestationRequest(data []byte) bool {
+	return len(data) > 0 && data[0] == msgTypeRequest
+}

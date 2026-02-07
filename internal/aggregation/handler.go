@@ -48,7 +48,7 @@ func (h *Handler) processRequest(req *AttestationRequest) ([]byte, error) {
 		return h.buildNegativeResponse(reasonWrongVersion), nil
 	}
 
-	hash := computeObjectHash(objectData, req.Version)
+	hash := ComputeObjectHash(objectData, req.Version)
 	sig := h.blsKey.Sign(hash[:])
 
 	return h.buildPositiveResponse(objectData, hash, sig, req.WantFull), nil
@@ -82,8 +82,8 @@ func (h *Handler) buildNegativeResponse(reason byte) []byte {
 	return EncodeNegativeResponse(resp)
 }
 
-// computeObjectHash computes BLAKE3(content || version) for signing.
-func computeObjectHash(content []byte, version uint64) [32]byte {
+// ComputeObjectHash computes BLAKE3(content || version) for signing.
+func ComputeObjectHash(content []byte, version uint64) [32]byte {
 	hasher := blake3.New()
 	hasher.Write(content)
 

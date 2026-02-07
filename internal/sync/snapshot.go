@@ -185,8 +185,8 @@ func sortValidatorInfos(validators []*consensus.ValidatorInfo) {
 	})
 }
 
-// encodeValidators encodes validators with their addresses.
-// Format: for each validator: 32-byte pubkey + u16 http_len + http_bytes + u16 quic_len + quic_bytes
+// encodeValidators encodes validators with their addresses and BLS pubkey.
+// Format: for each validator: 32-byte pubkey + u16 http_len + http_bytes + u16 quic_len + quic_bytes + 48-byte bls_pubkey
 func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 	var buf bytes.Buffer
 
@@ -206,6 +206,9 @@ func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 		binary.LittleEndian.PutUint16(lenBuf, uint16(len(quicBytes)))
 		buf.Write(lenBuf)
 		buf.Write(quicBytes)
+
+		// BLS pubkey (48 bytes fixed)
+		buf.Write(v.BLSPubkey[:])
 	}
 
 	return buf.Bytes()
@@ -245,6 +248,13 @@ func decodeValidators(data []byte) []*consensus.ValidatorInfo {
 		}
 		v.QUICAddr = string(data[:quicLen])
 		data = data[quicLen:]
+
+		// BLS pubkey (48 bytes fixed)
+		if len(data) < 48 {
+			break
+		}
+		copy(v.BLSPubkey[:], data[:48])
+		data = data[48:]
 
 		validators = append(validators, v)
 	}

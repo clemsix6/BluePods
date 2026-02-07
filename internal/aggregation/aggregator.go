@@ -2,6 +2,7 @@ package aggregation
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sync"
 
@@ -65,20 +66,21 @@ func (a *Aggregator) extractObjectRefs(tx *types.Transaction) []ObjectRef {
 	return refs
 }
 
-// parseObjectIDs parses a byte slice of concatenated 32-byte object IDs.
+// parseObjectIDs parses a byte slice of concatenated 40-byte object references.
+// Each reference is 32-byte objectID + 8-byte version (little-endian).
 func (a *Aggregator) parseObjectIDs(data []byte) []ObjectRef {
 	if len(data) == 0 {
 		return nil
 	}
 
-	numObjects := len(data) / 32
+	numObjects := len(data) / 40
 	refs := make([]ObjectRef, 0, numObjects)
 
 	for i := 0; i < numObjects; i++ {
 		var ref ObjectRef
-		copy(ref.ID[:], data[i*32:(i+1)*32])
-		// TODO: Version should be fetched from storage or passed in
-		ref.Version = 0
+		offset := i * 40
+		copy(ref.ID[:], data[offset:offset+32])
+		ref.Version = binary.LittleEndian.Uint64(data[offset+32 : offset+40])
 
 		refs = append(refs, ref)
 	}
@@ -127,7 +129,9 @@ func (a *Aggregator) collectAllObjects(ctx context.Context, refs []ObjectRef) ([
 func (a *Aggregator) buildAttestedTransaction(txData []byte, results []*CollectionResult) ([]byte, error) {
 	builder := flatbuffers.NewBuilder(1024)
 
-	txOffset := builder.CreateByteVector(txData)
+	// Rebuild Transaction table inside the builder (not as raw byte vector).
+	tx := types.GetRootAsTransaction(txData, 0)
+	txOffset := rebuildTxTable(builder, tx)
 
 	var objectOffsets, proofOffsets []flatbuffers.UOffsetT
 
@@ -205,7 +209,7 @@ func (a *Aggregator) buildObject(builder *flatbuffers.Builder, result *Collectio
 
 	types.ObjectStart(builder)
 	types.ObjectAddId(builder, idOffset)
-	types.ObjectAddVersion(builder, 0) // TODO: Include actual version
+	types.ObjectAddVersion(builder, result.Version)
 	types.ObjectAddReplication(builder, result.Replication)
 
 	if contentOffset != 0 {
@@ -232,4 +236,30 @@ func (a *Aggregator) buildQuorumProof(builder *flatbuffers.Builder, result *Coll
 	types.QuorumProofAddSignerBitmap(builder, bitmapOffset)
 
 	return types.QuorumProofEnd(builder), nil
+}
+
+// rebuildTxTable rebuilds a Transaction table in the given builder.
+// Needed because FlatBuffers tables must be built in the same builder as the parent table.
+func rebuildTxTable(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
+	hashVec := builder.CreateByteVector(tx.HashBytes())
+	sigVec := builder.CreateByteVector(tx.SignatureBytes())
+	argsVec := builder.CreateByteVector(tx.ArgsBytes())
+	senderVec := builder.CreateByteVector(tx.SenderBytes())
+	podVec := builder.CreateByteVector(tx.PodBytes())
+	funcNameOff := builder.CreateString(string(tx.FunctionName()))
+	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
+	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddSignature(builder, sigVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
+	types.TransactionAddMutableObjects(builder, mutObjVec)
+	types.TransactionAddReadObjects(builder, readObjVec)
+
+	return types.TransactionEnd(builder)
 }

@@ -47,6 +47,10 @@ type Config struct {
 	// MinValidators is the minimum number of validators before non-bootstrap nodes produce.
 	// Bootstrap always produces. Others wait until this threshold is reached.
 	MinValidators int
+
+	// SyncBufferSec is the sync buffer duration in seconds.
+	// New nodes buffer vertices for this long before requesting a snapshot.
+	SyncBufferSec int
 }
 
 // parseFlags parses command-line flags into Config.
@@ -64,6 +68,7 @@ func parseFlags() *Config {
 	flag.Uint64Var(&cfg.InitialMint, "initial-mint", 1_000_000_000, "Initial token mint amount")
 	flag.StringVar(&cfg.SystemPodPath, "system-pod", "./pods/pod-system/build/pod.wasm", "System pod WASM path")
 	flag.IntVar(&cfg.MinValidators, "min-validators", 1, "Minimum validators before non-bootstrap nodes produce")
+	flag.IntVar(&cfg.SyncBufferSec, "sync-buffer", 12, "Sync buffer duration in seconds (time to buffer vertices before snapshot)")
 	flag.Parse()
 
 	return cfg

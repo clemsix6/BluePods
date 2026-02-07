@@ -103,7 +103,7 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 	}
 
 	// Verify hash
-	expectedHash := computeObjectHash(objData, version)
+	expectedHash := ComputeObjectHash(objData, version)
 	if resp.Hash != expectedHash {
 		t.Error("hash mismatch")
 	}
@@ -253,8 +253,8 @@ func TestComputeObjectHash(t *testing.T) {
 	content := []byte("test content for hashing")
 	version := uint64(42)
 
-	hash1 := computeObjectHash(content, version)
-	hash2 := computeObjectHash(content, version)
+	hash1 := ComputeObjectHash(content, version)
+	hash2 := ComputeObjectHash(content, version)
 
 	// Same input should produce same hash
 	if hash1 != hash2 {
@@ -262,13 +262,13 @@ func TestComputeObjectHash(t *testing.T) {
 	}
 
 	// Different version should produce different hash
-	hash3 := computeObjectHash(content, version+1)
+	hash3 := ComputeObjectHash(content, version+1)
 	if hash1 == hash3 {
 		t.Error("different version should produce different hash")
 	}
 
 	// Different content should produce different hash
-	hash4 := computeObjectHash([]byte("different content"), version)
+	hash4 := ComputeObjectHash([]byte("different content"), version)
 	if hash1 == hash4 {
 		t.Error("different content should produce different hash")
 	}

@@ -20,6 +20,7 @@ type HolderAttestation struct {
 type CollectionResult struct {
 	ObjectID    [32]byte // ObjectID is the object's identifier
 	ObjectData  []byte   // ObjectData is the full object content
+	Version     uint64   // Version is the object's current version
 	Replication uint16   // Replication is the object's replication factor
 	Signatures  [][]byte // Signatures are the collected BLS signatures
 	SignerMask  []byte   // SignerMask is a bitmap of which holders signed

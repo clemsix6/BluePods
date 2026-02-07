@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,8 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/aggregation"
 	"BluePods/internal/api"
 	"BluePods/internal/consensus"
 	"BluePods/internal/genesis"
@@ -28,8 +31,8 @@ import (
 )
 
 const (
-	// syncBufferDuration is how long to buffer vertices before requesting snapshot.
-	syncBufferDuration = 12 * time.Second
+	// defaultSyncBufferSec is the default sync buffer duration in seconds.
+	defaultSyncBufferSec = 12
 )
 
 // Node represents a running BluePods node.
@@ -44,6 +47,12 @@ type Node struct {
 	snapManager *sync.SnapshotManager
 	syncBuffer  *sync.VertexBuffer // syncBuffer holds vertices during sync
 	systemPod   [32]byte
+
+	// Aggregation components
+	aggregator *aggregation.Aggregator  // aggregator orchestrates attestation collection
+	blsKey     *aggregation.BLSKeyPair  // blsKey is the BLS key for signing attestations
+	attHandler *aggregation.Handler     // attHandler responds to attestation requests
+	rendezvous *aggregation.Rendezvous  // rendezvous computes object-holder mappings
 }
 
 // NewNode creates and initializes a new node.
@@ -181,8 +190,160 @@ func (n *Node) initConsensus() error {
 	)
 
 	n.setupValidatorCallback()
+	n.initAggregation(validators)
 
 	return nil
+}
+
+// initAggregation initializes the aggregation subsystem.
+func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
+	blsKey, err := aggregation.DeriveFromED25519(n.cfg.PrivateKey)
+	if err != nil {
+		logger.Warn("failed to derive BLS key, attestation handler disabled", "error", err)
+		return
+	}
+
+	n.blsKey = blsKey
+	n.attHandler = aggregation.NewHandler(n.state, n.blsKey)
+	n.rendezvous = aggregation.NewRendezvous(validators)
+	n.aggregator = aggregation.NewAggregator(n.network, validators, n.state)
+
+	// Set up isHolder closure for execution and storage sharding
+	myPubkey := n.myPubkey()
+	isHolder := n.buildIsHolder(myPubkey)
+
+	n.dag.SetIsHolder(isHolder)
+	n.state.SetIsHolder(isHolder)
+
+	// Set up ATX proof verifier
+	n.dag.SetATXProofVerifier(n.buildATXVerifier(validators))
+
+	logger.Info("aggregation initialized")
+}
+
+// buildIsHolder creates a closure that checks if this node is a holder for an object.
+func (n *Node) buildIsHolder(myPubkey consensus.Hash) func(objectID [32]byte, replication uint16) bool {
+	return func(objectID [32]byte, replication uint16) bool {
+		// Singletons: all validators hold them
+		if replication == 0 {
+			return true
+		}
+
+		holders := n.rendezvous.ComputeHolders(objectID, int(replication))
+		for _, h := range holders {
+			if h == myPubkey {
+				return true
+			}
+		}
+
+		return false
+	}
+}
+
+// buildATXVerifier returns a closure that verifies all BLS quorum proofs in an ATX.
+func (n *Node) buildATXVerifier(validators *consensus.ValidatorSet) func(*types.AttestedTransaction) error {
+	return func(atx *types.AttestedTransaction) error {
+		var proof types.QuorumProof
+
+		for i := 0; i < atx.ProofsLength(); i++ {
+			if !atx.Proofs(&proof, i) {
+				return fmt.Errorf("cannot read proof %d", i)
+			}
+
+			if err := n.verifySingleProof(atx, &proof, validators); err != nil {
+				return fmt.Errorf("proof %d:\n%w", i, err)
+			}
+		}
+
+		return nil
+	}
+}
+
+// verifySingleProof verifies one QuorumProof against the ATX objects and validator BLS keys.
+func (n *Node) verifySingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof, validators *consensus.ValidatorSet) error {
+	// Find the matching object in the ATX
+	objIdx := findATXObjectIndex(atx, proof.ObjectIdBytes())
+	if objIdx < 0 {
+		return fmt.Errorf("object not found in ATX")
+	}
+
+	var obj types.Object
+	if !atx.Objects(&obj, objIdx) {
+		return fmt.Errorf("cannot read object at index %d", objIdx)
+	}
+
+	// Recompute expected hash from object data
+	hash := aggregation.ComputeObjectHash(obj.ContentBytes(), obj.Version())
+
+	// Compute holders using rendezvous
+	var objectID [32]byte
+	copy(objectID[:], proof.ObjectIdBytes())
+	holders := n.rendezvous.ComputeHolders(objectID, int(obj.Replication()))
+
+	// Extract signer BLS keys from bitmap
+	blsKeys, signerCount := extractSignerBLSKeys(proof.SignerBitmapBytes(), holders, validators)
+	if signerCount == 0 {
+		return fmt.Errorf("no signers in bitmap")
+	}
+
+	// Verify quorum
+	quorum := aggregation.QuorumSize(len(holders))
+	if signerCount < quorum {
+		return fmt.Errorf("insufficient signers: got %d, need %d", signerCount, quorum)
+	}
+
+	// Verify aggregated BLS signature
+	if !aggregation.VerifyAggregated(proof.BlsSignatureBytes(), hash[:], blsKeys) {
+		return fmt.Errorf("aggregated BLS signature invalid")
+	}
+
+	return nil
+}
+
+// findATXObjectIndex returns the index of the object with the given ID in the ATX, or -1.
+func findATXObjectIndex(atx *types.AttestedTransaction, objectID []byte) int {
+	var obj types.Object
+
+	for i := 0; i < atx.ObjectsLength(); i++ {
+		if !atx.Objects(&obj, i) {
+			continue
+		}
+
+		if bytes.Equal(obj.IdBytes(), objectID) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// extractSignerBLSKeys maps a signer bitmap to BLS public keys via rendezvous holders.
+// Returns the BLS keys and the number of signers.
+func extractSignerBLSKeys(bitmap []byte, holders []consensus.Hash, validators *consensus.ValidatorSet) ([][]byte, int) {
+	indices := aggregation.ParseSignerBitmap(bitmap)
+	var keys [][]byte
+
+	for _, idx := range indices {
+		if idx >= len(holders) {
+			continue
+		}
+
+		info := validators.Get(holders[idx])
+		if info == nil || info.BLSPubkey == [48]byte{} {
+			continue
+		}
+
+		keys = append(keys, info.BLSPubkey[:])
+	}
+
+	return keys, len(keys)
+}
+
+// myPubkey returns this node's public key as a consensus.Hash.
+func (n *Node) myPubkey() consensus.Hash {
+	var pk consensus.Hash
+	copy(pk[:], n.cfg.PrivateKey.Public().(ed25519.PublicKey))
+	return pk
 }
 
 // setupValidatorCallback configures the callback for new validator registration.
@@ -268,12 +429,22 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 		return nil
 	}
 
+	// Derive BLS key early so it's available for genesis
+	blsKey, err := aggregation.DeriveFromED25519(n.cfg.PrivateKey)
+	if err != nil {
+		logger.Warn("failed to derive BLS key for genesis", "error", err)
+		return nil
+	}
+
+	n.blsKey = blsKey
+
 	genesisCfg := genesis.Config{
 		PrivateKey:  n.cfg.PrivateKey,
 		InitialMint: n.cfg.InitialMint,
 		HTTPAddress: n.cfg.HTTPAddress,
 		QUICAddress: n.cfg.QUICAddress,
 		SystemPodID: n.systemPod,
+		BLSPubkey:   blsKey.PublicKeyBytes(),
 	}
 
 	txs, err := genesis.BuildTransactions(genesisCfg)
@@ -310,7 +481,7 @@ func (n *Node) Run() error {
 	n.setupRequestHandlers()
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig())
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter())
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
@@ -349,7 +520,7 @@ func (n *Node) runValidator() error {
 		return fmt.Errorf("sync failed:\n%w", err)
 	}
 
-	// Set up request handlers for snapshot serving
+	// Set up request handlers for snapshot serving and attestations
 	n.setupRequestHandlers()
 
 	// Start network listener early so other validators can connect to us.
@@ -364,13 +535,13 @@ func (n *Node) runValidator() error {
 	// Start processing committed transactions
 	go n.processCommitted()
 
-	// Register as validator by sending transaction to bootstrap
+	// Register as validator by sending raw tx to bootstrap
 	if err := n.registerAsValidator(); err != nil {
 		return fmt.Errorf("register validator:\n%w", err)
 	}
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig())
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter())
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
@@ -384,13 +555,19 @@ func (n *Node) runValidator() error {
 	return n.waitForShutdown()
 }
 
-// registerAsValidator sends a register_validator transaction to the bootstrap node.
+// registerAsValidator sends a register_validator raw transaction to the bootstrap node.
 func (n *Node) registerAsValidator() error {
-	tx := genesis.BuildRegisterValidatorTx(
+	var blsPubkeyBytes []byte
+	if n.blsKey != nil {
+		blsPubkeyBytes = n.blsKey.PublicKeyBytes()
+	}
+
+	tx := genesis.BuildRegisterValidatorRawTx(
 		n.cfg.PrivateKey,
 		n.systemPod,
 		n.cfg.HTTPAddress,
 		n.cfg.QUICAddress,
+		blsPubkeyBytes,
 	)
 
 	registrationHTTP := n.getRegistrationHTTPAddr()
@@ -416,7 +593,13 @@ func (n *Node) registerAsValidator() error {
 	pubKey := n.cfg.PrivateKey.Public().(ed25519.PublicKey)
 	var pubHash consensus.Hash
 	copy(pubHash[:], pubKey)
-	n.dag.AddValidator(pubHash, n.cfg.HTTPAddress, n.cfg.QUICAddress)
+
+	var blsPub [48]byte
+	if n.blsKey != nil {
+		copy(blsPub[:], n.blsKey.PublicKeyBytes())
+	}
+
+	n.dag.AddValidator(pubHash, n.cfg.HTTPAddress, n.cfg.QUICAddress, blsPub)
 
 	logger.Info("registration submitted, self-added to validator set")
 	return nil
@@ -485,8 +668,9 @@ func (n *Node) runListener() error {
 // If asValidator is true, initializes for active participation instead of listener mode.
 func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	// Wait to buffer enough vertices (covers snapshot interval)
-	logger.Info("buffering vertices", "duration", syncBufferDuration)
-	time.Sleep(syncBufferDuration)
+	bufferDuration := time.Duration(n.cfg.SyncBufferSec) * time.Second
+	logger.Info("buffering vertices", "duration", bufferDuration)
+	time.Sleep(bufferDuration)
 
 	logger.Info("buffer status",
 		"vertices", n.syncBuffer.Len(),
@@ -638,6 +822,7 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 	)
 
 	n.setupValidatorCallback()
+	n.initAggregation(validators)
 
 	return nil
 }
@@ -652,9 +837,9 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 		"count", len(validators),
 	)
 
-	// Add each validator with their full info (pubkey + addresses)
+	// Add each validator with their full info (pubkey + addresses + BLS key)
 	for _, v := range validators {
-		vs.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr)
+		vs.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
 			"http", v.HTTPAddr,
@@ -785,6 +970,14 @@ func (n *Node) GossipTx(tx []byte) {
 // setupRequestHandlers configures bidirectional request handlers.
 func (n *Node) setupRequestHandlers() {
 	n.network.OnRequest(func(peer *network.Peer, data []byte) ([]byte, error) {
+		// Handle attestation requests
+		if aggregation.IsAttestationRequest(data) {
+			if n.attHandler == nil {
+				return nil, fmt.Errorf("no attestation handler")
+			}
+			return n.attHandler.HandleRequest(peer, data)
+		}
+
 		// Handle snapshot requests
 		if sync.IsSnapshotRequest(data) {
 			if n.snapManager == nil {
@@ -796,7 +989,6 @@ func (n *Node) setupRequestHandlers() {
 		return nil, fmt.Errorf("unknown request type")
 	})
 }
-
 
 // processCommitted handles committed transactions from the DAG.
 func (n *Node) processCommitted() {
@@ -828,6 +1020,117 @@ func (n *Node) faucetConfig() *api.FaucetConfig {
 		PrivKey:   n.cfg.PrivateKey,
 		SystemPod: n.systemPod,
 	}
+}
+
+// newHolderRouter creates a HolderRouter for routing GetObject requests.
+// Returns nil if aggregation is not initialized.
+func (n *Node) newHolderRouter() api.HolderRouter {
+	if n.rendezvous == nil {
+		return nil
+	}
+
+	return &holderRouter{
+		rendezvous: n.rendezvous,
+		dag:        n.dag,
+		ownPubkey:  n.myPubkey(),
+	}
+}
+
+// holderRouter routes GetObject requests to remote holders.
+type holderRouter struct {
+	rendezvous *aggregation.Rendezvous // rendezvous computes holder mappings
+	dag        *consensus.DAG          // dag provides validator info
+	ownPubkey  consensus.Hash          // ownPubkey is this node's public key
+}
+
+// RouteGetObject tries to fetch an object from its holders.
+func (hr *holderRouter) RouteGetObject(id [32]byte) ([]byte, error) {
+	// Use replication=10 as minimum probe size
+	holders := hr.rendezvous.ComputeHolders(id, 10)
+
+	for _, h := range holders {
+		// Skip self
+		if h == hr.ownPubkey {
+			continue
+		}
+
+		info := hr.dag.ValidatorSet().Get(h)
+		if info == nil || info.HTTPAddr == "" {
+			continue
+		}
+
+		data, err := fetchObjectFromHolder(info.HTTPAddr, id)
+		if err == nil {
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("object not found on any holder")
+}
+
+// fetchObjectFromHolder fetches an object from a remote holder via HTTP.
+func fetchObjectFromHolder(httpAddr string, id [32]byte) ([]byte, error) {
+	url := "http://" + httpAddr + "/object/" + hex.EncodeToString(id[:])
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	var objResp struct {
+		ID          string `json:"id"`
+		Version     uint64 `json:"version"`
+		Owner       string `json:"owner"`
+		Replication uint16 `json:"replication"`
+		Content     string `json:"content"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&objResp); err != nil {
+		return nil, err
+	}
+
+	return rebuildObjectFromJSON(objResp.ID, objResp.Owner, objResp.Content, objResp.Version, objResp.Replication)
+}
+
+// rebuildObjectFromJSON reconstructs a FlatBuffer Object from JSON API response fields.
+func rebuildObjectFromJSON(idHex, ownerHex, contentHex string, version uint64, replication uint16) ([]byte, error) {
+	idBytes, err := hex.DecodeString(idHex)
+	if err != nil || len(idBytes) != 32 {
+		return nil, fmt.Errorf("invalid id")
+	}
+
+	ownerBytes, err := hex.DecodeString(ownerHex)
+	if err != nil || len(ownerBytes) != 32 {
+		return nil, fmt.Errorf("invalid owner")
+	}
+
+	contentBytes, err := hex.DecodeString(contentHex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid content")
+	}
+
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(idBytes)
+	ownerVec := builder.CreateByteVector(ownerBytes)
+	contentVec := builder.CreateByteVector(contentBytes)
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, version)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, replication)
+	types.ObjectAddContent(builder, contentVec)
+	offset := types.ObjectEnd(builder)
+
+	builder.Finish(offset)
+
+	return builder.FinishedBytes(), nil
 }
 
 // Close shuts down all node components gracefully.

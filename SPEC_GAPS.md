@@ -4,55 +4,25 @@ Liste des simplifications et ecarts entre l'implementation actuelle et la spec `
 
 ---
 
-## 1. ~~Singletons inclus dans le corps des transactions~~ RESOLU
+## Implemente et fonctionnel
 
-**Spec** : "Les singletons ne sont pas inclus dans le corps de la transaction car chaque validator possede deja leur contenu localement. Seuls leur identifiant et version attendue apparaissent dans le header."
+Les elements suivants de la spec sont correctement implementes :
 
-**Fix applique** : Le client n'inclut plus les singletons (replication=0) dans le vecteur Objects de l'ATX. Le noeud resout les objets manquants depuis son state local via `resolveMutableObjects()`.
-
----
-
-## 2. ReadObjects non utilise
-
-**Spec** : Deux listes d'objets dans le header : `ReadObjects` (version verifiee, pas incrementee) et `MutableObjects` (version verifiee ET incrementee).
-
-**Actuel** : Le client ne remplit jamais `ReadObjects`. Toutes les references passent par `MutableObjects`.
-
-**Impact** : Aucun pour l'instant (split/transfer ne touchent qu'un objet mutable). Deviendra important pour des transactions multi-objets ou un objet est lu sans etre modifie.
-
-**Fix** : Ajouter le support `ReadObjects` dans le client quand un pod en aura besoin.
+- **Singletons vs objets standard** : Les singletons (replication=0) sont exclus du body ATX, resolus depuis le state local via `resolveMutableObjects()`. Les objets standard sont collectes aupres des holders.
+- **Attestation BLS / collecte de quorum** : L'agregateur collecte les attestations des holders via QUIC, le top-1 envoie l'objet complet, les autres envoient hash+signature BLS. Quorum 67% avec fail-fast sur votes negatifs. Preuves incluses dans les vertices (signature BLS agregee + bitmap).
+- **Rendezvous Hashing** : Les holders sont determines par Rendezvous Hashing (`blake3(objectID || validatorPubkey)`, tri decroissant, top-N). Implemente dans `aggregation/rendezvous.go`.
+- **Sharding d'execution** : Seuls les holders des MutableObjects executent. Configure via `dag.SetIsHolder()` et `state.SetIsHolder()` dans `cmd/node/node.go`. Exception : `creates_objects=true` → tous les validators executent.
+- **Sharding de stockage** : Les objets crees ne sont stockes que par les holders (via `isHolder` dans `state.applyCreatedObjects()`).
+- **Version tracking** : Le `versionTracker` dans le consensus suit les versions de tous les objets depuis le DAG. Detection de conflits sans execution. `ensureMutableVersions()` garantit la coherence state/consensus.
+- **Consensus DAG (Mysticeti)** : Commit rule 2-round avec quorum 67%. Vertices gossiped avec fanout 40. Verification des preuves BLS au commit.
+- **IDs deterministes** : `blake3(txHash || index_u32_LE)` pour les objets crees.
+- **ReadObjects** : Le client et le consensus supportent `ReadObjects` (version verifiee, pas incrementee) et `MutableObjects` (version verifiee ET incrementee). `checkVersions()` verifie les deux listes.
 
 ---
 
-## 3. ~~Version state vs version tracker (fragile)~~ RESOLU
+## Ecarts restants
 
-**Spec** : "La version s'incremente des qu'un objet est declare comme mutable dans une transaction reussie, independamment du fait que son contenu change effectivement ou non."
-
-**Fix applique** : `state.Execute` appelle `ensureMutableVersions()` apres `processOutput()`. Cette fonction parcourt tous les objets dans `MutableObjects` et garantit que leur version est incrementee a `expectedVersion+1`, meme si le pod ne les a pas retournes dans `UpdatedObjects`.
-
----
-
-## 4. Pas d'attestation BLS / collecte de quorum
-
-**Spec** : L'agregateur collecte les attestations des holders via QUIC, agrege les signatures BLS, et inclut les preuves dans le vertex. Le vecteur `Proofs` de l'ATX contient la signature BLS agregee + bitmap.
-
-**Actuel** : Le vecteur `Proofs` est toujours vide. Toutes les transactions sont acceptees sans preuve de quorum. Pas de collecte d'attestations, pas de BLS.
-
-**Impact** : Aucune securite sur l'authenticite des objets inclus dans les transactions. Un client malveillant peut inclure de faux objets.
-
----
-
-## 5. Pas de sharding d'execution
-
-**Spec** : "Chaque holder d'au moins un objet dans MutableObjects appelle execute(tx)." Seuls les holders executent.
-
-**Actuel** : Tous les validators executent toutes les transactions.
-
-**Impact** : Pas de scaling horizontal. Chaque validator supporte la charge totale du reseau.
-
----
-
-## 6. Pas de limites de transaction enforçees
+### 1. Pas de limites de transaction enforçees
 
 **Spec** :
 - 8 objets standards max par tx
@@ -69,20 +39,51 @@ Liste des simplifications et ecarts entre l'implementation actuelle et la spec `
 
 ---
 
-## 7. Pas de Rendezvous Hashing
+### 2. Pas d'epochs / gestion des validators
 
-**Spec** : Les holders d'un objet sont determines par Rendezvous Hashing. Seuls les N holders stockent l'objet.
+**Spec** : Le reseau fonctionne par epochs. Au debut de chaque epoch, la liste des validators est figee. Detection des inactifs par observation des votes. Exclusion et penalites en fin d'epoch.
 
-**Actuel** : Tous les validators stockent tous les objets (tout est traite comme singleton).
+**Actuel** : Pas d'epochs. Les validators sont ajoutes dynamiquement et ne sont jamais retires. Pas de detection d'inactivite, pas de penalites, pas de slashing.
 
-**Impact** : Pas de distribution du stockage. Chaque noeud stocke l'integralite du state.
+**Impact** : Pas de rotation des validators. Un validator inactif reste dans le set indefiniment.
+
+---
+
+### 3. Pas de systeme de fees
+
+**Spec** : Les frais de transaction existent (creation de singletons plus chere, enregistrement de domaines dissuasif).
+
+**Actuel** : Aucun systeme de fees. Les transactions sont gratuites. Gas limit hardcode a 10M.
+
+---
+
+### 4. Pas de Domain Registry
+
+**Spec** : Systeme de noms de domaine (DomainRegistry singleton) permettant d'associer des noms lisibles a des adresses d'objets.
+
+**Actuel** : Non implemente.
+
+---
+
+### 5. Pas de fraud proofs
+
+**Spec** : "Le mecanisme exact de fraud proof si un holder execute mal une transaction et produit un mauvais etat n'est pas encore defini." (probleme ouvert dans la spec aussi)
+
+**Actuel** : Aucune verification que les holders produisent le meme resultat d'execution.
+
+---
+
+### 6. Pas de challenge de stockage
+
+**Spec** : "Les details du systeme de challenge et proof pour le stockage restent a affiner." (probleme ouvert dans la spec aussi)
+
+**Actuel** : Aucun mecanisme pour verifier qu'un holder detient reellement les objets.
 
 ---
 
 ## Priorite suggeree
 
-1. ~~**Point 3** (version state/tracker)~~ RESOLU
-2. **Point 6** (limites tx) - Securite basique
-3. ~~**Point 1** (singletons dans ATX)~~ RESOLU
-4. **Point 2** (ReadObjects) - Quand un pod en aura besoin
-5. **Points 4, 5, 7** - Architecture reseau, gros chantiers
+1. **Point 1** (limites tx) - Securite basique, empecher les abus
+2. **Point 2** (epochs) - Gros chantier, necessaire pour un reseau ouvert
+3. **Point 3** (fees) - Necessaire avant mainnet
+4. **Points 4, 5, 6** - Futures iterations

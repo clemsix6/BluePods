@@ -11,7 +11,7 @@ import (
 
 // Rendezvous computes object-to-holder mappings using rendezvous hashing.
 type Rendezvous struct {
-	validators []consensus.Hash // validators is the list of validator pubkeys
+	vs *consensus.ValidatorSet // vs is the live validator set
 }
 
 // scoredValidator pairs a validator with its computed score.
@@ -22,26 +22,26 @@ type scoredValidator struct {
 
 // NewRendezvous creates a new Rendezvous from the validator set.
 func NewRendezvous(vs *consensus.ValidatorSet) *Rendezvous {
-	return &Rendezvous{
-		validators: vs.Validators(),
-	}
+	return &Rendezvous{vs: vs}
 }
 
 // ComputeHolders returns the N validators responsible for holding the object.
 // The validators are ordered by their rendezvous score (highest first).
 func (r *Rendezvous) ComputeHolders(objectID [32]byte, replication int) []consensus.Hash {
+	validators := r.vs.Validators()
+
 	if replication <= 0 {
 		return nil
 	}
 
-	if replication > len(r.validators) {
-		replication = len(r.validators)
+	if replication > len(validators) {
+		replication = len(validators)
 	}
 
 	// Score all validators
-	scored := make([]scoredValidator, len(r.validators))
+	scored := make([]scoredValidator, len(validators))
 
-	for i, v := range r.validators {
+	for i, v := range validators {
 		scored[i] = scoredValidator{
 			pubkey: v,
 			score:  r.computeScore(objectID, v),

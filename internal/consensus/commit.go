@@ -146,8 +146,26 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 		return
 	}
 
+	// Verify BLS quorum proofs (skip genesis/singletons/creates_objects with no proofs)
+	if d.verifyATXProofs != nil && atx.ProofsLength() > 0 {
+		if err := d.verifyATXProofs(atx); err != nil {
+			logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
+			d.emitTransaction(tx, false)
+			return
+		}
+	}
+
 	// Handle system transactions (register_validator)
 	d.handleRegisterValidator(tx, commitRound)
+
+	// Execution sharding: skip execution if not a holder of any mutable object.
+	// creates_objects=true → ALL validators execute (holder unknown until after execution).
+	// creates_objects=false → only holders of mutable objects execute.
+	if !tx.CreatesObjects() && !d.shouldExecute(atx, tx) {
+		logger.Debug("skipping execution (not holder)", "func", funcName)
+		d.emitTransaction(tx, true)
+		return
+	}
 
 	// Execute via state (objects are in AttestedTransaction)
 	var success bool
@@ -167,6 +185,64 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	d.emitTransaction(tx, success)
 }
 
+// shouldExecute returns true if this node should execute the transaction.
+// A node executes if it is a holder of at least one object in MutableObjects.
+// Singletons (replication=0, not in ATX objects) are held by all validators.
+func (d *DAG) shouldExecute(atx *types.AttestedTransaction, tx *types.Transaction) bool {
+	if d.isHolder == nil {
+		return true // no sharding configured
+	}
+
+	// Build replication map from ATX objects vector
+	replicationMap := buildReplicationMap(atx)
+
+	// Check each mutable object
+	data := tx.MutableObjectsBytes()
+	for i := 0; i+40 <= len(data); i += 40 {
+		var objectID [32]byte
+		copy(objectID[:], data[i:i+32])
+
+		replication, found := replicationMap[objectID]
+		if !found {
+			replication = 0 // not in ATX → singleton
+		}
+
+		if d.isHolder(objectID, replication) {
+			return true
+		}
+	}
+
+	return len(data) == 0 // no mutable objects → execute everywhere
+}
+
+// buildReplicationMap extracts objectID → replication from ATX objects vector.
+func buildReplicationMap(atx *types.AttestedTransaction) map[[32]byte]uint16 {
+	count := atx.ObjectsLength()
+	if count == 0 {
+		return nil
+	}
+
+	m := make(map[[32]byte]uint16, count)
+	var obj types.Object
+
+	for i := 0; i < count; i++ {
+		if !atx.Objects(&obj, i) {
+			continue
+		}
+
+		idBytes := obj.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
+		var id [32]byte
+		copy(id[:], idBytes)
+		m[id] = obj.Replication()
+	}
+
+	return m
+}
+
 // handleRegisterValidator checks if TX is register_validator and adds the validator.
 // The validator pubkey is taken from tx.Sender (matching the Rust pod behavior).
 // Network addresses are parsed from tx.Args.
@@ -183,10 +259,15 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	var pubkey Hash
 	copy(pubkey[:], sender)
 
-	// Parse network addresses from transaction args
-	httpAddr, quicAddr := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
+	// Parse network addresses and BLS pubkey from transaction args
+	httpAddr, quicAddr, blsPubkeyBytes := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
 
-	d.validators.Add(pubkey, httpAddr, quicAddr)
+	var blsPubkey [48]byte
+	if len(blsPubkeyBytes) == 48 {
+		copy(blsPubkey[:], blsPubkeyBytes)
+	}
+
+	d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
 
 	// Enter transition immediately when minValidators is reached.
 	// This prevents producing vertices with cross-references before transition

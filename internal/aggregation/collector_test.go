@@ -103,12 +103,17 @@ func TestCollectorBasic(t *testing.T) {
 
 	objID := [32]byte{0x01}
 
+	// Pre-build the object data and compute the real hash for all handlers
+	testObjData := buildTestObject(objID, 3) // replication=3
+	fbObj := types.GetRootAsObject(testObjData, 0)
+	objHash := ComputeObjectHash(testObjData, fbObj.Version())
+
 	// Set up handlers - return object with replication=3
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, err := DecodeRequest(data)
+			_, err := DecodeRequest(data)
 			if err != nil {
 				return nil, err
 			}
@@ -118,12 +123,12 @@ func TestCollectorBasic(t *testing.T) {
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
 			resp := &PositiveResponse{
-				Hash:      [32]byte{0x42},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      objHash,
+				Signature: blsKey.Sign(objHash[:]),
 			}
 
-			if req.WantFull {
-				resp.Data = buildTestObject(req.ObjectID, 3) // replication=3
+			if true { // always include data for WantFull
+				resp.Data = testObjData
 			}
 
 			return EncodePositiveResponse(resp), nil
@@ -173,12 +178,16 @@ func TestCollectorSingleton(t *testing.T) {
 
 	objID := [32]byte{0x02}
 
+	// Pre-build singleton object and compute hash
+	singletonData := buildTestObject(objID, 0) // singleton
+	singletonHash := ComputeObjectHash(singletonData, types.GetRootAsObject(singletonData, 0).Version())
+
 	// Set up handlers - return object with replication=0 (singleton)
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, err := DecodeRequest(data)
+			_, err := DecodeRequest(data)
 			if err != nil {
 				return nil, err
 			}
@@ -188,12 +197,12 @@ func TestCollectorSingleton(t *testing.T) {
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
 			resp := &PositiveResponse{
-				Hash:      [32]byte{0x42},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      singletonHash,
+				Signature: blsKey.Sign(singletonHash[:]),
 			}
 
-			if req.WantFull {
-				resp.Data = buildTestObject(req.ObjectID, 0) // singleton!
+			if true {
+				resp.Data = singletonData
 			}
 
 			return EncodePositiveResponse(resp), nil
@@ -235,6 +244,9 @@ func TestCollectorQuorum(t *testing.T) {
 	collector := NewCollector(nodes[0].node, rv, vs, nil)
 
 	objID := [32]byte{0x03}
+	quorumTestObjData := buildTestObject(objID, 3)
+	quorumTestHash := ComputeObjectHash(quorumTestObjData, types.GetRootAsObject(quorumTestObjData, 0).Version())
+
 	respondersCount := 0
 
 	// Only first responder returns positive, others negative
@@ -244,7 +256,7 @@ func TestCollectorQuorum(t *testing.T) {
 		respondersCount++
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, _ := DecodeRequest(data)
+			_, _ = DecodeRequest(data)
 
 			seed := make([]byte, 32)
 			copy(seed, nodes[idx].key.Public().(ed25519.PublicKey)[:32])
@@ -252,13 +264,11 @@ func TestCollectorQuorum(t *testing.T) {
 
 			if shouldRespond {
 				resp := &PositiveResponse{
-					Hash:      [32]byte{0x42},
-					Signature: blsKey.Sign(req.ObjectID[:]),
+					Hash:      quorumTestHash,
+					Signature: blsKey.Sign(quorumTestHash[:]),
 				}
 
-				if req.WantFull {
-					resp.Data = buildTestObject(req.ObjectID, 3)
-				}
+				resp.Data = quorumTestObjData
 
 				return EncodePositiveResponse(resp), nil
 			}
@@ -332,26 +342,26 @@ func TestCollectorHashMismatch(t *testing.T) {
 	collector := NewCollector(nodes[0].node, rv, vs, nil)
 
 	objID := [32]byte{0x05}
+	hashMismatchObjData := buildTestObject(objID, 3)
 
 	// Each node returns a different hash
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, _ := DecodeRequest(data)
+			_, _ = DecodeRequest(data)
 
 			seed := make([]byte, 32)
 			copy(seed, nodes[idx].key.Public().(ed25519.PublicKey)[:32])
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
+			fakeHash := [32]byte{byte(idx)} // Different hash per node
 			resp := &PositiveResponse{
-				Hash:      [32]byte{byte(idx)}, // Different hash per node
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      fakeHash,
+				Signature: blsKey.Sign(fakeHash[:]),
 			}
 
-			if req.WantFull {
-				resp.Data = buildTestObject(req.ObjectID, 3)
-			}
+			resp.Data = hashMismatchObjData
 
 			return EncodePositiveResponse(resp), nil
 		})
@@ -564,9 +574,12 @@ func (c *collectorWithMockState) collectAttestationsOnlyMock(
 	localData []byte,
 	replication uint16,
 ) *CollectionResult {
+	fbObj := types.GetRootAsObject(localData, 0)
+
 	result := &CollectionResult{
 		ObjectID:    obj.ID,
 		ObjectData:  localData,
+		Version:     fbObj.Version(),
 		Replication: replication,
 	}
 
@@ -627,7 +640,7 @@ func (c *collectorWithMockState) collectAttestationsOnlyMock(
 		}
 	}
 
-	return c.finalizeResult(result, attestations, quorum)
+	return c.finalizeResult(result, attestations, quorum, holders)
 }
 
 // TestCollectorLocalStandard tests that standard objects in local storage skip top-1 fetch.
@@ -654,6 +667,10 @@ func TestCollectorLocalStandard(t *testing.T) {
 		mockState: mockSt,
 	}
 
+	// Compute the real hash of the local object for matching
+	localObjData := buildTestObject(objID, 3)
+	localObjHash := ComputeObjectHash(localObjData, types.GetRootAsObject(localObjData, 0).Version())
+
 	// Track requests - none should request WantFull=true
 	var wantFullRequests atomic.Int32
 	for i := 1; i < len(nodes); i++ {
@@ -674,8 +691,8 @@ func TestCollectorLocalStandard(t *testing.T) {
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
 			resp := &PositiveResponse{
-				Hash:      [32]byte{0x42},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      localObjHash,
+				Signature: blsKey.Sign(localObjHash[:]),
 			}
 
 			return EncodePositiveResponse(resp), nil

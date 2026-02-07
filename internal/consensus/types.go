@@ -18,9 +18,10 @@ type Hash [32]byte
 
 // ValidatorInfo holds information about a validator.
 type ValidatorInfo struct {
-	Pubkey   Hash   // Pubkey is the validator's Ed25519 public key
-	HTTPAddr string // HTTPAddr is the HTTP API endpoint (may be empty)
-	QUICAddr string // QUICAddr is the QUIC P2P endpoint (may be empty)
+	Pubkey    Hash     // Pubkey is the validator's Ed25519 public key
+	HTTPAddr  string   // HTTPAddr is the HTTP API endpoint (may be empty)
+	QUICAddr  string   // QUICAddr is the QUIC P2P endpoint (may be empty)
+	BLSPubkey [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
 }
 
 // ValidatorSet holds the active validators with their network addresses.
@@ -57,15 +58,16 @@ func (vs *ValidatorSet) OnAdd(fn func(*ValidatorInfo)) {
 	vs.onAdd = fn
 }
 
-// Add adds a validator with network addresses.
+// Add adds a validator with network addresses and BLS public key.
 // Returns true if added or updated, false if already exists with same addresses.
 // If the validator exists but had empty addresses, the addresses are updated.
+// If the validator exists but had zero BLS key, the BLS key is updated.
 // The callback (if set) is called outside the lock only for new validators.
-func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string) bool {
+func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string, blsPubkey [48]byte) bool {
 	vs.mu.Lock()
 
 	if idx, exists := vs.index[pubkey]; exists {
-		// Validator exists - check if we need to update addresses
+		// Validator exists - check if we need to update fields
 		existing := vs.validators[idx]
 		if existing.HTTPAddr == "" && httpAddr != "" {
 			existing.HTTPAddr = httpAddr
@@ -73,14 +75,18 @@ func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string) bool {
 		if existing.QUICAddr == "" && quicAddr != "" {
 			existing.QUICAddr = quicAddr
 		}
+		if existing.BLSPubkey == [48]byte{} && blsPubkey != [48]byte{} {
+			existing.BLSPubkey = blsPubkey
+		}
 		vs.mu.Unlock()
 		return false // Not a new validator
 	}
 
 	info := &ValidatorInfo{
-		Pubkey:   pubkey,
-		HTTPAddr: httpAddr,
-		QUICAddr: quicAddr,
+		Pubkey:    pubkey,
+		HTTPAddr:  httpAddr,
+		QUICAddr:  quicAddr,
+		BLSPubkey: blsPubkey,
 	}
 
 	vs.index[pubkey] = len(vs.validators)
@@ -151,9 +157,10 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 		info := vs.validators[idx]
 		// Return a copy to avoid races
 		return &ValidatorInfo{
-			Pubkey:   info.Pubkey,
-			HTTPAddr: info.HTTPAddr,
-			QUICAddr: info.QUICAddr,
+			Pubkey:    info.Pubkey,
+			HTTPAddr:  info.HTTPAddr,
+			QUICAddr:  info.QUICAddr,
+			BLSPubkey: info.BLSPubkey,
 		}
 	}
 
@@ -168,9 +175,10 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	result := make([]*ValidatorInfo, len(vs.validators))
 	for i, v := range vs.validators {
 		result[i] = &ValidatorInfo{
-			Pubkey:   v.Pubkey,
-			HTTPAddr: v.HTTPAddr,
-			QUICAddr: v.QUICAddr,
+			Pubkey:    v.Pubkey,
+			HTTPAddr:  v.HTTPAddr,
+			QUICAddr:  v.QUICAddr,
+			BLSPubkey: v.BLSPubkey,
 		}
 	}
 

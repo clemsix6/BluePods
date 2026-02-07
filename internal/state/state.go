@@ -20,8 +20,9 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	objects *objectStore
-	pods    *podvm.Pool
+	objects  *objectStore
+	pods     *podvm.Pool
+	isHolder func(objectID [32]byte, replication uint16) bool // isHolder checks if this node stores an object
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -30,6 +31,12 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 		objects: newObjectStore(db),
 		pods:    pods,
 	}
+}
+
+// SetIsHolder sets the holder check function for storage sharding.
+// Objects where isHolder returns false will not be stored locally.
+func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
+	s.isHolder = fn
 }
 
 // Execute runs an attested transaction and updates the state.
@@ -291,6 +298,7 @@ func rebuildObjectIncrementVersion(obj *types.Object) []byte {
 
 // applyCreatedObjects stores newly created objects with deterministic IDs.
 // Each object ID is computed as blake3(txHash || index_u32_LE) per the spec.
+// Storage sharding: only stores objects where this node is a holder.
 func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
 	var obj types.Object
 
@@ -300,6 +308,12 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 		}
 
 		id := computeObjectID(txHash, uint32(i))
+
+		// Storage sharding: skip objects this node doesn't hold
+		if s.isHolder != nil && !s.isHolder(id, obj.Replication()) {
+			continue
+		}
+
 		data := rebuildObjectWithID(id, &obj)
 		s.objects.set(id, data)
 	}

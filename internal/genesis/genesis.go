@@ -21,6 +21,9 @@ type Config struct {
 
 	// SystemPodID is the blake3 hash of the system pod WASM.
 	SystemPodID [32]byte
+
+	// BLSPubkey is the validator's BLS public key for attestation signing.
+	BLSPubkey []byte
 }
 
 // BuildTransactions creates the genesis transactions for network bootstrap.
@@ -47,6 +50,7 @@ func BuildTransactions(cfg Config) ([][]byte, error) {
 		cfg.SystemPodID,
 		cfg.HTTPAddress,
 		cfg.QUICAddress,
+		cfg.BLSPubkey,
 	)
 
 	return [][]byte{mintTx, registerTx}, nil

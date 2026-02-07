@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 // buildTestTransaction creates a test transaction with the given object IDs.
+// Object references are encoded as 40-byte entries: 32-byte ID + 8-byte version (LE).
 func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
@@ -24,10 +26,12 @@ func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 	var readBytesOffset flatbuffers.UOffsetT
 
 	if len(readObjects) > 0 {
-		readBytes := make([]byte, len(readObjects)*32)
+		readBytes := make([]byte, len(readObjects)*40)
 
 		for i, id := range readObjects {
-			copy(readBytes[i*32:], id[:])
+			offset := i * 40
+			copy(readBytes[offset:offset+32], id[:])
+			binary.LittleEndian.PutUint64(readBytes[offset+32:offset+40], 1) // version=1
 		}
 
 		readBytesOffset = builder.CreateByteVector(readBytes)
@@ -36,10 +40,12 @@ func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 	var mutableBytesOffset flatbuffers.UOffsetT
 
 	if len(mutableObjects) > 0 {
-		mutableBytes := make([]byte, len(mutableObjects)*32)
+		mutableBytes := make([]byte, len(mutableObjects)*40)
 
 		for i, id := range mutableObjects {
-			copy(mutableBytes[i*32:], id[:])
+			offset := i * 40
+			copy(mutableBytes[offset:offset+32], id[:])
+			binary.LittleEndian.PutUint64(mutableBytes[offset+32:offset+40], 1) // version=1
 		}
 
 		mutableBytesOffset = builder.CreateByteVector(mutableBytes)
@@ -132,11 +138,15 @@ func TestAggregatorWithObjects(t *testing.T) {
 	vs := consensus.NewValidatorSet(validators)
 	agg := NewAggregator(nodes[0].node, vs, nil)
 
+	objID := [32]byte{0x01, 0x02, 0x03}
+	testObjData := buildTestObject(objID, 3) // replication=3
+	testObjHash := ComputeObjectHash(testObjData, types.GetRootAsObject(testObjData, 0).Version())
+
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, err := DecodeRequest(data)
+			_, err := DecodeRequest(data)
 			if err != nil {
 				return nil, err
 			}
@@ -146,19 +156,16 @@ func TestAggregatorWithObjects(t *testing.T) {
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
 			resp := &PositiveResponse{
-				Hash:      [32]byte{0x42},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      testObjHash,
+				Signature: blsKey.Sign(testObjHash[:]),
 			}
 
-			if req.WantFull {
-				resp.Data = buildTestObject(req.ObjectID, 3) // replication=3
-			}
+			resp.Data = testObjData
 
 			return EncodePositiveResponse(resp), nil
 		})
 	}
 
-	objID := [32]byte{0x01, 0x02, 0x03}
 	txData := buildTestTransaction([][32]byte{objID}, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -204,11 +211,15 @@ func TestAggregatorSingleton(t *testing.T) {
 	vs := consensus.NewValidatorSet(validators)
 	agg := NewAggregator(nodes[0].node, vs, nil)
 
+	objID := [32]byte{0x01}
+	singletonObjData := buildTestObject(objID, 0) // singleton
+	singletonObjHash := ComputeObjectHash(singletonObjData, types.GetRootAsObject(singletonObjData, 0).Version())
+
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
 		nodes[i].node.OnRequest(func(p *network.Peer, data []byte) ([]byte, error) {
-			req, err := DecodeRequest(data)
+			_, err := DecodeRequest(data)
 			if err != nil {
 				return nil, err
 			}
@@ -218,19 +229,15 @@ func TestAggregatorSingleton(t *testing.T) {
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
 			resp := &PositiveResponse{
-				Hash:      [32]byte{0x42},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+				Hash:      singletonObjHash,
+				Signature: blsKey.Sign(singletonObjHash[:]),
 			}
 
-			if req.WantFull {
-				resp.Data = buildTestObject(req.ObjectID, 0) // singleton!
-			}
+			resp.Data = singletonObjData
 
 			return EncodePositiveResponse(resp), nil
 		})
 	}
-
-	objID := [32]byte{0x01}
 	txData := buildTestTransaction([][32]byte{objID}, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -269,6 +276,12 @@ func TestAggregatorMixedObjects(t *testing.T) {
 	standardObj := [32]byte{0x01}
 	singletonObj := [32]byte{0x02}
 
+	// Pre-build objects and compute hashes
+	stdObjData := buildTestObject(standardObj, 3)
+	stdObjHash := ComputeObjectHash(stdObjData, types.GetRootAsObject(stdObjData, 0).Version())
+	singletonObjData := buildTestObject(singletonObj, 0)
+	singletonObjHash := ComputeObjectHash(singletonObjData, types.GetRootAsObject(singletonObjData, 0).Version())
+
 	for i := 1; i < len(nodes); i++ {
 		idx := i
 
@@ -282,18 +295,20 @@ func TestAggregatorMixedObjects(t *testing.T) {
 			copy(seed, nodes[idx].key.Public().(ed25519.PublicKey)[:32])
 			blsKey, _ := GenerateBLSKeyFromSeed(seed)
 
-			resp := &PositiveResponse{
-				Hash:      [32]byte{req.ObjectID[0]},
-				Signature: blsKey.Sign(req.ObjectID[:]),
+			var objData []byte
+			var objHash [32]byte
+			if req.ObjectID == standardObj {
+				objData = stdObjData
+				objHash = stdObjHash
+			} else {
+				objData = singletonObjData
+				objHash = singletonObjHash
 			}
 
-			if req.WantFull {
-				// First object is standard, second is singleton
-				if req.ObjectID == standardObj {
-					resp.Data = buildTestObject(req.ObjectID, 3)
-				} else {
-					resp.Data = buildTestObject(req.ObjectID, 0) // singleton
-				}
+			resp := &PositiveResponse{
+				Hash:      objHash,
+				Signature: blsKey.Sign(objHash[:]),
+				Data:      objData,
 			}
 
 			return EncodePositiveResponse(resp), nil

@@ -13,7 +13,6 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
-	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
 
@@ -228,15 +227,10 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 		return [32]byte{}, fmt.Errorf("coin not tracked: %x", coinID[:8])
 	}
 
-	obj, err := c.GetObject(coinID)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("get coin object:\n%w", err)
-	}
-
 	args := encodeSplitArgs(amount, recipient)
 	mutableRefs := buildMutableRef(coinID, coin.Version)
 
-	txBytes, txHash := buildSignedAttestedTx(w.privKey, c.systemPod, "split", args, true, mutableRefs, obj)
+	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "split", args, true, mutableRefs, nil)
 	newCoinID := computeNewObjectID(txHash)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
@@ -253,15 +247,10 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 		return fmt.Errorf("coin not tracked: %x", coinID[:8])
 	}
 
-	obj, err := c.GetObject(coinID)
-	if err != nil {
-		return fmt.Errorf("get coin object:\n%w", err)
-	}
-
 	args := encodeTransferArgs(recipient)
 	mutableRefs := buildMutableRef(coinID, coin.Version)
 
-	txBytes, _ := buildSignedAttestedTx(w.privKey, c.systemPod, "transfer", args, false, mutableRefs, obj)
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer", args, false, mutableRefs, nil)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
 		return fmt.Errorf("submit transfer tx:\n%w", err)
@@ -299,6 +288,177 @@ func encodeTransferArgs(newOwner [32]byte) []byte {
 	return buf
 }
 
+// CreateNFT creates a new NFT with configurable replication.
+// Returns the predicted NFT object ID.
+func (w *Wallet) CreateNFT(c *Client, replication uint16, metadata []byte) ([32]byte, error) {
+	args := encodeCreateNftArgs(w.Pubkey(), replication, metadata)
+
+	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_nft", args, true, nil, nil)
+	nftID := computeNewObjectID(txHash)
+
+	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+		return [32]byte{}, fmt.Errorf("submit create_nft tx:\n%w", err)
+	}
+
+	return nftID, nil
+}
+
+// TransferNFT transfers an NFT to a new owner.
+func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) error {
+	obj, err := c.GetObject(nftID)
+	if err != nil {
+		return fmt.Errorf("get nft object:\n%w", err)
+	}
+
+	args := encodeTransferArgs(recipient)
+	mutableRefs := buildMutableRef(nftID, obj.Version)
+
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_nft", args, false, mutableRefs, nil)
+
+	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+		return fmt.Errorf("submit transfer_nft tx:\n%w", err)
+	}
+
+	return nil
+}
+
+// encodeCreateNftArgs encodes create_nft arguments in Borsh format.
+// Format: [u8; 32] owner + u16 replication + u32 metadata_len + metadata bytes.
+func encodeCreateNftArgs(owner [32]byte, replication uint16, metadata []byte) []byte {
+	buf := make([]byte, 32+2+4+len(metadata))
+	copy(buf[:32], owner[:])
+	binary.LittleEndian.PutUint16(buf[32:], replication)
+	binary.LittleEndian.PutUint32(buf[34:], uint32(len(metadata)))
+	copy(buf[38:], metadata)
+
+	return buf
+}
+
+// buildSignedTx builds a signed raw Transaction (not ATX).
+// Per spec: the client sends a raw Transaction to the validator, which becomes the aggregator.
+// Returns the serialized Transaction bytes and the transaction hash.
+func buildSignedTx(
+	privKey ed25519.PrivateKey,
+	pod [32]byte,
+	funcName string,
+	args []byte,
+	createsObjects bool,
+	mutableRefs []byte,
+	readRefs []byte,
+) ([]byte, [32]byte) {
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	unsignedBytes := buildUnsignedTxBytes(pubKey, pod, funcName, args, createsObjects, mutableRefs, readRefs)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(privKey, hash[:])
+
+	txBytes := buildTxFlatBuffer(pubKey, pod, funcName, args, createsObjects, mutableRefs, readRefs, hash, sig)
+
+	return txBytes, hash
+}
+
+// buildUnsignedTxBytes creates transaction bytes without hash/signature for hashing.
+func buildUnsignedTxBytes(
+	sender []byte,
+	pod [32]byte,
+	funcName string,
+	args []byte,
+	createsObjects bool,
+	mutableRefs []byte,
+	readRefs []byte,
+) []byte {
+	builder := flatbuffers.NewBuilder(512)
+
+	argsVec := builder.CreateByteVector(args)
+	senderVec := builder.CreateByteVector(sender)
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString(funcName)
+
+	var mutObjVec flatbuffers.UOffsetT
+	if len(mutableRefs) > 0 {
+		mutObjVec = builder.CreateByteVector(mutableRefs)
+	}
+
+	var readObjVec flatbuffers.UOffsetT
+	if len(readRefs) > 0 {
+		readObjVec = builder.CreateByteVector(readRefs)
+	}
+
+	types.TransactionStart(builder)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	types.TransactionAddCreatesObjects(builder, createsObjects)
+
+	if len(mutableRefs) > 0 {
+		types.TransactionAddMutableObjects(builder, mutObjVec)
+	}
+
+	if len(readRefs) > 0 {
+		types.TransactionAddReadObjects(builder, readObjVec)
+	}
+
+	txOff := types.TransactionEnd(builder)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes()
+}
+
+// buildTxFlatBuffer creates a standalone Transaction FlatBuffer with hash and signature.
+func buildTxFlatBuffer(
+	sender []byte,
+	pod [32]byte,
+	funcName string,
+	args []byte,
+	createsObjects bool,
+	mutableRefs []byte,
+	readRefs []byte,
+	hash [32]byte,
+	sig []byte,
+) []byte {
+	builder := flatbuffers.NewBuilder(1024)
+
+	hashVec := builder.CreateByteVector(hash[:])
+	sigVec := builder.CreateByteVector(sig)
+	argsVec := builder.CreateByteVector(args)
+	senderVec := builder.CreateByteVector(sender)
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString(funcName)
+
+	var mutObjVec flatbuffers.UOffsetT
+	if len(mutableRefs) > 0 {
+		mutObjVec = builder.CreateByteVector(mutableRefs)
+	}
+
+	var readObjVec flatbuffers.UOffsetT
+	if len(readRefs) > 0 {
+		readObjVec = builder.CreateByteVector(readRefs)
+	}
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddSignature(builder, sigVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	types.TransactionAddCreatesObjects(builder, createsObjects)
+
+	if len(mutableRefs) > 0 {
+		types.TransactionAddMutableObjects(builder, mutObjVec)
+	}
+
+	if len(readRefs) > 0 {
+		types.TransactionAddReadObjects(builder, readObjVec)
+	}
+
+	txOff := types.TransactionEnd(builder)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes()
+}
+
 // computeNewObjectID computes the deterministic ID for the first created object.
 // objectID = blake3(txHash || 0_u32_LE).
 func computeNewObjectID(txHash [32]byte) [32]byte {
@@ -307,95 +467,6 @@ func computeNewObjectID(txHash [32]byte) [32]byte {
 	binary.LittleEndian.PutUint32(buf[32:], 0)
 
 	return blake3.Sum256(buf[:])
-}
-
-// buildSignedAttestedTx builds a signed AttestedTransaction with embedded objects.
-// Returns the serialized bytes and the transaction hash.
-func buildSignedAttestedTx(
-	privKey ed25519.PrivateKey,
-	pod [32]byte,
-	funcName string,
-	args []byte,
-	createsObjects bool,
-	mutableRefs []byte,
-	obj *ObjectInfo,
-) ([]byte, [32]byte) {
-	pubKey := privKey.Public().(ed25519.PublicKey)
-
-	unsignedBytes := genesis.BuildUnsignedTxBytesWithMutables(
-		pubKey, pod, funcName, args, createsObjects, mutableRefs,
-	)
-
-	hash := blake3.Sum256(unsignedBytes)
-	sig := ed25519.Sign(privKey, hash[:])
-
-	atxBytes := assembleAttestedTx(pubKey, pod, funcName, args, createsObjects, mutableRefs, hash, sig, obj)
-
-	return atxBytes, hash
-}
-
-// assembleAttestedTx builds the final AttestedTransaction FlatBuffers.
-func assembleAttestedTx(
-	sender []byte,
-	pod [32]byte,
-	funcName string,
-	args []byte,
-	createsObjects bool,
-	mutableRefs []byte,
-	hash [32]byte,
-	sig []byte,
-	obj *ObjectInfo,
-) []byte {
-	builder := flatbuffers.NewBuilder(2048)
-
-	// Singletons (replication=0) are not included in the ATX body.
-	// The node already has them locally and resolves them from state.
-	var objectsVec flatbuffers.UOffsetT
-	if obj.Replication == 0 {
-		types.AttestedTransactionStartObjectsVector(builder, 0)
-		objectsVec = builder.EndVector(0)
-	} else {
-		objOffset := buildObjectFB(builder, obj)
-		types.AttestedTransactionStartObjectsVector(builder, 1)
-		builder.PrependUOffsetT(objOffset)
-		objectsVec = builder.EndVector(1)
-	}
-
-	// Empty proofs vector (singletons don't need proofs)
-	types.AttestedTransactionStartProofsVector(builder, 0)
-	proofsVec := builder.EndVector(0)
-
-	// Build Transaction table
-	txOffset := genesis.BuildTxTableWithMutables(
-		builder, sender, pod, funcName, args, createsObjects, hash, sig, mutableRefs,
-	)
-
-	// Build AttestedTransaction
-	types.AttestedTransactionStart(builder)
-	types.AttestedTransactionAddTransaction(builder, txOffset)
-	types.AttestedTransactionAddObjects(builder, objectsVec)
-	types.AttestedTransactionAddProofs(builder, proofsVec)
-	atxOffset := types.AttestedTransactionEnd(builder)
-
-	builder.Finish(atxOffset)
-
-	return builder.FinishedBytes()
-}
-
-// buildObjectFB builds an Object FlatBuffers table from ObjectInfo.
-func buildObjectFB(builder *flatbuffers.Builder, info *ObjectInfo) flatbuffers.UOffsetT {
-	idVec := builder.CreateByteVector(info.ID[:])
-	ownerVec := builder.CreateByteVector(info.Owner[:])
-	contentVec := builder.CreateByteVector(info.Content)
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, info.Version)
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, info.Replication)
-	types.ObjectAddContent(builder, contentVec)
-
-	return types.ObjectEnd(builder)
 }
 
 // submitTx sends transaction bytes to a node via POST /tx.

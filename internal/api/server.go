@@ -49,6 +49,16 @@ type ObjectQuerier interface {
 	GetObject(id [32]byte) []byte
 }
 
+// TxAggregator aggregates a raw Transaction into an AttestedTransaction.
+type TxAggregator interface {
+	Aggregate(ctx context.Context, txData []byte) ([]byte, error)
+}
+
+// HolderRouter routes GetObject requests to holders when object is not local.
+type HolderRouter interface {
+	RouteGetObject(id [32]byte) ([]byte, error)
+}
+
 // FaucetConfig holds configuration for the faucet endpoint.
 type FaucetConfig struct {
 	PrivKey   ed25519.PrivateKey // PrivKey is the node's private key for signing mint txs
@@ -57,24 +67,37 @@ type FaucetConfig struct {
 
 // Server is the HTTP API server.
 type Server struct {
-	addr      string         // addr is the HTTP listen address
-	submitter TxSubmitter    // submitter accepts transactions for consensus
-	gossiper  TxGossiper     // gossiper forwards transactions to peers
-	status    StatusProvider // status provides consensus state for monitoring
-	objects   ObjectQuerier  // objects provides object lookup
-	faucet    *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
-	server    *http.Server   // server is the underlying HTTP server
+	addr       string         // addr is the HTTP listen address
+	submitter  TxSubmitter    // submitter accepts transactions for consensus
+	gossiper   TxGossiper     // gossiper forwards transactions to peers
+	status     StatusProvider // status provides consensus state for monitoring
+	objects    ObjectQuerier  // objects provides object lookup
+	faucet     *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
+	aggregator TxAggregator   // aggregator transforms raw tx into attested tx (nil = wrap only)
+	router     HolderRouter   // router routes GetObject to holders (nil = local only)
+	server     *http.Server   // server is the underlying HTTP server
 }
 
 // New creates a new HTTP API server.
-func New(addr string, submitter TxSubmitter, gossiper TxGossiper, status StatusProvider, objects ObjectQuerier, faucet *FaucetConfig) *Server {
+func New(
+	addr string,
+	submitter TxSubmitter,
+	gossiper TxGossiper,
+	status StatusProvider,
+	objects ObjectQuerier,
+	faucet *FaucetConfig,
+	aggregator TxAggregator,
+	router HolderRouter,
+) *Server {
 	return &Server{
-		addr:      addr,
-		submitter: submitter,
-		gossiper:  gossiper,
-		status:    status,
-		objects:   objects,
-		faucet:    faucet,
+		addr:       addr,
+		submitter:  submitter,
+		gossiper:   gossiper,
+		status:     status,
+		objects:    objects,
+		faucet:     faucet,
+		aggregator: aggregator,
+		router:     router,
 	}
 }
 
@@ -119,6 +142,7 @@ func (s *Server) Stop() error {
 }
 
 // handleSubmitTx handles POST /tx requests.
+// Accepts a raw Transaction, aggregates it into an ATX, then submits.
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTxSize))
 	if err != nil {
@@ -131,16 +155,24 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := extractTxHash(body)
+	// Extract hash from raw Transaction
+	hash, err := extractRawTxHash(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction: %v", err))
 		return
 	}
 
-	s.submitter.SubmitTx(body)
+	// Aggregate: raw tx → ATX
+	atxBytes, err := s.aggregateTx(r.Context(), body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("aggregation failed: %v", err))
+		return
+	}
+
+	s.submitter.SubmitTx(atxBytes)
 
 	if s.gossiper != nil {
-		s.gossiper.GossipTx(body)
+		s.gossiper.GossipTx(atxBytes)
 	}
 
 	logger.Debug("tx submitted", "hash", hex.EncodeToString(hash[:8]))
@@ -148,6 +180,17 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"hash": hex.EncodeToString(hash),
 	})
+}
+
+// aggregateTx converts a raw Transaction into an AttestedTransaction.
+// If aggregator is available, uses it. Otherwise wraps with empty objects/proofs.
+func (s *Server) aggregateTx(ctx context.Context, txData []byte) ([]byte, error) {
+	if s.aggregator != nil {
+		return s.aggregator.Aggregate(ctx, txData)
+	}
+
+	// No aggregator (bootstrap/early init) — wrap in empty ATX
+	return genesis.WrapInATX(txData), nil
 }
 
 // handleHealth handles GET /health requests.
@@ -185,6 +228,7 @@ type faucetRequest struct {
 }
 
 // handleFaucet handles POST /faucet requests.
+// Faucet builds ATX internally (mint has no objects to aggregate).
 func (s *Server) handleFaucet(w http.ResponseWriter, r *http.Request) {
 	if s.faucet == nil {
 		writeError(w, http.StatusServiceUnavailable, "faucet not available")
@@ -213,7 +257,7 @@ func (s *Server) handleFaucet(w http.ResponseWriter, r *http.Request) {
 
 	txBytes := genesis.BuildMintTx(s.faucet.PrivKey, s.faucet.SystemPod, req.Amount, owner)
 
-	txHash, err := extractTxHash(txBytes)
+	txHash, err := extractAtxHash(txBytes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build mint tx")
 		return
@@ -272,6 +316,7 @@ func (s *Server) handleValidators(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleGetObject handles GET /object/{id} requests.
+// If the object is not local and a router is available, routes to holders.
 func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	if s.objects == nil {
 		writeError(w, http.StatusServiceUnavailable, "object store not available")
@@ -295,6 +340,15 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	copy(id[:], idBytes)
 
 	data := s.objects.GetObject(id)
+
+	// If not local, try routing to holders
+	if data == nil && s.router != nil {
+		routed, err := s.router.RouteGetObject(id)
+		if err == nil && routed != nil {
+			data = routed
+		}
+	}
+
 	if data == nil {
 		writeError(w, http.StatusNotFound, "object not found")
 		return
@@ -311,8 +365,24 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractTxHash extracts the transaction hash from AttestedTransaction bytes.
-func extractTxHash(data []byte) ([]byte, error) {
+// extractRawTxHash extracts the transaction hash from a raw Transaction FlatBuffer.
+func extractRawTxHash(data []byte) ([]byte, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("data too short")
+	}
+
+	tx := types.GetRootAsTransaction(data, 0)
+
+	hash := tx.HashBytes()
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("invalid hash length: %d", len(hash))
+	}
+
+	return hash, nil
+}
+
+// extractAtxHash extracts the transaction hash from AttestedTransaction bytes.
+func extractAtxHash(data []byte) ([]byte, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short")
 	}

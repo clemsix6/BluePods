@@ -12,9 +12,11 @@ mod functions;
 mod objects;
 
 pod_sdk::dispatcher! {
+    "create_nft" => functions::create_nft::execute,
     "merge" => functions::merge::execute,
     "mint" => functions::mint::execute,
     "register_validator" => functions::register_validator::execute,
     "split" => functions::split::execute,
     "transfer" => functions::transfer::execute,
+    "transfer_nft" => functions::transfer_nft::execute,
 }

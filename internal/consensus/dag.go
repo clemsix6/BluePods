@@ -82,6 +82,12 @@ type DAG struct {
 	transitionRound    atomic.Int64 // round when minValidators was reached (-1 = not yet)
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
 
+	// Sharding: isHolder determines if this node stores/executes a given object.
+	isHolder func(objectID [32]byte, replication uint16) bool
+
+	// verifyATXProofs verifies BLS quorum proofs in an AttestedTransaction.
+	verifyATXProofs func(*types.AttestedTransaction) error
+
 	// Lifecycle
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -295,14 +301,32 @@ func (d *DAG) OnValidatorAdded(fn func(*ValidatorInfo)) {
 // AddValidator adds a validator to the local validator set.
 // Used for self-registration to allow immediate vertex production.
 // Also triggers transition if this addition reaches minValidators threshold.
-func (d *DAG) AddValidator(pubkey Hash, httpAddr, quicAddr string) {
-	d.validators.Add(pubkey, httpAddr, quicAddr)
+func (d *DAG) AddValidator(pubkey Hash, httpAddr, quicAddr string, blsPubkey [48]byte) {
+	d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
 
 	// Fire transition when the threshold is reached (same logic as handleRegisterValidator).
 	// For synced nodes, the self-add may be what pushes the count to minValidators.
 	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
 		d.enterTransition(d.round.Load())
 	}
+}
+
+// SetIsHolder sets the holder check function for execution/storage sharding.
+// Must be called after DAG creation, before transactions are committed.
+func (d *DAG) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
+	d.isHolder = fn
+}
+
+// SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
+// Must be called after DAG creation, before transactions are committed.
+func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
+	d.verifyATXProofs = fn
+}
+
+// ValidatorSet returns the underlying validator set.
+// Used by holderRouter to look up validator network addresses.
+func (d *DAG) ValidatorSet() *ValidatorSet {
+	return d.validators
 }
 
 // Close stops the DAG and waits for goroutines to finish.
