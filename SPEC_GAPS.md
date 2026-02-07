@@ -81,9 +81,39 @@ Les elements suivants de la spec sont correctement implementes :
 
 ---
 
+### 7. Pas de backpressure sur la mempool
+
+**Spec** : Non couvert par la spec.
+
+**Actuel** : `pendingTxs` dans le DAG est un slice non borne. Si le debit de soumission depasse le debit de traitement du reseau, la memoire explose sans aucune limite.
+
+**Impact** : Vecteur de DOS. Un noeud sous charge excessive finit en OOM.
+
+**Fix** : Borner `pendingTxs` avec un cap. Quand la mempool est pleine, rejeter les nouvelles tx (HTTP 503) pour que le client resoumettre a un autre validator. A terme avec les fees, eviction par fee la plus basse (priority queue).
+
+---
+
+### 8. Pas de pruning / retention limitee de l'historique
+
+**Spec** : Non couvert par la spec.
+
+**Actuel** : Les vertices committes et executes restent en memoire/stockage indefiniment. Pas de purge des anciennes donnees.
+
+**Impact** : Le stockage croit indefiniment. Stocker l'integralite de l'historique depuis le genesis est inutile et couteux (Solana: ~400 TB de ledger, +80 TB/an).
+
+**Decision** : Les validators ne stockent que le state courant (objets + versions) et les N derniers rounds du DAG (suffisant pour la commit rule et les retards reseau). L'historique complet n'est pas necessaire pour la securite du consensus. Ce choix est aligne avec l'industrie : Solana prune en FIFO (`--limit-ledger-size`), NEAR garbage-collect apres 5 epochs (~2.5 jours), Sui supporte le pruning agressif, Ethereum implemente EIP-4444 (history expiry).
+
+**Audit et tracabilite** : Un systeme de logs emis par les pods (a la Solana Program Logs) permettra aux developpeurs de logger ce qui est pertinent pour leur application. Ces logs seront indexes off-chain par des services externes (explorateurs, indexeurs), pas par les validators. Les archive nodes seront optionnels pour ceux qui veulent l'historique complet.
+
+**Fix** : Implementer le pruning des vertices committes au-dela de N rounds. Definir le mecanisme de snapshot signe (hash du state signe par un quorum de validators) pour le sync de nouveaux noeuds.
+
+---
+
 ## Priorite suggeree
 
 1. **Point 1** (limites tx) - Securite basique, empecher les abus
 2. **Point 2** (epochs) - Gros chantier, necessaire pour un reseau ouvert
 3. **Point 3** (fees) - Necessaire avant mainnet
-4. **Points 4, 5, 6** - Futures iterations
+4. **Point 7** (backpressure mempool) - Securite basique, empecher les OOM
+5. **Point 8** (pruning) - Necessaire pour la viabilite long terme
+6. **Points 4, 5, 6** - Futures iterations

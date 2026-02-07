@@ -155,6 +155,12 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate transaction structure, hash, and signature
+	if err := validateTx(body); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction: %v", err))
+		return
+	}
+
 	// Extract hash from raw Transaction
 	hash, err := extractRawTxHash(body)
 	if err != nil {
