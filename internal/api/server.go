@@ -2,13 +2,20 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/zeebo/blake3"
+
+	"BluePods/internal/consensus"
+	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
 )
@@ -34,24 +41,40 @@ type StatusProvider interface {
 	LastCommittedRound() uint64
 	ValidatorCount() int
 	FullQuorumAchieved() bool
+	ValidatorsInfo() []*consensus.ValidatorInfo
+}
+
+// ObjectQuerier reads objects from state.
+type ObjectQuerier interface {
+	GetObject(id [32]byte) []byte
+}
+
+// FaucetConfig holds configuration for the faucet endpoint.
+type FaucetConfig struct {
+	PrivKey   ed25519.PrivateKey // PrivKey is the node's private key for signing mint txs
+	SystemPod [32]byte           // SystemPod is the system pod ID
 }
 
 // Server is the HTTP API server.
 type Server struct {
 	addr      string         // addr is the HTTP listen address
 	submitter TxSubmitter    // submitter accepts transactions for consensus
-	gossiper  TxGossiper    // gossiper forwards transactions to peers
+	gossiper  TxGossiper     // gossiper forwards transactions to peers
 	status    StatusProvider // status provides consensus state for monitoring
-	server    *http.Server  // server is the underlying HTTP server
+	objects   ObjectQuerier  // objects provides object lookup
+	faucet    *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
+	server    *http.Server   // server is the underlying HTTP server
 }
 
 // New creates a new HTTP API server.
-func New(addr string, submitter TxSubmitter, gossiper TxGossiper, status StatusProvider) *Server {
+func New(addr string, submitter TxSubmitter, gossiper TxGossiper, status StatusProvider, objects ObjectQuerier, faucet *FaucetConfig) *Server {
 	return &Server{
 		addr:      addr,
 		submitter: submitter,
 		gossiper:  gossiper,
 		status:    status,
+		objects:   objects,
+		faucet:    faucet,
 	}
 }
 
@@ -61,6 +84,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /tx", s.handleSubmitTx)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("POST /faucet", s.handleFaucet)
+	mux.HandleFunc("GET /validators", s.handleValidators)
+	mux.HandleFunc("GET /object/", s.handleGetObject)
 
 	s.server = &http.Server{
 		Addr:         s.addr,
@@ -94,7 +120,6 @@ func (s *Server) Stop() error {
 
 // handleSubmitTx handles POST /tx requests.
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
-	// Read transaction bytes
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTxSize))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read body")
@@ -106,49 +131,183 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse to extract hash for response
 	hash, err := extractTxHash(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction: %v", err))
 		return
 	}
 
-	// Submit to local consensus
 	s.submitter.SubmitTx(body)
 
-	// Gossip to peers so transaction reaches a producer
-	// This enables validators to forward transactions they can't produce themselves
 	if s.gossiper != nil {
 		s.gossiper.GossipTx(body)
 	}
 
 	logger.Debug("tx submitted", "hash", hex.EncodeToString(hash[:8]))
 
-	// Return hash
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"hash": hex.EncodeToString(hash),
 	})
 }
 
 // handleHealth handles GET /health requests.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
 	})
 }
 
 // handleStatus handles GET /status requests.
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.status == nil {
 		writeError(w, http.StatusServiceUnavailable, "status not available")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"round":              s.status.Round(),
 		"lastCommitted":      s.status.LastCommittedRound(),
 		"validators":         s.status.ValidatorCount(),
 		"fullQuorumAchieved": s.status.FullQuorumAchieved(),
+	}
+
+	if s.faucet != nil {
+		resp["systemPod"] = hex.EncodeToString(s.faucet.SystemPod[:])
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// faucetRequest is the JSON body for POST /faucet.
+type faucetRequest struct {
+	Pubkey string `json:"pubkey"` // Pubkey is hex-encoded 32-byte public key
+	Amount uint64 `json:"amount"` // Amount of tokens to mint
+}
+
+// handleFaucet handles POST /faucet requests.
+func (s *Server) handleFaucet(w http.ResponseWriter, r *http.Request) {
+	if s.faucet == nil {
+		writeError(w, http.StatusServiceUnavailable, "faucet not available")
+		return
+	}
+
+	var req faucetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	pubkeyBytes, err := hex.DecodeString(req.Pubkey)
+	if err != nil || len(pubkeyBytes) != 32 {
+		writeError(w, http.StatusBadRequest, "pubkey must be 64 hex chars (32 bytes)")
+		return
+	}
+
+	if req.Amount == 0 {
+		writeError(w, http.StatusBadRequest, "amount must be > 0")
+		return
+	}
+
+	var owner [32]byte
+	copy(owner[:], pubkeyBytes)
+
+	txBytes := genesis.BuildMintTx(s.faucet.PrivKey, s.faucet.SystemPod, req.Amount, owner)
+
+	txHash, err := extractTxHash(txBytes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build mint tx")
+		return
+	}
+
+	// Predict the coinID: blake3(txHash || 0_u32_LE)
+	coinID := computeObjectID(txHash)
+
+	s.submitter.SubmitTx(txBytes)
+
+	if s.gossiper != nil {
+		s.gossiper.GossipTx(txBytes)
+	}
+
+	logger.Info("faucet mint", "to", req.Pubkey[:16], "amount", req.Amount)
+
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"hash":   hex.EncodeToString(txHash),
+		"coinID": hex.EncodeToString(coinID[:]),
+	})
+}
+
+// computeObjectID computes blake3(txHash || 0_u32_LE) for the first created object.
+func computeObjectID(txHash []byte) [32]byte {
+	var buf [36]byte
+	copy(buf[:32], txHash)
+	binary.LittleEndian.PutUint32(buf[32:], 0)
+
+	return blake3.Sum256(buf[:])
+}
+
+// validatorResponse is the JSON response for a single validator.
+type validatorResponse struct {
+	Pubkey string `json:"pubkey"` // Pubkey is the hex-encoded public key
+	HTTP   string `json:"http"`   // HTTP is the HTTP API endpoint
+}
+
+// handleValidators handles GET /validators requests.
+func (s *Server) handleValidators(w http.ResponseWriter, _ *http.Request) {
+	if s.status == nil {
+		writeError(w, http.StatusServiceUnavailable, "status not available")
+		return
+	}
+
+	infos := s.status.ValidatorsInfo()
+	resp := make([]validatorResponse, len(infos))
+
+	for i, info := range infos {
+		resp[i] = validatorResponse{
+			Pubkey: hex.EncodeToString(info.Pubkey[:]),
+			HTTP:   info.HTTPAddr,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleGetObject handles GET /object/{id} requests.
+func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
+	if s.objects == nil {
+		writeError(w, http.StatusServiceUnavailable, "object store not available")
+		return
+	}
+
+	// Extract ID from path: /object/{id}
+	idHex := strings.TrimPrefix(r.URL.Path, "/object/")
+	if idHex == "" {
+		writeError(w, http.StatusBadRequest, "missing object ID")
+		return
+	}
+
+	idBytes, err := hex.DecodeString(idHex)
+	if err != nil || len(idBytes) != 32 {
+		writeError(w, http.StatusBadRequest, "invalid object ID (expected 64 hex chars)")
+		return
+	}
+
+	var id [32]byte
+	copy(id[:], idBytes)
+
+	data := s.objects.GetObject(id)
+	if data == nil {
+		writeError(w, http.StatusNotFound, "object not found")
+		return
+	}
+
+	obj := types.GetRootAsObject(data, 0)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":          hex.EncodeToString(obj.IdBytes()),
+		"version":     obj.Version(),
+		"owner":       hex.EncodeToString(obj.OwnerBytes()),
+		"replication": obj.Replication(),
+		"content":     hex.EncodeToString(obj.ContentBytes()),
 	})
 }
 

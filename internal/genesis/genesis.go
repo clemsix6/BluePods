@@ -39,7 +39,7 @@ func BuildTransactions(cfg Config) ([][]byte, error) {
 	copy(owner[:], pubKey)
 
 	// Build mint transaction
-	mintTx := buildMintTx(cfg.PrivateKey, cfg.SystemPodID, cfg.InitialMint, owner)
+	mintTx := BuildMintTx(cfg.PrivateKey, cfg.SystemPodID, cfg.InitialMint, owner)
 
 	// Build register_validator transaction
 	registerTx := BuildRegisterValidatorTx(

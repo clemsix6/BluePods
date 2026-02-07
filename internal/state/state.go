@@ -1,9 +1,11 @@
 package state
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/zeebo/blake3"
 
 	"BluePods/internal/logger"
 	"BluePods/internal/podvm"
@@ -53,11 +55,22 @@ func (s *State) Execute(atxData []byte) error {
 		return fmt.Errorf("execute pod:\n%w", err)
 	}
 
-	if err := s.processOutput(output); err != nil {
+	txHash := extractTxHash(tx)
+
+	if err := s.processOutput(output, txHash); err != nil {
 		return fmt.Errorf("process output:\n%w", err)
 	}
 
 	return nil
+}
+
+// extractTxHash extracts the 32-byte hash from a Transaction.
+func extractTxHash(tx *types.Transaction) [32]byte {
+	var h [32]byte
+	if b := tx.HashBytes(); len(b) == 32 {
+		copy(h[:], b)
+	}
+	return h
 }
 
 // extractObjects extracts objects from an AttestedTransaction.
@@ -76,7 +89,7 @@ func (s *State) extractObjects(atx *types.AttestedTransaction) []*types.Object {
 }
 
 // GetObject retrieves an object by ID.
-func (s *State) GetObject(id Hash) []byte {
+func (s *State) GetObject(id [32]byte) []byte {
 	return s.objects.get(id)
 }
 
@@ -173,7 +186,7 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 }
 
 // processOutput applies PodExecuteOutput to the state.
-func (s *State) processOutput(outputData []byte) error {
+func (s *State) processOutput(outputData []byte, txHash [32]byte) error {
 	if len(outputData) == 0 {
 		return nil
 	}
@@ -190,13 +203,15 @@ func (s *State) processOutput(outputData []byte) error {
 	}
 
 	s.applyUpdatedObjects(output)
-	s.applyCreatedObjects(output)
+	s.applyCreatedObjects(output, txHash)
 	s.applyDeletedObjects(output)
 
 	return nil
 }
 
-// applyUpdatedObjects stores updated objects.
+// applyUpdatedObjects stores updated objects with incremented versions.
+// The version must be incremented to stay consistent with the consensus version tracker,
+// which increments versions for all mutable objects after each successful execution.
 func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput) {
 	var obj types.Object
 
@@ -205,14 +220,36 @@ func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput) {
 			continue
 		}
 
-		data := obj.Table().Bytes
+		data := rebuildObjectIncrementVersion(&obj)
 		id := extractObjectID(data)
 		s.objects.set(id, data)
 	}
 }
 
-// applyCreatedObjects stores newly created objects.
-func (s *State) applyCreatedObjects(output *types.PodExecuteOutput) {
+// rebuildObjectIncrementVersion rebuilds an Object as a standalone FlatBuffer with version+1.
+func rebuildObjectIncrementVersion(obj *types.Object) []byte {
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, obj.Version()+1)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	offset := types.ObjectEnd(builder)
+
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
+// applyCreatedObjects stores newly created objects with deterministic IDs.
+// Each object ID is computed as blake3(txHash || index_u32_LE) per the spec.
+func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
 	var obj types.Object
 
 	for i := 0; i < output.CreatedObjectsLength(); i++ {
@@ -220,10 +257,44 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput) {
 			continue
 		}
 
-		data := obj.Table().Bytes
-		id := extractObjectID(data)
+		id := computeObjectID(txHash, uint32(i))
+		data := rebuildObjectWithID(id, &obj)
 		s.objects.set(id, data)
 	}
+}
+
+// computeObjectID generates a deterministic object ID: blake3(txHash || index_u32_LE).
+func computeObjectID(txHash [32]byte, index uint32) Hash {
+	var buf [36]byte
+	copy(buf[:32], txHash[:])
+	binary.LittleEndian.PutUint32(buf[32:], index)
+
+	return blake3.Sum256(buf[:])
+}
+
+// rebuildObjectWithID rebuilds an Object FlatBuffers with a new ID.
+func rebuildObjectWithID(id Hash, obj *types.Object) []byte {
+	builder := flatbuffers.NewBuilder(512)
+	offset := rebuildObjectCustomID(builder, id, obj)
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
+// rebuildObjectCustomID rebuilds an Object table with a custom ID in the builder.
+func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Object) flatbuffers.UOffsetT {
+	idVec := builder.CreateByteVector(id[:])
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+
+	return types.ObjectEnd(builder)
 }
 
 // applyDeletedObjects removes deleted objects.

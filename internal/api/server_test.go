@@ -24,7 +24,7 @@ func (m *mockSubmitter) SubmitTx(tx []byte) {
 
 func TestHealthEndpoint(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -47,7 +47,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 func TestSubmitTx_Success(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil)
 
 	// Build a valid AttestedTransaction
 	txData := buildTestAttestedTx()
@@ -77,7 +77,7 @@ func TestSubmitTx_Success(t *testing.T) {
 
 func TestSubmitTx_EmptyBody(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("POST", "/tx", nil)
 	w := httptest.NewRecorder()
@@ -95,7 +95,7 @@ func TestSubmitTx_EmptyBody(t *testing.T) {
 
 func TestSubmitTx_InvalidData(t *testing.T) {
 	submitter := &mockSubmitter{}
-	server := New(":0", submitter, nil, nil)
+	server := New(":0", submitter, nil, nil, nil, nil)
 
 	req := httptest.NewRequest("POST", "/tx", bytes.NewReader([]byte("invalid")))
 	w := httptest.NewRecorder()

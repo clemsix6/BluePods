@@ -310,7 +310,7 @@ func (n *Node) Run() error {
 	n.setupRequestHandlers()
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag)
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig())
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
@@ -370,7 +370,7 @@ func (n *Node) runValidator() error {
 	}
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag)
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig())
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
@@ -820,6 +820,14 @@ func (n *Node) waitForShutdown() error {
 	logger.Info("shutting down", "signal", sig.String())
 
 	return n.Close()
+}
+
+// faucetConfig returns the faucet configuration for the API server.
+func (n *Node) faucetConfig() *api.FaucetConfig {
+	return &api.FaucetConfig{
+		PrivKey:   n.cfg.PrivateKey,
+		SystemPod: n.systemPod,
+	}
 }
 
 // Close shuts down all node components gracefully.

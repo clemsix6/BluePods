@@ -2,9 +2,9 @@ package genesis
 
 import "encoding/binary"
 
-// encodeMintArgs encodes mint arguments in Borsh format.
+// EncodeMintArgs encodes mint arguments in Borsh format.
 // Format: u64 amount (little-endian) + [u8; 32] owner
-func encodeMintArgs(amount uint64, owner [32]byte) []byte {
+func EncodeMintArgs(amount uint64, owner [32]byte) []byte {
 	buf := make([]byte, 8+32)
 	binary.LittleEndian.PutUint64(buf[0:8], amount)
 	copy(buf[8:], owner[:])
