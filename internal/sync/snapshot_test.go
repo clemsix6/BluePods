@@ -8,6 +8,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/consensus"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
 )
@@ -59,7 +60,7 @@ func TestCreateSnapshot_EmptyStorage(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 0, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestCreateSnapshot_WithObjects(t *testing.T) {
 		t.Fatalf("store obj2: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 42, nil)
+	data, err := CreateSnapshot(db, 42, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestCreateSnapshot_IgnoresConsensusData(t *testing.T) {
 		t.Fatalf("store meta: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestApplySnapshot_EmptySnapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create empty snapshot
-	data, err := CreateSnapshot(db, 5, nil)
+	data, err := CreateSnapshot(db, 5, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestApplySnapshot_WithObjects(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 100, nil)
+	data, err := CreateSnapshot(db, 100, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -272,7 +273,7 @@ func TestChecksumVerification_Valid(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestChecksumVerification_Corrupted(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestFullRoundtrip_CreateCompressDecompressApply(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 999, nil)
+	data, err := CreateSnapshot(db, 999, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -400,8 +401,8 @@ func TestDeterministicChecksum(t *testing.T) {
 	db2.Set(id2[:], obj2)
 	db2.Set(id1[:], obj1)
 
-	data1, _ := CreateSnapshot(db1, 42, nil)
-	data2, _ := CreateSnapshot(db2, 42, nil)
+	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil)
+	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)
@@ -419,24 +420,18 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	defer cleanup()
 
 	// Create validators
-	validators := [][]byte{
-		make([]byte, 32),
-		make([]byte, 32),
-	}
-	validators[0][0] = 1
-	validators[1][0] = 2
+	v1 := &consensus.ValidatorInfo{HTTPAddr: "127.0.0.1:8001"}
+	v1.Pubkey[0] = 1
+	v2 := &consensus.ValidatorInfo{HTTPAddr: "127.0.0.1:8002"}
+	v2.Pubkey[0] = 2
+	validators := []*consensus.ValidatorInfo{v1, v2}
 
-	data, err := CreateSnapshot(db, 100, validators)
+	data, err := CreateSnapshot(db, 100, validators, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
 
 	snapshot := types.GetRootAsSnapshot(data, 0)
-
-	// Verify validators are stored
-	if snapshot.ValidatorsLength() != 64 { // 2 validators * 32 bytes
-		t.Errorf("validators length = %d, want 64", snapshot.ValidatorsLength())
-	}
 
 	// Extract and verify validators
 	extracted := ExtractValidators(snapshot)
@@ -444,12 +439,12 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 		t.Fatalf("extracted validators count = %d, want 2", len(extracted))
 	}
 
-	// Validators should be sorted (validator[0][0]=1 < validator[1][0]=2)
-	if extracted[0][0] != 1 {
-		t.Errorf("first validator[0] = %d, want 1", extracted[0][0])
+	// Validators should be sorted (pubkey[0]=1 < pubkey[0]=2)
+	if extracted[0].Pubkey[0] != 1 {
+		t.Errorf("first validator pubkey[0] = %d, want 1", extracted[0].Pubkey[0])
 	}
-	if extracted[1][0] != 2 {
-		t.Errorf("second validator[0] = %d, want 2", extracted[1][0])
+	if extracted[1].Pubkey[0] != 2 {
+		t.Errorf("second validator pubkey[0] = %d, want 2", extracted[1].Pubkey[0])
 	}
 }
 
@@ -457,14 +452,13 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	validators1 := [][]byte{make([]byte, 32)}
-	validators1[0][0] = 1
+	v1 := &consensus.ValidatorInfo{}
+	v1.Pubkey[0] = 1
+	v2 := &consensus.ValidatorInfo{}
+	v2.Pubkey[0] = 2
 
-	validators2 := [][]byte{make([]byte, 32)}
-	validators2[0][0] = 2
-
-	data1, _ := CreateSnapshot(db, 0, validators1)
-	data2, _ := CreateSnapshot(db, 0, validators2)
+	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil)
+	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)

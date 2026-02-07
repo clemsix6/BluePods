@@ -43,6 +43,7 @@ func (s *State) Execute(atxData []byte) error {
 	}
 
 	objects := s.extractObjects(atx)
+	objects = s.resolveMutableObjects(tx, objects)
 
 	input, err := s.serializeInput(tx, objects)
 	if err != nil {
@@ -60,6 +61,8 @@ func (s *State) Execute(atxData []byte) error {
 	if err := s.processOutput(output, txHash); err != nil {
 		return fmt.Errorf("process output:\n%w", err)
 	}
+
+	s.ensureMutableVersions(tx)
 
 	return nil
 }
@@ -86,6 +89,45 @@ func (s *State) extractObjects(atx *types.AttestedTransaction) []*types.Object {
 	}
 
 	return objects
+}
+
+// resolveMutableObjects loads missing mutable objects from local state.
+// Singletons (replication=0) are not included in the ATX body,
+// so the node must resolve them from its own state store.
+func (s *State) resolveMutableObjects(tx *types.Transaction, atxObjects []*types.Object) []*types.Object {
+	present := make(map[Hash]bool, len(atxObjects))
+	for _, obj := range atxObjects {
+		if obj == nil {
+			continue
+		}
+
+		var id Hash
+		copy(id[:], obj.IdBytes())
+		present[id] = true
+	}
+
+	result := append([]*types.Object{}, atxObjects...)
+
+	data := tx.MutableObjectsBytes()
+	for i := 0; i+40 <= len(data); i += 40 {
+		var id Hash
+		copy(id[:], data[i:i+32])
+
+		if present[id] {
+			continue
+		}
+
+		// Missing from ATX → load from local state (singleton)
+		objData := s.objects.get(id)
+		if objData == nil {
+			continue
+		}
+
+		obj := types.GetRootAsObject(objData, 0)
+		result = append(result, obj)
+	}
+
+	return result
 }
 
 // GetObject retrieves an object by ID.
@@ -307,6 +349,56 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput) {
 		copy(id[:], data[i:i+idSize])
 		s.objects.delete(id)
 	}
+}
+
+// ensureMutableVersions guarantees that all objects declared in MutableObjects
+// have their version incremented to expectedVersion+1 after execution.
+// The consensus versionTracker increments ALL mutable objects, but the pod
+// may not return all of them in UpdatedObjects. This closes the gap.
+func (s *State) ensureMutableVersions(tx *types.Transaction) {
+	data := tx.MutableObjectsBytes()
+
+	for i := 0; i+40 <= len(data); i += 40 {
+		var id Hash
+		copy(id[:], data[i:i+32])
+
+		expectedVersion := binary.LittleEndian.Uint64(data[i+32 : i+40])
+		targetVersion := expectedVersion + 1
+
+		objData := s.objects.get(id)
+		if objData == nil {
+			continue
+		}
+
+		obj := types.GetRootAsObject(objData, 0)
+		if obj.Version() == targetVersion {
+			continue // already up to date (pod returned it in UpdatedObjects)
+		}
+
+		updated := rebuildObjectWithVersion(obj, targetVersion)
+		s.objects.set(id, updated)
+	}
+}
+
+// rebuildObjectWithVersion rebuilds an Object as a standalone FlatBuffer with an explicit version.
+func rebuildObjectWithVersion(obj *types.Object, version uint64) []byte {
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, version)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	offset := types.ObjectEnd(builder)
+
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
 }
 
 // extractPodID extracts the pod hash from a transaction.

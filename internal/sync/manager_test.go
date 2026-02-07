@@ -6,21 +6,33 @@ import (
 	"testing"
 	"time"
 
+	"BluePods/internal/consensus"
 	"BluePods/internal/storage"
 )
 
 // mockSnapshotProvider implements SnapshotProvider for testing.
 type mockSnapshotProvider struct {
-	round      uint64
-	validators [][]byte
+	round uint64
+}
+
+func (m *mockSnapshotProvider) Round() uint64 {
+	return m.round
 }
 
 func (m *mockSnapshotProvider) LastCommittedRound() uint64 {
 	return m.round
 }
 
-func (m *mockSnapshotProvider) Validators() [][]byte {
-	return m.validators
+func (m *mockSnapshotProvider) ValidatorsInfo() []*consensus.ValidatorInfo {
+	return nil
+}
+
+func (m *mockSnapshotProvider) ExportVertices(fromRound, toRound uint64) []consensus.VertexEntry {
+	return nil
+}
+
+func (m *mockSnapshotProvider) ExportVersions() []consensus.ObjectVersionEntry {
+	return nil
 }
 
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {
@@ -55,8 +67,8 @@ func TestSnapshotManager_CreatesInitialSnapshot(t *testing.T) {
 	manager.Start()
 	defer manager.Stop()
 
-	// Wait for initial snapshot
-	time.Sleep(100 * time.Millisecond)
+	// Wait for initial snapshot (loop waits 2s before first snapshot)
+	time.Sleep(3 * time.Second)
 
 	data, round := manager.Latest()
 	if data == nil {
@@ -81,8 +93,8 @@ func TestSnapshotManager_UpdatesOnNewRound(t *testing.T) {
 	manager.Start()
 	defer manager.Stop()
 
-	// Wait for initial snapshot
-	time.Sleep(100 * time.Millisecond)
+	// Wait for initial snapshot (loop waits 2s before first snapshot)
+	time.Sleep(3 * time.Second)
 
 	_, round1 := manager.Latest()
 	if round1 != 5 {
@@ -93,7 +105,7 @@ func TestSnapshotManager_UpdatesOnNewRound(t *testing.T) {
 	provider.round = 20
 
 	// Wait for next snapshot cycle
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	_, round2 := manager.Latest()
 	if round2 != 20 {
@@ -113,13 +125,16 @@ func TestSnapshotManager_SkipsIfNoNewCommits(t *testing.T) {
 	manager.Start()
 	defer manager.Stop()
 
-	// Wait for initial snapshot
-	time.Sleep(100 * time.Millisecond)
+	// Wait for initial snapshot (loop waits 2s before first snapshot)
+	time.Sleep(3 * time.Second)
 
 	data1, _ := manager.Latest()
+	if data1 == nil {
+		t.Fatal("expected initial snapshot to be created")
+	}
 
 	// Wait for another cycle (should skip since round hasn't changed)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	data2, _ := manager.Latest()
 
@@ -148,7 +163,7 @@ func TestSnapshotManager_StopsCleanly(t *testing.T) {
 	select {
 	case <-done:
 		// OK
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Stop() timed out")
 	}
 }

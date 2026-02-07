@@ -348,13 +348,18 @@ func assembleAttestedTx(
 ) []byte {
 	builder := flatbuffers.NewBuilder(2048)
 
-	// Build Object table first (child tables before parent)
-	objOffset := buildObjectFB(builder, obj)
-
-	// Build Objects vector
-	types.AttestedTransactionStartObjectsVector(builder, 1)
-	builder.PrependUOffsetT(objOffset)
-	objectsVec := builder.EndVector(1)
+	// Singletons (replication=0) are not included in the ATX body.
+	// The node already has them locally and resolves them from state.
+	var objectsVec flatbuffers.UOffsetT
+	if obj.Replication == 0 {
+		types.AttestedTransactionStartObjectsVector(builder, 0)
+		objectsVec = builder.EndVector(0)
+	} else {
+		objOffset := buildObjectFB(builder, obj)
+		types.AttestedTransactionStartObjectsVector(builder, 1)
+		builder.PrependUOffsetT(objOffset)
+		objectsVec = builder.EndVector(1)
+	}
 
 	// Empty proofs vector (singletons don't need proofs)
 	types.AttestedTransactionStartProofsVector(builder, 0)
