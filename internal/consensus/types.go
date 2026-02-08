@@ -11,6 +11,9 @@ const (
 
 	// registerValidatorFunc is the function name for validator registration.
 	registerValidatorFunc = "register_validator"
+
+	// deregisterValidatorFunc is the function name for voluntary validator departure.
+	deregisterValidatorFunc = "deregister_validator"
 )
 
 // Hash is a 32-byte identifier for vertices and validators.
@@ -99,6 +102,30 @@ func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string, blsPubkey [4
 	if callback != nil {
 		callback(info)
 	}
+
+	return true
+}
+
+// Remove removes a validator from the set.
+// Returns true if the validator was found and removed.
+func (vs *ValidatorSet) Remove(pubkey Hash) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	// Remove from slice by swapping with last element
+	last := len(vs.validators) - 1
+	if idx != last {
+		vs.validators[idx] = vs.validators[last]
+		vs.index[vs.validators[idx].Pubkey] = idx
+	}
+
+	vs.validators = vs.validators[:last]
+	delete(vs.index, pubkey)
 
 	return true
 }

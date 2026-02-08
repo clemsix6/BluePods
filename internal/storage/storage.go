@@ -122,6 +122,51 @@ func (s *Storage) Iterate(fn func(key, value []byte) error) error {
 	return iter.Error()
 }
 
+// IteratePrefix calls fn for each key-value pair with the given prefix.
+// Uses Pebble's iterator bounds for efficient prefix scanning.
+func (s *Storage) IteratePrefix(prefix []byte, fn func(key, value []byte) error) error {
+	upperBound := prefixUpperBound(prefix)
+
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: upperBound,
+	})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		value, err := iter.ValueAndErr()
+		if err != nil {
+			return err
+		}
+
+		if err := fn(key, value); err != nil {
+			return err
+		}
+	}
+
+	return iter.Error()
+}
+
+// prefixUpperBound computes the exclusive upper bound for a prefix scan.
+// Increments the last byte; returns nil if prefix is all 0xFF (full range).
+func prefixUpperBound(prefix []byte) []byte {
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
+
+	for i := len(upper) - 1; i >= 0; i-- {
+		upper[i]++
+		if upper[i] != 0 {
+			return upper
+		}
+	}
+
+	return nil // all 0xFF → unbounded
+}
+
 // Close stops the sync goroutine and closes the database.
 // It performs a final sync before closing to ensure durability.
 func (s *Storage) Close() error {

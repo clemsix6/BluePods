@@ -38,9 +38,9 @@ type Executor interface {
 
 // DAG manages the Mysticeti consensus.
 type DAG struct {
-	store       *store
-	versions    *versionTracker
-	validators  *ValidatorSet
+	store      *store
+	tracker    *objectTracker
+	validators *ValidatorSet
 	executor    Executor
 	broadcaster Broadcaster
 	systemPod   Hash
@@ -81,6 +81,15 @@ type DAG struct {
 	// transitionGraceRounds to let the network converge.
 	transitionRound    atomic.Int64 // round when minValidators was reached (-1 = not yet)
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
+
+	// Epoch: frozen validator set for Rendezvous hashing.
+	epochLength      uint64          // epochLength is the number of rounds per epoch (0 = disabled)
+	currentEpoch     uint64          // currentEpoch is the current epoch number
+	epochHolders     *ValidatorSet   // epochHolders is the frozen ValidatorSet for Rendezvous
+	pendingRemovals  map[Hash]bool   // pendingRemovals are validators to remove at next epoch
+	epochAdditions   []Hash          // epochAdditions are validators added this epoch
+	maxChurnPerEpoch int             // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
+	onEpochTransition func(epoch uint64) // onEpochTransition is called when an epoch boundary is reached
 
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
@@ -137,15 +146,32 @@ func WithMinValidators(n int) Option {
 	}
 }
 
-// WithImportData imports vertices and object versions from a snapshot BEFORE
+// WithEpochLength sets the number of rounds per epoch.
+// Object holding uses a frozen ValidatorSet snapshotted at epoch boundaries.
+// 0 means epochs are disabled.
+func WithEpochLength(length uint64) Option {
+	return func(d *DAG) {
+		d.epochLength = length
+	}
+}
+
+// WithMaxChurnPerEpoch sets the maximum validator changes per epoch.
+// 0 means unlimited churn.
+func WithMaxChurnPerEpoch(n int) Option {
+	return func(d *DAG) {
+		d.maxChurnPerEpoch = n
+	}
+}
+
+// WithImportData imports vertices and tracker entries from a snapshot BEFORE
 // the background goroutines start. This eliminates the race where commitLoop
 // and livenessLoop operate on incomplete state during import.
 // Also triggers transition if the validator set already meets minValidators,
 // since the synced node missed the original transition event.
-func WithImportData(vertices []VertexEntry, versions []ObjectVersionEntry) Option {
+func WithImportData(vertices []VertexEntry, trackerEntries []ObjectTrackerEntry) Option {
 	return func(d *DAG) {
 		d.importVerticesLocked(vertices)
-		d.importVersionsLocked(versions)
+		d.importTrackerEntriesLocked(trackerEntries)
 
 		// If this node joins a network that already reached minValidators,
 		// fire the transition so quorum relaxation kicks in.
@@ -163,7 +189,7 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 
 	d := &DAG{
 		store:           newStore(db),
-		versions:        newVersionTracker(),
+		tracker:         newObjectTracker(db),
 		validators:      validators,
 		executor:        executor,
 		broadcaster:     broadcaster,
@@ -173,6 +199,7 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		pubKey:          pubKey,
 		committed:       make(chan CommittedTx, channelBuffer),
 		pendingVertices: make(map[Hash][]byte),
+		pendingRemovals: make(map[Hash]bool),
 		stop:            make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition
@@ -317,6 +344,14 @@ func (d *DAG) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
 	d.isHolder = fn
 }
 
+// TrackObject registers a created object in the tracker.
+// Called by the state layer when a new object is created during execution.
+func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16) {
+	var h Hash
+	copy(h[:], id[:])
+	d.tracker.trackObject(h, version, replication)
+}
+
 // SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
 // Must be called after DAG creation, before transactions are committed.
 func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
@@ -327,6 +362,41 @@ func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
 // Used by holderRouter to look up validator network addresses.
 func (d *DAG) ValidatorSet() *ValidatorSet {
 	return d.validators
+}
+
+// EpochHolders returns the frozen validator set used for Rendezvous.
+// Returns the current validators if epochs are not initialized yet.
+func (d *DAG) EpochHolders() *ValidatorSet {
+	if d.epochHolders != nil {
+		return d.epochHolders
+	}
+	return d.validators
+}
+
+// Epoch returns the current epoch number.
+func (d *DAG) Epoch() uint64 {
+	return d.currentEpoch
+}
+
+// EpochHoldersCount returns the number of validators in the frozen epoch set.
+// Falls back to the active validator count if epochs are not initialized.
+func (d *DAG) EpochHoldersCount() int {
+	if d.epochHolders != nil {
+		return d.epochHolders.Len()
+	}
+
+	return d.validators.Len()
+}
+
+// OnEpochTransition sets a callback that fires on epoch boundaries.
+// Used to trigger Rendezvous rebuilding and background scanning.
+func (d *DAG) OnEpochTransition(fn func(epoch uint64)) {
+	d.onEpochTransition = fn
+}
+
+// AddPendingRemoval marks a validator for removal at the next epoch boundary.
+func (d *DAG) AddPendingRemoval(pubkey Hash) {
+	d.pendingRemovals[pubkey] = true
 }
 
 // Close stops the DAG and waits for goroutines to finish.
@@ -380,25 +450,25 @@ func (d *DAG) importVerticesLocked(entries []VertexEntry) uint64 {
 	return maxRound
 }
 
-// ExportVersions returns all object versions for snapshot.
-func (d *DAG) ExportVersions() []ObjectVersionEntry {
-	return d.versions.Export()
+// ExportTrackerEntries returns all tracked objects for snapshot.
+func (d *DAG) ExportTrackerEntries() []ObjectTrackerEntry {
+	return d.tracker.Export()
 }
 
-// ImportVersions loads object versions from snapshot.
-func (d *DAG) ImportVersions(entries []ObjectVersionEntry) {
-	d.importVersionsLocked(entries)
+// ImportTrackerEntries loads tracker entries from snapshot.
+func (d *DAG) ImportTrackerEntries(entries []ObjectTrackerEntry) {
+	d.importTrackerEntriesLocked(entries)
 }
 
-// importVersionsLocked imports object versions.
+// importTrackerEntriesLocked imports tracker entries.
 // Safe to call before goroutines start (used by WithImportData).
-func (d *DAG) importVersionsLocked(entries []ObjectVersionEntry) {
+func (d *DAG) importTrackerEntriesLocked(entries []ObjectTrackerEntry) {
 	if len(entries) == 0 {
 		return
 	}
 
-	d.versions.Import(entries)
-	logger.Info("imported object versions", "count", len(entries))
+	d.tracker.Import(entries)
+	logger.Info("imported tracker entries", "count", len(entries))
 }
 
 // onVertexAdded is called after a vertex is stored.

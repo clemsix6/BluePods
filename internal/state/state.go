@@ -20,9 +20,10 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	objects  *objectStore
-	pods     *podvm.Pool
-	isHolder func(objectID [32]byte, replication uint16) bool // isHolder checks if this node stores an object
+	objects        *objectStore
+	pods           *podvm.Pool
+	isHolder       func(objectID [32]byte, replication uint16) bool   // isHolder checks if this node stores an object
+	onObjectCreated func(id [32]byte, version uint64, replication uint16) // onObjectCreated is called when a new object is created
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -37,6 +38,12 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 // Objects where isHolder returns false will not be stored locally.
 func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
 	s.isHolder = fn
+}
+
+// SetOnObjectCreated sets a callback that fires when a new object is created.
+// Used by the consensus tracker to register created objects.
+func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16)) {
+	s.onObjectCreated = fn
 }
 
 // Execute runs an attested transaction and updates the state.
@@ -299,6 +306,7 @@ func rebuildObjectIncrementVersion(obj *types.Object) []byte {
 // applyCreatedObjects stores newly created objects with deterministic IDs.
 // Each object ID is computed as blake3(txHash || index_u32_LE) per the spec.
 // Storage sharding: only stores objects where this node is a holder.
+// Notifies the tracker callback for each created object (all validators track all objects).
 func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
 	var obj types.Object
 
@@ -308,6 +316,11 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 		}
 
 		id := computeObjectID(txHash, uint32(i))
+
+		// Notify tracker (all validators track all objects regardless of holding)
+		if s.onObjectCreated != nil {
+			s.onObjectCreated(id, obj.Version(), obj.Replication())
+		}
 
 		// Storage sharding: skip objects this node doesn't hold
 		if s.isHolder != nil && !s.isHolder(id, obj.Replication()) {

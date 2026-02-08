@@ -42,6 +42,8 @@ type StatusProvider interface {
 	ValidatorCount() int
 	FullQuorumAchieved() bool
 	ValidatorsInfo() []*consensus.ValidatorInfo
+	Epoch() uint64
+	EpochHoldersCount() int
 }
 
 // ObjectQuerier reads objects from state.
@@ -218,6 +220,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"lastCommitted":      s.status.LastCommittedRound(),
 		"validators":         s.status.ValidatorCount(),
 		"fullQuorumAchieved": s.status.FullQuorumAchieved(),
+		"epoch":              s.status.Epoch(),
+		"epochHolders":       s.status.EpochHoldersCount(),
 	}
 
 	if s.faucet != nil {
@@ -347,8 +351,9 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 
 	data := s.objects.GetObject(id)
 
-	// If not local, try routing to holders
-	if data == nil && s.router != nil {
+	// If not local, try routing to holders (unless ?local=true is set)
+	localOnly := r.URL.Query().Get("local") == "true"
+	if data == nil && s.router != nil && !localOnly {
 		routed, err := s.router.RouteGetObject(id)
 		if err == nil && routed != nil {
 			data = routed

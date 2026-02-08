@@ -12,65 +12,69 @@ import (
 )
 
 // =============================================================================
-// Version Tracker Tests
+// Object Tracker Tests (basic — full tests in tracker_test.go)
 // =============================================================================
 
-// TestVersionTrackerCheckAndUpdate tests basic version check and increment.
-func TestVersionTrackerCheckAndUpdate(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerCheckAndUpdate tests basic version check and increment.
+func TestTrackerCheckAndUpdate(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
 	tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
 
-	if !vt.checkAndUpdate(tx) {
+	if !ot.checkAndUpdate(tx) {
 		t.Fatal("first tx should succeed (version 0 matches default)")
 	}
 
-	if v := vt.getVersion(objID); v != 1 {
+	if v := ot.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1, got %d", v)
 	}
 }
 
-// TestVersionTrackerConflict tests that a duplicate version causes conflict.
-func TestVersionTrackerConflict(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerConflict tests that a duplicate version causes conflict.
+func TestTrackerConflict(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
 
 	tx1 := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
-	if !vt.checkAndUpdate(tx1) {
+	if !ot.checkAndUpdate(tx1) {
 		t.Fatal("tx1 should succeed")
 	}
 
 	// tx2 expects version 0 but current is now 1
 	tx2 := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
-	if vt.checkAndUpdate(tx2) {
+	if ot.checkAndUpdate(tx2) {
 		t.Fatal("tx2 should fail: version conflict")
 	}
 }
 
-// TestVersionTrackerSequential tests sequential version increments.
-func TestVersionTrackerSequential(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerSequential tests sequential version increments.
+func TestTrackerSequential(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
 
 	for i := uint64(0); i < 5; i++ {
 		tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: i}})
 
-		if !vt.checkAndUpdate(tx) {
+		if !ot.checkAndUpdate(tx) {
 			t.Fatalf("tx at version %d should succeed", i)
 		}
 
-		if v := vt.getVersion(objID); v != i+1 {
+		if v := ot.getVersion(objID); v != i+1 {
 			t.Fatalf("after version %d: expected %d, got %d", i, i+1, v)
 		}
 	}
 }
 
-// TestVersionTrackerMultipleObjects tests tracking multiple objects independently.
-func TestVersionTrackerMultipleObjects(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerMultipleObjects tests tracking multiple objects independently.
+func TestTrackerMultipleObjects(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
@@ -80,29 +84,30 @@ func TestVersionTrackerMultipleObjects(t *testing.T) {
 		{id: obj2, version: 0},
 	})
 
-	if !vt.checkAndUpdate(tx) {
+	if !ot.checkAndUpdate(tx) {
 		t.Fatal("tx should succeed")
 	}
 
-	if v := vt.getVersion(obj1); v != 1 {
+	if v := ot.getVersion(obj1); v != 1 {
 		t.Fatalf("obj1: expected version 1, got %d", v)
 	}
 
-	if v := vt.getVersion(obj2); v != 1 {
+	if v := ot.getVersion(obj2); v != 1 {
 		t.Fatalf("obj2: expected version 1, got %d", v)
 	}
 }
 
-// TestVersionTrackerReadObjectConflict tests that ReadObjects versions are also checked.
-func TestVersionTrackerReadObjectConflict(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerReadObjectConflict tests that ReadObjects versions are also checked.
+func TestTrackerReadObjectConflict(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	readObj := Hash{0x01}
 	mutObj := Hash{0x02}
 
 	// First bump readObj version
 	tx1 := buildTxWithMutables(t, nil, []objectRef{{id: readObj, version: 0}})
-	if !vt.checkAndUpdate(tx1) {
+	if !ot.checkAndUpdate(tx1) {
 		t.Fatal("tx1 should succeed")
 	}
 
@@ -112,33 +117,43 @@ func TestVersionTrackerReadObjectConflict(t *testing.T) {
 		[]objectRef{{id: mutObj, version: 0}},
 	)
 
-	if vt.checkAndUpdate(tx2) {
+	if ot.checkAndUpdate(tx2) {
 		t.Fatal("tx2 should fail: read object version conflict")
 	}
 }
 
-// TestVersionTrackerExportImport tests snapshot export and import.
-func TestVersionTrackerExportImport(t *testing.T) {
-	vt := newVersionTracker()
+// TestTrackerExportImport tests snapshot export and import.
+func TestTrackerExportImport(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
 
 	obj1, obj2 := Hash{0x01}, Hash{0x02}
-	vt.setVersion(obj1, 5)
-	vt.setVersion(obj2, 10)
+	ot.trackObject(obj1, 5, 10)
+	ot.trackObject(obj2, 10, 20)
 
-	entries := vt.Export()
+	entries := ot.Export()
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 
-	vt2 := newVersionTracker()
-	vt2.Import(entries)
+	db2 := newTestStorage(t)
+	ot2 := newObjectTracker(db2)
+	ot2.Import(entries)
 
-	if v := vt2.getVersion(obj1); v != 5 {
+	if v := ot2.getVersion(obj1); v != 5 {
 		t.Fatalf("obj1: expected 5, got %d", v)
 	}
 
-	if v := vt2.getVersion(obj2); v != 10 {
+	if v := ot2.getVersion(obj2); v != 10 {
 		t.Fatalf("obj2: expected 10, got %d", v)
+	}
+
+	if r := ot2.getReplication(obj1); r != 10 {
+		t.Fatalf("obj1: expected replication 10, got %d", r)
+	}
+
+	if r := ot2.getReplication(obj2); r != 20 {
+		t.Fatalf("obj2: expected replication 20, got %d", r)
 	}
 }
 
@@ -158,7 +173,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	objID := Hash{0x10}
 
 	// Pre-set version to 3
-	dag.versions.setVersion(objID, 3)
+	dag.tracker.trackObject(objID, 3, 0)
 
 	// Build ATX expecting version 0 (stale)
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, false)
@@ -167,7 +182,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	dag.executeTx(atx, 0)
 
 	// Tx should fail, version should NOT have been incremented
-	if v := dag.versions.getVersion(objID); v != 3 {
+	if v := dag.tracker.getVersion(objID); v != 3 {
 		t.Fatalf("version should stay at 3 after conflict, got %d", v)
 	}
 }
@@ -190,7 +205,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 	dag.executeTx(atx, 0)
 
 	// Version should be incremented
-	if v := dag.versions.getVersion(objID); v != 1 {
+	if v := dag.tracker.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1 after success, got %d", v)
 	}
 }
@@ -353,7 +368,7 @@ func TestCommitRoundProcessing(t *testing.T) {
 	// Wait for vertex production and commit.
 	time.Sleep(2 * time.Second)
 
-	if v := dag.versions.getVersion(objID); v != 1 {
+	if v := dag.tracker.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1 after commit, got %d", v)
 	}
 }
@@ -415,6 +430,136 @@ func TestCommittedTxOutput(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// =============================================================================
+// Deregister Validator Tests (via executeTx commit path)
+// =============================================================================
+
+// TestHandleDeregisterValidator_ViaExecuteTx tests that a deregister_validator
+// transaction submitted through executeTx correctly populates pendingRemovals.
+func TestHandleDeregisterValidator_ViaExecuteTx(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	// Build a deregister_validator ATX from validator[2]
+	atxBytes := buildDeregisterATX(t, validators[2].pubKey, testSystemPod)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	// Verify validator[2] is currently active
+	if !dag.validators.Contains(validators[2].pubKey) {
+		t.Fatal("validator[2] should be in active set before deregister")
+	}
+
+	dag.executeTx(atx, 5)
+
+	// Validator should still be active (removal is deferred to epoch)
+	if !dag.validators.Contains(validators[2].pubKey) {
+		t.Fatal("validator[2] should STILL be active after deregister (deferred to epoch)")
+	}
+
+	// But should be in pending removals
+	if !dag.pendingRemovals[validators[2].pubKey] {
+		t.Fatal("validator[2] should be in pendingRemovals")
+	}
+}
+
+// TestHandleDeregisterValidator_WrongPod tests that deregister on wrong pod is ignored.
+func TestHandleDeregisterValidator_WrongPod(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	wrongPod := Hash{0xFF, 0xFE, 0xFD}
+	atxBytes := buildDeregisterATX(t, validators[2].pubKey, wrongPod)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5)
+
+	if len(dag.pendingRemovals) != 0 {
+		t.Fatal("deregister on wrong pod should be ignored")
+	}
+}
+
+// TestHandleDeregisterValidator_WrongFunction tests that wrong function name is ignored.
+func TestHandleDeregisterValidator_WrongFunction(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	// Build ATX with right pod but wrong function
+	atxBytes := buildSystemPodATX(t, validators[2].pubKey, testSystemPod, "wrong_function")
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5)
+
+	if len(dag.pendingRemovals) != 0 {
+		t.Fatal("wrong function name should be ignored")
+	}
+}
+
+// TestDeregisterThenEpoch_FullPath tests the complete path:
+// deregister tx → pendingRemovals → epoch transition → validator removed.
+func TestDeregisterThenEpoch_FullPath(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	)
+	defer dag.Close()
+
+	// Step 1: Submit deregister tx
+	atxBytes := buildDeregisterATX(t, validators[3].pubKey, testSystemPod)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	dag.executeTx(atx, 5)
+
+	// Verify: still active, in pending
+	if !dag.validators.Contains(validators[3].pubKey) {
+		t.Fatal("should still be active before epoch")
+	}
+	if !dag.pendingRemovals[validators[3].pubKey] {
+		t.Fatal("should be in pendingRemovals")
+	}
+
+	// Step 2: Epoch transition
+	dag.transitionEpoch(10)
+
+	// Verify: now removed from both validators and epoch holders
+	if dag.validators.Contains(validators[3].pubKey) {
+		t.Fatal("should be removed from validators after epoch")
+	}
+	if dag.EpochHolders().Contains(validators[3].pubKey) {
+		t.Fatal("should be removed from epoch holders after epoch")
+	}
+	if len(dag.pendingRemovals) != 0 {
+		t.Fatal("pendingRemovals should be empty after epoch applied it")
+	}
+
+	// Verify remaining validators are correct
+	if dag.validators.Len() != 3 {
+		t.Fatalf("expected 3 validators remaining, got %d", dag.validators.Len())
+	}
+	for i := 0; i < 3; i++ {
+		if !dag.validators.Contains(validators[i].pubKey) {
+			t.Errorf("validator[%d] should still be active", i)
+		}
 	}
 }
 
@@ -806,4 +951,47 @@ func addQuorumVertices(t *testing.T, dag *DAG, validators []testValidator, round
 		data := buildTestVertex(t, v, round, parents, 1)
 		dag.AddVertex(data)
 	}
+}
+
+// buildDeregisterATX creates a deregister_validator ATX from the given sender on the given pod.
+func buildDeregisterATX(t *testing.T, sender Hash, pod Hash) []byte {
+	t.Helper()
+	return buildSystemPodATX(t, sender, pod, "deregister_validator")
+}
+
+// buildSystemPodATX creates an ATX with specific sender, pod, and function name.
+// Used for testing system pod functions (register/deregister validator).
+func buildSystemPodATX(t *testing.T, sender Hash, pod Hash, funcName string) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(512)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString(funcName)
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	txOff := types.TransactionEnd(builder)
+
+	// Empty objects and proofs
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
 }

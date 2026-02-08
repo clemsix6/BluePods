@@ -31,7 +31,7 @@ func (m *mockSnapshotProvider) ExportVertices(fromRound, toRound uint64) []conse
 	return nil
 }
 
-func (m *mockSnapshotProvider) ExportVersions() []consensus.ObjectVersionEntry {
+func (m *mockSnapshotProvider) ExportTrackerEntries() []consensus.ObjectTrackerEntry {
 	return nil
 }
 

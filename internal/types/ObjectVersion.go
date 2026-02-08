@@ -87,8 +87,20 @@ func (rcv *ObjectVersion) MutateVersion(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(6, n)
 }
 
+func (rcv *ObjectVersion) Replication() uint16 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.GetUint16(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) MutateReplication(n uint16) bool {
+	return rcv._tab.MutateUint16Slot(8, n)
+}
+
 func ObjectVersionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(3)
 }
 func ObjectVersionAddId(builder *flatbuffers.Builder, id flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(id), 0)
@@ -98,6 +110,9 @@ func ObjectVersionStartIdVector(builder *flatbuffers.Builder, numElems int) flat
 }
 func ObjectVersionAddVersion(builder *flatbuffers.Builder, version uint64) {
 	builder.PrependUint64Slot(1, version, 0)
+}
+func ObjectVersionAddReplication(builder *flatbuffers.Builder, replication uint16) {
+	builder.PrependUint16Slot(2, replication, 0)
 }
 func ObjectVersionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

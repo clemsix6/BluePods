@@ -17,7 +17,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 1
+	snapshotVersion = 2
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -25,20 +25,21 @@ const (
 
 // Storage key prefixes used by consensus (must be skipped when iterating objects).
 var (
-	prefixVertex = []byte("v:")
-	prefixRound  = []byte("r:")
-	prefixMeta   = []byte("m:")
+	prefixVertex  = []byte("v:")
+	prefixRound   = []byte("r:")
+	prefixMeta    = []byte("m:")
+	prefixTracker = []byte("t:")
 )
 
 // CreateSnapshot creates a snapshot of the current committed state.
 // It iterates over all objects in storage, excluding consensus data.
-func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, versions []consensus.ObjectVersionEntry) ([]byte, error) {
+func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry) ([]byte, error) {
 	objects, err := collectObjects(db)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, versions)
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries)
 
 	return data, nil
 }
@@ -89,19 +90,20 @@ type objectEntry struct {
 func isConsensusKey(key []byte) bool {
 	return bytes.HasPrefix(key, prefixVertex) ||
 		bytes.HasPrefix(key, prefixRound) ||
-		bytes.HasPrefix(key, prefixMeta)
+		bytes.HasPrefix(key, prefixMeta) ||
+		bytes.HasPrefix(key, prefixTracker)
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, versions []consensus.ObjectVersionEntry) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
 	// Sort validators for deterministic checksum
 	sortValidatorInfos(validators)
 
-	// Compute checksum over canonical data
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators)
+	// Compute checksum over canonical data (includes tracker entries)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -147,14 +149,15 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	verticesVector := builder.EndVector(len(vertexOffsets))
 
-	// Build object versions vector
-	versionOffsets := make([]flatbuffers.UOffsetT, len(versions))
-	for i, v := range versions {
-		idOffset := builder.CreateByteVector(v.ID[:])
+	// Build object versions vector (with replication)
+	versionOffsets := make([]flatbuffers.UOffsetT, len(trackerEntries))
+	for i, entry := range trackerEntries {
+		idOffset := builder.CreateByteVector(entry.ID[:])
 
 		types.ObjectVersionStart(builder)
 		types.ObjectVersionAddId(builder, idOffset)
-		types.ObjectVersionAddVersion(builder, v.Version)
+		types.ObjectVersionAddVersion(builder, entry.Version)
+		types.ObjectVersionAddReplication(builder, entry.Replication)
 		versionOffsets[i] = types.ObjectVersionEnd(builder)
 	}
 
@@ -270,8 +273,8 @@ func sortObjects(objects []objectEntry) {
 }
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
-// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo) [32]byte {
+// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -297,10 +300,30 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(obj.data)
 	}
 
+	// Write tracker entries (sorted by ID for determinism)
+	sortTrackerEntries(trackerEntries)
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(trackerEntries)))
+	hasher.Write(buf[:4])
+
+	for _, entry := range trackerEntries {
+		hasher.Write(entry.ID[:])
+		binary.BigEndian.PutUint64(buf[:], entry.Version)
+		hasher.Write(buf[:])
+		binary.BigEndian.PutUint16(buf[:2], entry.Replication)
+		hasher.Write(buf[:2])
+	}
+
 	var checksum [32]byte
 	hasher.Sum(checksum[:0])
 
 	return checksum
+}
+
+// sortTrackerEntries sorts tracker entries by ID for deterministic checksum.
+func sortTrackerEntries(entries []consensus.ObjectTrackerEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].ID[:], entries[j].ID[:]) < 0
+	})
 }
 
 // CompressSnapshot compresses snapshot data using zstd.
@@ -392,10 +415,13 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	// Extract validators
 	validators := ExtractValidators(snapshot)
 
+	// Extract tracker entries
+	trackerEntries := ExtractTrackerEntries(snapshot)
+
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators)
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries)
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {
@@ -444,14 +470,14 @@ func ExtractVertices(snapshot *types.Snapshot) []consensus.VertexEntry {
 	return entries
 }
 
-// ExtractVersions extracts object versions from a snapshot.
-func ExtractVersions(snapshot *types.Snapshot) []consensus.ObjectVersionEntry {
+// ExtractTrackerEntries extracts object tracker entries from a snapshot.
+func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEntry {
 	length := snapshot.ObjectVersionsLength()
 	if length == 0 {
 		return nil
 	}
 
-	entries := make([]consensus.ObjectVersionEntry, length)
+	entries := make([]consensus.ObjectTrackerEntry, length)
 	var v types.ObjectVersion
 
 	for i := 0; i < length; i++ {
@@ -465,9 +491,10 @@ func ExtractVersions(snapshot *types.Snapshot) []consensus.ObjectVersionEntry {
 			copy(id[:], idBytes)
 		}
 
-		entries[i] = consensus.ObjectVersionEntry{
-			ID:      id,
-			Version: v.Version(),
+		entries[i] = consensus.ObjectTrackerEntry{
+			ID:          id,
+			Version:     v.Version(),
+			Replication: v.Replication(),
 		}
 	}
 

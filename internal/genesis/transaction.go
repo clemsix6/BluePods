@@ -39,6 +39,23 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 	return builder.FinishedBytes()
 }
 
+// BuildDeregisterValidatorRawTx creates a signed deregister_validator as a raw Transaction.
+// The sender pubkey identifies the validator requesting departure.
+// No args are needed — the Go consensus layer handles epoch-deferred removal.
+func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte) []byte {
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, false)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(privKey, hash[:])
+
+	builder := flatbuffers.NewBuilder(512)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, false, hash, sig)
+	builder.Finish(txOffset)
+
+	return builder.FinishedBytes()
+}
+
 // BuildAttestedTx creates a signed transaction wrapped in AttestedTransaction.
 // Genesis transactions have no objects or proofs since they don't reference existing objects.
 func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createsObjects bool) []byte {

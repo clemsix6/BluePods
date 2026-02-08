@@ -332,6 +332,8 @@ type statusResponse struct {
 	LastCommitted      uint64 `json:"lastCommitted"`      // LastCommitted is the last committed round
 	Validators         int    `json:"validators"`         // Validators is the active validator count
 	FullQuorumAchieved bool   `json:"fullQuorumAchieved"` // FullQuorumAchieved indicates BFT quorum observed
+	Epoch              uint64 `json:"epoch"`              // Epoch is the current epoch number
+	EpochHolders       int    `json:"epochHolders"`       // EpochHolders is the frozen validator count for Rendezvous
 }
 
 // queryStatus queries the /status endpoint of a node.

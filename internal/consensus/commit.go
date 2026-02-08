@@ -53,6 +53,11 @@ func (d *DAG) checkCommits() {
 		logger.Debug("committing round", "round", round)
 		d.commitRound(round)
 		d.lastCommitted = round + 1
+
+		// Check for epoch boundary after committing the round
+		if d.isEpochBoundary(round) {
+			d.transitionEpoch(round)
+		}
 	}
 }
 
@@ -140,7 +145,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	logger.Debug("processing tx", "func", funcName)
 
 	// Check and update versions atomically
-	if !d.versions.checkAndUpdate(tx) {
+	if !d.tracker.checkAndUpdate(tx) {
 		logger.Debug("version conflict", "func", funcName)
 		d.emitTransaction(tx, false) // conflict
 		return
@@ -155,8 +160,9 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 		}
 	}
 
-	// Handle system transactions (register_validator)
+	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
+	d.handleDeregisterValidator(tx, commitRound)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// creates_objects=true → ALL validators execute (holder unknown until after execution).
@@ -267,7 +273,12 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 		copy(blsPubkey[:], blsPubkeyBytes)
 	}
 
-	d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
+	isNew := d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
+
+	// Track mid-epoch additions for churn limiting
+	if isNew && d.epochLength > 0 {
+		d.epochAdditions = append(d.epochAdditions, pubkey)
+	}
 
 	// Enter transition immediately when minValidators is reached.
 	// This prevents producing vertices with cross-references before transition
@@ -275,6 +286,44 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
 		d.enterTransition(commitRound)
 	}
+}
+
+// handleDeregisterValidator checks if TX is deregister_validator and marks for removal.
+// The validator stays active until the next epoch boundary.
+func (d *DAG) handleDeregisterValidator(tx *types.Transaction, commitRound uint64) {
+	if !d.isDeregisterValidatorTx(tx) {
+		return
+	}
+
+	sender := tx.SenderBytes()
+	if len(sender) != 32 {
+		return
+	}
+
+	var pubkey Hash
+	copy(pubkey[:], sender)
+
+	d.pendingRemovals[pubkey] = true
+
+	logger.Info("validator deregistration pending",
+		"pubkey_prefix", pubkey[:4],
+		"commitRound", commitRound,
+	)
+}
+
+// isDeregisterValidatorTx checks if a transaction calls deregister_validator on system pod.
+func (d *DAG) isDeregisterValidatorTx(tx *types.Transaction) bool {
+	podBytes := tx.PodBytes()
+	if len(podBytes) != 32 {
+		return false
+	}
+
+	if !bytes.Equal(podBytes, d.systemPod[:]) {
+		return false
+	}
+
+	funcName := string(tx.FunctionName())
+	return funcName == deregisterValidatorFunc
 }
 
 // isRegisterValidatorTx checks if a transaction calls register_validator on system pod.

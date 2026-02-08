@@ -13,6 +13,7 @@ mod objects;
 
 pod_sdk::dispatcher! {
     "create_nft" => functions::create_nft::execute,
+    "deregister_validator" => functions::deregister_validator::execute,
     "merge" => functions::merge::execute,
     "mint" => functions::mint::execute,
     "register_validator" => functions::register_validator::execute,

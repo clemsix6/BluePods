@@ -28,8 +28,8 @@ type SnapshotProvider interface {
 	// ExportVertices returns vertices from the specified round range.
 	ExportVertices(fromRound, toRound uint64) []consensus.VertexEntry
 
-	// ExportVersions returns all object versions.
-	ExportVersions() []consensus.ObjectVersionEntry
+	// ExportTrackerEntries returns all tracked objects with versions and replication.
+	ExportTrackerEntries() []consensus.ObjectTrackerEntry
 }
 
 // SnapshotManager creates periodic snapshots of the committed state.
@@ -130,11 +130,11 @@ func (m *SnapshotManager) createSnapshot() {
 	}
 	vertices := m.provider.ExportVertices(fromRound, currentRound)
 
-	// Get object versions
-	versions := m.provider.ExportVersions()
+	// Get tracker entries
+	trackerEntries := m.provider.ExportTrackerEntries()
 
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, versions)
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return
@@ -158,7 +158,7 @@ func (m *SnapshotManager) createSnapshot() {
 		"currentRound", currentRound,
 		"validators", len(validators),
 		"vertices", len(vertices),
-		"versions", len(versions),
+		"trackerEntries", len(trackerEntries),
 		"size", len(data),
 		"compressed", len(compressed),
 	)

@@ -89,6 +89,16 @@ func NewWallet() *Wallet {
 	}
 }
 
+// NewWalletFromKey creates a wallet from an existing Ed25519 private key.
+// Used for integration testing where a node's private key is loaded from file.
+func NewWalletFromKey(privKey ed25519.PrivateKey) *Wallet {
+	return &Wallet{
+		privKey: privKey,
+		pubKey:  privKey.Public().(ed25519.PublicKey),
+		coins:   make(map[[32]byte]*CoinInfo),
+	}
+}
+
 // Pubkey returns the wallet's public key as a 32-byte array.
 func (w *Wallet) Pubkey() [32]byte {
 	var pk [32]byte
@@ -317,6 +327,18 @@ func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) erro
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
 		return fmt.Errorf("submit transfer_nft tx:\n%w", err)
+	}
+
+	return nil
+}
+
+// DeregisterValidator sends a deregister_validator transaction.
+// The validator is removed from the active set at the next epoch boundary.
+func (w *Wallet) DeregisterValidator(c *Client) error {
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "deregister_validator", nil, false, nil, nil)
+
+	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+		return fmt.Errorf("submit deregister_validator tx:\n%w", err)
 	}
 
 	return nil

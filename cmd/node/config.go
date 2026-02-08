@@ -51,6 +51,15 @@ type Config struct {
 	// SyncBufferSec is the sync buffer duration in seconds.
 	// New nodes buffer vertices for this long before requesting a snapshot.
 	SyncBufferSec int
+
+	// EpochLength is the number of rounds per epoch.
+	// Object holding (Rendezvous) uses a frozen ValidatorSet snapshotted at epoch boundaries.
+	// 0 means epochs are disabled.
+	EpochLength uint64
+
+	// MaxChurnPerEpoch is the maximum number of validator additions/removals per epoch.
+	// 0 means unlimited churn.
+	MaxChurnPerEpoch int
 }
 
 // parseFlags parses command-line flags into Config.
@@ -69,6 +78,8 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.SystemPodPath, "system-pod", "./pods/pod-system/build/pod.wasm", "System pod WASM path")
 	flag.IntVar(&cfg.MinValidators, "min-validators", 1, "Minimum validators before non-bootstrap nodes produce")
 	flag.IntVar(&cfg.SyncBufferSec, "sync-buffer", 12, "Sync buffer duration in seconds (time to buffer vertices before snapshot)")
+	flag.Uint64Var(&cfg.EpochLength, "epoch-length", 1000, "Rounds per epoch (0 = disabled)")
+	flag.IntVar(&cfg.MaxChurnPerEpoch, "max-churn", 0, "Max validator changes per epoch (0 = unlimited)")
 	flag.Parse()
 
 	return cfg

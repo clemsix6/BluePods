@@ -38,6 +38,11 @@ func createTestStorage(t *testing.T) (*storage.Storage, func()) {
 
 // buildTestObject creates a FlatBuffers Object for testing.
 func buildTestObject(id [32]byte, version uint64, content []byte) []byte {
+	return buildTestObjectWithReplication(id, version, content, 0)
+}
+
+// buildTestObjectWithReplication creates a FlatBuffers Object with a specific replication factor.
+func buildTestObjectWithReplication(id [32]byte, version uint64, content []byte, replication uint16) []byte {
 	builder := flatbuffers.NewBuilder(256)
 
 	idOffset := builder.CreateByteVector(id[:])
@@ -48,7 +53,7 @@ func buildTestObject(id [32]byte, version uint64, content []byte) []byte {
 	types.ObjectAddId(builder, idOffset)
 	types.ObjectAddVersion(builder, version)
 	types.ObjectAddOwner(builder, ownerOffset)
-	types.ObjectAddReplication(builder, 0)
+	types.ObjectAddReplication(builder, replication)
 	types.ObjectAddContent(builder, contentOffset)
 	offset := types.ObjectEnd(builder)
 	builder.Finish(offset)
@@ -445,6 +450,81 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	}
 	if extracted[1].Pubkey[0] != 2 {
 		t.Errorf("second validator pubkey[0] = %d, want 2", extracted[1].Pubkey[0])
+	}
+}
+
+func TestSnapshotReplicationAffectsChecksum(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	// Same objects, different replication in tracker entries
+	trackerA := []consensus.ObjectTrackerEntry{
+		{ID: consensus.Hash{1}, Version: 1, Replication: 3},
+	}
+	trackerB := []consensus.ObjectTrackerEntry{
+		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
+	}
+
+	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA)
+	if err != nil {
+		t.Fatalf("CreateSnapshot A: %v", err)
+	}
+
+	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB)
+	if err != nil {
+		t.Fatalf("CreateSnapshot B: %v", err)
+	}
+
+	snapA := types.GetRootAsSnapshot(dataA, 0)
+	snapB := types.GetRootAsSnapshot(dataB, 0)
+
+	if bytes.Equal(snapA.ChecksumBytes(), snapB.ChecksumBytes()) {
+		t.Error("different replication values should produce different checksums")
+	}
+}
+
+func TestSnapshotReplicationPreserved(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	id := [32]byte{1}
+	obj := buildTestObjectWithReplication(id, 1, []byte("content"), 5)
+	if err := db.Set(id[:], obj); err != nil {
+		t.Fatalf("store obj: %v", err)
+	}
+
+	tracker := []consensus.ObjectTrackerEntry{
+		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
+	}
+
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+
+	// Extract tracker entries and verify replication preserved
+	entries := ExtractTrackerEntries(snapshot)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 tracker entry, got %d", len(entries))
+	}
+
+	if entries[0].Replication != 5 {
+		t.Errorf("expected replication=5, got %d", entries[0].Replication)
+	}
+
+	if entries[0].Version != 1 {
+		t.Errorf("expected version=1, got %d", entries[0].Version)
+	}
+
+	// Verify checksum is still valid (ApplySnapshot checks it)
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	_, err = ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot should succeed with valid checksum: %v", err)
 	}
 }
 

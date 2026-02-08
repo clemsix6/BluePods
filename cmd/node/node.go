@@ -208,12 +208,36 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	n.rendezvous = aggregation.NewRendezvous(validators)
 	n.aggregator = aggregation.NewAggregator(n.network, validators, n.state)
 
+	// Initialize epoch holders and set epoch transition callback
+	if n.dag != nil {
+		n.dag.InitEpochHolders()
+
+		n.dag.OnEpochTransition(func(epoch uint64) {
+			// Rebuild Rendezvous with the new epoch holders
+			epochHolders := n.dag.EpochHolders()
+			n.rendezvous = aggregation.NewRendezvous(epochHolders)
+
+			logger.Info("rendezvous rebuilt for epoch",
+				"epoch", epoch,
+				"holders", epochHolders.Len(),
+			)
+
+			// Background scan for object redistribution
+			go n.scanObjectsForEpoch()
+		})
+	}
+
 	// Set up isHolder closure for execution and storage sharding
 	myPubkey := n.myPubkey()
 	isHolder := n.buildIsHolder(myPubkey)
 
 	n.dag.SetIsHolder(isHolder)
 	n.state.SetIsHolder(isHolder)
+
+	// Wire object creation callback to tracker
+	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
+		n.dag.TrackObject(id, version, replication)
+	})
 
 	// Set up ATX proof verifier
 	n.dag.SetATXProofVerifier(n.buildATXVerifier(validators))
@@ -453,11 +477,21 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 		return nil
 	}
 
-	return []consensus.Option{
+	opts := []consensus.Option{
 		consensus.WithGenesisTxs(txs),
 		consensus.WithBootstrap(),
 		consensus.WithMinValidators(n.cfg.MinValidators),
 	}
+
+	if n.cfg.EpochLength > 0 {
+		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
+	}
+
+	if n.cfg.MaxChurnPerEpoch > 0 {
+		opts = append(opts, consensus.WithMaxChurnPerEpoch(n.cfg.MaxChurnPerEpoch))
+	}
+
+	return opts
 }
 
 // Run starts the node and blocks until shutdown signal.
@@ -739,7 +773,7 @@ type snapshotResult struct {
 	lastCommittedRound uint64
 	validators         []*consensus.ValidatorInfo
 	vertices           []consensus.VertexEntry
-	versions           []consensus.ObjectVersionEntry
+	trackerEntries     []consensus.ObjectTrackerEntry
 }
 
 // requestAndApplySnapshot requests a snapshot from a peer and applies it locally.
@@ -760,7 +794,7 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		lastCommittedRound: snapshot.LastCommittedRound(),
 		validators:         sync.ExtractValidators(snapshot),
 		vertices:           sync.ExtractVertices(snapshot),
-		versions:           sync.ExtractVersions(snapshot),
+		trackerEntries:     sync.ExtractTrackerEntries(snapshot),
 	}
 
 	logger.Info("snapshot applied",
@@ -768,7 +802,7 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		"objects", snapshot.ObjectsLength(),
 		"validators", len(result.validators),
 		"vertices", len(result.vertices),
-		"versions", len(result.versions),
+		"trackerEntries", len(result.trackerEntries),
 	)
 
 	return result, nil
@@ -778,6 +812,16 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 func (n *Node) initConsensusForListener(result *snapshotResult) error {
 	validators := n.buildValidatorSetFromSnapshot(result.validators)
 
+	opts := []consensus.Option{
+		consensus.WithLastCommittedRound(result.lastCommittedRound),
+		consensus.WithListenerMode(),
+		consensus.WithImportData(result.vertices, result.trackerEntries),
+	}
+
+	if n.cfg.EpochLength > 0 {
+		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
+	}
+
 	n.dag = consensus.New(
 		n.storage,
 		validators,
@@ -786,9 +830,7 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		0, // epoch
 		n.cfg.PrivateKey,
 		n.state,
-		consensus.WithLastCommittedRound(result.lastCommittedRound),
-		consensus.WithListenerMode(),
-		consensus.WithImportData(result.vertices, result.versions),
+		opts...,
 	)
 
 	n.setupValidatorCallback()
@@ -802,6 +844,20 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 	validators := n.buildValidatorSetFromSnapshot(result.validators)
 	logger.Info("validator set created", "size", validators.Len())
 
+	opts := []consensus.Option{
+		consensus.WithLastCommittedRound(result.lastCommittedRound),
+		consensus.WithMinValidators(n.cfg.MinValidators),
+		consensus.WithImportData(result.vertices, result.trackerEntries),
+	}
+
+	if n.cfg.EpochLength > 0 {
+		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
+	}
+
+	if n.cfg.MaxChurnPerEpoch > 0 {
+		opts = append(opts, consensus.WithMaxChurnPerEpoch(n.cfg.MaxChurnPerEpoch))
+	}
+
 	n.dag = consensus.New(
 		n.storage,
 		validators,
@@ -810,9 +866,7 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		0, // epoch
 		n.cfg.PrivateKey,
 		n.state,
-		consensus.WithLastCommittedRound(result.lastCommittedRound),
-		consensus.WithMinValidators(n.cfg.MinValidators),
-		consensus.WithImportData(result.vertices, result.versions),
+		opts...,
 	)
 
 	logger.Info("DAG created for validator mode",
@@ -1068,11 +1122,15 @@ func (hr *holderRouter) RouteGetObject(id [32]byte) ([]byte, error) {
 	return nil, fmt.Errorf("object not found on any holder")
 }
 
+// holderClient is an HTTP client with timeout for holder-to-holder requests.
+// Without a timeout, routing cascades can hang the HTTP server indefinitely.
+var holderClient = &http.Client{Timeout: 5 * time.Second}
+
 // fetchObjectFromHolder fetches an object from a remote holder via HTTP.
 func fetchObjectFromHolder(httpAddr string, id [32]byte) ([]byte, error) {
 	url := "http://" + httpAddr + "/object/" + hex.EncodeToString(id[:])
 
-	resp, err := http.Get(url)
+	resp, err := holderClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -1131,6 +1189,36 @@ func rebuildObjectFromJSON(idHex, ownerHex, contentHex string, version uint64, r
 	builder.Finish(offset)
 
 	return builder.FinishedBytes(), nil
+}
+
+// scanObjectsForEpoch performs a background scan after epoch transitions.
+// Identifies objects that need to be fetched or can be dropped.
+func (n *Node) scanObjectsForEpoch() {
+	myPubkey := n.myPubkey()
+	isHolder := n.buildIsHolder(myPubkey)
+
+	hasLocal := func(id [32]byte) bool {
+		return n.state.GetObject(id) != nil
+	}
+
+	result := n.dag.ScanObjects(isHolder, hasLocal)
+
+	// Fetch objects we should hold but don't have
+	for _, id := range result.NeedFetch {
+		go func(objectID [32]byte) {
+			if hr := n.newHolderRouter(); hr != nil {
+				data, err := hr.RouteGetObject(objectID)
+				if err != nil {
+					logger.Debug("epoch scan: fetch failed", "id_prefix", objectID[:4], "error", err)
+					return
+				}
+
+				n.state.SetObject(data)
+			}
+		}(id)
+	}
+
+	// Objects to drop are handled lazily (not deleted immediately)
 }
 
 // Close shuts down all node components gracefully.

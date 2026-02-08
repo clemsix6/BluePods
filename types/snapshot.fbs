@@ -21,13 +21,16 @@ table SnapshotVertex {
     data:[ubyte];
 }
 
-// ObjectVersion tracks the current version of an object.
+// ObjectVersion tracks the current version and replication of an object.
 table ObjectVersion {
     // id is the 32-byte object identifier.
     id:[ubyte];
 
     // version is the current version number.
     version:uint64;
+
+    // replication is the number of holders for this object (0 = singleton).
+    replication:uint16;
 }
 
 // Snapshot represents the committed state at a point in time.
