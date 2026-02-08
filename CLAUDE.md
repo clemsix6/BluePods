@@ -98,6 +98,16 @@ Rust tool for instrumenting WASM modules with gas metering.
 - Prefer 3 small focused functions over 1 large function doing everything
 - Good code reads like a story: the main function orchestrates, sub-functions execute specific tasks
 
+### File Size (CRUCIAL)
+
+- Files MUST stay focused and manageable - aim for 200-300 lines maximum
+- A file that exceeds 400 lines is almost certainly doing too much and MUST be split
+- Each file should have ONE clear responsibility or theme
+- Split by logical domain: initialization, networking, sync, routing, etc.
+- Prefer 4 small focused files over 1 large file doing everything
+- File names should clearly describe their content (e.g., `sync.go`, `handlers.go`, `routing.go`)
+- **Exception**: a file can exceed 400 lines if it represents a single cohesive type with tightly coupled methods (e.g., a core struct and all its methods). Only accept this when splitting would scatter related logic across files and hurt readability
+
 ### TODO Comments
 
 - Use `// TODO:` comments to mark incomplete implementations or future improvements
