@@ -4,9 +4,9 @@ import (
 	"crypto/ed25519"
 	"fmt"
 
-	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
 
@@ -22,9 +22,6 @@ const (
 
 	// podSize is the expected size of a pod identifier.
 	podSize = 32
-
-	// objectRefSize is the size of one object reference (32-byte ID + 8-byte version).
-	objectRefSize = 40
 
 	// maxObjectRefs is the maximum total number of object references per transaction.
 	// Spec: 8 standard objects + 32 singletons = 40 max refs.
@@ -89,46 +86,68 @@ func validateFieldSizes(tx *types.Transaction) error {
 
 // validateObjectRefs checks that object references are well-formed and within limits.
 func validateObjectRefs(tx *types.Transaction) error {
-	readBytes := tx.ReadObjectsBytes()
-	mutableBytes := tx.MutableObjectsBytes()
-
-	if len(readBytes)%objectRefSize != 0 {
-		return fmt.Errorf("read_objects length %d is not a multiple of %d", len(readBytes), objectRefSize)
-	}
-
-	if len(mutableBytes)%objectRefSize != 0 {
-		return fmt.Errorf("mutable_objects length %d is not a multiple of %d", len(mutableBytes), objectRefSize)
-	}
-
-	readCount := len(readBytes) / objectRefSize
-	mutableCount := len(mutableBytes) / objectRefSize
+	readCount := tx.ReadRefsLength()
+	mutableCount := tx.MutableRefsLength()
 	totalRefs := readCount + mutableCount
 
 	if totalRefs > maxObjectRefs {
 		return fmt.Errorf("too many object refs: %d (max %d)", totalRefs, maxObjectRefs)
 	}
 
-	return validateNoDuplicateRefs(readBytes, mutableBytes)
+	return validateNoDuplicateRefs(tx)
 }
 
-// validateNoDuplicateRefs ensures no object ID appears twice across read and mutable lists.
-func validateNoDuplicateRefs(readBytes, mutableBytes []byte) error {
+// validateNoDuplicateRefs ensures no object ID or domain name appears twice across read and mutable refs.
+func validateNoDuplicateRefs(tx *types.Transaction) error {
 	seen := make(map[[32]byte]bool)
+	seenDomains := make(map[string]bool)
 
-	if err := checkDuplicates(mutableBytes, seen, "mutable_objects"); err != nil {
+	if err := checkRefDuplicates(tx, true, seen, seenDomains); err != nil {
 		return err
 	}
 
-	return checkDuplicates(readBytes, seen, "read_objects")
+	return checkRefDuplicates(tx, false, seen, seenDomains)
 }
 
-// checkDuplicates scans a concatenated ref list for duplicates against the seen set.
-func checkDuplicates(data []byte, seen map[[32]byte]bool, fieldName string) error {
-	numRefs := len(data) / objectRefSize
+// checkRefDuplicates scans ObjectRef entries for duplicate IDs or domain names.
+func checkRefDuplicates(tx *types.Transaction, mutable bool, seen map[[32]byte]bool, seenDomains map[string]bool) error {
+	var count int
+	if mutable {
+		count = tx.MutableRefsLength()
+	} else {
+		count = tx.ReadRefsLength()
+	}
 
-	for i := 0; i < numRefs; i++ {
+	fieldName := "read_refs"
+	if mutable {
+		fieldName = "mutable_refs"
+	}
+
+	var ref types.ObjectRef
+	for i := 0; i < count; i++ {
+		if mutable {
+			tx.MutableRefs(&ref, i)
+		} else {
+			tx.ReadRefs(&ref, i)
+		}
+
+		// Domain refs: check for duplicate domain names
+		if len(ref.Domain()) > 0 {
+			domain := string(ref.Domain())
+			if seenDomains[domain] {
+				return fmt.Errorf("duplicate domain ref: %q", domain)
+			}
+			seenDomains[domain] = true
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			return fmt.Errorf("invalid object ref ID size in %s: got %d, want 32", fieldName, len(idBytes))
+		}
+
 		var id [32]byte
-		copy(id[:], data[i*objectRefSize:i*objectRefSize+32])
+		copy(id[:], idBytes)
 
 		if seen[id] {
 			return fmt.Errorf("duplicate object ref in %s: %x", fieldName, id[:8])
@@ -158,47 +177,64 @@ func validateHash(tx *types.Transaction) error {
 }
 
 // rebuildUnsignedTx reconstructs the unsigned transaction bytes for hash verification.
-// Must match the client's buildUnsignedTxBytes construction order exactly.
+// Must match the client's BuildUnsignedTxBytesWithRefs construction order exactly.
 func rebuildUnsignedTx(tx *types.Transaction) []byte {
-	builder := flatbuffers.NewBuilder(512)
+	mutableRefs := extractRefData(tx, true)
+	readRefs := extractRefData(tx, false)
 
-	argsVec := builder.CreateByteVector(tx.ArgsBytes())
-	senderVec := builder.CreateByteVector(tx.SenderBytes())
-	podVec := builder.CreateByteVector(tx.PodBytes())
-	funcNameOff := builder.CreateString(string(tx.FunctionName()))
+	return genesis.BuildUnsignedTxBytesWithRefs(
+		tx.SenderBytes(),
+		extractPod(tx),
+		string(tx.FunctionName()),
+		tx.ArgsBytes(),
+		tx.MaxCreateObjects(),
+		tx.MaxCreateDomains(),
+		mutableRefs,
+		readRefs,
+	)
+}
 
-	mutableBytes := tx.MutableObjectsBytes()
-	readBytes := tx.ReadObjectsBytes()
-
-	var mutObjVec flatbuffers.UOffsetT
-	if len(mutableBytes) > 0 {
-		mutObjVec = builder.CreateByteVector(mutableBytes)
+// extractRefData extracts ObjectRefData from a transaction's refs.
+func extractRefData(tx *types.Transaction, mutable bool) []genesis.ObjectRefData {
+	var count int
+	if mutable {
+		count = tx.MutableRefsLength()
+	} else {
+		count = tx.ReadRefsLength()
 	}
 
-	var readObjVec flatbuffers.UOffsetT
-	if len(readBytes) > 0 {
-		readObjVec = builder.CreateByteVector(readBytes)
+	if count == 0 {
+		return nil
 	}
 
-	types.TransactionStart(builder)
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
+	refs := make([]genesis.ObjectRefData, count)
+	var ref types.ObjectRef
 
-	if len(mutableBytes) > 0 {
-		types.TransactionAddMutableObjects(builder, mutObjVec)
+	for i := 0; i < count; i++ {
+		if mutable {
+			tx.MutableRefs(&ref, i)
+		} else {
+			tx.ReadRefs(&ref, i)
+		}
+
+		if idBytes := ref.IdBytes(); len(idBytes) == 32 {
+			copy(refs[i].ID[:], idBytes)
+		}
+
+		refs[i].Version = ref.Version()
+		refs[i].Domain = string(ref.Domain())
 	}
 
-	if len(readBytes) > 0 {
-		types.TransactionAddReadObjects(builder, readObjVec)
+	return refs
+}
+
+// extractPod extracts the pod ID from a transaction as [32]byte.
+func extractPod(tx *types.Transaction) [32]byte {
+	var pod [32]byte
+	if b := tx.PodBytes(); len(b) == 32 {
+		copy(pod[:], b)
 	}
-
-	txOff := types.TransactionEnd(builder)
-	builder.Finish(txOff)
-
-	return builder.FinishedBytes()
+	return pod
 }
 
 // validateSignature verifies the Ed25519 signature over the transaction hash.

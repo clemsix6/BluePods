@@ -9,6 +9,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/state"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
 )
@@ -65,7 +66,7 @@ func TestCreateSnapshot_EmptyStorage(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestCreateSnapshot_WithObjects(t *testing.T) {
 		t.Fatalf("store obj2: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 42, nil, nil, nil)
+	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestCreateSnapshot_IgnoresConsensusData(t *testing.T) {
 		t.Fatalf("store meta: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestApplySnapshot_EmptySnapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create empty snapshot
-	data, err := CreateSnapshot(db, 5, nil, nil, nil)
+	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestApplySnapshot_WithObjects(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 100, nil, nil, nil)
+	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestChecksumVerification_Valid(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -303,7 +304,7 @@ func TestChecksumVerification_Corrupted(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestFullRoundtrip_CreateCompressDecompressApply(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 999, nil, nil, nil)
+	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -406,8 +407,8 @@ func TestDeterministicChecksum(t *testing.T) {
 	db2.Set(id2[:], obj2)
 	db2.Set(id1[:], obj1)
 
-	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil)
-	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil)
+	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil)
+	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)
@@ -431,7 +432,7 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	v2.Pubkey[0] = 2
 	validators := []*consensus.ValidatorInfo{v1, v2}
 
-	data, err := CreateSnapshot(db, 100, validators, nil, nil)
+	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -465,12 +466,12 @@ func TestSnapshotReplicationAffectsChecksum(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -497,7 +498,7 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, tracker)
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -528,6 +529,101 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 	}
 }
 
+func TestSnapshot_WithDomains(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domains := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}},
+		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
+	}
+
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+
+	if snapshot.DomainsLength() != 2 {
+		t.Fatalf("domains length = %d, want 2", snapshot.DomainsLength())
+	}
+
+	// Extract and verify roundtrip
+	extracted := ExtractDomains(snapshot)
+	if len(extracted) != 2 {
+		t.Fatalf("extracted domains count = %d, want 2", len(extracted))
+	}
+
+	// Verify checksum is valid (ApplySnapshot checks it)
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	_, err = ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot should succeed with valid checksum: %v", err)
+	}
+}
+
+func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domainsA := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}},
+	}
+	domainsB := []state.DomainEntry{
+		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
+	}
+
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA)
+	if err != nil {
+		t.Fatalf("CreateSnapshot A: %v", err)
+	}
+
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB)
+	if err != nil {
+		t.Fatalf("CreateSnapshot B: %v", err)
+	}
+
+	snapA := types.GetRootAsSnapshot(dataA, 0)
+	snapB := types.GetRootAsSnapshot(dataB, 0)
+
+	if bytes.Equal(snapA.ChecksumBytes(), snapB.ChecksumBytes()) {
+		t.Error("different domains should produce different checksums")
+	}
+}
+
+func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	// Store a real object
+	id := [32]byte{42}
+	obj := buildTestObject(id, 1, []byte("content"))
+	if err := db.Set(id[:], obj); err != nil {
+		t.Fatalf("store obj: %v", err)
+	}
+
+	// Store a domain entry directly (simulating what domainStore.set does)
+	domainKey := []byte("d:test.pod")
+	if err := db.Set(domainKey, make([]byte, 32)); err != nil {
+		t.Fatalf("store domain: %v", err)
+	}
+
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+
+	// Should only have the 1 object, domain key should be excluded
+	if snapshot.ObjectsLength() != 1 {
+		t.Errorf("objects length = %d, want 1 (domain keys should be excluded)", snapshot.ObjectsLength())
+	}
+}
+
 func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
@@ -537,8 +633,8 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	v2 := &consensus.ValidatorInfo{}
 	v2.Pubkey[0] = 2
 
-	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil)
-	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil)
+	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil)
+	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)

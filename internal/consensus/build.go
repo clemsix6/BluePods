@@ -5,6 +5,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
 
@@ -187,27 +188,7 @@ func (d *DAG) rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transac
 		return types.TransactionEnd(builder)
 	}
 
-	hashVec := builder.CreateByteVector(tx.HashBytes())
-	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
-	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
-	senderVec := builder.CreateByteVector(tx.SenderBytes())
-	sigVec := builder.CreateByteVector(tx.SignatureBytes())
-	podVec := builder.CreateByteVector(tx.PodBytes())
-	funcNameOff := builder.CreateString(string(tx.FunctionName()))
-	argsVec := builder.CreateByteVector(tx.ArgsBytes())
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, hashVec)
-	types.TransactionAddReadObjects(builder, readObjVec)
-	types.TransactionAddMutableObjects(builder, mutObjVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddSignature(builder, sigVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-
-	return types.TransactionEnd(builder)
+	return genesis.RebuildTxInBuilder(builder, tx)
 }
 
 // rebuildObject rebuilds an Object in the builder.

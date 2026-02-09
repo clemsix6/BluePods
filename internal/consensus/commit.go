@@ -165,9 +165,9 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	d.handleDeregisterValidator(tx, commitRound)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
-	// creates_objects=true → ALL validators execute (holder unknown until after execution).
-	// creates_objects=false → only holders of mutable objects execute.
-	if !tx.CreatesObjects() && !d.shouldExecute(atx, tx) {
+	// max_create_objects/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
+	// Otherwise → only holders of mutable objects execute.
+	if tx.MaxCreateObjects() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
 		d.emitTransaction(tx, true)
 		return
@@ -192,25 +192,32 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 }
 
 // shouldExecute returns true if this node should execute the transaction.
-// A node executes if it is a holder of at least one object in MutableObjects.
+// A node executes if it is a holder of at least one object in MutableRefs.
 // Singletons (replication=0, not in ATX objects) are held by all validators.
 func (d *DAG) shouldExecute(atx *types.AttestedTransaction, tx *types.Transaction) bool {
 	if d.isHolder == nil {
-		return true // no sharding configured
+		return true
 	}
 
-	// Build replication map from ATX objects vector
 	replicationMap := buildReplicationMap(atx)
 
-	// Check each mutable object
-	data := tx.MutableObjectsBytes()
-	for i := 0; i+40 <= len(data); i += 40 {
+	var ref types.ObjectRef
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
 		var objectID [32]byte
-		copy(objectID[:], data[i:i+32])
+		copy(objectID[:], idBytes)
 
 		replication, found := replicationMap[objectID]
 		if !found {
-			replication = 0 // not in ATX → singleton
+			replication = 0
 		}
 
 		if d.isHolder(objectID, replication) {
@@ -218,7 +225,7 @@ func (d *DAG) shouldExecute(atx *types.AttestedTransaction, tx *types.Transactio
 		}
 	}
 
-	return len(data) == 0 // no mutable objects → execute everywhere
+	return tx.MutableRefsLength() == 0
 }
 
 // buildReplicationMap extracts objectID → replication from ATX objects vector.
@@ -421,27 +428,7 @@ func serializeTx(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffer
 		return types.TransactionEnd(builder)
 	}
 
-	hashVec := builder.CreateByteVector(tx.HashBytes())
-	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
-	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
-	senderVec := builder.CreateByteVector(tx.SenderBytes())
-	sigVec := builder.CreateByteVector(tx.SignatureBytes())
-	podVec := builder.CreateByteVector(tx.PodBytes())
-	funcNameOff := builder.CreateString(string(tx.FunctionName()))
-	argsVec := builder.CreateByteVector(tx.ArgsBytes())
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, hashVec)
-	types.TransactionAddReadObjects(builder, readObjVec)
-	types.TransactionAddMutableObjects(builder, mutObjVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddSignature(builder, sigVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-
-	return types.TransactionEnd(builder)
+	return genesis.RebuildTxInBuilder(builder, tx)
 }
 
 // serializeObject rebuilds an Object in the builder.

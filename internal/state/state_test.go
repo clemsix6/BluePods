@@ -381,6 +381,75 @@ func TestApplyCreatedObjectsNoHolderFunc(t *testing.T) {
 	}
 }
 
+// TestApplyCreatedObjectsOnObjectCreatedCallback verifies the callback fires for each created object.
+func TestApplyCreatedObjectsOnObjectCreatedCallback(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
+
+	// Track callback invocations
+	type callbackCall struct {
+		id          Hash
+		version     uint64
+		replication uint16
+	}
+	var calls []callbackCall
+
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
+		calls = append(calls, callbackCall{id: id, version: version, replication: replication})
+	})
+
+	txHash := Hash{0xCB}
+	output := buildPodOutputWithCreated(3, 7) // 3 objects, replication=7
+
+	s.applyCreatedObjects(output, txHash)
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 callback calls, got %d", len(calls))
+	}
+
+	// Verify each call has correct data
+	for i, call := range calls {
+		expectedID := computeObjectID(txHash, uint32(i))
+		if call.id != expectedID {
+			t.Errorf("call %d: expected ID %x, got %x", i, expectedID[:4], call.id[:4])
+		}
+		if call.replication != 7 {
+			t.Errorf("call %d: expected replication 7, got %d", i, call.replication)
+		}
+	}
+}
+
+// TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder verifies callback fires even when not a holder.
+func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return false })
+
+	callbackCount := 0
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
+		callbackCount++
+	})
+
+	txHash := Hash{0xCC}
+	output := buildPodOutputWithCreated(2, 10)
+
+	s.applyCreatedObjects(output, txHash)
+
+	// Callback should fire even though we're not a holder (all validators track)
+	if callbackCount != 2 {
+		t.Errorf("expected 2 callback calls even as non-holder, got %d", callbackCount)
+	}
+
+	// But objects should NOT be stored
+	for i := 0; i < 2; i++ {
+		id := computeObjectID(txHash, uint32(i))
+		if s.GetObject(id) != nil {
+			t.Errorf("object %d should not be stored by non-holder", i)
+		}
+	}
+}
+
 // --- applyUpdatedObjects ---
 
 // TestApplyUpdatedObjects verifies version increment on updated objects.
@@ -427,6 +496,48 @@ func TestApplyDeletedObjects(t *testing.T) {
 
 	output := buildPodOutputWithDeleted(objID)
 
+	s.applyDeletedObjects(output)
+
+	if s.GetObject(objID) != nil {
+		t.Error("object should be deleted")
+	}
+}
+
+// TestApplyDeletedObjectsMalformedData verifies no panic when data is not a multiple of 32.
+func TestApplyDeletedObjectsMalformedData(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	objID := Hash{0x71}
+	s.SetObject(buildTestObject(objID, 1, []byte("to delete")))
+
+	// Build output with 33 bytes (32 + 1 trailing byte) - should only delete the first ID
+	builder := flatbuffers.NewBuilder(256)
+
+	// 33 bytes: one full ID + 1 trailing byte
+	data := make([]byte, 33)
+	copy(data[:32], objID[:])
+	data[32] = 0xFF // trailing byte
+
+	deletedVec := builder.CreateByteVector(data)
+
+	types.PodExecuteOutputStartUpdatedObjectsVector(builder, 0)
+	updatedVec := builder.EndVector(0)
+
+	types.PodExecuteOutputStartCreatedObjectsVector(builder, 0)
+	createdVec := builder.EndVector(0)
+
+	types.PodExecuteOutputStart(builder)
+	types.PodExecuteOutputAddDeletedObjects(builder, deletedVec)
+	types.PodExecuteOutputAddUpdatedObjects(builder, updatedVec)
+	types.PodExecuteOutputAddCreatedObjects(builder, createdVec)
+	outputOffset := types.PodExecuteOutputEnd(builder)
+
+	builder.Finish(outputOffset)
+
+	output := types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
+
+	// Should not panic and should delete the first ID
 	s.applyDeletedObjects(output)
 
 	if s.GetObject(objID) != nil {
@@ -521,25 +632,35 @@ func buildTestObjectFull(id Hash, version uint64, owner Hash, replication uint16
 	return builder.FinishedBytes()
 }
 
-// buildTxWithMutableRefs creates a Transaction with MutableObjects references.
+// buildTxWithMutableRefs creates a Transaction with MutableRefs (ObjectRef tables).
 func buildTxWithMutableRefs(refs []objectRef) *types.Transaction {
 	builder := flatbuffers.NewBuilder(512)
 
-	// Encode mutable refs: each is 32-byte ID + 8-byte version LE
-	mutableData := make([]byte, len(refs)*40)
+	// Build ObjectRef tables first (before starting the Transaction table)
+	refOffsets := make([]flatbuffers.UOffsetT, len(refs))
 	for i, ref := range refs {
-		copy(mutableData[i*40:i*40+32], ref.id[:])
-		binary.LittleEndian.PutUint64(mutableData[i*40+32:i*40+40], ref.version)
+		idVec := builder.CreateByteVector(ref.id[:])
+
+		types.ObjectRefStart(builder)
+		types.ObjectRefAddId(builder, idVec)
+		types.ObjectRefAddVersion(builder, ref.version)
+		refOffsets[i] = types.ObjectRefEnd(builder)
 	}
 
-	mutVec := builder.CreateByteVector(mutableData)
+	// Build mutable refs vector
+	types.TransactionStartMutableRefsVector(builder, len(refOffsets))
+	for i := len(refOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(refOffsets[i])
+	}
+	mutRefsVec := builder.EndVector(len(refOffsets))
+
 	senderVec := builder.CreateByteVector(make([]byte, 32))
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcName := builder.CreateString("test")
 	argsVec := builder.CreateByteVector([]byte{})
 
 	types.TransactionStart(builder)
-	types.TransactionAddMutableObjects(builder, mutVec)
+	types.TransactionAddMutableRefs(builder, mutRefsVec)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcName)
@@ -628,6 +749,401 @@ func buildPodOutputWithUpdated(id Hash, version uint64, content []byte) *types.P
 	builder.Finish(outputOffset)
 
 	return types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
+}
+
+// --- validateOutput ---
+
+// TestValidateOutput_MaxCreateObjectsExceeded verifies exceeding max created objects fails.
+func TestValidateOutput_MaxCreateObjectsExceeded(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(2, 0)
+	output := buildPodOutputWithDomainsRaw(3, 10, nil)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	if err := s.validateOutput(out, tx); err == nil {
+		t.Error("expected error for 3 created objects with max 2")
+	}
+}
+
+// TestValidateOutput_MaxCreateObjectsExact verifies exact limit passes.
+func TestValidateOutput_MaxCreateObjectsExact(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(2, 0)
+	output := buildPodOutputWithDomainsRaw(2, 10, nil)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	if err := s.validateOutput(out, tx); err != nil {
+		t.Errorf("expected success for 2 created objects with max 2, got: %v", err)
+	}
+}
+
+// TestValidateOutput_MaxCreateDomainsExceeded verifies exceeding max domains fails.
+func TestValidateOutput_MaxCreateDomainsExceeded(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 1)
+	domains := []testDomain{
+		{name: "first.pod"},
+		{name: "second.pod"},
+	}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	if err := s.validateOutput(out, tx); err == nil {
+		t.Error("expected error for 2 domains with max 1")
+	}
+}
+
+// TestValidateOutput_MaxCreateDomainsExact verifies exact domain limit passes.
+func TestValidateOutput_MaxCreateDomainsExact(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 1)
+	domains := []testDomain{{name: "only.pod"}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	if err := s.validateOutput(out, tx); err != nil {
+		t.Errorf("expected success for 1 domain with max 1, got: %v", err)
+	}
+}
+
+// TestValidateOutput_DomainCollision verifies that registering an existing domain fails.
+func TestValidateOutput_DomainCollision(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	// Pre-register domain
+	s.domains.set("taken.pod", Hash{0x99})
+
+	tx := buildTxWithLimits(5, 1)
+	domains := []testDomain{{name: "taken.pod"}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	err := s.validateOutput(out, tx)
+	if err == nil {
+		t.Error("expected error for domain collision")
+	}
+}
+
+// TestValidateOutput_EmptyDomainName verifies that empty domain name is rejected.
+func TestValidateOutput_EmptyDomainName(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 1)
+	domains := []testDomain{{name: ""}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	err := s.validateOutput(out, tx)
+	if err == nil {
+		t.Error("expected error for empty domain name")
+	}
+}
+
+// TestValidateOutput_DomainNameTooLong verifies that domain names exceeding 253 bytes are rejected.
+func TestValidateOutput_DomainNameTooLong(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 1)
+	longName := string(make([]byte, 254)) // 254 bytes > max 253
+	domains := []testDomain{{name: longName}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	err := s.validateOutput(out, tx)
+	if err == nil {
+		t.Error("expected error for domain name exceeding 253 bytes")
+	}
+}
+
+// TestValidateOutput_DomainNameExact253 verifies that exactly 253 byte domain name passes.
+func TestValidateOutput_DomainNameExact253(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 1)
+	name253 := string(make([]byte, 253))
+	for i := range []byte(name253) {
+		// Use printable characters to avoid FlatBuffers issues
+		name253 = name253[:i] + "a" + name253[i+1:]
+	}
+	domains := []testDomain{{name: name253}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	err := s.validateOutput(out, tx)
+	if err != nil {
+		t.Errorf("expected success for 253-byte domain name, got: %v", err)
+	}
+}
+
+// TestValidateOutput_DuplicateDomainInOutput verifies same name twice in output is rejected.
+func TestValidateOutput_DuplicateDomainInOutput(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	tx := buildTxWithLimits(5, 2)
+	domains := []testDomain{
+		{name: "dup.pod"},
+		{name: "dup.pod"},
+	}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	err := s.validateOutput(out, tx)
+	if err == nil {
+		t.Error("expected error for duplicate domain name in output")
+	}
+}
+
+// --- processOutput rollback ---
+
+// TestProcessOutput_RollbackOnLimitExceeded verifies no state changes on validation failure.
+func TestProcessOutput_RollbackOnLimitExceeded(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
+
+	tx := buildTxWithLimits(1, 0)
+	txHash := Hash{0xDE, 0xAD}
+
+	// 2 created objects but max=1 → should fail
+	output := buildPodOutputWithDomainsRaw(2, 10, nil)
+
+	err := s.processOutput(output, txHash, tx)
+	if err == nil {
+		t.Fatal("expected error for exceeding limits")
+	}
+
+	// Verify no objects were created
+	for i := 0; i < 2; i++ {
+		id := computeObjectID(txHash, uint32(i))
+		if s.GetObject(id) != nil {
+			t.Errorf("object %d should not exist after rollback", i)
+		}
+	}
+}
+
+// TestProcessOutput_RollbackOnDomainCollision verifies no objects or domains on collision.
+func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
+
+	// Pre-register the domain
+	s.domains.set("taken.pod", Hash{0x99})
+
+	tx := buildTxWithLimits(5, 1)
+	txHash := Hash{0xBE, 0xEF}
+	domains := []testDomain{{name: "taken.pod"}}
+	output := buildPodOutputWithDomainsRaw(1, 10, domains)
+
+	err := s.processOutput(output, txHash, tx)
+	if err == nil {
+		t.Fatal("expected error for domain collision")
+	}
+
+	// Object should not exist (validation failed before apply)
+	id := computeObjectID(txHash, 0)
+	if s.GetObject(id) != nil {
+		t.Error("object should not exist after rollback")
+	}
+}
+
+// --- applyRegisteredDomains ---
+
+// TestApplyRegisteredDomains_ByIndex verifies object_index computes correct ObjectID.
+func TestApplyRegisteredDomains_ByIndex(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	txHash := Hash{0xAA, 0xBB}
+	domains := []testDomain{{name: "indexed.pod", objectIndex: 2}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	s.applyRegisteredDomains(out, txHash)
+
+	expectedID := computeObjectID(txHash, 2)
+	got, found := s.ResolveDomain("indexed.pod")
+	if !found {
+		t.Fatal("expected domain to be registered")
+	}
+
+	if got != expectedID {
+		t.Errorf("expected %x, got %x", expectedID, got)
+	}
+}
+
+// TestApplyRegisteredDomains_ByObjectID verifies direct object_id is stored correctly.
+func TestApplyRegisteredDomains_ByObjectID(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	directID := Hash{0xDD, 0xEE, 0xFF}
+	domains := []testDomain{{name: "direct.pod", objectID: directID}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	s.applyRegisteredDomains(out, Hash{})
+
+	got, found := s.ResolveDomain("direct.pod")
+	if !found {
+		t.Fatal("expected domain to be registered")
+	}
+
+	if got != directID {
+		t.Errorf("expected %x, got %x", directID, got)
+	}
+}
+
+// TestResolveDomainObjectID_PrefersObjectID verifies that when both object_id and
+// object_index are set, object_id wins (the bug fix).
+func TestResolveDomainObjectID_PrefersObjectID(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	txHash := Hash{0x11, 0x22}
+	directID := Hash{0xCC, 0xDD}
+
+	// Both object_id and object_index set
+	domains := []testDomain{{
+		name:        "both.pod",
+		objectIndex: 5,
+		objectID:    directID,
+	}}
+	output := buildPodOutputWithDomainsRaw(0, 10, domains)
+	out := types.GetRootAsPodExecuteOutput(output, 0)
+
+	s.applyRegisteredDomains(out, txHash)
+
+	got, found := s.ResolveDomain("both.pod")
+	if !found {
+		t.Fatal("expected domain to be registered")
+	}
+
+	// Should use object_id, not compute from object_index
+	indexID := computeObjectID(txHash, 5)
+	if got == indexID {
+		t.Error("should prefer object_id over object_index")
+	}
+
+	if got != directID {
+		t.Errorf("expected direct ID %x, got %x", directID, got)
+	}
+}
+
+// --- test helpers for domains ---
+
+// testDomain describes a domain for building test PodExecuteOutput.
+type testDomain struct {
+	name        string // name is the domain name
+	objectIndex uint16 // objectIndex references a created object by index
+	objectID    Hash   // objectID is a direct 32-byte object identifier
+}
+
+// buildTxWithLimits creates a Transaction with max_create_objects and max_create_domains.
+func buildTxWithLimits(maxCreateObjects, maxCreateDomains uint16) *types.Transaction {
+	builder := flatbuffers.NewBuilder(256)
+
+	senderVec := builder.CreateByteVector(make([]byte, 32))
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcName := builder.CreateString("test")
+
+	types.TransactionStart(builder)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcName)
+	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
+	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
+	txOffset := types.TransactionEnd(builder)
+
+	builder.Finish(txOffset)
+
+	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
+}
+
+// buildPodOutputWithDomainsRaw creates raw PodExecuteOutput bytes with created objects and domains.
+func buildPodOutputWithDomainsRaw(createdCount int, replication uint16, domains []testDomain) []byte {
+	builder := flatbuffers.NewBuilder(1024)
+
+	// Build created objects
+	objOffsets := make([]flatbuffers.UOffsetT, createdCount)
+	for i := createdCount - 1; i >= 0; i-- {
+		idVec := builder.CreateByteVector(make([]byte, 32))
+		ownerVec := builder.CreateByteVector(make([]byte, 32))
+		contentVec := builder.CreateByteVector([]byte("created"))
+
+		types.ObjectStart(builder)
+		types.ObjectAddId(builder, idVec)
+		types.ObjectAddVersion(builder, 0)
+		types.ObjectAddOwner(builder, ownerVec)
+		types.ObjectAddReplication(builder, replication)
+		types.ObjectAddContent(builder, contentVec)
+		objOffsets[i] = types.ObjectEnd(builder)
+	}
+
+	types.PodExecuteOutputStartCreatedObjectsVector(builder, createdCount)
+	for i := createdCount - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(objOffsets[i])
+	}
+	createdVec := builder.EndVector(createdCount)
+
+	// Build registered domains
+	domOffsets := make([]flatbuffers.UOffsetT, len(domains))
+	for i := len(domains) - 1; i >= 0; i-- {
+		dom := domains[i]
+
+		nameOff := builder.CreateString(dom.name)
+
+		var objIdVec flatbuffers.UOffsetT
+		if dom.objectID != (Hash{}) {
+			objIdVec = builder.CreateByteVector(dom.objectID[:])
+		}
+
+		types.RegisteredDomainStart(builder)
+		types.RegisteredDomainAddName(builder, nameOff)
+		types.RegisteredDomainAddObjectIndex(builder, dom.objectIndex)
+
+		if objIdVec != 0 {
+			types.RegisteredDomainAddObjectId(builder, objIdVec)
+		}
+
+		domOffsets[i] = types.RegisteredDomainEnd(builder)
+	}
+
+	types.PodExecuteOutputStartRegisteredDomainsVector(builder, len(domains))
+	for i := len(domOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(domOffsets[i])
+	}
+	domainsVec := builder.EndVector(len(domains))
+
+	// Empty updated and deleted
+	types.PodExecuteOutputStartUpdatedObjectsVector(builder, 0)
+	updatedVec := builder.EndVector(0)
+
+	deletedVec := builder.CreateByteVector([]byte{})
+
+	types.PodExecuteOutputStart(builder)
+	types.PodExecuteOutputAddCreatedObjects(builder, createdVec)
+	types.PodExecuteOutputAddUpdatedObjects(builder, updatedVec)
+	types.PodExecuteOutputAddDeletedObjects(builder, deletedVec)
+	types.PodExecuteOutputAddRegisteredDomains(builder, domainsVec)
+	outputOffset := types.PodExecuteOutputEnd(builder)
+
+	builder.Finish(outputOffset)
+
+	return builder.FinishedBytes()
 }
 
 // buildPodOutputWithDeleted creates a PodExecuteOutput with a deleted object ID.

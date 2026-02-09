@@ -12,14 +12,14 @@ import (
 // BuildMintTx creates a signed mint transaction wrapped in AttestedTransaction.
 func BuildMintTx(privKey ed25519.PrivateKey, systemPod [32]byte, amount uint64, owner [32]byte) []byte {
 	args := EncodeMintArgs(amount, owner)
-	return BuildAttestedTx(privKey, systemPod, "mint", args, true)
+	return BuildAttestedTx(privKey, systemPod, "mint", args, 1, 0)
 }
 
 // BuildRegisterValidatorTx creates a signed register_validator transaction as ATX.
 // Used for genesis transactions sent directly via HTTP (bootstrap path).
 func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr string, blsPubkey []byte) []byte {
 	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
-	return BuildAttestedTx(privKey, systemPod, "register_validator", args, true)
+	return BuildAttestedTx(privKey, systemPod, "register_validator", args, 1, 0)
 }
 
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
@@ -28,12 +28,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, true)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, 1, 0)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, true, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, 1, 0, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -45,12 +45,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, false)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, 0, 0)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(512)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, false, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, 0, 0, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -58,11 +58,11 @@ func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byt
 
 // BuildAttestedTx creates a signed transaction wrapped in AttestedTransaction.
 // Genesis transactions have no objects or proofs since they don't reference existing objects.
-func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createsObjects bool) []byte {
+func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	// Build unsigned tx first to compute hash
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, createsObjects)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, maxCreateObjects, maxCreateDomains)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
@@ -70,7 +70,7 @@ func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, 
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Build Transaction table first (must be done before AttestedTransaction)
-	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, createsObjects, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, maxCreateObjects, maxCreateDomains, hash, sig)
 
 	// Empty objects vector
 	types.AttestedTransactionStartObjectsVector(builder, 0)
@@ -100,7 +100,7 @@ func WrapInATX(txBytes []byte) []byte {
 	builder := flatbuffers.NewBuilder(len(txBytes) + 256)
 
 	// Rebuild Transaction table in the new builder
-	txOffset := rebuildTxInBuilder(builder, tx)
+	txOffset := RebuildTxInBuilder(builder, tx)
 
 	// Empty objects vector
 	types.AttestedTransactionStartObjectsVector(builder, 0)
@@ -121,16 +121,18 @@ func WrapInATX(txBytes []byte) []byte {
 	return builder.FinishedBytes()
 }
 
-// rebuildTxInBuilder rebuilds a Transaction table in the given builder.
-func rebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
+// RebuildTxInBuilder rebuilds a Transaction table in the given builder.
+// Exported because it's needed by multiple packages.
+func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
 	hashVec := builder.CreateByteVector(tx.HashBytes())
 	sigVec := builder.CreateByteVector(tx.SignatureBytes())
 	argsVec := builder.CreateByteVector(tx.ArgsBytes())
 	senderVec := builder.CreateByteVector(tx.SenderBytes())
 	podVec := builder.CreateByteVector(tx.PodBytes())
 	funcNameOff := builder.CreateString(string(tx.FunctionName()))
-	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
-	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
+
+	readRefsVec := BuildObjectRefVectorFromTx(builder, tx, false)
+	mutRefsVec := BuildObjectRefVectorFromTx(builder, tx, true)
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
@@ -139,42 +141,106 @@ func rebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-	types.TransactionAddMutableObjects(builder, mutObjVec)
-	types.TransactionAddReadObjects(builder, readObjVec)
+	types.TransactionAddMaxCreateObjects(builder, tx.MaxCreateObjects())
+	types.TransactionAddMaxCreateDomains(builder, tx.MaxCreateDomains())
+
+	if mutRefsVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutRefsVec)
+	}
+
+	if readRefsVec != 0 {
+		types.TransactionAddReadRefs(builder, readRefsVec)
+	}
 
 	return types.TransactionEnd(builder)
+}
+
+// BuildObjectRefVectorFromTx rebuilds a read_refs or mutable_refs vector from a Transaction.
+// If mutable is true, rebuilds mutable_refs; otherwise read_refs.
+func BuildObjectRefVectorFromTx(builder *flatbuffers.Builder, tx *types.Transaction, mutable bool) flatbuffers.UOffsetT {
+	var count int
+	if mutable {
+		count = tx.MutableRefsLength()
+	} else {
+		count = tx.ReadRefsLength()
+	}
+
+	if count == 0 {
+		return 0
+	}
+
+	offsets := make([]flatbuffers.UOffsetT, count)
+	var ref types.ObjectRef
+
+	for i := 0; i < count; i++ {
+		if mutable {
+			tx.MutableRefs(&ref, i)
+		} else {
+			tx.ReadRefs(&ref, i)
+		}
+
+		offsets[i] = RebuildObjectRef(builder, &ref)
+	}
+
+	if mutable {
+		types.TransactionStartMutableRefsVector(builder, count)
+	} else {
+		types.TransactionStartReadRefsVector(builder, count)
+	}
+
+	for i := count - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(offsets[i])
+	}
+
+	return builder.EndVector(count)
+}
+
+// RebuildObjectRef rebuilds a single ObjectRef in the builder.
+func RebuildObjectRef(builder *flatbuffers.Builder, ref *types.ObjectRef) flatbuffers.UOffsetT {
+	var idVec flatbuffers.UOffsetT
+	if idBytes := ref.IdBytes(); len(idBytes) > 0 {
+		idVec = builder.CreateByteVector(idBytes)
+	}
+
+	var domainOff flatbuffers.UOffsetT
+	if domain := ref.Domain(); len(domain) > 0 {
+		domainOff = builder.CreateString(string(domain))
+	}
+
+	types.ObjectRefStart(builder)
+
+	if idVec != 0 {
+		types.ObjectRefAddId(builder, idVec)
+	}
+
+	types.ObjectRefAddVersion(builder, ref.Version())
+
+	if domainOff != 0 {
+		types.ObjectRefAddDomain(builder, domainOff)
+	}
+
+	return types.ObjectRefEnd(builder)
+}
+
+// ObjectRefData holds the data for building an ObjectRef.
+type ObjectRefData struct {
+	ID      [32]byte // ID is the 32-byte object identifier
+	Version uint64   // Version is the expected version
+	Domain  string   // Domain is the domain name (empty for ID refs)
 }
 
 // BuildTxTable builds a Transaction table in the given builder.
-func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createsObjects bool, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
-	hashVec := builder.CreateByteVector(hash[:])
-	sigVec := builder.CreateByteVector(sig)
-	argsVec := builder.CreateByteVector(args)
-	senderVec := builder.CreateByteVector(sender)
-	podVec := builder.CreateByteVector(pod[:])
-	funcNameOff := builder.CreateString(funcName)
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, hashVec)
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddSignature(builder, sigVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, createsObjects)
-
-	return types.TransactionEnd(builder)
+func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
+	return BuildTxTableWithRefs(builder, sender, pod, funcName, args, maxCreateObjects, maxCreateDomains, hash, sig, nil, nil)
 }
 
 // BuildUnsignedTxBytes creates transaction bytes without hash and signature for hashing.
-func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, createsObjects bool) []byte {
-	return BuildUnsignedTxBytesWithMutables(sender, pod, funcName, args, createsObjects, nil, nil)
+func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16) []byte {
+	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, maxCreateObjects, maxCreateDomains, nil, nil)
 }
 
-// BuildUnsignedTxBytesWithMutables creates transaction bytes with MutableObjects and ReadObjects references.
-// Each mutableRef/readRef is 40 bytes: 32-byte objectID + 8-byte version LE.
-func BuildUnsignedTxBytesWithMutables(sender []byte, pod [32]byte, funcName string, args []byte, createsObjects bool, mutableRefs []byte, readRefs []byte) []byte {
+// BuildUnsignedTxBytesWithRefs creates transaction bytes with ObjectRef references.
+func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, mutableRefs, readRefs []ObjectRefData) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	argsVec := builder.CreateByteVector(args)
@@ -182,29 +248,23 @@ func BuildUnsignedTxBytesWithMutables(sender []byte, pod [32]byte, funcName stri
 	podVec := builder.CreateByteVector(pod[:])
 	funcNameOff := builder.CreateString(funcName)
 
-	var mutObjVec flatbuffers.UOffsetT
-	if len(mutableRefs) > 0 {
-		mutObjVec = builder.CreateByteVector(mutableRefs)
-	}
-
-	var readObjVec flatbuffers.UOffsetT
-	if len(readRefs) > 0 {
-		readObjVec = builder.CreateByteVector(readRefs)
-	}
+	mutRefsVec := buildObjectRefDataVector(builder, mutableRefs, true)
+	readRefsVec := buildObjectRefDataVector(builder, readRefs, false)
 
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, createsObjects)
+	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
+	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
 
-	if len(mutableRefs) > 0 {
-		types.TransactionAddMutableObjects(builder, mutObjVec)
+	if mutRefsVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutRefsVec)
 	}
 
-	if len(readRefs) > 0 {
-		types.TransactionAddReadObjects(builder, readObjVec)
+	if readRefsVec != 0 {
+		types.TransactionAddReadRefs(builder, readRefsVec)
 	}
 
 	txOff := types.TransactionEnd(builder)
@@ -213,8 +273,8 @@ func BuildUnsignedTxBytesWithMutables(sender []byte, pod [32]byte, funcName stri
 	return builder.FinishedBytes()
 }
 
-// BuildTxTableWithMutables builds a Transaction table with MutableObjects and ReadObjects in the given builder.
-func BuildTxTableWithMutables(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createsObjects bool, hash [32]byte, sig []byte, mutableRefs []byte, readRefs []byte) flatbuffers.UOffsetT {
+// BuildTxTableWithRefs builds a Transaction table with ObjectRef references in the given builder.
+func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
 	hashVec := builder.CreateByteVector(hash[:])
 	sigVec := builder.CreateByteVector(sig)
 	argsVec := builder.CreateByteVector(args)
@@ -222,15 +282,8 @@ func BuildTxTableWithMutables(builder *flatbuffers.Builder, sender []byte, pod [
 	podVec := builder.CreateByteVector(pod[:])
 	funcNameOff := builder.CreateString(funcName)
 
-	var mutObjVec flatbuffers.UOffsetT
-	if len(mutableRefs) > 0 {
-		mutObjVec = builder.CreateByteVector(mutableRefs)
-	}
-
-	var readObjVec flatbuffers.UOffsetT
-	if len(readRefs) > 0 {
-		readObjVec = builder.CreateByteVector(readRefs)
-	}
+	mutRefsVec := buildObjectRefDataVector(builder, mutableRefs, true)
+	readRefsVec := buildObjectRefDataVector(builder, readRefs, false)
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
@@ -239,15 +292,68 @@ func BuildTxTableWithMutables(builder *flatbuffers.Builder, sender []byte, pod [
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, createsObjects)
+	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
+	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
 
-	if len(mutableRefs) > 0 {
-		types.TransactionAddMutableObjects(builder, mutObjVec)
+	if mutRefsVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutRefsVec)
 	}
 
-	if len(readRefs) > 0 {
-		types.TransactionAddReadObjects(builder, readObjVec)
+	if readRefsVec != 0 {
+		types.TransactionAddReadRefs(builder, readRefsVec)
 	}
 
 	return types.TransactionEnd(builder)
+}
+
+// buildObjectRefDataVector builds an ObjectRef vector from ObjectRefData slices.
+func buildObjectRefDataVector(builder *flatbuffers.Builder, refs []ObjectRefData, mutable bool) flatbuffers.UOffsetT {
+	if len(refs) == 0 {
+		return 0
+	}
+
+	offsets := make([]flatbuffers.UOffsetT, len(refs))
+
+	for i, ref := range refs {
+		offsets[i] = buildSingleObjectRef(builder, ref)
+	}
+
+	if mutable {
+		types.TransactionStartMutableRefsVector(builder, len(offsets))
+	} else {
+		types.TransactionStartReadRefsVector(builder, len(offsets))
+	}
+
+	for i := len(offsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(offsets[i])
+	}
+
+	return builder.EndVector(len(offsets))
+}
+
+// buildSingleObjectRef builds a single ObjectRef table in the builder.
+func buildSingleObjectRef(builder *flatbuffers.Builder, ref ObjectRefData) flatbuffers.UOffsetT {
+	var idVec flatbuffers.UOffsetT
+	if ref.ID != [32]byte{} {
+		idVec = builder.CreateByteVector(ref.ID[:])
+	}
+
+	var domainOff flatbuffers.UOffsetT
+	if ref.Domain != "" {
+		domainOff = builder.CreateString(ref.Domain)
+	}
+
+	types.ObjectRefStart(builder)
+
+	if idVec != 0 {
+		types.ObjectRefAddId(builder, idVec)
+	}
+
+	types.ObjectRefAddVersion(builder, ref.Version)
+
+	if domainOff != 0 {
+		types.ObjectRefAddDomain(builder, domainOff)
+	}
+
+	return types.ObjectRefEnd(builder)
 }

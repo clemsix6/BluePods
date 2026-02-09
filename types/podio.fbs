@@ -18,6 +18,18 @@ table PodExecuteInput {
     local_objects:[Object];
 }
 
+// RegisteredDomain maps a domain name to a created object.
+table RegisteredDomain {
+    // name is the domain name (e.g., "myapp.config").
+    name:string;
+
+    // object_index is the index in created_objects (0xFFFF = use object_id instead).
+    object_index:uint16;
+
+    // object_id is the 32-byte ObjectID (alternative to object_index).
+    object_id:[ubyte];
+}
+
 // PodExecuteOutput contains the output data from a pod's execute function.
 table PodExecuteOutput {
     // error contains the error code if execution failed.
@@ -34,4 +46,7 @@ table PodExecuteOutput {
 
     // logs contains debug messages from the pod execution.
     logs:[string];
+
+    // registered_domains are domain name registrations from the pod execution.
+    registered_domains:[RegisteredDomain];
 }

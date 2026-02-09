@@ -144,8 +144,28 @@ func (rcv *PodExecuteOutput) LogsLength() int {
 	return 0
 }
 
+func (rcv *PodExecuteOutput) RegisteredDomains(obj *RegisteredDomain, j int) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		x := rcv._tab.Vector(o)
+		x += flatbuffers.UOffsetT(j) * 4
+		x = rcv._tab.Indirect(x)
+		obj.Init(rcv._tab.Bytes, x)
+		return true
+	}
+	return false
+}
+
+func (rcv *PodExecuteOutput) RegisteredDomainsLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
 func PodExecuteOutputStart(builder *flatbuffers.Builder) {
-	builder.StartObject(5)
+	builder.StartObject(6)
 }
 func PodExecuteOutputAddError(builder *flatbuffers.Builder, error uint32) {
 	builder.PrependUint32Slot(0, error, 0)
@@ -172,6 +192,12 @@ func PodExecuteOutputAddLogs(builder *flatbuffers.Builder, logs flatbuffers.UOff
 	builder.PrependUOffsetTSlot(4, flatbuffers.UOffsetT(logs), 0)
 }
 func PodExecuteOutputStartLogsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(4, numElems, 4)
+}
+func PodExecuteOutputAddRegisteredDomains(builder *flatbuffers.Builder, registeredDomains flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(5, flatbuffers.UOffsetT(registeredDomains), 0)
+}
+func PodExecuteOutputStartRegisteredDomainsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(4, numElems, 4)
 }
 func PodExecuteOutputEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {

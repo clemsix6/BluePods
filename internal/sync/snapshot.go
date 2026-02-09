@@ -11,13 +11,14 @@ import (
 	"github.com/zeebo/blake3"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/state"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
 )
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 2
+	snapshotVersion = 3
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -29,17 +30,18 @@ var (
 	prefixRound   = []byte("r:")
 	prefixMeta    = []byte("m:")
 	prefixTracker = []byte("t:")
+	prefixDomain  = []byte("d:")
 )
 
 // CreateSnapshot creates a snapshot of the current committed state.
 // It iterates over all objects in storage, excluding consensus data.
-func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry) ([]byte, error) {
+func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) ([]byte, error) {
 	objects, err := collectObjects(db)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries)
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries)
 
 	return data, nil
 }
@@ -91,19 +93,20 @@ func isConsensusKey(key []byte) bool {
 	return bytes.HasPrefix(key, prefixVertex) ||
 		bytes.HasPrefix(key, prefixRound) ||
 		bytes.HasPrefix(key, prefixMeta) ||
-		bytes.HasPrefix(key, prefixTracker)
+		bytes.HasPrefix(key, prefixTracker) ||
+		bytes.HasPrefix(key, prefixDomain)
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
 	// Sort validators for deterministic checksum
 	sortValidatorInfos(validators)
 
-	// Compute checksum over canonical data (includes tracker entries)
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries)
+	// Compute checksum over canonical data (includes tracker entries and domain entries)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -167,6 +170,27 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	versionsVector := builder.EndVector(len(versionOffsets))
 
+	// Sort domain entries for deterministic ordering
+	sortDomainEntries(domainEntries)
+
+	// Build domains vector
+	domainOffsets := make([]flatbuffers.UOffsetT, len(domainEntries))
+	for i, entry := range domainEntries {
+		nameOffset := builder.CreateString(entry.Name)
+		objIdOffset := builder.CreateByteVector(entry.ObjectID[:])
+
+		types.SnapshotDomainStart(builder)
+		types.SnapshotDomainAddName(builder, nameOffset)
+		types.SnapshotDomainAddObjectId(builder, objIdOffset)
+		domainOffsets[i] = types.SnapshotDomainEnd(builder)
+	}
+
+	types.SnapshotStartDomainsVector(builder, len(domainOffsets))
+	for i := len(domainOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(domainOffsets[i])
+	}
+	domainsVector := builder.EndVector(len(domainOffsets))
+
 	types.SnapshotStart(builder)
 	types.SnapshotAddVersion(builder, snapshotVersion)
 	types.SnapshotAddLastCommittedRound(builder, lastCommittedRound)
@@ -175,6 +199,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	types.SnapshotAddChecksum(builder, checksumOffset)
 	types.SnapshotAddVertices(builder, verticesVector)
 	types.SnapshotAddObjectVersions(builder, versionsVector)
+	types.SnapshotAddDomains(builder, domainsVector)
 	offset := types.SnapshotEnd(builder)
 	builder.Finish(offset)
 
@@ -273,8 +298,8 @@ func sortObjects(objects []objectEntry) {
 }
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
-// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry) [32]byte {
+// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -313,6 +338,18 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(buf[:2])
 	}
 
+	// Write domain entries (already sorted)
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(domainEntries)))
+	hasher.Write(buf[:4])
+
+	for _, entry := range domainEntries {
+		nameBytes := []byte(entry.Name)
+		binary.BigEndian.PutUint32(buf[:4], uint32(len(nameBytes)))
+		hasher.Write(buf[:4])
+		hasher.Write(nameBytes)
+		hasher.Write(entry.ObjectID[:])
+	}
+
 	var checksum [32]byte
 	hasher.Sum(checksum[:0])
 
@@ -323,6 +360,13 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 func sortTrackerEntries(entries []consensus.ObjectTrackerEntry) {
 	sort.Slice(entries, func(i, j int) bool {
 		return bytes.Compare(entries[i].ID[:], entries[j].ID[:]) < 0
+	})
+}
+
+// sortDomainEntries sorts domain entries by name for deterministic ordering.
+func sortDomainEntries(entries []state.DomainEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
 	})
 }
 
@@ -418,10 +462,14 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	// Extract tracker entries
 	trackerEntries := ExtractTrackerEntries(snapshot)
 
+	// Extract domain entries
+	domainEntries := ExtractDomains(snapshot)
+	sortDomainEntries(domainEntries)
+
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries)
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries)
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {
@@ -495,6 +543,31 @@ func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEn
 			ID:          id,
 			Version:     v.Version(),
 			Replication: v.Replication(),
+		}
+	}
+
+	return entries
+}
+
+// ExtractDomains extracts domain entries from a snapshot.
+func ExtractDomains(snapshot *types.Snapshot) []state.DomainEntry {
+	length := snapshot.DomainsLength()
+	if length == 0 {
+		return nil
+	}
+
+	entries := make([]state.DomainEntry, length)
+	var dom types.SnapshotDomain
+
+	for i := 0; i < length; i++ {
+		if !snapshot.Domains(&dom, i) {
+			continue
+		}
+
+		entries[i].Name = string(dom.Name())
+
+		if idBytes := dom.ObjectIdBytes(); len(idBytes) == 32 {
+			copy(entries[i].ObjectID[:], idBytes)
 		}
 	}
 

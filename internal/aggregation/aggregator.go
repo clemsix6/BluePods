@@ -2,11 +2,11 @@ package aggregation
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"sync"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/genesis"
 	"BluePods/internal/network"
 	"BluePods/internal/state"
 	"BluePods/internal/types"
@@ -57,30 +57,48 @@ func (a *Aggregator) Aggregate(ctx context.Context, txData []byte) ([]byte, erro
 func (a *Aggregator) extractObjectRefs(tx *types.Transaction) []ObjectRef {
 	var refs []ObjectRef
 
-	readBytes := tx.ReadObjectsBytes()
-	refs = append(refs, a.parseObjectIDs(readBytes)...)
-
-	mutableBytes := tx.MutableObjectsBytes()
-	refs = append(refs, a.parseObjectIDs(mutableBytes)...)
+	refs = append(refs, a.extractRefsFromTx(tx, false)...)
+	refs = append(refs, a.extractRefsFromTx(tx, true)...)
 
 	return refs
 }
 
-// parseObjectIDs parses a byte slice of concatenated 40-byte object references.
-// Each reference is 32-byte objectID + 8-byte version (little-endian).
-func (a *Aggregator) parseObjectIDs(data []byte) []ObjectRef {
-	if len(data) == 0 {
+// extractRefsFromTx extracts ObjectRef entries from read_refs or mutable_refs.
+func (a *Aggregator) extractRefsFromTx(tx *types.Transaction, mutable bool) []ObjectRef {
+	var count int
+	if mutable {
+		count = tx.MutableRefsLength()
+	} else {
+		count = tx.ReadRefsLength()
+	}
+
+	if count == 0 {
 		return nil
 	}
 
-	numObjects := len(data) / 40
-	refs := make([]ObjectRef, 0, numObjects)
+	refs := make([]ObjectRef, 0, count)
+	var fbRef types.ObjectRef
 
-	for i := 0; i < numObjects; i++ {
+	for i := 0; i < count; i++ {
+		if mutable {
+			tx.MutableRefs(&fbRef, i)
+		} else {
+			tx.ReadRefs(&fbRef, i)
+		}
+
+		// Skip domain refs (will be resolved later)
+		if len(fbRef.Domain()) > 0 {
+			continue
+		}
+
+		idBytes := fbRef.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
 		var ref ObjectRef
-		offset := i * 40
-		copy(ref.ID[:], data[offset:offset+32])
-		ref.Version = binary.LittleEndian.Uint64(data[offset+32 : offset+40])
+		copy(ref.ID[:], idBytes)
+		ref.Version = fbRef.Version()
 
 		refs = append(refs, ref)
 	}
@@ -241,25 +259,5 @@ func (a *Aggregator) buildQuorumProof(builder *flatbuffers.Builder, result *Coll
 // rebuildTxTable rebuilds a Transaction table in the given builder.
 // Needed because FlatBuffers tables must be built in the same builder as the parent table.
 func rebuildTxTable(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
-	hashVec := builder.CreateByteVector(tx.HashBytes())
-	sigVec := builder.CreateByteVector(tx.SignatureBytes())
-	argsVec := builder.CreateByteVector(tx.ArgsBytes())
-	senderVec := builder.CreateByteVector(tx.SenderBytes())
-	podVec := builder.CreateByteVector(tx.PodBytes())
-	funcNameOff := builder.CreateString(string(tx.FunctionName()))
-	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
-	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, hashVec)
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddSignature(builder, sigVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-	types.TransactionAddMutableObjects(builder, mutObjVec)
-	types.TransactionAddReadObjects(builder, readObjVec)
-
-	return types.TransactionEnd(builder)
+	return genesis.RebuildTxInBuilder(builder, tx)
 }

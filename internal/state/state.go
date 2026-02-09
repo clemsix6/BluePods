@@ -7,6 +7,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/podvm"
 	"BluePods/internal/storage"
@@ -20,9 +21,10 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	objects        *objectStore
-	pods           *podvm.Pool
-	isHolder       func(objectID [32]byte, replication uint16) bool   // isHolder checks if this node stores an object
+	objects         *objectStore                                          // objects is the object storage
+	domains         *domainStore                                          // domains stores domain name → ObjectID mappings
+	pods            *podvm.Pool                                           // pods is the WASM runtime pool
+	isHolder        func(objectID [32]byte, replication uint16) bool      // isHolder checks if this node stores an object
 	onObjectCreated func(id [32]byte, version uint64, replication uint16) // onObjectCreated is called when a new object is created
 }
 
@@ -30,8 +32,25 @@ type State struct {
 func New(db *storage.Storage, pods *podvm.Pool) *State {
 	return &State{
 		objects: newObjectStore(db),
+		domains: newDomainStore(db),
 		pods:    pods,
 	}
+}
+
+// ResolveDomain resolves a domain name to its ObjectID.
+// Returns the ObjectID and true if found, zero hash and false otherwise.
+func (s *State) ResolveDomain(name string) ([32]byte, bool) {
+	return s.domains.get(name)
+}
+
+// ExportDomains returns all domain entries for snapshot serialization.
+func (s *State) ExportDomains() []DomainEntry {
+	return s.domains.export()
+}
+
+// ImportDomains loads domain entries from snapshot data.
+func (s *State) ImportDomains(entries []DomainEntry) {
+	s.domains.importBatch(entries)
 }
 
 // SetIsHolder sets the holder check function for storage sharding.
@@ -72,7 +91,7 @@ func (s *State) Execute(atxData []byte) error {
 
 	txHash := extractTxHash(tx)
 
-	if err := s.processOutput(output, txHash); err != nil {
+	if err := s.processOutput(output, txHash, tx); err != nil {
 		return fmt.Errorf("process output:\n%w", err)
 	}
 
@@ -122,16 +141,24 @@ func (s *State) resolveMutableObjects(tx *types.Transaction, atxObjects []*types
 
 	result := append([]*types.Object{}, atxObjects...)
 
-	data := tx.MutableObjectsBytes()
-	for i := 0; i+40 <= len(data); i += 40 {
+	var ref types.ObjectRef
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
 		var id Hash
-		copy(id[:], data[i:i+32])
+		copy(id[:], idBytes)
 
 		if present[id] {
 			continue
 		}
 
-		// Missing from ATX → load from local state (singleton)
 		objData := s.objects.get(id)
 		if objData == nil {
 			continue
@@ -202,27 +229,7 @@ func rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transaction) fla
 		return types.TransactionEnd(builder)
 	}
 
-	hashVec := builder.CreateByteVector(tx.HashBytes())
-	readObjVec := builder.CreateByteVector(tx.ReadObjectsBytes())
-	mutObjVec := builder.CreateByteVector(tx.MutableObjectsBytes())
-	senderVec := builder.CreateByteVector(tx.SenderBytes())
-	sigVec := builder.CreateByteVector(tx.SignatureBytes())
-	podVec := builder.CreateByteVector(tx.PodBytes())
-	funcNameOff := builder.CreateString(string(tx.FunctionName()))
-	argsVec := builder.CreateByteVector(tx.ArgsBytes())
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, hashVec)
-	types.TransactionAddReadObjects(builder, readObjVec)
-	types.TransactionAddMutableObjects(builder, mutObjVec)
-	types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-	types.TransactionAddSender(builder, senderVec)
-	types.TransactionAddSignature(builder, sigVec)
-	types.TransactionAddPod(builder, podVec)
-	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddArgs(builder, argsVec)
-
-	return types.TransactionEnd(builder)
+	return genesis.RebuildTxInBuilder(builder, tx)
 }
 
 // rebuildObject rebuilds an Object table in the builder.
@@ -241,15 +248,16 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 	return types.ObjectEnd(builder)
 }
 
-// processOutput applies PodExecuteOutput to the state.
-func (s *State) processOutput(outputData []byte, txHash [32]byte) error {
+// processOutput validates and applies PodExecuteOutput to the state.
+// Validates creation limits and domain collisions before applying any mutations.
+// If any validation fails, no state changes are made (rollback semantics).
+func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction) error {
 	if len(outputData) == 0 {
 		return nil
 	}
 
 	output := types.GetRootAsPodExecuteOutput(outputData, 0)
 
-	// Print pod logs
 	for i := 0; i < output.LogsLength(); i++ {
 		logger.Debug("pod log", "msg", string(output.Logs(i)))
 	}
@@ -258,11 +266,90 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte) error {
 		return fmt.Errorf("pod execution error: %d", errCode)
 	}
 
+	if err := s.validateOutput(output, tx); err != nil {
+		return fmt.Errorf("output validation failed:\n%w", err)
+	}
+
 	s.applyUpdatedObjects(output)
 	s.applyCreatedObjects(output, txHash)
 	s.applyDeletedObjects(output)
+	s.applyRegisteredDomains(output, txHash)
 
 	return nil
+}
+
+// validateOutput checks creation limits and domain collisions.
+// Returns error if any limit is exceeded or a domain already exists.
+func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transaction) error {
+	createdCount := output.CreatedObjectsLength()
+	if createdCount > int(tx.MaxCreateObjects()) {
+		return fmt.Errorf("created %d objects, max allowed %d", createdCount, tx.MaxCreateObjects())
+	}
+
+	domainCount := output.RegisteredDomainsLength()
+	if domainCount > int(tx.MaxCreateDomains()) {
+		return fmt.Errorf("registered %d domains, max allowed %d", domainCount, tx.MaxCreateDomains())
+	}
+
+	seen := make(map[string]bool, domainCount)
+	var dom types.RegisteredDomain
+
+	for i := 0; i < domainCount; i++ {
+		if !output.RegisteredDomains(&dom, i) {
+			continue
+		}
+
+		name := string(dom.Name())
+
+		if len(name) == 0 {
+			return fmt.Errorf("empty domain name at index %d", i)
+		}
+
+		if len(name) > 253 {
+			return fmt.Errorf("domain name too long: %d bytes (max 253)", len(name))
+		}
+
+		if seen[name] {
+			return fmt.Errorf("duplicate domain name in output: %q", name)
+		}
+		seen[name] = true
+
+		if s.domains.exists(name) {
+			return fmt.Errorf("domain collision: %q already registered", name)
+		}
+	}
+
+	return nil
+}
+
+// applyRegisteredDomains stores domain name → ObjectID mappings from pod output.
+// Each RegisteredDomain references either an object_index (into created objects) or a direct object_id.
+func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [32]byte) {
+	var dom types.RegisteredDomain
+
+	for i := 0; i < output.RegisteredDomainsLength(); i++ {
+		if !output.RegisteredDomains(&dom, i) {
+			continue
+		}
+
+		name := string(dom.Name())
+		objectID := s.resolveDomainObjectID(&dom, txHash)
+		s.domains.set(name, objectID)
+	}
+}
+
+// resolveDomainObjectID determines the ObjectID for a RegisteredDomain entry.
+// Prefers direct object_id if present (32 bytes), falls back to object_index.
+// object_id is checked first because FlatBuffers defaults object_index to 0,
+// which would silently use the first created object instead of the direct ID.
+func (s *State) resolveDomainObjectID(dom *types.RegisteredDomain, txHash [32]byte) Hash {
+	if idBytes := dom.ObjectIdBytes(); len(idBytes) == 32 {
+		var id Hash
+		copy(id[:], idBytes)
+		return id
+	}
+
+	return computeObjectID(txHash, uint32(dom.ObjectIndex()))
 }
 
 // applyUpdatedObjects stores updated objects with incremented versions.
@@ -371,7 +458,7 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput) {
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
 
-	for i := 0; i < len(data); i += idSize {
+	for i := 0; i+idSize <= len(data); i += idSize {
 		var id Hash
 		copy(id[:], data[i:i+idSize])
 		s.objects.delete(id)
@@ -383,13 +470,22 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput) {
 // The consensus versionTracker increments ALL mutable objects, but the pod
 // may not return all of them in UpdatedObjects. This closes the gap.
 func (s *State) ensureMutableVersions(tx *types.Transaction) {
-	data := tx.MutableObjectsBytes()
+	var ref types.ObjectRef
 
-	for i := 0; i+40 <= len(data); i += 40 {
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
 		var id Hash
-		copy(id[:], data[i:i+32])
+		copy(id[:], idBytes)
 
-		expectedVersion := binary.LittleEndian.Uint64(data[i+32 : i+40])
+		expectedVersion := ref.Version()
 		targetVersion := expectedVersion + 1
 
 		objData := s.objects.get(id)
@@ -399,7 +495,7 @@ func (s *State) ensureMutableVersions(tx *types.Transaction) {
 
 		obj := types.GetRootAsObject(objData, 0)
 		if obj.Version() == targetVersion {
-			continue // already up to date (pod returned it in UpdatedObjects)
+			continue
 		}
 
 		updated := rebuildObjectWithVersion(obj, targetVersion)

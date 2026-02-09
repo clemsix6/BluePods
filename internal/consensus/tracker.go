@@ -44,37 +44,46 @@ func (ot *objectTracker) checkAndUpdate(tx *types.Transaction) bool {
 
 // checkVersions verifies all object versions match expected values.
 func (ot *objectTracker) checkVersions(tx *types.Transaction) bool {
-	readObjs := tx.ReadObjectsBytes()
-	mutObjs := tx.MutableObjectsBytes()
-
-	if !ot.checkObjectList(readObjs) {
-		logger.Debug("version mismatch on read objects", "count", len(readObjs)/40)
+	if !ot.checkRefList(tx, false) {
+		logger.Debug("version mismatch on read refs", "count", tx.ReadRefsLength())
 		return false
 	}
 
-	if !ot.checkObjectList(mutObjs) {
-		logger.Debug("version mismatch on mutable objects", "count", len(mutObjs)/40)
+	if !ot.checkRefList(tx, true) {
+		logger.Debug("version mismatch on mutable refs", "count", tx.MutableRefsLength())
 		return false
 	}
 
 	return true
 }
 
-// checkObjectList verifies versions for a list of object references.
-// Each reference is 40 bytes: 32 bytes objectID + 8 bytes expected version.
-func (ot *objectTracker) checkObjectList(data []byte) bool {
-	const refSize = 40
-
-	if len(data)%refSize != 0 {
-		logger.Warn("invalid object list length", "len", len(data), "expected_multiple", refSize)
-		return false
+// checkRefList verifies versions for a list of ObjectRef references.
+func (ot *objectTracker) checkRefList(tx *types.Transaction, mutable bool) bool {
+	var count int
+	if mutable {
+		count = tx.MutableRefsLength()
+	} else {
+		count = tx.ReadRefsLength()
 	}
 
-	for i := 0; i < len(data); i += refSize {
-		var objectID Hash
-		copy(objectID[:], data[i:i+32])
+	var ref types.ObjectRef
 
-		expectedVersion := decodeVersion(data[i+32 : i+40])
+	for i := 0; i < count; i++ {
+		if mutable {
+			tx.MutableRefs(&ref, i)
+		} else {
+			tx.ReadRefs(&ref, i)
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
+		var objectID Hash
+		copy(objectID[:], idBytes)
+
+		expectedVersion := ref.Version()
 		currentVersion := ot.getVersion(objectID)
 
 		if currentVersion != expectedVersion {
@@ -87,12 +96,20 @@ func (ot *objectTracker) checkObjectList(data []byte) bool {
 
 // incrementMutableObjects increments version for each mutable object.
 func (ot *objectTracker) incrementMutableObjects(tx *types.Transaction) {
-	data := tx.MutableObjectsBytes()
-	const refSize = 40
+	var ref types.ObjectRef
 
-	for i := 0; i < len(data); i += refSize {
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
 		var objectID Hash
-		copy(objectID[:], data[i:i+32])
+		copy(objectID[:], idBytes)
 
 		version := ot.getVersion(objectID)
 		replication := ot.getReplication(objectID)
@@ -194,14 +211,3 @@ func (ot *objectTracker) encodeValue(version uint64, replication uint16) []byte 
 	return value
 }
 
-// decodeVersion decodes a little-endian uint64 from 8 bytes.
-func decodeVersion(b []byte) uint64 {
-	return uint64(b[0]) |
-		uint64(b[1])<<8 |
-		uint64(b[2])<<16 |
-		uint64(b[3])<<24 |
-		uint64(b[4])<<32 |
-		uint64(b[5])<<40 |
-		uint64(b[6])<<48 |
-		uint64(b[7])<<56
-}

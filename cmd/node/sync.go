@@ -11,6 +11,7 @@ import (
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
+	"BluePods/internal/state"
 	"BluePods/internal/sync"
 	"BluePods/internal/types"
 )
@@ -21,6 +22,7 @@ type snapshotResult struct {
 	validators         []*consensus.ValidatorInfo      // validators is the set of validators from the snapshot
 	vertices           []consensus.VertexEntry         // vertices is the set of vertices from the snapshot
 	trackerEntries     []consensus.ObjectTrackerEntry  // trackerEntries is the set of object tracker entries
+	domainEntries      []state.DomainEntry             // domainEntries is the set of domain mappings from the snapshot
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -69,13 +71,14 @@ func (n *Node) runValidator() error {
 	}
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter())
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
 
 	// Start snapshot manager
 	n.snapManager = sync.NewSnapshotManager(n.storage, n.dag)
+	n.snapManager.SetDomainExporter(n.state)
 	n.snapManager.Start()
 
 	logger.Info("validator mode active", "round", n.dag.Round())
@@ -202,6 +205,12 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		validators:         sync.ExtractValidators(snapshot),
 		vertices:           sync.ExtractVertices(snapshot),
 		trackerEntries:     sync.ExtractTrackerEntries(snapshot),
+		domainEntries:      sync.ExtractDomains(snapshot),
+	}
+
+	// Import domain entries into state
+	if len(result.domainEntries) > 0 {
+		n.state.ImportDomains(result.domainEntries)
 	}
 
 	logger.Info("snapshot applied",
@@ -210,6 +219,7 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		"validators", len(result.validators),
 		"vertices", len(result.vertices),
 		"trackerEntries", len(result.trackerEntries),
+		"domains", len(result.domainEntries),
 	)
 
 	return result, nil

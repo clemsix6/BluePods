@@ -33,6 +33,15 @@ table ObjectVersion {
     replication:uint16;
 }
 
+// SnapshotDomain maps a domain name to an object ID in the snapshot.
+table SnapshotDomain {
+    // name is the domain name.
+    name:string;
+
+    // object_id is the 32-byte ObjectID.
+    object_id:[ubyte];
+}
+
 // Snapshot represents the committed state at a point in time.
 table Snapshot {
     // version is the snapshot format version for future migrations.
@@ -56,6 +65,9 @@ table Snapshot {
 
     // object_versions contains the current version of each object.
     object_versions:[ObjectVersion];
+
+    // domains contains all registered domain name mappings.
+    domains:[SnapshotDomain];
 }
 
 // SnapshotRequest is sent by a node to request the current snapshot.

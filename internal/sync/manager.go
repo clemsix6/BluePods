@@ -6,6 +6,7 @@ import (
 
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
+	"BluePods/internal/state"
 	"BluePods/internal/storage"
 )
 
@@ -32,11 +33,17 @@ type SnapshotProvider interface {
 	ExportTrackerEntries() []consensus.ObjectTrackerEntry
 }
 
+// DomainExporter exports domain entries for snapshot inclusion.
+type DomainExporter interface {
+	ExportDomains() []state.DomainEntry
+}
+
 // SnapshotManager creates periodic snapshots of the committed state.
 type SnapshotManager struct {
-	db       *storage.Storage
-	provider SnapshotProvider
-	interval time.Duration
+	db       *storage.Storage  // db is the underlying Pebble storage
+	provider SnapshotProvider  // provider provides consensus data
+	domains  DomainExporter    // domains exports domain entries (nil = no domains)
+	interval time.Duration     // interval between snapshot creation
 
 	mu       sync.RWMutex
 	current  []byte // compressed snapshot data
@@ -54,6 +61,11 @@ func NewSnapshotManager(db *storage.Storage, provider SnapshotProvider) *Snapsho
 		interval: defaultSnapshotInterval,
 		stop:     make(chan struct{}),
 	}
+}
+
+// SetDomainExporter sets the domain exporter for including domains in snapshots.
+func (m *SnapshotManager) SetDomainExporter(de DomainExporter) {
+	m.domains = de
 }
 
 // Start begins the periodic snapshot creation loop.
@@ -133,8 +145,14 @@ func (m *SnapshotManager) createSnapshot() {
 	// Get tracker entries
 	trackerEntries := m.provider.ExportTrackerEntries()
 
+	// Get domain entries
+	var domainEntries []state.DomainEntry
+	if m.domains != nil {
+		domainEntries = m.domains.ExportDomains()
+	}
+
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries)
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return

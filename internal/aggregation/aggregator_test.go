@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/binary"
 	"testing"
 	"time"
 
@@ -15,40 +14,56 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
+// buildObjectRefOffsets creates ObjectRef table offsets for the given IDs (version=1).
+func buildObjectRefOffsets(builder *flatbuffers.Builder, ids [][32]byte) []flatbuffers.UOffsetT {
+	offsets := make([]flatbuffers.UOffsetT, len(ids))
+
+	for i, id := range ids {
+		idVec := builder.CreateByteVector(id[:])
+
+		types.ObjectRefStart(builder)
+		types.ObjectRefAddId(builder, idVec)
+		types.ObjectRefAddVersion(builder, 1)
+		offsets[i] = types.ObjectRefEnd(builder)
+	}
+
+	return offsets
+}
+
 // buildTestTransaction creates a test transaction with the given object IDs.
-// Object references are encoded as 40-byte entries: 32-byte ID + 8-byte version (LE).
+// Each object reference is built as an ObjectRef table with version=1.
 func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	hash := [32]byte{0x01, 0x02, 0x03}
 	hashOffset := builder.CreateByteVector(hash[:])
 
-	var readBytesOffset flatbuffers.UOffsetT
+	// Build ObjectRef tables before starting any vectors
+	readRefOffsets := buildObjectRefOffsets(builder, readObjects)
+	mutableRefOffsets := buildObjectRefOffsets(builder, mutableObjects)
 
-	if len(readObjects) > 0 {
-		readBytes := make([]byte, len(readObjects)*40)
+	var readRefsVec flatbuffers.UOffsetT
 
-		for i, id := range readObjects {
-			offset := i * 40
-			copy(readBytes[offset:offset+32], id[:])
-			binary.LittleEndian.PutUint64(readBytes[offset+32:offset+40], 1) // version=1
+	if len(readRefOffsets) > 0 {
+		types.TransactionStartReadRefsVector(builder, len(readRefOffsets))
+
+		for i := len(readRefOffsets) - 1; i >= 0; i-- {
+			builder.PrependUOffsetT(readRefOffsets[i])
 		}
 
-		readBytesOffset = builder.CreateByteVector(readBytes)
+		readRefsVec = builder.EndVector(len(readRefOffsets))
 	}
 
-	var mutableBytesOffset flatbuffers.UOffsetT
+	var mutableRefsVec flatbuffers.UOffsetT
 
-	if len(mutableObjects) > 0 {
-		mutableBytes := make([]byte, len(mutableObjects)*40)
+	if len(mutableRefOffsets) > 0 {
+		types.TransactionStartMutableRefsVector(builder, len(mutableRefOffsets))
 
-		for i, id := range mutableObjects {
-			offset := i * 40
-			copy(mutableBytes[offset:offset+32], id[:])
-			binary.LittleEndian.PutUint64(mutableBytes[offset+32:offset+40], 1) // version=1
+		for i := len(mutableRefOffsets) - 1; i >= 0; i-- {
+			builder.PrependUOffsetT(mutableRefOffsets[i])
 		}
 
-		mutableBytesOffset = builder.CreateByteVector(mutableBytes)
+		mutableRefsVec = builder.EndVector(len(mutableRefOffsets))
 	}
 
 	sender := [32]byte{0xAA}
@@ -66,15 +81,15 @@ func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashOffset)
 
-	if readBytesOffset != 0 {
-		types.TransactionAddReadObjects(builder, readBytesOffset)
+	if readRefsVec != 0 {
+		types.TransactionAddReadRefs(builder, readRefsVec)
 	}
 
-	if mutableBytesOffset != 0 {
-		types.TransactionAddMutableObjects(builder, mutableBytesOffset)
+	if mutableRefsVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutableRefsVec)
 	}
 
-	types.TransactionAddCreatesObjects(builder, false)
+	types.TransactionAddMaxCreateObjects(builder, 0)
 	types.TransactionAddSender(builder, senderOffset)
 	types.TransactionAddSignature(builder, sigOffset)
 	types.TransactionAddPod(builder, podOffset)

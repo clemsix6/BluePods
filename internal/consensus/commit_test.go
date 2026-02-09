@@ -2,12 +2,12 @@ package consensus
 
 import (
 	"crypto/ed25519"
-	"encoding/binary"
 	"testing"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
 
@@ -157,6 +157,40 @@ func TestTrackerExportImport(t *testing.T) {
 	}
 }
 
+// TestTrackerDeleteObject verifies deleteObject removes an object from the tracker.
+func TestTrackerDeleteObject(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objID := Hash{0x03}
+	ot.trackObject(objID, 5, 10)
+
+	// Verify it exists
+	if v := ot.getVersion(objID); v != 5 {
+		t.Fatalf("expected version 5, got %d", v)
+	}
+
+	ot.deleteObject(objID)
+
+	// Should return 0 (default for missing)
+	if v := ot.getVersion(objID); v != 0 {
+		t.Errorf("expected version 0 after delete, got %d", v)
+	}
+
+	if r := ot.getReplication(objID); r != 0 {
+		t.Errorf("expected replication 0 after delete, got %d", r)
+	}
+}
+
+// TestTrackerDeleteNonExistent verifies deleting a non-existent object doesn't panic.
+func TestTrackerDeleteNonExistent(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
+
+	// Should not panic
+	ot.deleteObject(Hash{0xFF})
+}
+
 // =============================================================================
 // Commit Path Tests
 // =============================================================================
@@ -176,7 +210,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	dag.tracker.trackObject(objID, 3, 0)
 
 	// Build ATX expecting version 0 (stale)
-	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, false)
+	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 0)
@@ -199,7 +233,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 	objID := Hash{0x10}
 
 	// Build ATX expecting version 0 (matches default)
-	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, false)
+	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 0)
@@ -281,7 +315,7 @@ func TestShouldExecuteSingleton(t *testing.T) {
 	}
 
 	// ATX with singleton (not in Objects vector, so replication defaults to 0)
-	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: singletonObj, version: 0}}, false)
+	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: singletonObj, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
@@ -312,7 +346,7 @@ func TestShouldExecuteNoSharding(t *testing.T) {
 	}
 }
 
-// TestCreatesObjectsAllValidatorsExecute tests that creates_objects=true skips holder check.
+// TestCreatesObjectsAllValidatorsExecute tests that max_create_objects>0 skips holder check.
 func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(1)
@@ -328,23 +362,23 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 
 	objID := Hash{0x10}
 
-	// Build ATX with creates_objects=true
-	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, true)
+	// Build ATX with max_create_objects=1
+	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 1)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	// creates_objects check happens in executeTx, not shouldExecute directly
-	// The check is: if !tx.CreatesObjects() && !d.shouldExecute(...)
-	createsObjects := tx.CreatesObjects()
+	// max_create_objects check happens in executeTx, not shouldExecute directly
+	// The check is: if tx.MaxCreateObjects() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(...)
+	maxCreate := tx.MaxCreateObjects()
 
-	if !createsObjects {
-		t.Fatal("creates_objects should be true")
+	if maxCreate == 0 {
+		t.Fatal("max_create_objects should be > 0")
 	}
 
-	// With creates_objects=true, the shouldExecute check is bypassed
-	shouldSkip := !createsObjects && !dag.shouldExecute(atx, tx)
+	// With max_create_objects>0, the shouldExecute check is bypassed
+	shouldSkip := maxCreate == 0 && tx.MaxCreateDomains() == 0 && !dag.shouldExecute(atx, tx)
 	if shouldSkip {
-		t.Fatal("creates_objects=true should force execution on all validators")
+		t.Fatal("max_create_objects>0 should force execution on all validators")
 	}
 }
 
@@ -358,7 +392,7 @@ func TestCommitRoundProcessing(t *testing.T) {
 
 	objID := Hash{0x10}
 
-	atxBytes := buildTestATX(t, "some_func", nil, []objectRef{{id: objID, version: 0}}, false)
+	atxBytes := buildTestATX(t, "some_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
 		WithGenesisTxs([][]byte{atxBytes}))
@@ -400,7 +434,7 @@ func TestBuildReplicationMap(t *testing.T) {
 
 // TestBuildReplicationMapEmpty tests empty ATX objects vector.
 func TestBuildReplicationMapEmpty(t *testing.T) {
-	atxBytes := buildTestATX(t, "test", nil, nil, false)
+	atxBytes := buildTestATX(t, "test", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	m := buildReplicationMap(atx)
@@ -416,7 +450,7 @@ func TestCommittedTxOutput(t *testing.T) {
 	mock := &mockBroadcaster{}
 
 	// Include tx in genesis so validator[0] produces it in round 0
-	atxBytes := buildTestATX(t, "some_func", nil, nil, false)
+	atxBytes := buildTestATX(t, "some_func", nil, nil, 0)
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
 		WithGenesisTxs([][]byte{atxBytes}))
@@ -431,6 +465,83 @@ func TestCommittedTxOutput(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for committed tx")
 	}
+}
+
+// TestMaxCreateDomainsAllValidatorsExecute tests that max_create_domains>0 forces execution.
+func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Not a holder of anything
+	dag.isHolder = func(objectID [32]byte, replication uint16) bool {
+		return false
+	}
+
+	objID := Hash{0x10}
+
+	// Build ATX with max_create_domains=1
+	atxBytes := buildTestATXWithDomains(t, "test_func", []objectRef{{id: objID, version: 0}}, 1)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
+
+	maxDomains := tx.MaxCreateDomains()
+	if maxDomains == 0 {
+		t.Fatal("max_create_domains should be > 0")
+	}
+
+	// With max_create_domains>0, the shouldExecute check is bypassed
+	shouldSkip := tx.MaxCreateObjects() == 0 && maxDomains == 0 && !dag.shouldExecute(atx, tx)
+	if shouldSkip {
+		t.Fatal("max_create_domains>0 should force execution on all validators")
+	}
+}
+
+// buildTestATXWithDomains creates a test ATX with max_create_domains set.
+func buildTestATXWithDomains(t *testing.T, funcName string, mutRefs []objectRef, maxCreateDomains uint16) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	mutVec := buildObjectRefVector(builder, mutRefs, true)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(make([]byte, 32))
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcNameOff := builder.CreateString(funcName)
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
+
+	if mutVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutVec)
+	}
+
+	txOff := types.TransactionEnd(builder)
+
+	// Empty objects and proofs
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
 }
 
 // =============================================================================
@@ -579,22 +690,41 @@ type testObject struct {
 	replication uint16
 }
 
-// buildTxWithMutables creates a Transaction with ReadObjects and MutableObjects refs.
+// buildObjectRefVector builds an ObjectRef vector in the builder.
+func buildObjectRefVector(builder *flatbuffers.Builder, refs []objectRef, mutable bool) flatbuffers.UOffsetT {
+	if len(refs) == 0 {
+		return 0
+	}
+
+	offsets := make([]flatbuffers.UOffsetT, len(refs))
+	for i, ref := range refs {
+		idVec := builder.CreateByteVector(ref.id[:])
+		types.ObjectRefStart(builder)
+		types.ObjectRefAddId(builder, idVec)
+		types.ObjectRefAddVersion(builder, ref.version)
+		offsets[i] = types.ObjectRefEnd(builder)
+	}
+
+	if mutable {
+		types.TransactionStartMutableRefsVector(builder, len(offsets))
+	} else {
+		types.TransactionStartReadRefsVector(builder, len(offsets))
+	}
+	for i := len(offsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(offsets[i])
+	}
+
+	return builder.EndVector(len(offsets))
+}
+
+// buildTxWithMutables creates a Transaction with ReadRefs and MutableRefs.
 func buildTxWithMutables(t *testing.T, readRefs []objectRef, mutRefs []objectRef) *types.Transaction {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(512)
 
-	readBytes := encodeObjectRefs(readRefs)
-	mutBytes := encodeObjectRefs(mutRefs)
-
-	var readVec, mutVec flatbuffers.UOffsetT
-	if len(readBytes) > 0 {
-		readVec = builder.CreateByteVector(readBytes)
-	}
-	if len(mutBytes) > 0 {
-		mutVec = builder.CreateByteVector(mutBytes)
-	}
+	readVec := buildObjectRefVector(builder, readRefs, false)
+	mutVec := buildObjectRefVector(builder, mutRefs, true)
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(make([]byte, 32))
@@ -607,11 +737,11 @@ func buildTxWithMutables(t *testing.T, readRefs []objectRef, mutRefs []objectRef
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcName)
 
-	if len(readBytes) > 0 {
-		types.TransactionAddReadObjects(builder, readVec)
+	if readVec != 0 {
+		types.TransactionAddReadRefs(builder, readVec)
 	}
-	if len(mutBytes) > 0 {
-		types.TransactionAddMutableObjects(builder, mutVec)
+	if mutVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutVec)
 	}
 
 	txOff := types.TransactionEnd(builder)
@@ -621,21 +751,13 @@ func buildTxWithMutables(t *testing.T, readRefs []objectRef, mutRefs []objectRef
 }
 
 // buildTestATX creates a test AttestedTransaction with given function, read/mutable refs.
-func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs []objectRef, createsObjects bool) []byte {
+func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs []objectRef, maxCreateObjects uint16) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
 
-	readBytes := encodeObjectRefs(readRefs)
-	mutBytes := encodeObjectRefs(mutRefs)
-
-	var readVec, mutVec flatbuffers.UOffsetT
-	if len(readBytes) > 0 {
-		readVec = builder.CreateByteVector(readBytes)
-	}
-	if len(mutBytes) > 0 {
-		mutVec = builder.CreateByteVector(mutBytes)
-	}
+	readVec := buildObjectRefVector(builder, readRefs, false)
+	mutVec := buildObjectRefVector(builder, mutRefs, true)
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(make([]byte, 32))
@@ -647,13 +769,13 @@ func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs [
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddCreatesObjects(builder, createsObjects)
+	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
 
-	if len(readBytes) > 0 {
-		types.TransactionAddReadObjects(builder, readVec)
+	if readVec != 0 {
+		types.TransactionAddReadRefs(builder, readVec)
 	}
-	if len(mutBytes) > 0 {
-		types.TransactionAddMutableObjects(builder, mutVec)
+	if mutVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutVec)
 	}
 
 	txOff := types.TransactionEnd(builder)
@@ -682,11 +804,7 @@ func buildTestATXWithObjects(t *testing.T, funcName string, mutRefs []objectRef,
 
 	builder := flatbuffers.NewBuilder(2048)
 
-	mutBytes := encodeObjectRefs(mutRefs)
-	var mutVec flatbuffers.UOffsetT
-	if len(mutBytes) > 0 {
-		mutVec = builder.CreateByteVector(mutBytes)
-	}
+	mutVec := buildObjectRefVector(builder, mutRefs, true)
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(make([]byte, 32))
@@ -699,8 +817,8 @@ func buildTestATXWithObjects(t *testing.T, funcName string, mutRefs []objectRef,
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 
-	if len(mutBytes) > 0 {
-		types.TransactionAddMutableObjects(builder, mutVec)
+	if mutVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutVec)
 	}
 
 	txOff := types.TransactionEnd(builder)
@@ -740,22 +858,6 @@ func buildTestATXWithObjects(t *testing.T, funcName string, mutRefs []objectRef,
 	builder.Finish(atxOff)
 
 	return builder.FinishedBytes()
-}
-
-// encodeObjectRefs encodes object references as 40-byte entries.
-func encodeObjectRefs(refs []objectRef) []byte {
-	if len(refs) == 0 {
-		return nil
-	}
-
-	data := make([]byte, len(refs)*40)
-	for i, ref := range refs {
-		offset := i * 40
-		copy(data[offset:offset+32], ref.id[:])
-		binary.LittleEndian.PutUint64(data[offset+32:offset+40], ref.version)
-	}
-
-	return data
 }
 
 // buildTestVertexWithTx creates a signed vertex containing an ATX.
@@ -856,29 +958,10 @@ func rebuildATXInBuilder(builder *flatbuffers.Builder, atxBytes []byte) flatbuff
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	// Rebuild Transaction
+	// Rebuild Transaction using genesis helper
 	var txOff flatbuffers.UOffsetT
 	if tx != nil {
-		hashV := builder.CreateByteVector(tx.HashBytes())
-		readV := builder.CreateByteVector(tx.ReadObjectsBytes())
-		mutV := builder.CreateByteVector(tx.MutableObjectsBytes())
-		senderV := builder.CreateByteVector(tx.SenderBytes())
-		sigV := builder.CreateByteVector(tx.SignatureBytes())
-		podV := builder.CreateByteVector(tx.PodBytes())
-		fnV := builder.CreateString(string(tx.FunctionName()))
-		argsV := builder.CreateByteVector(tx.ArgsBytes())
-
-		types.TransactionStart(builder)
-		types.TransactionAddHash(builder, hashV)
-		types.TransactionAddReadObjects(builder, readV)
-		types.TransactionAddMutableObjects(builder, mutV)
-		types.TransactionAddCreatesObjects(builder, tx.CreatesObjects())
-		types.TransactionAddSender(builder, senderV)
-		types.TransactionAddSignature(builder, sigV)
-		types.TransactionAddPod(builder, podV)
-		types.TransactionAddFunctionName(builder, fnV)
-		types.TransactionAddArgs(builder, argsV)
-		txOff = types.TransactionEnd(builder)
+		txOff = genesis.RebuildTxInBuilder(builder, tx)
 	}
 
 	// Rebuild objects

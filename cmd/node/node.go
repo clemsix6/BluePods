@@ -124,13 +124,14 @@ func (n *Node) runBootstrap() error {
 	n.setupRequestHandlers()
 
 	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter())
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}
 
 	// Start snapshot manager for bootstrap nodes
 	n.snapManager = sync.NewSnapshotManager(n.storage, n.dag)
+	n.snapManager.SetDomainExporter(n.state)
 	n.snapManager.Start()
 
 	go n.processCommitted()

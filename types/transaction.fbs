@@ -5,20 +5,34 @@ include "object.fbs";
 
 namespace types;
 
+// ObjectRef references an object either by direct ID or by domain name.
+// For direct refs: id (32 bytes) + version are set.
+// For domain refs: domain is set, id and version are ignored.
+table ObjectRef {
+    // id is the 32-byte ObjectID (empty if domain ref).
+    id:[ubyte];
+
+    // version is the expected version (ignored if domain ref).
+    version:uint64;
+
+    // domain is the domain name (empty if direct ref).
+    domain:string;
+}
+
 // Transaction represents a transaction to be executed on the network.
 // Uses a flat structure for easier API integration.
 table Transaction {
     // hash is the unique 32-byte transaction identifier.
     hash:[ubyte];
 
-    // read_objects are 32-byte hashes of objects accessed in read-only mode.
-    read_objects:[ubyte];
+    // read_refs are references to objects accessed in read-only mode.
+    read_refs:[ObjectRef];
 
-    // mutable_objects are 32-byte hashes of objects that may be modified or deleted.
-    mutable_objects:[ubyte];
+    // mutable_refs are references to objects that may be modified or deleted.
+    mutable_refs:[ObjectRef];
 
-    // creates_objects indicates if this transaction creates new objects.
-    creates_objects:bool;
+    // max_create_objects is the maximum number of objects this transaction may create.
+    max_create_objects:uint16;
 
     // sender is the 32-byte Ed25519 public key of the transaction sender.
     sender:[ubyte];
@@ -34,6 +48,9 @@ table Transaction {
 
     // args contains the serialized function arguments.
     args:[ubyte];
+
+    // max_create_domains is the maximum number of domains this transaction may register.
+    max_create_domains:uint16;
 }
 
 root_type Transaction;

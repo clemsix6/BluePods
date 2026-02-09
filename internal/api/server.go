@@ -61,6 +61,11 @@ type HolderRouter interface {
 	RouteGetObject(id [32]byte) ([]byte, error)
 }
 
+// DomainResolver resolves domain names to ObjectIDs.
+type DomainResolver interface {
+	ResolveDomain(name string) ([32]byte, bool)
+}
+
 // FaucetConfig holds configuration for the faucet endpoint.
 type FaucetConfig struct {
 	PrivKey   ed25519.PrivateKey // PrivKey is the node's private key for signing mint txs
@@ -77,6 +82,7 @@ type Server struct {
 	faucet     *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
 	aggregator TxAggregator   // aggregator transforms raw tx into attested tx (nil = wrap only)
 	router     HolderRouter   // router routes GetObject to holders (nil = local only)
+	domains    DomainResolver // domains resolves domain names to object IDs (nil = disabled)
 	server     *http.Server   // server is the underlying HTTP server
 }
 
@@ -90,6 +96,7 @@ func New(
 	faucet *FaucetConfig,
 	aggregator TxAggregator,
 	router HolderRouter,
+	domains DomainResolver,
 ) *Server {
 	return &Server{
 		addr:       addr,
@@ -100,6 +107,7 @@ func New(
 		faucet:     faucet,
 		aggregator: aggregator,
 		router:     router,
+		domains:    domains,
 	}
 }
 
@@ -112,6 +120,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /faucet", s.handleFaucet)
 	mux.HandleFunc("GET /validators", s.handleValidators)
 	mux.HandleFunc("GET /object/", s.handleGetObject)
+	mux.HandleFunc("GET /domain/", s.handleGetDomain)
 
 	s.server = &http.Server{
 		Addr:         s.addr,
@@ -373,6 +382,31 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		"owner":       hex.EncodeToString(obj.OwnerBytes()),
 		"replication": obj.Replication(),
 		"content":     hex.EncodeToString(obj.ContentBytes()),
+	})
+}
+
+// handleGetDomain handles GET /domain/{name} requests.
+// Resolves a domain name to its associated ObjectID.
+func (s *Server) handleGetDomain(w http.ResponseWriter, r *http.Request) {
+	if s.domains == nil {
+		writeError(w, http.StatusServiceUnavailable, "domain resolution not available")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/domain/")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "missing domain name")
+		return
+	}
+
+	objectID, found := s.domains.ResolveDomain(name)
+	if !found {
+		writeError(w, http.StatusNotFound, "domain not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"objectId": hex.EncodeToString(objectID[:]),
 	})
 }
 

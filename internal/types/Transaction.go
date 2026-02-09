@@ -75,16 +75,19 @@ func (rcv *Transaction) MutateHash(j int, n byte) bool {
 	return false
 }
 
-func (rcv *Transaction) ReadObjects(j int) byte {
+func (rcv *Transaction) ReadRefs(obj *ObjectRef, j int) bool {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+		x := rcv._tab.Vector(o)
+		x += flatbuffers.UOffsetT(j) * 4
+		x = rcv._tab.Indirect(x)
+		obj.Init(rcv._tab.Bytes, x)
+		return true
 	}
-	return 0
+	return false
 }
 
-func (rcv *Transaction) ReadObjectsLength() int {
+func (rcv *Transaction) ReadRefsLength() int {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		return rcv._tab.VectorLen(o)
@@ -92,33 +95,19 @@ func (rcv *Transaction) ReadObjectsLength() int {
 	return 0
 }
 
-func (rcv *Transaction) ReadObjectsBytes() []byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
+func (rcv *Transaction) MutableRefs(obj *ObjectRef, j int) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
 	if o != 0 {
-		return rcv._tab.ByteVector(o + rcv._tab.Pos)
-	}
-	return nil
-}
-
-func (rcv *Transaction) MutateReadObjects(j int, n byte) bool {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+		x := rcv._tab.Vector(o)
+		x += flatbuffers.UOffsetT(j) * 4
+		x = rcv._tab.Indirect(x)
+		obj.Init(rcv._tab.Bytes, x)
+		return true
 	}
 	return false
 }
 
-func (rcv *Transaction) MutableObjects(j int) byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
-	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
-	}
-	return 0
-}
-
-func (rcv *Transaction) MutableObjectsLength() int {
+func (rcv *Transaction) MutableRefsLength() int {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
 	if o != 0 {
 		return rcv._tab.VectorLen(o)
@@ -126,33 +115,16 @@ func (rcv *Transaction) MutableObjectsLength() int {
 	return 0
 }
 
-func (rcv *Transaction) MutableObjectsBytes() []byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
-	if o != 0 {
-		return rcv._tab.ByteVector(o + rcv._tab.Pos)
-	}
-	return nil
-}
-
-func (rcv *Transaction) MutateMutableObjects(j int, n byte) bool {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
-	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
-	}
-	return false
-}
-
-func (rcv *Transaction) CreatesObjects() bool {
+func (rcv *Transaction) MaxCreateObjects() uint16 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
 	if o != 0 {
-		return rcv._tab.GetBool(o + rcv._tab.Pos)
+		return rcv._tab.GetUint16(o + rcv._tab.Pos)
 	}
-	return false
+	return 0
 }
 
-func (rcv *Transaction) MutateCreatesObjects(n bool) bool {
-	return rcv._tab.MutateBoolSlot(10, n)
+func (rcv *Transaction) MutateMaxCreateObjects(n uint16) bool {
+	return rcv._tab.MutateUint16Slot(10, n)
 }
 
 func (rcv *Transaction) Sender(j int) byte {
@@ -299,8 +271,20 @@ func (rcv *Transaction) MutateArgs(j int, n byte) bool {
 	return false
 }
 
+func (rcv *Transaction) MaxCreateDomains() uint16 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(22))
+	if o != 0 {
+		return rcv._tab.GetUint16(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Transaction) MutateMaxCreateDomains(n uint16) bool {
+	return rcv._tab.MutateUint16Slot(22, n)
+}
+
 func TransactionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(9)
+	builder.StartObject(10)
 }
 func TransactionAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(hash), 0)
@@ -308,20 +292,20 @@ func TransactionAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT)
 func TransactionStartHashVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
 }
-func TransactionAddReadObjects(builder *flatbuffers.Builder, readObjects flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(readObjects), 0)
+func TransactionAddReadRefs(builder *flatbuffers.Builder, readRefs flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(readRefs), 0)
 }
-func TransactionStartReadObjectsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
-	return builder.StartVector(1, numElems, 1)
+func TransactionStartReadRefsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(4, numElems, 4)
 }
-func TransactionAddMutableObjects(builder *flatbuffers.Builder, mutableObjects flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(mutableObjects), 0)
+func TransactionAddMutableRefs(builder *flatbuffers.Builder, mutableRefs flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(mutableRefs), 0)
 }
-func TransactionStartMutableObjectsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
-	return builder.StartVector(1, numElems, 1)
+func TransactionStartMutableRefsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(4, numElems, 4)
 }
-func TransactionAddCreatesObjects(builder *flatbuffers.Builder, createsObjects bool) {
-	builder.PrependBoolSlot(3, createsObjects, false)
+func TransactionAddMaxCreateObjects(builder *flatbuffers.Builder, maxCreateObjects uint16) {
+	builder.PrependUint16Slot(3, maxCreateObjects, 0)
 }
 func TransactionAddSender(builder *flatbuffers.Builder, sender flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(4, flatbuffers.UOffsetT(sender), 0)
@@ -349,6 +333,9 @@ func TransactionAddArgs(builder *flatbuffers.Builder, args flatbuffers.UOffsetT)
 }
 func TransactionStartArgsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
+}
+func TransactionAddMaxCreateDomains(builder *flatbuffers.Builder, maxCreateDomains uint16) {
+	builder.PrependUint16Slot(9, maxCreateDomains, 0)
 }
 func TransactionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()
