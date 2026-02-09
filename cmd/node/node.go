@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	"BluePods/internal/aggregation"
@@ -34,7 +35,7 @@ type Node struct {
 	dag         *consensus.DAG
 	api         *api.Server
 	snapManager *sync.SnapshotManager
-	syncBuffer  *sync.VertexBuffer // syncBuffer holds vertices during sync
+	syncBuffer  atomic.Pointer[sync.VertexBuffer] // syncBuffer holds vertices during sync
 	systemPod   [32]byte
 
 	// Aggregation components

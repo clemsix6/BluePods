@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"crypto/ed25519"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -545,6 +546,237 @@ func buildTestATXWithDomains(t *testing.T, funcName string, mutRefs []objectRef,
 }
 
 // =============================================================================
+// checkRefList Tests (malformed refs vs domain refs)
+// =============================================================================
+
+// TestCheckRefList_MalformedIDRejected verifies that a mutable ref with a
+// 16-byte ID (malformed standard ref) causes checkAndUpdate to return false.
+func TestCheckRefList_MalformedIDRejected(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
+
+	// Build a transaction with a malformed 16-byte ID ref
+	tx := buildTxWithMalformedRef(t, 16, false)
+
+	if ot.checkAndUpdate(tx) {
+		t.Fatal("checkAndUpdate should reject tx with malformed 16-byte object ID")
+	}
+}
+
+// TestCheckRefList_DomainRefSkipped verifies that a ref with a domain field
+// but no ID is treated as a domain ref and skipped (returns true).
+func TestCheckRefList_DomainRefSkipped(t *testing.T) {
+	db := newTestStorage(t)
+	ot := newObjectTracker(db)
+
+	// Build a transaction with a domain ref (has domain, no ID)
+	tx := buildTxWithDomainRef(t, "example.com")
+
+	if !ot.checkAndUpdate(tx) {
+		t.Fatal("checkAndUpdate should succeed: domain refs should be skipped")
+	}
+}
+
+// =============================================================================
+// Register Validator Tests (via executeTx commit path)
+// =============================================================================
+
+// TestHandleRegisterValidator_ViaExecuteTx tests that a register_validator
+// transaction submitted through executeTx correctly adds validator to set.
+func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Create a new validator to register
+	newVal := newTestValidator()
+	blsKey := [48]byte{0xAA, 0xBB}
+
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://new:8080", "quic://new:9090", blsKey)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	// Verify new validator is NOT in the set yet
+	if dag.validators.Contains(newVal.pubKey) {
+		t.Fatal("new validator should not be in set before register")
+	}
+
+	dag.executeTx(atx, 5)
+
+	// Validator should now be in the set
+	if !dag.validators.Contains(newVal.pubKey) {
+		t.Fatal("new validator should be in set after register")
+	}
+
+	// Verify network info was stored
+	info := dag.validators.Get(newVal.pubKey)
+	if info == nil {
+		t.Fatal("validator info should exist")
+	}
+	if info.HTTPAddr != "http://new:8080" {
+		t.Fatalf("expected http addr 'http://new:8080', got '%s'", info.HTTPAddr)
+	}
+	if info.QUICAddr != "quic://new:9090" {
+		t.Fatalf("expected quic addr 'quic://new:9090', got '%s'", info.QUICAddr)
+	}
+}
+
+// TestHandleRegisterValidator_WrongPod tests that register on wrong pod is ignored.
+func TestHandleRegisterValidator_WrongPod(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+	wrongPod := Hash{0xFF, 0xFE, 0xFD}
+
+	atxBytes := buildRegisterATX(t, newVal.pubKey, wrongPod, "http://x:1", "quic://x:2", [48]byte{})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	initialCount := dag.validators.Len()
+	dag.executeTx(atx, 5)
+
+	if dag.validators.Len() != initialCount {
+		t.Fatal("register on wrong pod should be ignored")
+	}
+}
+
+// TestHandleRegisterValidator_WrongFunction tests that wrong function name is ignored.
+func TestHandleRegisterValidator_WrongFunction(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+
+	// Build ATX with right pod but wrong function
+	atxBytes := buildSystemPodATX(t, newVal.pubKey, testSystemPod, "wrong_function")
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	initialCount := dag.validators.Len()
+	dag.executeTx(atx, 5)
+
+	if dag.validators.Len() != initialCount {
+		t.Fatal("wrong function name should not register validator")
+	}
+}
+
+// TestHandleRegisterValidator_InvalidSender tests that sender != 32 bytes is ignored.
+func TestHandleRegisterValidator_InvalidSender(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Build ATX with short sender (16 bytes instead of 32)
+	atxBytes := buildRegisterATXWithShortSender(t, testSystemPod)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	initialCount := dag.validators.Len()
+	dag.executeTx(atx, 5)
+
+	if dag.validators.Len() != initialCount {
+		t.Fatal("invalid sender should not register validator")
+	}
+}
+
+// TestHandleRegisterValidator_DuplicateRegister tests that registering the same
+// pubkey twice leaves the validator set unchanged (idempotent).
+func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+	blsKey := [48]byte{0xCC}
+
+	// Register once
+	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5)
+
+	countAfterFirst := dag.validators.Len()
+
+	// Register again with same pubkey
+	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6)
+
+	if dag.validators.Len() != countAfterFirst {
+		t.Fatal("duplicate register should not change validator count")
+	}
+}
+
+// TestHandleRegisterValidator_EpochAdditionsTracked tests that with epochLength > 0,
+// new validators are added to epochAdditions.
+func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+	blsKey := [48]byte{0xDD}
+
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5)
+
+	if len(dag.epochAdditions) != 1 {
+		t.Fatalf("expected 1 epoch addition, got %d", len(dag.epochAdditions))
+	}
+	if dag.epochAdditions[0] != newVal.pubKey {
+		t.Fatal("epoch addition should be the new validator")
+	}
+}
+
+// TestHandleRegisterValidator_TriggersTransition tests that when minValidators
+// is reached, transitionRound is set.
+func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	mock := &mockBroadcaster{}
+
+	// Set minValidators=3, currently we have 2
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil,
+		WithMinValidators(3),
+	)
+	defer dag.Close()
+
+	// Verify transition has not fired yet
+	if dag.transitionRound.Load() >= 0 {
+		t.Fatal("transition should not have fired yet")
+	}
+
+	// Register a third validator to hit minValidators=3
+	newVal := newTestValidator()
+	blsKey := [48]byte{0xEE}
+
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 10)
+
+	// Transition should now be set
+	if dag.transitionRound.Load() < 0 {
+		t.Fatal("transition should have fired when minValidators was reached")
+	}
+}
+
+// =============================================================================
 // Deregister Validator Tests (via executeTx commit path)
 // =============================================================================
 
@@ -1077,4 +1309,173 @@ func buildSystemPodATX(t *testing.T, sender Hash, pod Hash, funcName string) []b
 	builder.Finish(atxOff)
 
 	return builder.FinishedBytes()
+}
+
+// buildRegisterATX creates a register_validator ATX with network addresses and BLS key.
+func buildRegisterATX(t *testing.T, sender Hash, pod Hash, httpAddr, quicAddr string, blsPubkey [48]byte) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	// Encode args in Borsh format (same as genesis.encodeRegisterValidatorArgs)
+	args := encodeRegisterValidatorArgsBorsh([]byte(httpAddr), []byte(quicAddr), blsPubkey[:])
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString("register_validator")
+	argsVec := builder.CreateByteVector(args)
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	txOff := types.TransactionEnd(builder)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
+}
+
+// encodeRegisterValidatorArgsBorsh encodes register_validator args in Borsh format.
+// Format: u32 len + http bytes + u32 len + quic bytes + u32 len + bls bytes
+func encodeRegisterValidatorArgsBorsh(httpAddr, quicAddr, blsPubkey []byte) []byte {
+	buf := make([]byte, 0, 4+len(httpAddr)+4+len(quicAddr)+4+len(blsPubkey))
+	lenBuf := make([]byte, 4)
+
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(httpAddr)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, httpAddr...)
+
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, quicAddr...)
+
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(blsPubkey)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, blsPubkey...)
+
+	return buf
+}
+
+// buildRegisterATXWithShortSender creates a register_validator ATX with a 16-byte sender.
+func buildRegisterATXWithShortSender(t *testing.T, pod Hash) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(512)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(make([]byte, 16)) // short sender
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString("register_validator")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	txOff := types.TransactionEnd(builder)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
+}
+
+// buildTxWithMalformedRef creates a Transaction with a mutable ref that has a non-32-byte ID.
+func buildTxWithMalformedRef(t *testing.T, idLen int, isDomain bool) *types.Transaction {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(512)
+
+	// Build a single mutable ref with a malformed ID
+	malformedID := make([]byte, idLen)
+	for i := range malformedID {
+		malformedID[i] = 0xAA
+	}
+
+	idVec := builder.CreateByteVector(malformedID)
+	types.ObjectRefStart(builder)
+	types.ObjectRefAddId(builder, idVec)
+	types.ObjectRefAddVersion(builder, 0)
+	refOff := types.ObjectRefEnd(builder)
+
+	types.TransactionStartMutableRefsVector(builder, 1)
+	builder.PrependUOffsetT(refOff)
+	mutVec := builder.EndVector(1)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(make([]byte, 32))
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcName := builder.CreateString("test")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcName)
+	types.TransactionAddMutableRefs(builder, mutVec)
+	txOff := types.TransactionEnd(builder)
+	builder.Finish(txOff)
+
+	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
+}
+
+// buildTxWithDomainRef creates a Transaction with a mutable ref that has a domain field but no ID.
+func buildTxWithDomainRef(t *testing.T, domain string) *types.Transaction {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(512)
+
+	// Build a domain ref: has domain field, no ID
+	domainVec := builder.CreateByteVector([]byte(domain))
+	types.ObjectRefStart(builder)
+	types.ObjectRefAddDomain(builder, domainVec)
+	types.ObjectRefAddVersion(builder, 0)
+	refOff := types.ObjectRefEnd(builder)
+
+	types.TransactionStartMutableRefsVector(builder, 1)
+	builder.PrependUOffsetT(refOff)
+	mutVec := builder.EndVector(1)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(make([]byte, 32))
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcName := builder.CreateString("test")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcName)
+	types.TransactionAddMutableRefs(builder, mutVec)
+	txOff := types.TransactionEnd(builder)
+	builder.Finish(txOff)
+
+	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
 }

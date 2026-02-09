@@ -77,7 +77,12 @@ func (ot *objectTracker) checkRefList(tx *types.Transaction, mutable bool) bool 
 
 		idBytes := ref.IdBytes()
 		if len(idBytes) != 32 {
-			continue
+			// Domain refs have no ID — skip them (version tracking is by object ID)
+			if len(ref.Domain()) > 0 {
+				continue
+			}
+			// Malformed standard ref — reject transaction
+			return false
 		}
 
 		var objectID Hash
@@ -105,6 +110,10 @@ func (ot *objectTracker) incrementMutableObjects(tx *types.Transaction) {
 
 		idBytes := ref.IdBytes()
 		if len(idBytes) != 32 {
+			// Domain refs have no ID — skip them
+			if len(ref.Domain()) > 0 {
+				continue
+			}
 			continue
 		}
 

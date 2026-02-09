@@ -6,6 +6,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 
 	"BluePods/internal/genesis"
+	"BluePods/internal/logger"
 	"BluePods/internal/types"
 )
 
@@ -132,7 +133,16 @@ func (d *DAG) buildTxVector(builder *flatbuffers.Builder, txs [][]byte) flatbuff
 
 // tryRebuildAttestedTx parses an AttestedTransaction and rebuilds it in the builder.
 // Returns (offset, true) on success, (0, false) if data is invalid.
-func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (flatbuffers.UOffsetT, bool) {
+// Uses defer/recover to handle FlatBuffer panics on corrupted data.
+func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (offset flatbuffers.UOffsetT, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Warn("malformed ATX skipped", "panic", r)
+			offset = 0
+			ok = false
+		}
+	}()
+
 	if len(data) < 8 {
 		return 0, false
 	}

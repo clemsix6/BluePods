@@ -28,12 +28,14 @@ type snapshotResult struct {
 // runValidator runs the node as a new validator: sync then participate.
 func (n *Node) runValidator() error {
 	// Create buffer to collect vertices during sync
-	n.syncBuffer = sync.NewVertexBuffer()
+	n.syncBuffer.Store(sync.NewVertexBuffer())
 
 	// Set up handler to buffer vertices
 	n.network.OnMessage(func(peer *network.Peer, data []byte) {
 		logger.Debug("buffering vertex", "from", peer.Address(), "len", len(data))
-		n.syncBuffer.Add(data)
+		if buf := n.syncBuffer.Load(); buf != nil {
+			buf.Add(data)
+		}
 	})
 
 	// Connect to bootstrap
@@ -89,11 +91,13 @@ func (n *Node) runValidator() error {
 // runListener runs the node in listener mode (observe only).
 func (n *Node) runListener() error {
 	// Create buffer to collect vertices during sync
-	n.syncBuffer = sync.NewVertexBuffer()
+	n.syncBuffer.Store(sync.NewVertexBuffer())
 
 	// Set up handler to buffer vertices
 	n.network.OnMessage(func(peer *network.Peer, data []byte) {
-		n.syncBuffer.Add(data)
+		if buf := n.syncBuffer.Load(); buf != nil {
+			buf.Add(data)
+		}
 	})
 
 	// Connect to bootstrap
@@ -125,9 +129,9 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	time.Sleep(bufferDuration)
 
 	logger.Info("buffer status",
-		"vertices", n.syncBuffer.Len(),
-		"minRound", n.syncBuffer.MinRound(),
-		"maxRound", n.syncBuffer.MaxRound(),
+		"vertices", n.syncBuffer.Load().Len(),
+		"minRound", n.syncBuffer.Load().MinRound(),
+		"maxRound", n.syncBuffer.Load().MaxRound(),
 	)
 
 	// Request and apply snapshot
@@ -178,8 +182,9 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	}
 
 	// Clear buffer
-	n.syncBuffer.Clear()
-	n.syncBuffer = nil
+	if buf := n.syncBuffer.Swap(nil); buf != nil {
+		buf.Clear()
+	}
 
 	logger.Info("sync complete", "round", n.dag.Round())
 
@@ -342,7 +347,7 @@ func (n *Node) replayBufferedVertices(lastCommittedRound uint64) error {
 	// The snapshot may not include all historical vertices, and the buffer
 	// contains vertices received during sync that complete the chain.
 	// The DAG will handle duplicates and out-of-order vertices gracefully.
-	vertices := n.syncBuffer.GetAll()
+	vertices := n.syncBuffer.Load().GetAll()
 
 	// Count unique producers in buffer to debug sync issues
 	producers := make(map[string]int)
@@ -355,8 +360,8 @@ func (n *Node) replayBufferedVertices(lastCommittedRound uint64) error {
 	logger.Info("replaying vertices",
 		"count", len(vertices),
 		"fromSnapshot", lastCommittedRound,
-		"bufferMinRound", n.syncBuffer.MinRound(),
-		"bufferMaxRound", n.syncBuffer.MaxRound(),
+		"bufferMinRound", n.syncBuffer.Load().MinRound(),
+		"bufferMaxRound", n.syncBuffer.Load().MaxRound(),
 		"dagRoundAfterImport", n.dag.Round(),
 		"producersInBuffer", producers,
 	)
