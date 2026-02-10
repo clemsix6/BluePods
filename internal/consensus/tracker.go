@@ -11,11 +11,12 @@ import (
 // trackerKeyPrefix is the Pebble key prefix for tracker entries.
 var trackerKeyPrefix = []byte("t:")
 
-// ObjectTrackerEntry represents an object with its version and replication factor.
+// ObjectTrackerEntry represents an object with its version, replication, and fees.
 type ObjectTrackerEntry struct {
 	ID          Hash   // ID is the 32-byte object identifier
 	Version     uint64 // Version is the current version number
 	Replication uint16 // Replication is the number of holders for this object
+	Fees        uint64 // Fees is the storage deposit set at creation
 }
 
 // objectTracker tracks object versions and replication from committed transactions.
@@ -122,7 +123,8 @@ func (ot *objectTracker) incrementMutableObjects(tx *types.Transaction) {
 
 		version := ot.getVersion(objectID)
 		replication := ot.getReplication(objectID)
-		ot.trackObject(objectID, version+1, replication)
+		fees := ot.getFees(objectID)
+		ot.trackObject(objectID, version+1, replication, fees)
 	}
 }
 
@@ -152,10 +154,21 @@ func (ot *objectTracker) getReplication(objectID Hash) uint16 {
 	return binary.LittleEndian.Uint16(value[8:10])
 }
 
-// trackObject stores or updates an object's version and replication.
-func (ot *objectTracker) trackObject(objectID Hash, version uint64, replication uint16) {
+// getFees returns the storage deposit of an object.
+// Returns 0 if the object is not tracked.
+func (ot *objectTracker) getFees(objectID Hash) uint64 {
+	value, err := ot.db.Get(ot.makeKey(objectID))
+	if err != nil || value == nil || len(value) < 18 {
+		return 0
+	}
+
+	return binary.LittleEndian.Uint64(value[10:18])
+}
+
+// trackObject stores or updates an object's version, replication, and fees.
+func (ot *objectTracker) trackObject(objectID Hash, version uint64, replication uint16, fees uint64) {
 	key := ot.makeKey(objectID)
-	value := ot.encodeValue(version, replication)
+	value := ot.encodeValue(version, replication, fees)
 
 	_ = ot.db.Set(key, value)
 }
@@ -178,11 +191,18 @@ func (ot *objectTracker) Export() []ObjectTrackerEntry {
 		var id Hash
 		copy(id[:], key[len(trackerKeyPrefix):])
 
-		entries = append(entries, ObjectTrackerEntry{
+		entry := ObjectTrackerEntry{
 			ID:          id,
 			Version:     binary.LittleEndian.Uint64(value[:8]),
 			Replication: binary.LittleEndian.Uint16(value[8:10]),
-		})
+		}
+
+		// Read fees from extended value (18 bytes: version:8 + replication:2 + fees:8)
+		if len(value) >= 18 {
+			entry.Fees = binary.LittleEndian.Uint64(value[10:18])
+		}
+
+		entries = append(entries, entry)
 
 		return nil
 	})
@@ -197,7 +217,7 @@ func (ot *objectTracker) Import(entries []ObjectTrackerEntry) {
 	for i, entry := range entries {
 		pairs[i] = storage.KeyValue{
 			Key:   ot.makeKey(entry.ID),
-			Value: ot.encodeValue(entry.Version, entry.Replication),
+			Value: ot.encodeValue(entry.Version, entry.Replication, entry.Fees),
 		}
 	}
 
@@ -212,11 +232,12 @@ func (ot *objectTracker) makeKey(objectID Hash) []byte {
 	return key
 }
 
-// encodeValue encodes version (8 bytes LE) + replication (2 bytes LE) = 10 bytes.
-func (ot *objectTracker) encodeValue(version uint64, replication uint16) []byte {
-	value := make([]byte, 10)
+// encodeValue encodes version (8 bytes LE) + replication (2 bytes LE) + fees (8 bytes LE) = 18 bytes.
+func (ot *objectTracker) encodeValue(version uint64, replication uint16, fees uint64) []byte {
+	value := make([]byte, 18)
 	binary.LittleEndian.PutUint64(value[:8], version)
 	binary.LittleEndian.PutUint16(value[8:10], replication)
+	binary.LittleEndian.PutUint64(value[10:18], fees)
 	return value
 }
 

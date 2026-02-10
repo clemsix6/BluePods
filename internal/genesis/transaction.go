@@ -12,14 +12,14 @@ import (
 // BuildMintTx creates a signed mint transaction wrapped in AttestedTransaction.
 func BuildMintTx(privKey ed25519.PrivateKey, systemPod [32]byte, amount uint64, owner [32]byte) []byte {
 	args := EncodeMintArgs(amount, owner)
-	return BuildAttestedTx(privKey, systemPod, "mint", args, 1, 0)
+	return BuildAttestedTx(privKey, systemPod, "mint", args, []uint16{0}, 0, 0, nil)
 }
 
 // BuildRegisterValidatorTx creates a signed register_validator transaction as ATX.
 // Used for genesis transactions sent directly via HTTP (bootstrap path).
 func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr string, blsPubkey []byte) []byte {
 	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
-	return BuildAttestedTx(privKey, systemPod, "register_validator", args, 1, 0)
+	return BuildAttestedTx(privKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
 }
 
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
@@ -28,12 +28,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, 1, 0)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, 1, 0, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -45,12 +45,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, 0, 0)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, nil, 0, 0, nil)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(512)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, 0, 0, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, nil, 0, 0, nil, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -58,11 +58,11 @@ func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byt
 
 // BuildAttestedTx creates a signed transaction wrapped in AttestedTransaction.
 // Genesis transactions have no objects or proofs since they don't reference existing objects.
-func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16) []byte {
+func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	// Build unsigned tx first to compute hash
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, maxCreateObjects, maxCreateDomains)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
@@ -70,7 +70,7 @@ func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, 
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Build Transaction table first (must be done before AttestedTransaction)
-	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, maxCreateObjects, maxCreateDomains, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig)
 
 	// Empty objects vector
 	types.AttestedTransactionStartObjectsVector(builder, 0)
@@ -134,6 +134,15 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	readRefsVec := BuildObjectRefVectorFromTx(builder, tx, false)
 	mutRefsVec := BuildObjectRefVectorFromTx(builder, tx, true)
 
+	// Rebuild created_objects_replication vector
+	corVec := rebuildCreatedObjectsReplication(builder, tx)
+
+	// Rebuild gas_coin vector
+	var gasCoinVec flatbuffers.UOffsetT
+	if gcBytes := tx.GasCoinBytes(); len(gcBytes) > 0 {
+		gasCoinVec = builder.CreateByteVector(gcBytes)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
@@ -141,8 +150,16 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateObjects(builder, tx.MaxCreateObjects())
 	types.TransactionAddMaxCreateDomains(builder, tx.MaxCreateDomains())
+	types.TransactionAddMaxGas(builder, tx.MaxGas())
+
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
+
+	if gasCoinVec != 0 {
+		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
 
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)
@@ -153,6 +170,21 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	}
 
 	return types.TransactionEnd(builder)
+}
+
+// rebuildCreatedObjectsReplication rebuilds the created_objects_replication vector from tx.
+func rebuildCreatedObjectsReplication(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
+	count := tx.CreatedObjectsReplicationLength()
+	if count == 0 {
+		return 0
+	}
+
+	types.TransactionStartCreatedObjectsReplicationVector(builder, count)
+	for i := count - 1; i >= 0; i-- {
+		builder.PrependUint16(tx.CreatedObjectsReplication(i))
+	}
+
+	return builder.EndVector(count)
 }
 
 // BuildObjectRefVectorFromTx rebuilds a read_refs or mutable_refs vector from a Transaction.
@@ -230,17 +262,17 @@ type ObjectRefData struct {
 }
 
 // BuildTxTable builds a Transaction table in the given builder.
-func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
-	return BuildTxTableWithRefs(builder, sender, pod, funcName, args, maxCreateObjects, maxCreateDomains, hash, sig, nil, nil)
+func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
+	return BuildTxTableWithRefs(builder, sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig, nil, nil)
 }
 
 // BuildUnsignedTxBytes creates transaction bytes without hash and signature for hashing.
-func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16) []byte {
-	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, maxCreateObjects, maxCreateDomains, nil, nil)
+func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte) []byte {
+	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, nil, nil)
 }
 
 // BuildUnsignedTxBytesWithRefs creates transaction bytes with ObjectRef references.
-func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, mutableRefs, readRefs []ObjectRefData) []byte {
+func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	argsVec := builder.CreateByteVector(args)
@@ -251,13 +283,28 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 	mutRefsVec := buildObjectRefDataVector(builder, mutableRefs, true)
 	readRefsVec := buildObjectRefDataVector(builder, readRefs, false)
 
+	corVec := buildCreatedObjectsReplicationVector(builder, createdObjectsReplication)
+
+	var gasCoinVec flatbuffers.UOffsetT
+	if len(gasCoin) > 0 {
+		gasCoinVec = builder.CreateByteVector(gasCoin)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
 	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
+	types.TransactionAddMaxGas(builder, maxGas)
+
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
+
+	if gasCoinVec != 0 {
+		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
 
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)
@@ -274,7 +321,7 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 }
 
 // BuildTxTableWithRefs builds a Transaction table with ObjectRef references in the given builder.
-func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, maxCreateObjects, maxCreateDomains uint16, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
+func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
 	hashVec := builder.CreateByteVector(hash[:])
 	sigVec := builder.CreateByteVector(sig)
 	argsVec := builder.CreateByteVector(args)
@@ -285,6 +332,13 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 	mutRefsVec := buildObjectRefDataVector(builder, mutableRefs, true)
 	readRefsVec := buildObjectRefDataVector(builder, readRefs, false)
 
+	corVec := buildCreatedObjectsReplicationVector(builder, createdObjectsReplication)
+
+	var gasCoinVec flatbuffers.UOffsetT
+	if len(gasCoin) > 0 {
+		gasCoinVec = builder.CreateByteVector(gasCoin)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
@@ -292,8 +346,16 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
 	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
+	types.TransactionAddMaxGas(builder, maxGas)
+
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
+
+	if gasCoinVec != 0 {
+		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
 
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)
@@ -304,6 +366,20 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 	}
 
 	return types.TransactionEnd(builder)
+}
+
+// buildCreatedObjectsReplicationVector builds the [uint16] vector for created objects replication.
+func buildCreatedObjectsReplicationVector(builder *flatbuffers.Builder, replication []uint16) flatbuffers.UOffsetT {
+	if len(replication) == 0 {
+		return 0
+	}
+
+	types.TransactionStartCreatedObjectsReplicationVector(builder, len(replication))
+	for i := len(replication) - 1; i >= 0; i-- {
+		builder.PrependUint16(replication[i])
+	}
+
+	return builder.EndVector(len(replication))
 }
 
 // buildObjectRefDataVector builds an ObjectRef vector from ObjectRefData slices.

@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"fmt"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -107,8 +108,10 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 }
 
 // commitRound processes all transactions from a committed round.
+// Tracks per-validator round production and accumulates epoch fees.
 func (d *DAG) commitRound(round uint64) {
 	hashes := d.store.getByRound(round)
+	d.epochTotalRounds++
 
 	for _, h := range hashes {
 		v := d.store.get(h)
@@ -116,29 +119,57 @@ func (d *DAG) commitRound(round uint64) {
 			continue
 		}
 
-		d.processTransactions(v, round)
+		// Track round production per validator
+		producer := extractProducer(v)
+		d.epochRoundsProduced[producer]++
+
+		fees := d.processTransactions(v, round)
+
+		// Accumulate epoch fees from vertex fee summary
+		d.epochFees += fees.Epoch
+
+		if fees.Total > 0 {
+			logger.Debug("vertex fees",
+				"round", round,
+				"total", fees.Total,
+				"aggregator", fees.Aggregator,
+				"burned", fees.Burned,
+				"epoch", fees.Epoch,
+			)
+		}
 	}
 }
 
 // processTransactions handles committed transactions from a vertex.
-func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) {
+// Returns the accumulated fee summary for the vertex.
+func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) FeeSplit {
 	var atx types.AttestedTransaction
+	var vertexFees FeeSplit
+
+	producer := extractProducer(v)
 
 	for i := 0; i < v.TransactionsLength(); i++ {
 		if !v.Transactions(&atx, i) {
 			continue
 		}
 
-		d.executeTx(&atx, commitRound)
+		txFees := d.executeTx(&atx, commitRound, producer)
+		vertexFees.Total += txFees.Total
+		vertexFees.Aggregator += txFees.Aggregator
+		vertexFees.Burned += txFees.Burned
+		vertexFees.Epoch += txFees.Epoch
 	}
+
+	return vertexFees
 }
 
-// executeTx checks version conflicts and executes a transaction.
-func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
+// executeTx checks version conflicts, deducts fees, and executes a transaction.
+// Returns the fee split for this transaction (zero if fees disabled).
+func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, producer Hash) FeeSplit {
 	tx := atx.Transaction(nil)
 	if tx == nil {
 		logger.Warn("tx is nil, skipping")
-		return
+		return FeeSplit{}
 	}
 
 	funcName := string(tx.FunctionName())
@@ -148,7 +179,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	if !d.tracker.checkAndUpdate(tx) {
 		logger.Debug("version conflict", "func", funcName)
 		d.emitTransaction(tx, false) // conflict
-		return
+		return FeeSplit{}
 	}
 
 	// Verify BLS quorum proofs (skip genesis/singletons/creates_objects with no proofs)
@@ -156,8 +187,18 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 		if err := d.verifyATXProofs(atx); err != nil {
 			logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
 			d.emitTransaction(tx, false)
-			return
+			return FeeSplit{}
 		}
+	}
+
+	// Protocol-level fee deduction (before execution)
+	feeSplit, proceed := d.deductFees(tx, atx, producer)
+
+	// If fee deduction rejected tx (insufficient funds, invalid gas_coin, min_gas violation)
+	if !proceed {
+		logger.Debug("fee deduction rejected", "func", funcName)
+		d.emitTransaction(tx, false)
+		return feeSplit
 	}
 
 	// Handle system transactions
@@ -165,12 +206,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 	d.handleDeregisterValidator(tx, commitRound)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
-	// max_create_objects/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
+	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
 	// Otherwise → only holders of mutable objects execute.
-	if tx.MaxCreateObjects() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
+	if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
 		d.emitTransaction(tx, true)
-		return
+		return feeSplit
 	}
 
 	// Execute via state (objects are in AttestedTransaction)
@@ -189,6 +230,235 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64) {
 
 	logger.Debug("tx completed", "func", funcName, "success", success)
 	d.emitTransaction(tx, success)
+
+	return feeSplit
+}
+
+// deductFees performs protocol-level fee deduction from gas_coin.
+// Returns the fee split and whether the tx should proceed.
+// proceed=true means fees were successfully handled (or fees disabled/no gas_coin).
+// proceed=false means tx must be rejected (invalid gas_coin, min_gas, insufficient funds).
+func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, bool) {
+	if d.feeParams == nil || d.coinStore == nil {
+		return FeeSplit{}, true
+	}
+
+	// No gas_coin → genesis/bootstrap tx, skip fees
+	gasCoinBytes := tx.GasCoinBytes()
+	if len(gasCoinBytes) != 32 {
+		return FeeSplit{}, true
+	}
+
+	var gasCoinID [32]byte
+	copy(gasCoinID[:], gasCoinBytes)
+
+	// min_gas anti-spam check
+	if tx.MaxGas() < d.feeParams.MinGas {
+		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", d.feeParams.MinGas)
+		return FeeSplit{}, false
+	}
+
+	// Validate gas_coin ownership: must belong to sender
+	if err := d.validateGasCoin(tx, gasCoinID); err != nil {
+		logger.Warn("gas coin validation failed", "error", err)
+		return FeeSplit{}, false
+	}
+
+	// Calculate fee from tx header
+	fee := d.calculateTxFee(tx, atx)
+	if fee == 0 {
+		return FeeSplit{}, true
+	}
+
+	// Deduct fee from gas_coin
+	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
+	if err != nil {
+		logger.Warn("fee deduction failed", "error", err)
+		return FeeSplit{}, false
+	}
+
+	// Split the actually deducted amount
+	split := SplitFee(deducted, *d.feeParams)
+
+	// Credit aggregator (vertex producer)
+	d.creditAggregator(producer, split.Aggregator)
+
+	// If insufficient funds: fees partially deducted, tx rejected
+	if !fullyCovered {
+		split.Total = fee
+		return split, false
+	}
+
+	return split, true
+}
+
+// validateGasCoin checks that the gas_coin exists, is a singleton, and belongs to sender.
+func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
+	data := d.coinStore.GetObject(gasCoinID)
+	if data == nil {
+		return fmt.Errorf("gas coin not found: %x", gasCoinID[:8])
+	}
+
+	// Must be a singleton (replication=0)
+	if rep := readCoinReplication(data); rep != 0 {
+		return fmt.Errorf("gas coin is not a singleton: replication=%d", rep)
+	}
+
+	// Owner must match sender
+	owner, err := readCoinOwner(data)
+	if err != nil {
+		return err
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return fmt.Errorf("invalid sender length: %d", len(senderBytes))
+	}
+
+	var sender [32]byte
+	copy(sender[:], senderBytes)
+
+	if owner != sender {
+		return fmt.Errorf("gas coin owner mismatch: owner=%x sender=%x", owner[:8], sender[:8])
+	}
+
+	return nil
+}
+
+// calculateTxFee computes the total fee from transaction header fields.
+func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransaction) uint64 {
+	// Build mutable refs for replication ratio
+	mutableRefs := extractMutableObjectRefs(tx, atx)
+
+	// Count standard objects (non-singletons in read + mutable refs)
+	readRefs := extractReadObjectRefs(tx, atx)
+	allRefs := append(mutableRefs, readRefs...)
+	standardCount := CountStandardObjects(allRefs)
+
+	// Build created objects replication slice
+	createdReps := extractCreatedObjectsReplication(tx)
+
+	// Calculate replication ratio
+	totalValidators := d.validators.Len()
+	repNum, repDenom := ReplicationRatio(
+		mutableRefs,
+		len(createdReps),
+		int(tx.MaxCreateDomains()),
+		d.computeHolders,
+		totalValidators,
+	)
+
+	return CalculateFee(
+		tx.MaxGas(),
+		repNum, repDenom,
+		standardCount,
+		createdReps,
+		int(tx.MaxCreateDomains()),
+		totalValidators,
+		*d.feeParams,
+	)
+}
+
+// creditAggregator credits the aggregator's coin with the aggregator share.
+func (d *DAG) creditAggregator(producer Hash, amount uint64) {
+	if amount == 0 || d.coinStore == nil {
+		return
+	}
+
+	// Look up aggregator's coin. For now, the aggregator coin is identified
+	// through ValidatorInfo. If not available, skip credit silently.
+	info := d.validators.Get(producer)
+	if info == nil {
+		return
+	}
+
+	// TODO: aggregator coin lookup via ValidatorInfo once reward_coin is implemented
+	// For now, aggregator credits are accumulated but not distributed to a specific coin.
+}
+
+// extractMutableObjectRefs builds ObjectRef slice from tx mutable refs + ATX replication map.
+func extractMutableObjectRefs(tx *types.Transaction, atx *types.AttestedTransaction) []ObjectRef {
+	count := tx.MutableRefsLength()
+	if count == 0 {
+		return nil
+	}
+
+	repMap := buildReplicationMap(atx)
+	refs := make([]ObjectRef, 0, count)
+	var ref types.ObjectRef
+
+	for i := 0; i < count; i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
+		var id [32]byte
+		copy(id[:], idBytes)
+
+		replication := uint16(0)
+		if rep, found := repMap[id]; found {
+			replication = rep
+		}
+
+		refs = append(refs, ObjectRef{ID: id, Replication: replication})
+	}
+
+	return refs
+}
+
+// extractReadObjectRefs builds ObjectRef slice from tx read refs + ATX replication map.
+func extractReadObjectRefs(tx *types.Transaction, atx *types.AttestedTransaction) []ObjectRef {
+	count := tx.ReadRefsLength()
+	if count == 0 {
+		return nil
+	}
+
+	repMap := buildReplicationMap(atx)
+	refs := make([]ObjectRef, 0, count)
+	var ref types.ObjectRef
+
+	for i := 0; i < count; i++ {
+		if !tx.ReadRefs(&ref, i) {
+			continue
+		}
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			continue
+		}
+
+		var id [32]byte
+		copy(id[:], idBytes)
+
+		replication := uint16(0)
+		if rep, found := repMap[id]; found {
+			replication = rep
+		}
+
+		refs = append(refs, ObjectRef{ID: id, Replication: replication})
+	}
+
+	return refs
+}
+
+// extractCreatedObjectsReplication reads the created_objects_replication vector from tx.
+func extractCreatedObjectsReplication(tx *types.Transaction) []uint16 {
+	count := tx.CreatedObjectsReplicationLength()
+	if count == 0 {
+		return nil
+	}
+
+	reps := make([]uint16, count)
+	for i := 0; i < count; i++ {
+		reps[i] = tx.CreatedObjectsReplication(i)
+	}
+
+	return reps
 }
 
 // shouldExecute returns true if this node should execute the transaction.
@@ -443,6 +713,7 @@ func serializeObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffer
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 
 	return types.ObjectEnd(builder)
 }

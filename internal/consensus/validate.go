@@ -43,6 +43,11 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		return err
 	}
 
+	// 6. Fee summary must match recalculation from tx headers
+	if err := d.validateFeeSummary(v); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -196,6 +201,65 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	if len(parentProducers) < quorumSize {
 		return fmt.Errorf("insufficient parent quorum: got %d, need %d",
 			len(parentProducers), quorumSize)
+	}
+
+	return nil
+}
+
+// validateFeeSummary verifies the vertex fee_summary by recalculating from tx headers.
+// Skipped if fee system is not active (feeParams nil).
+func (d *DAG) validateFeeSummary(v *types.Vertex) error {
+	if d.feeParams == nil {
+		return nil
+	}
+
+	declared := v.FeeSummary(nil)
+	if declared == nil {
+		// No fee summary declared and fees are enabled: only ok if no transactions
+		if v.TransactionsLength() == 0 {
+			return nil
+		}
+		return fmt.Errorf("missing fee_summary with %d transactions", v.TransactionsLength())
+	}
+
+	// Recalculate from transaction headers
+	var totalFees, totalAgg, totalBurned, totalEpoch uint64
+	var atx types.AttestedTransaction
+
+	for i := 0; i < v.TransactionsLength(); i++ {
+		if !v.Transactions(&atx, i) {
+			continue
+		}
+
+		tx := atx.Transaction(nil)
+		if tx == nil || len(tx.GasCoinBytes()) != 32 {
+			continue
+		}
+
+		fee := d.calculateTxFee(tx, &atx)
+		split := SplitFee(fee, *d.feeParams)
+
+		totalFees += split.Total
+		totalAgg += split.Aggregator
+		totalBurned += split.Burned
+		totalEpoch += split.Epoch
+	}
+
+	if declared.TotalFees() != totalFees {
+		return fmt.Errorf("fee_summary.total_fees mismatch: declared %d, computed %d",
+			declared.TotalFees(), totalFees)
+	}
+	if declared.TotalAggregator() != totalAgg {
+		return fmt.Errorf("fee_summary.total_aggregator mismatch: declared %d, computed %d",
+			declared.TotalAggregator(), totalAgg)
+	}
+	if declared.TotalBurned() != totalBurned {
+		return fmt.Errorf("fee_summary.total_burned mismatch: declared %d, computed %d",
+			declared.TotalBurned(), totalBurned)
+	}
+	if declared.TotalEpoch() != totalEpoch {
+		return fmt.Errorf("fee_summary.total_epoch mismatch: declared %d, computed %d",
+			declared.TotalEpoch(), totalEpoch)
 	}
 
 	return nil

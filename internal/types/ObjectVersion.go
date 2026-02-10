@@ -99,8 +99,20 @@ func (rcv *ObjectVersion) MutateReplication(n uint16) bool {
 	return rcv._tab.MutateUint16Slot(8, n)
 }
 
+func (rcv *ObjectVersion) Fees() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) MutateFees(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(10, n)
+}
+
 func ObjectVersionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(3)
+	builder.StartObject(4)
 }
 func ObjectVersionAddId(builder *flatbuffers.Builder, id flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(id), 0)
@@ -113,6 +125,9 @@ func ObjectVersionAddVersion(builder *flatbuffers.Builder, version uint64) {
 }
 func ObjectVersionAddReplication(builder *flatbuffers.Builder, replication uint16) {
 	builder.PrependUint16Slot(2, replication, 0)
+}
+func ObjectVersionAddFees(builder *flatbuffers.Builder, fees uint64) {
+	builder.PrependUint64Slot(3, fees, 0)
 }
 func ObjectVersionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

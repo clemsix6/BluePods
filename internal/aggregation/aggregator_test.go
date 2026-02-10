@@ -89,7 +89,6 @@ func buildTestTransaction(readObjects, mutableObjects [][32]byte) []byte {
 		types.TransactionAddMutableRefs(builder, mutableRefsVec)
 	}
 
-	types.TransactionAddMaxCreateObjects(builder, 0)
 	types.TransactionAddSender(builder, senderOffset)
 	types.TransactionAddSignature(builder, sigOffset)
 	types.TransactionAddPod(builder, podOffset)

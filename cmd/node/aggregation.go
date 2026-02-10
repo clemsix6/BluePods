@@ -50,14 +50,37 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	n.state.SetIsHolder(isHolder)
 
 	// Wire object creation callback to tracker
-	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
-		n.dag.TrackObject(id, version, replication)
+	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
+		n.dag.TrackObject(id, version, replication, fees)
 	})
 
 	// Set up ATX proof verifier
 	n.dag.SetATXProofVerifier(n.buildATXVerifier(validators))
 
+	// Set up fee system
+	n.initFeeSystem(validators)
+
 	logger.Info("aggregation initialized")
+}
+
+// initFeeSystem configures protocol-level fee deduction and storage deposits.
+func (n *Node) initFeeSystem(validators *consensus.ValidatorSet) {
+	feeParams := consensus.DefaultFeeParams()
+
+	// Build holder computation closure for replication ratio
+	computeHolders := func(objectID [32]byte, replication int) []consensus.Hash {
+		return n.rendezvous.ComputeHolders(objectID, replication)
+	}
+
+	// Wire into DAG for fee deduction at commit
+	n.dag.SetFeeSystem(n.state, &feeParams, computeHolders)
+
+	// Wire into state for storage deposits on object creation/deletion
+	n.state.SetStorageFees(
+		feeParams.StorageFee,
+		feeParams.StorageRefundBPS,
+		validators.Len(),
+	)
 }
 
 // buildIsHolder creates a closure that checks if this node is a holder for an object.

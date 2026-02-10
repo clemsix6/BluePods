@@ -240,7 +240,7 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 	args := encodeSplitArgs(amount, recipient)
 	mutableRefs := buildMutableRef(coinID, coin.Version)
 
-	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "split", args, 1, mutableRefs, nil)
+	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "split", args, []uint16{0}, mutableRefs, nil)
 	newCoinID := computeNewObjectID(txHash)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
@@ -260,7 +260,7 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 	args := encodeTransferArgs(recipient)
 	mutableRefs := buildMutableRef(coinID, coin.Version)
 
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer", args, 0, mutableRefs, nil)
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer", args, nil, mutableRefs, nil)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
 		return fmt.Errorf("submit transfer tx:\n%w", err)
@@ -298,7 +298,7 @@ func encodeTransferArgs(newOwner [32]byte) []byte {
 func (w *Wallet) CreateNFT(c *Client, replication uint16, metadata []byte) ([32]byte, error) {
 	args := encodeCreateNftArgs(w.Pubkey(), replication, metadata)
 
-	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_nft", args, 1, nil, nil)
+	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_nft", args, []uint16{replication}, nil, nil)
 	nftID := computeNewObjectID(txHash)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
@@ -318,7 +318,7 @@ func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) erro
 	args := encodeTransferArgs(recipient)
 	mutableRefs := buildMutableRef(nftID, obj.Version)
 
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_nft", args, 0, mutableRefs, nil)
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_nft", args, nil, mutableRefs, nil)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
 		return fmt.Errorf("submit transfer_nft tx:\n%w", err)
@@ -330,7 +330,7 @@ func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) erro
 // DeregisterValidator sends a deregister_validator transaction.
 // The validator is removed from the active set at the next epoch boundary.
 func (w *Wallet) DeregisterValidator(c *Client) error {
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "deregister_validator", nil, 0, nil, nil)
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "deregister_validator", nil, nil, nil, nil)
 
 	if err := submitTx(c.nodeAddr, txBytes); err != nil {
 		return fmt.Errorf("submit deregister_validator tx:\n%w", err)
@@ -359,21 +359,21 @@ func buildSignedTx(
 	pod [32]byte,
 	funcName string,
 	args []byte,
-	maxCreateObjects uint16,
+	createdObjectsReplication []uint16,
 	mutableRefs []genesis.ObjectRefData,
 	readRefs []genesis.ObjectRefData,
 ) ([]byte, [32]byte) {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
-		pubKey, pod, funcName, args, maxCreateObjects, 0, mutableRefs, readRefs,
+		pubKey, pod, funcName, args, createdObjectsReplication, 0, 0, nil, mutableRefs, readRefs,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableWithRefs(
-		builder, pubKey, pod, funcName, args, maxCreateObjects, 0, hash, sig, mutableRefs, readRefs,
+		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, 0, nil, hash, sig, mutableRefs, readRefs,
 	)
 	builder.Finish(txOffset)
 

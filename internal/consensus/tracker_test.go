@@ -59,7 +59,7 @@ func TestCheckAndUpdate_VersionConflict(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 5, 0)
+	ot.trackObject(objID, 5, 0, 0)
 
 	tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
 
@@ -127,7 +127,7 @@ func TestTrackObject_StoresVersionAndReplication(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x42}
-	ot.trackObject(objID, 1, 10)
+	ot.trackObject(objID, 1, 10, 0)
 
 	if v := ot.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1, got %d", v)
@@ -145,7 +145,7 @@ func TestTrackObject_GetReplication(t *testing.T) {
 
 	// Singleton (replication=0)
 	singleton := Hash{0x01}
-	ot.trackObject(singleton, 1, 0)
+	ot.trackObject(singleton, 1, 0, 0)
 
 	if r := ot.getReplication(singleton); r != 0 {
 		t.Fatalf("expected replication 0, got %d", r)
@@ -153,7 +153,7 @@ func TestTrackObject_GetReplication(t *testing.T) {
 
 	// Standard object
 	standard := Hash{0x02}
-	ot.trackObject(standard, 1, 50)
+	ot.trackObject(standard, 1, 50, 0)
 
 	if r := ot.getReplication(standard); r != 50 {
 		t.Fatalf("expected replication 50, got %d", r)
@@ -169,9 +169,9 @@ func TestExportImport_Roundtrip(t *testing.T) {
 	obj2 := Hash{0x02}
 	obj3 := Hash{0x03}
 
-	ot1.trackObject(obj1, 5, 10)
-	ot1.trackObject(obj2, 10, 20)
-	ot1.trackObject(obj3, 15, 0)
+	ot1.trackObject(obj1, 5, 10, 0)
+	ot1.trackObject(obj2, 10, 20, 0)
+	ot1.trackObject(obj3, 15, 0, 0)
 
 	entries := ot1.Export()
 	if len(entries) != 3 {
@@ -199,7 +199,7 @@ func TestExportImport_WithReplication(t *testing.T) {
 	ot1 := newObjectTracker(db1)
 
 	objID := Hash{0xAA}
-	ot1.trackObject(objID, 3, 42)
+	ot1.trackObject(objID, 3, 42, 0)
 
 	entries := ot1.Export()
 
@@ -295,7 +295,7 @@ func TestTrackAllObjects(t *testing.T) {
 		var id Hash
 		id[0] = byte(i)
 		id[1] = byte(i >> 8)
-		ot.trackObject(id, 1, uint16(i%50))
+		ot.trackObject(id, 1, uint16(i%50), 0)
 	}
 
 	entries := ot.Export()
@@ -322,7 +322,7 @@ func TestPebblePersistence(t *testing.T) {
 
 	ot1 := newObjectTracker(db1)
 	objID := Hash{0x42}
-	ot1.trackObject(objID, 7, 25)
+	ot1.trackObject(objID, 7, 25, 0)
 	db1.Close()
 
 	// Reopen and verify
@@ -399,7 +399,7 @@ func TestDeleteObject(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 5, 10)
+	ot.trackObject(objID, 5, 10, 0)
 
 	if v := ot.getVersion(objID); v != 5 {
 		t.Fatalf("expected version 5, got %d", v)
@@ -419,7 +419,7 @@ func TestIncrementPreservesReplication(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 0, 42)
+	ot.trackObject(objID, 0, 42, 0)
 
 	tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
 	if !ot.checkAndUpdate(tx) {

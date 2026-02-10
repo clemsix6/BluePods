@@ -115,16 +115,30 @@ func (rcv *Transaction) MutableRefsLength() int {
 	return 0
 }
 
-func (rcv *Transaction) MaxCreateObjects() uint16 {
+func (rcv *Transaction) CreatedObjectsReplication(j int) uint16 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
 	if o != 0 {
-		return rcv._tab.GetUint16(o + rcv._tab.Pos)
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetUint16(a + flatbuffers.UOffsetT(j*2))
 	}
 	return 0
 }
 
-func (rcv *Transaction) MutateMaxCreateObjects(n uint16) bool {
-	return rcv._tab.MutateUint16Slot(10, n)
+func (rcv *Transaction) CreatedObjectsReplicationLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *Transaction) MutateCreatedObjectsReplication(j int, n uint16) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateUint16(a+flatbuffers.UOffsetT(j*2), n)
+	}
+	return false
 }
 
 func (rcv *Transaction) Sender(j int) byte {
@@ -283,8 +297,54 @@ func (rcv *Transaction) MutateMaxCreateDomains(n uint16) bool {
 	return rcv._tab.MutateUint16Slot(22, n)
 }
 
+func (rcv *Transaction) MaxGas() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Transaction) MutateMaxGas(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(24, n)
+}
+
+func (rcv *Transaction) GasCoin(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *Transaction) GasCoinLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *Transaction) GasCoinBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *Transaction) MutateGasCoin(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
 func TransactionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(10)
+	builder.StartObject(12)
 }
 func TransactionAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(hash), 0)
@@ -304,8 +364,11 @@ func TransactionAddMutableRefs(builder *flatbuffers.Builder, mutableRefs flatbuf
 func TransactionStartMutableRefsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(4, numElems, 4)
 }
-func TransactionAddMaxCreateObjects(builder *flatbuffers.Builder, maxCreateObjects uint16) {
-	builder.PrependUint16Slot(3, maxCreateObjects, 0)
+func TransactionAddCreatedObjectsReplication(builder *flatbuffers.Builder, createdObjectsReplication flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(3, flatbuffers.UOffsetT(createdObjectsReplication), 0)
+}
+func TransactionStartCreatedObjectsReplicationVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(2, numElems, 2)
 }
 func TransactionAddSender(builder *flatbuffers.Builder, sender flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(4, flatbuffers.UOffsetT(sender), 0)
@@ -336,6 +399,15 @@ func TransactionStartArgsVector(builder *flatbuffers.Builder, numElems int) flat
 }
 func TransactionAddMaxCreateDomains(builder *flatbuffers.Builder, maxCreateDomains uint16) {
 	builder.PrependUint16Slot(9, maxCreateDomains, 0)
+}
+func TransactionAddMaxGas(builder *flatbuffers.Builder, maxGas uint64) {
+	builder.PrependUint64Slot(10, maxGas, 0)
+}
+func TransactionAddGasCoin(builder *flatbuffers.Builder, gasCoin flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(11, flatbuffers.UOffsetT(gasCoin), 0)
+}
+func TransactionStartGasCoinVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
 }
 func TransactionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

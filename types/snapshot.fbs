@@ -31,6 +31,9 @@ table ObjectVersion {
 
     // replication is the number of holders for this object (0 = singleton).
     replication:uint16;
+
+    // fees is the storage deposit for this object.
+    fees:uint64;
 }
 
 // SnapshotDomain maps a domain name to an object ID in the snapshot.

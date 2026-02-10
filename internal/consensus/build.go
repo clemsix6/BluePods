@@ -30,6 +30,7 @@ func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 // buildUnsignedVertex creates a vertex without hash and signature.
 func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte) []byte {
 	txsVec := d.buildTxVector(builder, txs)
+	feeSummaryOff := d.buildFeeSummary(builder, txs)
 	parentsVec := d.buildParentsVector(builder, parents)
 	producerVec := builder.CreateByteVector(d.pubKey[:])
 
@@ -39,6 +40,7 @@ func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, pa
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, d.epoch)
+	types.VertexAddFeeSummary(builder, feeSummaryOff)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
@@ -49,6 +51,7 @@ func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, pa
 // buildSignedVertex creates a complete vertex with hash and signature.
 func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, hash Hash, sig []byte) []byte {
 	txsVec := d.buildTxVector(builder, txs)
+	feeSummaryOff := d.buildFeeSummary(builder, txs)
 	hashVec := builder.CreateByteVector(hash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec := builder.CreateByteVector(d.pubKey[:])
@@ -62,11 +65,58 @@ func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, pare
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, d.epoch)
+	types.VertexAddFeeSummary(builder, feeSummaryOff)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
 
 	return builder.FinishedBytes()
+}
+
+// buildFeeSummary computes and builds the FeeSummary for a set of transactions.
+// Returns the FlatBuffers offset. If fees are disabled, returns an empty summary.
+func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbuffers.UOffsetT {
+	var totalFees, totalAgg, totalBurned, totalEpoch uint64
+
+	if d.feeParams != nil {
+		for _, txBytes := range txs {
+			split := d.computeTxFeeSplit(txBytes)
+			totalFees += split.Total
+			totalAgg += split.Aggregator
+			totalBurned += split.Burned
+			totalEpoch += split.Epoch
+		}
+	}
+
+	types.FeeSummaryStart(builder)
+	types.FeeSummaryAddTotalFees(builder, totalFees)
+	types.FeeSummaryAddTotalAggregator(builder, totalAgg)
+	types.FeeSummaryAddTotalBurned(builder, totalBurned)
+	types.FeeSummaryAddTotalEpoch(builder, totalEpoch)
+
+	return types.FeeSummaryEnd(builder)
+}
+
+// computeTxFeeSplit calculates the fee split for a single AttestedTransaction.
+func (d *DAG) computeTxFeeSplit(txBytes []byte) FeeSplit {
+	if len(txBytes) < 8 {
+		return FeeSplit{}
+	}
+
+	atx := types.GetRootAsAttestedTransaction(txBytes, 0)
+	tx := atx.Transaction(nil)
+	if tx == nil {
+		return FeeSplit{}
+	}
+
+	// Skip if no gas_coin (genesis/bootstrap tx)
+	if len(tx.GasCoinBytes()) != 32 {
+		return FeeSplit{}
+	}
+
+	fee := d.calculateTxFee(tx, atx)
+
+	return SplitFee(fee, *d.feeParams)
 }
 
 // buildParentsVector creates the parents vector for a vertex.
@@ -213,6 +263,7 @@ func (d *DAG) rebuildObject(builder *flatbuffers.Builder, obj *types.Object) fla
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 
 	return types.ObjectEnd(builder)
 }

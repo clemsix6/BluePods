@@ -39,6 +39,21 @@ table VertexLink {
     producer:[ubyte];
 }
 
+// FeeSummary aggregates fee breakdown for all transactions in a vertex.
+table FeeSummary {
+    // total_fees is the sum of all fees collected from transactions.
+    total_fees:uint64;
+
+    // total_aggregator is the 20% portion credited to the vertex producer.
+    total_aggregator:uint64;
+
+    // total_burned is the 30% portion permanently removed from supply.
+    total_burned:uint64;
+
+    // total_epoch is the 50% portion accumulated for epoch reward distribution.
+    total_epoch:uint64;
+}
+
 // Vertex is a unit in the DAG produced by a validator.
 table Vertex {
     // hash is the 32-byte unique identifier of this vertex.
@@ -61,6 +76,9 @@ table Vertex {
 
     // epoch is the current epoch number for validator set identification.
     epoch:uint64;
+
+    // fee_summary aggregates the fee breakdown for all transactions in this vertex.
+    fee_summary:FeeSummary;
 }
 
 root_type Vertex;

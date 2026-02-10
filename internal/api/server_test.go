@@ -556,7 +556,7 @@ func buildTxWithBadRefID(t *testing.T, mutable bool) []byte {
 	// Build the unsigned tx first for hashing (with no refs, since the bad ref
 	// won't match anyway -- we just need a valid hash/sig pair for the outer fields)
 	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
-		pub, pod, "test", []byte{}, 0, 0, nil, nil,
+		pub, pod, "test", []byte{}, nil, 0, 0, nil, nil, nil,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
@@ -1033,12 +1033,12 @@ func buildTxWithDomainRefs(t *testing.T, mutableDomains, readDomains []string) [
 		readRefs = append(readRefs, genesis.ObjectRefData{Domain: d})
 	}
 
-	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(pub, pod, "test", nil, 0, 0, mutableRefs, readRefs)
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(pub, pod, "test", nil, nil, 0, 0, nil, mutableRefs, readRefs)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOffset := genesis.BuildTxTableWithRefs(builder, pub, pod, "test", nil, 0, 0, hash, sig, mutableRefs, readRefs)
+	txOffset := genesis.BuildTxTableWithRefs(builder, pub, pod, "test", nil, nil, 0, 0, nil, hash, sig, mutableRefs, readRefs)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()

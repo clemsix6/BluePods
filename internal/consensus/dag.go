@@ -97,6 +97,16 @@ type DAG struct {
 	// verifyATXProofs verifies BLS quorum proofs in an AttestedTransaction.
 	verifyATXProofs func(*types.AttestedTransaction) error
 
+	// Fee system: protocol-level fee deduction and credits.
+	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
+	feeParams      *FeeParams // feeParams holds fee constants (nil = fees disabled)
+	computeHolders HolderFunc // computeHolders computes holders for replication ratio
+
+	// Epoch rewards: accumulated fees and round tracking per validator.
+	epochFees           uint64           // epochFees accumulates total_epoch from all committed vertices this epoch
+	epochRoundsProduced map[Hash]uint64  // epochRoundsProduced counts vertices produced per validator this epoch
+	epochTotalRounds    uint64           // epochTotalRounds is total committed rounds this epoch
+
 	// Lifecycle
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -198,9 +208,10 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		privKey:         privKey,
 		pubKey:          pubKey,
 		committed:       make(chan CommittedTx, channelBuffer),
-		pendingVertices: make(map[Hash][]byte),
-		pendingRemovals: make(map[Hash]bool),
-		stop:            make(chan struct{}),
+		pendingVertices:     make(map[Hash][]byte),
+		pendingRemovals:     make(map[Hash]bool),
+		epochRoundsProduced: make(map[Hash]uint64),
+		stop:                make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition
 
@@ -346,16 +357,24 @@ func (d *DAG) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
 
 // TrackObject registers a created object in the tracker.
 // Called by the state layer when a new object is created during execution.
-func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16) {
+func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64) {
 	var h Hash
 	copy(h[:], id[:])
-	d.tracker.trackObject(h, version, replication)
+	d.tracker.trackObject(h, version, replication, fees)
 }
 
 // SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
 // Must be called after DAG creation, before transactions are committed.
 func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
 	d.verifyATXProofs = fn
+}
+
+// SetFeeSystem configures protocol-level fee deduction.
+// When feeParams is non-nil, fees are deducted from gas_coin before execution.
+func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFunc) {
+	d.coinStore = store
+	d.feeParams = params
+	d.computeHolders = holders
 }
 
 // ValidatorSet returns the underlying validator set.

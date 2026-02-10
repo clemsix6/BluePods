@@ -19,6 +19,9 @@ table Object {
 
     // content holds the serialized object data (max 4 KB).
     content:[ubyte];
+
+    // fees is the storage deposit set by the protocol at object creation (read-only for pods).
+    fees:uint64;
 }
 
 root_type Object;

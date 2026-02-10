@@ -25,7 +25,12 @@ type State struct {
 	domains         *domainStore                                          // domains stores domain name → ObjectID mappings
 	pods            *podvm.Pool                                           // pods is the WASM runtime pool
 	isHolder        func(objectID [32]byte, replication uint16) bool      // isHolder checks if this node stores an object
-	onObjectCreated func(id [32]byte, version uint64, replication uint16) // onObjectCreated is called when a new object is created
+	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64) // onObjectCreated is called when a new object is created
+
+	// Fee system: storage deposits and refunds.
+	storageFee      uint64 // storageFee is the per-object storage fee (0 = disabled)
+	storageRefundBPS uint64 // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
+	totalValidators int    // totalValidators is the current validator count for fee calculation
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -61,8 +66,16 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 
 // SetOnObjectCreated sets a callback that fires when a new object is created.
 // Used by the consensus tracker to register created objects.
-func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16)) {
+func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
 	s.onObjectCreated = fn
+}
+
+// SetStorageFees configures protocol-level storage deposits and refunds.
+// When storageFee > 0, created objects get a storage deposit in their fees field.
+func (s *State) SetStorageFees(storageFee uint64, storageRefundBPS uint64, totalValidators int) {
+	s.storageFee = storageFee
+	s.storageRefundBPS = storageRefundBPS
+	s.totalValidators = totalValidators
 }
 
 // Execute runs an attested transaction and updates the state.
@@ -244,6 +257,7 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 
 	return types.ObjectEnd(builder)
 }
@@ -272,7 +286,7 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 
 	s.applyUpdatedObjects(output)
 	s.applyCreatedObjects(output, txHash)
-	s.applyDeletedObjects(output)
+	s.applyDeletedObjects(output, tx)
 	s.applyRegisteredDomains(output, txHash)
 
 	return nil
@@ -282,8 +296,9 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 // Returns error if any limit is exceeded or a domain already exists.
 func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transaction) error {
 	createdCount := output.CreatedObjectsLength()
-	if createdCount > int(tx.MaxCreateObjects()) {
-		return fmt.Errorf("created %d objects, max allowed %d", createdCount, tx.MaxCreateObjects())
+	maxCreate := tx.CreatedObjectsReplicationLength()
+	if createdCount > maxCreate {
+		return fmt.Errorf("created %d objects, max allowed %d", createdCount, maxCreate)
 	}
 
 	domainCount := output.RegisteredDomainsLength()
@@ -383,6 +398,7 @@ func rebuildObjectIncrementVersion(obj *types.Object) []byte {
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 	offset := types.ObjectEnd(builder)
 
 	builder.Finish(offset)
@@ -394,6 +410,7 @@ func rebuildObjectIncrementVersion(obj *types.Object) []byte {
 // Each object ID is computed as blake3(txHash || index_u32_LE) per the spec.
 // Storage sharding: only stores objects where this node is a holder.
 // Notifies the tracker callback for each created object (all validators track all objects).
+// Protocol sets the storage deposit in object.fees.
 func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
 	var obj types.Object
 
@@ -404,9 +421,12 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 
 		id := computeObjectID(txHash, uint32(i))
 
+		// Compute storage deposit (protocol-level, overrides pod value)
+		fees := s.computeStorageDeposit(obj.Replication())
+
 		// Notify tracker (all validators track all objects regardless of holding)
 		if s.onObjectCreated != nil {
-			s.onObjectCreated(id, obj.Version(), obj.Replication())
+			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees)
 		}
 
 		// Storage sharding: skip objects this node doesn't hold
@@ -414,7 +434,7 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 			continue
 		}
 
-		data := rebuildObjectWithID(id, &obj)
+		data := rebuildObjectWithIDAndFees(id, &obj, fees)
 		s.objects.set(id, data)
 	}
 }
@@ -437,6 +457,28 @@ func rebuildObjectWithID(id Hash, obj *types.Object) []byte {
 	return builder.FinishedBytes()
 }
 
+// rebuildObjectWithIDAndFees rebuilds an Object with a custom ID and overridden fees.
+func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte {
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(id[:])
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, fees)
+
+	offset := types.ObjectEnd(builder)
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
 // rebuildObjectCustomID rebuilds an Object table with a custom ID in the builder.
 func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Object) flatbuffers.UOffsetT {
 	idVec := builder.CreateByteVector(id[:])
@@ -449,20 +491,132 @@ func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Obj
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 
 	return types.ObjectEnd(builder)
 }
 
-// applyDeletedObjects removes deleted objects.
-func (s *State) applyDeletedObjects(output *types.PodExecuteOutput) {
+// applyDeletedObjects removes deleted objects with ownership verification.
+// Protocol-level ownership check: only the object owner can delete.
+// Computes refund (95% of fees) and credits the sender's gas_coin.
+func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Transaction) {
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
+
+	// Extract sender for ownership check
+	var sender Hash
+	if senderBytes := tx.SenderBytes(); len(senderBytes) == 32 {
+		copy(sender[:], senderBytes)
+	}
+
+	// Extract gas_coin for refund credit
+	var gasCoinID Hash
+	hasGasCoin := false
+	if gasCoinBytes := tx.GasCoinBytes(); len(gasCoinBytes) == 32 {
+		copy(gasCoinID[:], gasCoinBytes)
+		hasGasCoin = true
+	}
 
 	for i := 0; i+idSize <= len(data); i += idSize {
 		var id Hash
 		copy(id[:], data[i:i+idSize])
+
+		// Load object to verify ownership
+		objData := s.objects.get(id)
+		if objData == nil {
+			continue // object not in local storage, skip
+		}
+
+		// Ownership check: only owner can delete
+		obj := types.GetRootAsObject(objData, 0)
+		var owner Hash
+		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
+			copy(owner[:], ownerBytes)
+		}
+
+		if owner != sender {
+			logger.Warn("non-owner deletion blocked",
+				"id_prefix", id[:4],
+				"owner_prefix", owner[:4],
+				"sender_prefix", sender[:4],
+			)
+			continue
+		}
+
+		// Compute refund and credit gas_coin
+		objFees := obj.Fees()
+		if objFees > 0 && hasGasCoin && s.storageRefundBPS > 0 {
+			refund := objFees * s.storageRefundBPS / 10000
+			s.creditGasCoin(gasCoinID, refund)
+		}
+
 		s.objects.delete(id)
 	}
+}
+
+// computeStorageDeposit calculates the storage deposit for a new object.
+func (s *State) computeStorageDeposit(replication uint16) uint64 {
+	if s.storageFee == 0 || s.totalValidators == 0 {
+		return 0
+	}
+
+	effRep := int(replication)
+	if replication == 0 {
+		effRep = s.totalValidators
+	}
+
+	return uint64(effRep) * s.storageFee / uint64(s.totalValidators)
+}
+
+// creditGasCoin adds a refund amount to a gas_coin balance.
+// Version is NOT incremented (implicit protocol modification).
+func (s *State) creditGasCoin(coinID Hash, amount uint64) {
+	if amount == 0 {
+		return
+	}
+
+	data := s.objects.get(coinID)
+	if data == nil {
+		return
+	}
+
+	obj := types.GetRootAsObject(data, 0)
+	content := obj.ContentBytes()
+	if len(content) < 8 {
+		return
+	}
+
+	balance := binary.LittleEndian.Uint64(content[:8])
+	newBalance := balance + amount
+
+	// Overflow check
+	if newBalance < balance {
+		return
+	}
+
+	// Rebuild with new balance
+	newContent := make([]byte, len(content))
+	copy(newContent, content)
+	binary.LittleEndian.PutUint64(newContent[:8], newBalance)
+
+	builder := flatbuffers.NewBuilder(256)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
+	contentVec := builder.CreateByteVector(newContent)
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
+
+	offset := types.ObjectEnd(builder)
+	builder.Finish(offset)
+
+	s.objects.set(coinID, builder.FinishedBytes())
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects
@@ -517,6 +671,7 @@ func rebuildObjectWithVersion(obj *types.Object, version uint64) []byte {
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
 	offset := types.ObjectEnd(builder)
 
 	builder.Finish(offset)

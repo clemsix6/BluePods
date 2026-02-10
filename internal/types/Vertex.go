@@ -207,8 +207,21 @@ func (rcv *Vertex) MutateEpoch(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(16, n)
 }
 
+func (rcv *Vertex) FeeSummary(obj *FeeSummary) *FeeSummary {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(18))
+	if o != 0 {
+		x := rcv._tab.Indirect(o + rcv._tab.Pos)
+		if obj == nil {
+			obj = new(FeeSummary)
+		}
+		obj.Init(rcv._tab.Bytes, x)
+		return obj
+	}
+	return nil
+}
+
 func VertexStart(builder *flatbuffers.Builder) {
-	builder.StartObject(7)
+	builder.StartObject(8)
 }
 func VertexAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(hash), 0)
@@ -245,6 +258,9 @@ func VertexStartTransactionsVector(builder *flatbuffers.Builder, numElems int) f
 }
 func VertexAddEpoch(builder *flatbuffers.Builder, epoch uint64) {
 	builder.PrependUint64Slot(6, epoch, 0)
+}
+func VertexAddFeeSummary(builder *flatbuffers.Builder, feeSummary flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(7, flatbuffers.UOffsetT(feeSummary), 0)
 }
 func VertexEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

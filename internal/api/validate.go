@@ -81,6 +81,12 @@ func validateFieldSizes(tx *types.Transaction) error {
 		return fmt.Errorf("empty function name")
 	}
 
+	// gas_coin must be 0 (absent) or 32 bytes
+	gasCoinLen := len(tx.GasCoinBytes())
+	if gasCoinLen != 0 && gasCoinLen != 32 {
+		return fmt.Errorf("invalid gas_coin size: got %d, want 0 or 32", gasCoinLen)
+	}
+
 	return nil
 }
 
@@ -181,17 +187,35 @@ func validateHash(tx *types.Transaction) error {
 func rebuildUnsignedTx(tx *types.Transaction) []byte {
 	mutableRefs := extractRefData(tx, true)
 	readRefs := extractRefData(tx, false)
+	cor := extractCreatedObjectsReplication(tx)
 
 	return genesis.BuildUnsignedTxBytesWithRefs(
 		tx.SenderBytes(),
 		extractPod(tx),
 		string(tx.FunctionName()),
 		tx.ArgsBytes(),
-		tx.MaxCreateObjects(),
+		cor,
 		tx.MaxCreateDomains(),
+		tx.MaxGas(),
+		tx.GasCoinBytes(),
 		mutableRefs,
 		readRefs,
 	)
+}
+
+// extractCreatedObjectsReplication extracts the created_objects_replication vector from a tx.
+func extractCreatedObjectsReplication(tx *types.Transaction) []uint16 {
+	count := tx.CreatedObjectsReplicationLength()
+	if count == 0 {
+		return nil
+	}
+
+	result := make([]uint16, count)
+	for i := 0; i < count; i++ {
+		result[i] = tx.CreatedObjectsReplication(i)
+	}
+
+	return result
 }
 
 // extractRefData extracts ObjectRefData from a transaction's refs.

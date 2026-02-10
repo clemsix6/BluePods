@@ -129,8 +129,8 @@ func TestTrackerExportImport(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	obj1, obj2 := Hash{0x01}, Hash{0x02}
-	ot.trackObject(obj1, 5, 10)
-	ot.trackObject(obj2, 10, 20)
+	ot.trackObject(obj1, 5, 10, 0)
+	ot.trackObject(obj2, 10, 20, 0)
 
 	entries := ot.Export()
 	if len(entries) != 2 {
@@ -164,7 +164,7 @@ func TestTrackerDeleteObject(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x03}
-	ot.trackObject(objID, 5, 10)
+	ot.trackObject(objID, 5, 10, 0)
 
 	// Verify it exists
 	if v := ot.getVersion(objID); v != 5 {
@@ -208,13 +208,13 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	objID := Hash{0x10}
 
 	// Pre-set version to 3
-	dag.tracker.trackObject(objID, 3, 0)
+	dag.tracker.trackObject(objID, 3, 0, 0)
 
 	// Build ATX expecting version 0 (stale)
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0)
+	dag.executeTx(atx, 0, Hash{})
 
 	// Tx should fail, version should NOT have been incremented
 	if v := dag.tracker.getVersion(objID); v != 3 {
@@ -237,7 +237,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0)
+	dag.executeTx(atx, 0, Hash{})
 
 	// Version should be incremented
 	if v := dag.tracker.getVersion(objID); v != 1 {
@@ -369,11 +369,11 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	// max_create_objects check happens in executeTx, not shouldExecute directly
-	// The check is: if tx.MaxCreateObjects() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(...)
-	maxCreate := tx.MaxCreateObjects()
+	// The check is: if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(...)
+	maxCreate := tx.CreatedObjectsReplicationLength()
 
 	if maxCreate == 0 {
-		t.Fatal("max_create_objects should be > 0")
+		t.Fatal("created_objects_replication should be > 0")
 	}
 
 	// With max_create_objects>0, the shouldExecute check is bypassed
@@ -495,7 +495,7 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 	}
 
 	// With max_create_domains>0, the shouldExecute check is bypassed
-	shouldSkip := tx.MaxCreateObjects() == 0 && maxDomains == 0 && !dag.shouldExecute(atx, tx)
+	shouldSkip := tx.CreatedObjectsReplicationLength() == 0 && maxDomains == 0 && !dag.shouldExecute(atx, tx)
 	if shouldSkip {
 		t.Fatal("max_create_domains>0 should force execution on all validators")
 	}
@@ -603,7 +603,7 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 		t.Fatal("new validator should not be in set before register")
 	}
 
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	// Validator should now be in the set
 	if !dag.validators.Contains(newVal.pubKey) {
@@ -638,7 +638,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("register on wrong pod should be ignored")
@@ -660,7 +660,7 @@ func TestHandleRegisterValidator_WrongFunction(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("wrong function name should not register validator")
@@ -680,7 +680,7 @@ func TestHandleRegisterValidator_InvalidSender(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("invalid sender should not register validator")
@@ -702,13 +702,13 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 
 	// Register once
 	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
-	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5, Hash{})
 
 	countAfterFirst := dag.validators.Len()
 
 	// Register again with same pubkey
 	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
-	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6, Hash{})
 
 	if dag.validators.Len() != countAfterFirst {
 		t.Fatal("duplicate register should not change validator count")
@@ -733,7 +733,7 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if len(dag.epochAdditions) != 1 {
 		t.Fatalf("expected 1 epoch addition, got %d", len(dag.epochAdditions))
@@ -768,7 +768,7 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 10)
+	dag.executeTx(atx, 10, Hash{})
 
 	// Transition should now be set
 	if dag.transitionRound.Load() < 0 {
@@ -801,7 +801,7 @@ func TestHandleDeregisterValidator_ViaExecuteTx(t *testing.T) {
 		t.Fatal("validator[2] should be in active set before deregister")
 	}
 
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	// Validator should still be active (removal is deferred to epoch)
 	if !dag.validators.Contains(validators[2].pubKey) {
@@ -828,7 +828,7 @@ func TestHandleDeregisterValidator_WrongPod(t *testing.T) {
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, wrongPod)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if len(dag.pendingRemovals) != 0 {
 		t.Fatal("deregister on wrong pod should be ignored")
@@ -849,7 +849,7 @@ func TestHandleDeregisterValidator_WrongFunction(t *testing.T) {
 	atxBytes := buildSystemPodATX(t, validators[2].pubKey, testSystemPod, "wrong_function")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	if len(dag.pendingRemovals) != 0 {
 		t.Fatal("wrong function name should be ignored")
@@ -871,7 +871,7 @@ func TestDeregisterThenEpoch_FullPath(t *testing.T) {
 	// Step 1: Submit deregister tx
 	atxBytes := buildDeregisterATX(t, validators[3].pubKey, testSystemPod)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
-	dag.executeTx(atx, 5)
+	dag.executeTx(atx, 5, Hash{})
 
 	// Verify: still active, in pending
 	if !dag.validators.Contains(validators[3].pubKey) {
@@ -904,6 +904,312 @@ func TestDeregisterThenEpoch_FullPath(t *testing.T) {
 			t.Errorf("validator[%d] should still be active", i)
 		}
 	}
+}
+
+// =============================================================================
+// Fee Deduction Tests (via executeTx commit path)
+// =============================================================================
+
+// TestDeductFees_WrongOwner verifies gas_coin owned by different sender is rejected.
+func TestDeductFees_WrongOwner(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Setup fee system
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	wrongOwner := Hash{0x02}
+	gasCoinID := Hash{0xCC}
+
+	// Gas coin owned by wrongOwner, not sender
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 100000, wrongOwner, 0))
+
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	// Fee should be zero (tx rejected before deduction)
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees for wrong owner, got total=%d", feeSplit.Total)
+	}
+
+	// Coin balance should be unchanged
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance != 100000 {
+		t.Errorf("balance should be unchanged: got %d", balance)
+	}
+}
+
+// TestDeductFees_NotSingleton verifies gas_coin with replication > 0 is rejected.
+func TestDeductFees_NotSingleton(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+
+	// Gas coin with replication=10 (not a singleton)
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 100000, sender, 10))
+
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees for non-singleton gas coin, got total=%d", feeSplit.Total)
+	}
+}
+
+// TestDeductFees_CoinNotFound verifies missing gas_coin is rejected.
+func TestDeductFees_CoinNotFound(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	// Do NOT add coin to store
+
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees for missing coin, got total=%d", feeSplit.Total)
+	}
+}
+
+// TestDeductFees_MinGasViolation verifies max_gas < min_gas is rejected.
+func TestDeductFees_MinGasViolation(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams() // MinGas=100
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 100000, sender, 0))
+
+	// max_gas=50 < min_gas=100
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 50, nil)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees for min_gas violation, got total=%d", feeSplit.Total)
+	}
+
+	// Balance unchanged
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance != 100000 {
+		t.Errorf("balance should be unchanged: got %d", balance)
+	}
+}
+
+// TestDeductFees_InsufficientFunds verifies partial deduction when balance < fee.
+func TestDeductFees_InsufficientFunds(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+
+	// Low balance: 10 coins (fee will be much higher)
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 10, sender, 0))
+
+	// max_gas=500 with singleton created object → fee = 500*1*1/1 + 1000 = 1500 (default params)
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	// Balance should be drained to 0
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance != 0 {
+		t.Errorf("expected balance 0 after insufficient deduction, got %d", balance)
+	}
+
+	// feeSplit.Total should be the calculated fee (not the deducted amount)
+	if feeSplit.Total == 0 {
+		t.Error("expected non-zero fee total even on insufficient funds")
+	}
+}
+
+// TestDeductFees_Success verifies successful fee deduction and split.
+func TestDeductFees_Success(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
+
+	// max_gas=500, creating one singleton → ratio=1/1
+	// fee = 500*1 + 1000*3/3 = 500 + 1000 = 1500 (with 3 validators)
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total == 0 {
+		t.Fatal("expected non-zero fee total")
+	}
+
+	// Balance should be reduced
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance >= 1_000_000 {
+		t.Errorf("balance should be reduced, got %d", balance)
+	}
+
+	// Verify split components
+	if feeSplit.Aggregator+feeSplit.Burned+feeSplit.Epoch != feeSplit.Total {
+		t.Errorf("split parts don't sum to total: %d+%d+%d != %d",
+			feeSplit.Aggregator, feeSplit.Burned, feeSplit.Epoch, feeSplit.Total)
+	}
+}
+
+// TestDeductFees_NoGasCoin_Proceeds verifies that a tx without gas_coin proceeds.
+func TestDeductFees_NoGasCoin_Proceeds(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	// ATX without gas_coin (genesis-style)
+	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	// No fees deducted, but tx should proceed (feeSplit.Total == 0 is fine)
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees for no gas_coin, got %d", feeSplit.Total)
+	}
+}
+
+// TestDeductFees_FeesDisabled verifies that executeTx works when fee system is not configured.
+func TestDeductFees_FeesDisabled(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+	// Fee system NOT configured (coinStore=nil, feeParams=nil)
+
+	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total != 0 {
+		t.Errorf("expected zero fees when fee system disabled, got %d", feeSplit.Total)
+	}
+}
+
+// buildFeeTestATX creates a test ATX with sender, gas_coin, max_gas, and optional created objects.
+func buildFeeTestATX(t *testing.T, sender Hash, gasCoin Hash, maxGas uint64, createdReps []uint16) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcNameOff := builder.CreateString("test_func")
+	gasCoinVec := builder.CreateByteVector(gasCoin[:])
+
+	var corVec flatbuffers.UOffsetT
+	if len(createdReps) > 0 {
+		types.TransactionStartCreatedObjectsReplicationVector(builder, len(createdReps))
+		for j := len(createdReps) - 1; j >= 0; j-- {
+			builder.PrependUint16(createdReps[j])
+		}
+		corVec = builder.EndVector(len(createdReps))
+	}
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddMaxGas(builder, maxGas)
+	types.TransactionAddGasCoin(builder, gasCoinVec)
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
+	txOff := types.TransactionEnd(builder)
+
+	// Empty objects and proofs
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
 }
 
 // =============================================================================
@@ -983,7 +1289,7 @@ func buildTxWithMutables(t *testing.T, readRefs []objectRef, mutRefs []objectRef
 }
 
 // buildTestATX creates a test AttestedTransaction with given function, read/mutable refs.
-func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs []objectRef, maxCreateObjects uint16) []byte {
+func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs []objectRef, numCreatedObjects uint16) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -996,12 +1302,23 @@ func buildTestATX(t *testing.T, funcName string, readRefs []objectRef, mutRefs [
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcNameOff := builder.CreateString(funcName)
 
+	var corVec flatbuffers.UOffsetT
+	if numCreatedObjects > 0 {
+		types.TransactionStartCreatedObjectsReplicationVector(builder, int(numCreatedObjects))
+		for j := uint16(0); j < numCreatedObjects; j++ {
+			builder.PrependUint16(0)
+		}
+		corVec = builder.EndVector(int(numCreatedObjects))
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
-	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
 
 	if readVec != 0 {
 		types.TransactionAddReadRefs(builder, readVec)
@@ -1212,6 +1529,7 @@ func rebuildATXInBuilder(builder *flatbuffers.Builder, atxBytes []byte) flatbuff
 		types.ObjectAddOwner(builder, ownerV)
 		types.ObjectAddReplication(builder, obj.Replication())
 		types.ObjectAddContent(builder, contentV)
+		types.ObjectAddFees(builder, obj.Fees())
 		objOffsets[i] = types.ObjectEnd(builder)
 	}
 

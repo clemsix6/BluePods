@@ -58,11 +58,13 @@ Si le domaine est deja pris, la tx revert et le client reessaie.
 Le header de la transaction contient :
 
 ```
-max_create_objects:  uint16  // remplace creates_objects:bool
-max_create_domains:  uint16  // nombre max de domaines enregistres
+created_objects_replication: [uint16]   // len = nb objets crees, valeur = replication
+max_create_domains:          uint16     // nombre max de domaines enregistres
 ```
 
-`max_create_objects > 0` force l'execution par tous les validators (comme l'ancien `creates_objects: true`).
+`len(created_objects_replication) > 0` force l'execution par tous les validators
+(remplace l'ancien `creates_objects: true`). Les ObjectIDs des objets crees sont
+calculables depuis le header : `hash(tx_id || index)`.
 
 `max_create_domains` sert uniquement au calcul des frais. L'enregistrement
 effectif est valide au commit. Si le pod produit plus de `max_create_domains`
@@ -77,12 +79,15 @@ L'enregistrement de domaines est inclus dans la formule de frais :
 ```
 total = compute_fee * replication_ratio
       + nb_objets_standard_ATX * transit_fee
-      + max_create_objects * storage_fee * replication_ratio
+      + sum(replication_i / total_validators) * storage_fee
       + max_create_domains * domain_fee
 ```
 
+Chaque objet cree paie un storage_fee pondere par sa propre replication
+(lu depuis `created_objects_replication`).
+
 `domain_fee` est eleve (10-100x le compute_fee) pour empecher le spam.
-Pas de `replication_ratio` : le mapping est stocke dans Pebble sur tous
+Pas de multiplicateur replication : le mapping est stocke dans Pebble sur tous
 les validators, c'est un cout fixe.
 
 Les mises a jour et suppressions de domaines ne paient que le compute_fee standard.

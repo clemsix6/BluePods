@@ -31,8 +31,10 @@ table Transaction {
     // mutable_refs are references to objects that may be modified or deleted.
     mutable_refs:[ObjectRef];
 
-    // max_create_objects is the maximum number of objects this transaction may create.
-    max_create_objects:uint16;
+    // created_objects_replication holds the replication factor for each created object.
+    // Length = max number of objects this transaction may create.
+    // Value at index i = replication factor for the i-th created object.
+    created_objects_replication:[uint16];
 
     // sender is the 32-byte Ed25519 public key of the transaction sender.
     sender:[ubyte];
@@ -51,6 +53,12 @@ table Transaction {
 
     // max_create_domains is the maximum number of domains this transaction may register.
     max_create_domains:uint16;
+
+    // max_gas is the maximum gas units this transaction may consume.
+    max_gas:uint64;
+
+    // gas_coin is the 32-byte ObjectID of the sender's gas coin singleton.
+    gas_coin:[ubyte];
 }
 
 root_type Transaction;

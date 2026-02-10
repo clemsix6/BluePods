@@ -18,8 +18,8 @@ func TestScanDetectsNewHoldings(t *testing.T) {
 	// Track some objects
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
-	dag.tracker.trackObject(obj1, 1, 3)
-	dag.tracker.trackObject(obj2, 1, 3)
+	dag.tracker.trackObject(obj1, 1, 3, 0)
+	dag.tracker.trackObject(obj2, 1, 3, 0)
 
 	// isHolder returns true for both, but hasLocal returns false for obj2
 	isHolder := func(id [32]byte, rep uint16) bool {
@@ -56,8 +56,8 @@ func TestScanDetectsDroppedHoldings(t *testing.T) {
 
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
-	dag.tracker.trackObject(obj1, 1, 3)
-	dag.tracker.trackObject(obj2, 1, 3)
+	dag.tracker.trackObject(obj1, 1, 3, 0)
+	dag.tracker.trackObject(obj2, 1, 3, 0)
 
 	// isHolder returns false for both (no longer responsible)
 	isHolder := func(id [32]byte, rep uint16) bool {
@@ -91,8 +91,8 @@ func TestScanNoChanges(t *testing.T) {
 
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
-	dag.tracker.trackObject(obj1, 1, 3)
-	dag.tracker.trackObject(obj2, 1, 3)
+	dag.tracker.trackObject(obj1, 1, 3, 0)
+	dag.tracker.trackObject(obj2, 1, 3, 0)
 
 	// Perfect alignment: holder matches local
 	isHolder := func(id [32]byte, rep uint16) bool {
@@ -151,10 +151,10 @@ func TestScanMixedResults(t *testing.T) {
 	objDrop := Hash{0x03}    // not holder + has local = drop
 	objIgnore := Hash{0x04}  // not holder + no local = ignore
 
-	dag.tracker.trackObject(objKeep, 1, 3)
-	dag.tracker.trackObject(objFetch, 1, 3)
-	dag.tracker.trackObject(objDrop, 1, 3)
-	dag.tracker.trackObject(objIgnore, 1, 3)
+	dag.tracker.trackObject(objKeep, 1, 3, 0)
+	dag.tracker.trackObject(objFetch, 1, 3, 0)
+	dag.tracker.trackObject(objDrop, 1, 3, 0)
+	dag.tracker.trackObject(objIgnore, 1, 3, 0)
 
 	isHolder := func(id [32]byte, rep uint16) bool {
 		return id == objKeep || id == objFetch
@@ -196,7 +196,7 @@ func TestScanBackground_DoesNotBlockCommit(t *testing.T) {
 		var id Hash
 		id[0] = byte(i >> 8)
 		id[1] = byte(i)
-		dag.tracker.trackObject(id, 1, 3)
+		dag.tracker.trackObject(id, 1, 3, 0)
 	}
 
 	// Slow isHolder: sleeps 1ms per call to simulate expensive work
@@ -255,7 +255,7 @@ func TestScanLargeObjectCount(t *testing.T) {
 		var id Hash
 		id[0] = byte(i >> 8)
 		id[1] = byte(i)
-		dag.tracker.trackObject(id, 1, 3)
+		dag.tracker.trackObject(id, 1, 3, 0)
 	}
 
 	// Half need fetch, half can drop

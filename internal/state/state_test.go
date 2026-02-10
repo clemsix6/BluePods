@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"os"
 	"testing"
 
@@ -395,7 +396,7 @@ func TestApplyCreatedObjectsOnObjectCreatedCallback(t *testing.T) {
 	}
 	var calls []callbackCall
 
-	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
 		calls = append(calls, callbackCall{id: id, version: version, replication: replication})
 	})
 
@@ -427,7 +428,7 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return false })
 
 	callbackCount := 0
-	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16) {
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
 		callbackCount++
 	})
 
@@ -495,8 +496,9 @@ func TestApplyDeletedObjects(t *testing.T) {
 	}
 
 	output := buildPodOutputWithDeleted(objID)
+	tx := buildMinimalTx(Hash{}) // owner is zero hash
 
-	s.applyDeletedObjects(output)
+	s.applyDeletedObjects(output, tx)
 
 	if s.GetObject(objID) != nil {
 		t.Error("object should be deleted")
@@ -538,7 +540,8 @@ func TestApplyDeletedObjectsMalformedData(t *testing.T) {
 	output := types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
 
 	// Should not panic and should delete the first ID
-	s.applyDeletedObjects(output)
+	tx := buildMinimalTx(Hash{}) // owner is zero hash
+	s.applyDeletedObjects(output, tx)
 
 	if s.GetObject(objID) != nil {
 		t.Error("object should be deleted")
@@ -1043,6 +1046,245 @@ func TestResolveDomainObjectID_PrefersObjectID(t *testing.T) {
 	}
 }
 
+// --- applyDeletedObjects ownership ---
+
+// TestApplyDeletedObjects_NonOwnerBlocked verifies non-owner cannot delete objects.
+func TestApplyDeletedObjects_NonOwnerBlocked(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	objID := Hash{0x72}
+	owner := Hash{0xAA}
+	sender := Hash{0xBB} // different from owner
+
+	// Store object owned by 'owner'
+	s.SetObject(buildTestObjectFull(objID, 1, owner, 10, []byte("owned")))
+
+	output := buildPodOutputWithDeleted(objID)
+	tx := buildMinimalTx(sender) // sender != owner
+
+	s.applyDeletedObjects(output, tx)
+
+	// Object should NOT be deleted (ownership mismatch)
+	if s.GetObject(objID) == nil {
+		t.Error("non-owner should not be able to delete object")
+	}
+}
+
+// TestApplyDeletedObjects_OwnerCanDelete verifies owner can delete their object.
+func TestApplyDeletedObjects_OwnerCanDelete(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	objID := Hash{0x73}
+	owner := Hash{0xAA}
+
+	s.SetObject(buildTestObjectFull(objID, 1, owner, 10, []byte("owned")))
+
+	output := buildPodOutputWithDeleted(objID)
+	tx := buildMinimalTx(owner) // sender == owner
+
+	s.applyDeletedObjects(output, tx)
+
+	if s.GetObject(objID) != nil {
+		t.Error("owner should be able to delete their object")
+	}
+}
+
+// TestApplyDeletedObjects_RefundCredits verifies storage refund is credited to gas_coin.
+func TestApplyDeletedObjects_RefundCredits(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100) // 95% refund
+
+	owner := Hash{0xAA}
+	objID := Hash{0x74}
+	gasCoinID := Hash{0xEE}
+
+	// Inject a gas_coin object into state
+	gasCoinData := buildCoinObject(gasCoinID, 5000, owner)
+	s.SetObject(gasCoinData)
+
+	// Object with fees=10000
+	objData := buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 10000)
+	s.SetObject(objData)
+
+	// Build tx with gas_coin and sender=owner
+	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
+
+	output := buildPodOutputWithDeleted(objID)
+	s.applyDeletedObjects(output, tx)
+
+	// Object should be deleted
+	if s.GetObject(objID) != nil {
+		t.Error("object should be deleted")
+	}
+
+	// Gas coin should be credited with refund: 10000 * 9500 / 10000 = 9500
+	coinData := s.GetObject(gasCoinID)
+	if coinData == nil {
+		t.Fatal("gas coin should still exist")
+	}
+
+	obj := types.GetRootAsObject(coinData, 0)
+	content := obj.ContentBytes()
+	if len(content) < 8 {
+		t.Fatal("coin content too short")
+	}
+
+	balance := binary.LittleEndian.Uint64(content[:8])
+	// Original 5000 + refund 9500 = 14500
+	if balance != 14500 {
+		t.Errorf("expected balance 14500, got %d", balance)
+	}
+}
+
+// --- computeStorageDeposit ---
+
+// TestComputeStorageDeposit verifies storage deposit calculation.
+func TestComputeStorageDeposit(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	// No fees configured
+	if dep := s.computeStorageDeposit(10); dep != 0 {
+		t.Errorf("expected 0 with no fees, got %d", dep)
+	}
+
+	// Configure fees
+	s.SetStorageFees(1000, 9500, 100)
+
+	// Standard object: 10 * 1000 / 100 = 100
+	if dep := s.computeStorageDeposit(10); dep != 100 {
+		t.Errorf("standard: got %d, want 100", dep)
+	}
+
+	// Singleton: 100 * 1000 / 100 = 1000
+	if dep := s.computeStorageDeposit(0); dep != 1000 {
+		t.Errorf("singleton: got %d, want 1000", dep)
+	}
+}
+
+// --- creditGasCoin overflow ---
+
+// TestCreditGasCoin_Overflow verifies overflow is silently ignored.
+func TestCreditGasCoin_Overflow(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	coinID := Hash{0xDD}
+	owner := Hash{0xAA}
+
+	coinData := buildCoinObject(coinID, math.MaxUint64-10, owner)
+	s.SetObject(coinData)
+
+	// Adding 100 would overflow
+	s.creditGasCoin(coinID, 100)
+
+	// Balance should be unchanged
+	stored := s.GetObject(coinID)
+	obj := types.GetRootAsObject(stored, 0)
+	content := obj.ContentBytes()
+	balance := binary.LittleEndian.Uint64(content[:8])
+
+	if balance != math.MaxUint64-10 {
+		t.Errorf("expected unchanged balance, got %d", balance)
+	}
+}
+
+// TestCreditGasCoin_Success verifies normal credit works.
+func TestCreditGasCoin_Success(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	coinID := Hash{0xDD}
+	owner := Hash{0xAA}
+
+	coinData := buildCoinObject(coinID, 5000, owner)
+	s.SetObject(coinData)
+
+	s.creditGasCoin(coinID, 200)
+
+	stored := s.GetObject(coinID)
+	obj := types.GetRootAsObject(stored, 0)
+	content := obj.ContentBytes()
+	balance := binary.LittleEndian.Uint64(content[:8])
+
+	if balance != 5200 {
+		t.Errorf("expected 5200, got %d", balance)
+	}
+}
+
+// --- test helpers for coins in state ---
+
+// buildCoinObject creates a serialized Coin object (8-byte LE balance as content).
+func buildCoinObject(id Hash, balance uint64, owner Hash) []byte {
+	builder := flatbuffers.NewBuilder(256)
+
+	content := make([]byte, 8)
+	binary.LittleEndian.PutUint64(content, balance)
+
+	idVec := builder.CreateByteVector(id[:])
+	ownerVec := builder.CreateByteVector(owner[:])
+	contentVec := builder.CreateByteVector(content)
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, 1)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, 0)
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, 0)
+	offset := types.ObjectEnd(builder)
+
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
+// buildTestObjectFullWithFees creates a serialized Object with all fields including fees.
+func buildTestObjectFullWithFees(id Hash, version uint64, owner Hash, replication uint16, content []byte, fees uint64) []byte {
+	builder := flatbuffers.NewBuilder(256)
+
+	idVec := builder.CreateByteVector(id[:])
+	ownerVec := builder.CreateByteVector(owner[:])
+	contentVec := builder.CreateByteVector(content)
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, version)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, replication)
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, fees)
+	objOffset := types.ObjectEnd(builder)
+
+	builder.Finish(objOffset)
+
+	return builder.FinishedBytes()
+}
+
+// buildMinimalTxWithGasCoin creates a minimal Transaction with sender and gas_coin.
+func buildMinimalTxWithGasCoin(sender Hash, gasCoin Hash) *types.Transaction {
+	builder := flatbuffers.NewBuilder(256)
+
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcName := builder.CreateString("test")
+	gasCoinVec := builder.CreateByteVector(gasCoin[:])
+
+	types.TransactionStart(builder)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcName)
+	types.TransactionAddGasCoin(builder, gasCoinVec)
+	txOffset := types.TransactionEnd(builder)
+
+	builder.Finish(txOffset)
+
+	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
+}
+
 // --- test helpers for domains ---
 
 // testDomain describes a domain for building test PodExecuteOutput.
@@ -1052,7 +1294,7 @@ type testDomain struct {
 	objectID    Hash   // objectID is a direct 32-byte object identifier
 }
 
-// buildTxWithLimits creates a Transaction with max_create_objects and max_create_domains.
+// buildTxWithLimits creates a Transaction with created_objects_replication and max_create_domains.
 func buildTxWithLimits(maxCreateObjects, maxCreateDomains uint16) *types.Transaction {
 	builder := flatbuffers.NewBuilder(256)
 
@@ -1060,11 +1302,22 @@ func buildTxWithLimits(maxCreateObjects, maxCreateDomains uint16) *types.Transac
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcName := builder.CreateString("test")
 
+	var corVec flatbuffers.UOffsetT
+	if maxCreateObjects > 0 {
+		types.TransactionStartCreatedObjectsReplicationVector(builder, int(maxCreateObjects))
+		for i := uint16(0); i < maxCreateObjects; i++ {
+			builder.PrependUint16(0)
+		}
+		corVec = builder.EndVector(int(maxCreateObjects))
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcName)
-	types.TransactionAddMaxCreateObjects(builder, maxCreateObjects)
+	if corVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, corVec)
+	}
 	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
 	txOffset := types.TransactionEnd(builder)
 
@@ -1167,4 +1420,26 @@ func buildPodOutputWithDeleted(id Hash) *types.PodExecuteOutput {
 	builder.Finish(outputOffset)
 
 	return types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
+}
+
+// buildMinimalTx creates a minimal Transaction with the given sender.
+// Used for deletion tests that need ownership verification.
+func buildMinimalTx(sender Hash) *types.Transaction {
+	builder := flatbuffers.NewBuilder(256)
+
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcName := builder.CreateString("test")
+	argsVec := builder.CreateByteVector([]byte{})
+
+	types.TransactionStart(builder)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcName)
+	types.TransactionAddArgs(builder, argsVec)
+	txOffset := types.TransactionEnd(builder)
+
+	builder.Finish(txOffset)
+
+	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
 }

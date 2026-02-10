@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 3
+	snapshotVersion = 4
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -152,7 +152,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	verticesVector := builder.EndVector(len(vertexOffsets))
 
-	// Build object versions vector (with replication)
+	// Build object versions vector (with replication and fees)
 	versionOffsets := make([]flatbuffers.UOffsetT, len(trackerEntries))
 	for i, entry := range trackerEntries {
 		idOffset := builder.CreateByteVector(entry.ID[:])
@@ -161,6 +161,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 		types.ObjectVersionAddId(builder, idOffset)
 		types.ObjectVersionAddVersion(builder, entry.Version)
 		types.ObjectVersionAddReplication(builder, entry.Replication)
+		types.ObjectVersionAddFees(builder, entry.Fees)
 		versionOffsets[i] = types.ObjectVersionEnd(builder)
 	}
 
@@ -336,6 +337,8 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(buf[:])
 		binary.BigEndian.PutUint16(buf[:2], entry.Replication)
 		hasher.Write(buf[:2])
+		binary.BigEndian.PutUint64(buf[:], entry.Fees)
+		hasher.Write(buf[:])
 	}
 
 	// Write domain entries (already sorted)
@@ -543,6 +546,7 @@ func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEn
 			ID:          id,
 			Version:     v.Version(),
 			Replication: v.Replication(),
+			Fees:        v.Fees(),
 		}
 	}
 
