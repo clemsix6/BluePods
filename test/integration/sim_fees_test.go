@@ -1,10 +1,14 @@
 package integration
 
 import (
+	"encoding/binary"
+	"encoding/hex"
+	"net/http"
 	"testing"
 	"time"
 
 	"BluePods/client"
+	"BluePods/internal/genesis"
 )
 
 const (
@@ -28,6 +32,10 @@ func TestSimFees(t *testing.T) {
 
 	t.Run("gas-coin", func(t *testing.T) {
 		runGasCoinTests(t, cli)
+	})
+
+	t.Run("gas-coin-validation", func(t *testing.T) {
+		runGasCoinValidationTests(t, cli, cluster)
 	})
 
 	t.Run("fee-consistency", func(t *testing.T) {
@@ -261,5 +269,160 @@ func runFeeConsistencyTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 		}
 
 		t.Logf("Balance consistent across %d nodes: %d", len(balances), balances[0])
+	})
+}
+
+// encodeTransferArgs encodes transfer args: [u8; 32] new_owner.
+func encodeTransferArgs(newOwner [32]byte) []byte {
+	buf := make([]byte, 32)
+	copy(buf, newOwner[:])
+	return buf
+}
+
+// buildMutableRef creates a single-element ObjectRefData slice.
+func buildMutableRef(id [32]byte, version uint64) []genesis.ObjectRefData {
+	return []genesis.ObjectRefData{{ID: id, Version: version}}
+}
+
+// encodeSplitArgs encodes split args: u64 amount (LE) + [u8; 32] new_owner.
+func encodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
+	buf := make([]byte, 40)
+	binary.LittleEndian.PutUint64(buf[:8], amount)
+	copy(buf[8:], newOwner[:])
+	return buf
+}
+
+// runGasCoinValidationTests tests gas coin validation at execution time.
+// Txs with invalid gas coins are accepted at API level (202) but rejected
+// during execution — the state change (transfer) does not take effect.
+func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluster) {
+	t.Helper()
+	addr := cluster.Bootstrap().HTTPAddr()
+
+	t.Run("ATP-6.1: gas coin not found rejects tx", func(t *testing.T) {
+		// Create a coin to attempt transfer
+		w := client.NewWallet()
+		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
+
+		if err := w.RefreshCoin(cli, coinID); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+
+		// Build tx with gas_coin pointing to non-existent object
+		var fakeGasCoin [32]byte
+		fakeGasCoin[0] = 0xDE
+		fakeGasCoin[1] = 0xAD
+
+		r := client.NewWallet()
+		txBytes := BuildSignedTxWithGasCoin(
+			cli.SystemPod(), "transfer", encodeTransferArgs(r.Pubkey()),
+			fakeGasCoin, buildMutableRef(coinID, w.GetCoin(coinID).Version),
+		)
+
+		code, _ := SubmitRawBytes(addr, txBytes)
+		if code != http.StatusAccepted {
+			t.Logf("API rejected tx with fake gas coin: %d (also valid)", code)
+			return
+		}
+
+		time.Sleep(feesTxWait)
+
+		// Owner should NOT have changed — tx should be rejected at execution
+		obj, err := cli.GetObject(coinID)
+		if err != nil {
+			t.Fatalf("get coin: %v", err)
+		}
+
+		pk := w.Pubkey()
+		if obj.Owner != pk {
+			t.Errorf("gas coin not found should reject tx: owner changed to %s",
+				hex.EncodeToString(obj.Owner[:8]))
+		}
+	})
+
+	t.Run("ATP-6.3: gas coin wrong owner rejects tx", func(t *testing.T) {
+		// Alice creates a coin
+		alice := client.NewWallet()
+		aliceCoinID := FaucetAndWait(t, cli, alice, feesFaucetAmount, 30*time.Second)
+
+		// Bob creates a separate coin (to use as gas)
+		bob := client.NewWallet()
+		bobCoinID := FaucetAndWait(t, cli, bob, feesFaucetAmount, 30*time.Second)
+
+		if err := alice.RefreshCoin(cli, aliceCoinID); err != nil {
+			t.Fatalf("refresh alice: %v", err)
+		}
+
+		// Alice tries to transfer using Bob's coin as gas_coin
+		// This should fail because Alice doesn't own Bob's gas coin
+		r := client.NewWallet()
+		txBytes := BuildSignedTxWithGasCoin(
+			cli.SystemPod(), "transfer", encodeTransferArgs(r.Pubkey()),
+			bobCoinID, buildMutableRef(aliceCoinID, alice.GetCoin(aliceCoinID).Version),
+		)
+
+		code, _ := SubmitRawBytes(addr, txBytes)
+		if code != http.StatusAccepted {
+			t.Logf("API rejected tx: %d (also valid)", code)
+			return
+		}
+
+		time.Sleep(feesTxWait)
+
+		// Alice's coin should still belong to Alice
+		obj, err := cli.GetObject(aliceCoinID)
+		if err != nil {
+			t.Fatalf("get coin: %v", err)
+		}
+
+		alicePK := alice.Pubkey()
+		if obj.Owner != alicePK {
+			t.Errorf("wrong gas coin owner should reject tx: owner changed to %s",
+				hex.EncodeToString(obj.Owner[:8]))
+		}
+	})
+
+	t.Run("ATP-21.15: gas coin must be singleton", func(t *testing.T) {
+		// Create an NFT (replication=5, NOT a singleton)
+		w := client.NewWallet()
+		nftID, err := w.CreateNFT(cli, 5, []byte("not-a-coin"))
+		if err != nil {
+			t.Fatalf("create NFT: %v", err)
+		}
+
+		WaitForObject(t, cli, nftID, 30*time.Second)
+
+		// Create a real coin to attempt transfer
+		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
+		if err := w.RefreshCoin(cli, coinID); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+
+		// Try to use the NFT as gas_coin (rep=5, not singleton)
+		r := client.NewWallet()
+		txBytes := BuildSignedTxWithGasCoin(
+			cli.SystemPod(), "transfer", encodeTransferArgs(r.Pubkey()),
+			nftID, buildMutableRef(coinID, w.GetCoin(coinID).Version),
+		)
+
+		code, _ := SubmitRawBytes(addr, txBytes)
+		if code != http.StatusAccepted {
+			t.Logf("API rejected tx: %d (also valid)", code)
+			return
+		}
+
+		time.Sleep(feesTxWait)
+
+		// Coin should still belong to original owner
+		obj, err := cli.GetObject(coinID)
+		if err != nil {
+			t.Fatalf("get coin: %v", err)
+		}
+
+		pk := w.Pubkey()
+		if obj.Owner != pk {
+			t.Errorf("non-singleton gas coin should reject tx: owner changed to %s",
+				hex.EncodeToString(obj.Owner[:8]))
+		}
 	})
 }

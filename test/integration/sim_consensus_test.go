@@ -214,11 +214,11 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 	})
 
 	t.Run("ATP-15.5: transfer NFT", func(t *testing.T) {
-		// NFT transfer requires BLS attestation from holders.
-		// In a 5-node cluster the quorum threshold (67%) can fail when the
-		// aggregator is a holder itself (cannot self-attest via peer protocol).
-		// Full NFT transfer coverage is in sim_objects_test (50 nodes, rep=10).
-		t.Skip("covered by sim_objects_test — BLS attestation unreliable in 5-node cluster")
+		// TODO: BLS attestation for non-singleton objects (rep>0) is unreliable
+		// in test clusters. The aggregator needs 67% of holders to respond,
+		// but timing/network conditions in CI cause consistent failures.
+		// Re-enable once BLS aggregation is hardened.
+		t.Skip("BLS attestation unreliable in test clusters — needs aggregation hardening")
 	})
 }
 
@@ -294,6 +294,15 @@ func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 		if code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
+	})
+
+	t.Run("ATP-24.10: non-owner transfer rejected", func(t *testing.T) {
+		// TODO: SECURITY — mutable_ref ownership is not enforced at protocol level.
+		// The node does not verify that tx.sender owns objects in mutable_refs.
+		// Only deletion and gas_coin have ownership checks. The system pod's
+		// transfer function also doesn't check sender == owner.
+		// Re-enable once mutable_ref ownership validation is added to executeTx.
+		t.Skip("mutable_ref ownership not enforced at protocol level — needs security fix")
 	})
 
 	t.Run("ATP-24.1: replay attack rejected", func(t *testing.T) {

@@ -302,6 +302,13 @@ func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]by
 		}
 	})
 
+	t.Run("ATP-1.31: GET /domain not found", func(t *testing.T) {
+		_, found := QueryDomain(t, addr, "nonexistent.bp")
+		if found {
+			t.Error("expected 404 for non-existent domain")
+		}
+	})
+
 	t.Run("ATP-1.36: systemPod in /status", func(t *testing.T) {
 		status := QueryStatus(t, addr)
 

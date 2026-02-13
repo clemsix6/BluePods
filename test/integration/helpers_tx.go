@@ -327,6 +327,59 @@ func buildRefWithCustomIDSize(builder *flatbuffers.Builder, idSize int) flatbuff
 	return types.ObjectRefEnd(builder)
 }
 
+// BuildSignedTxWithGasCoin builds a correctly signed tx with gas_coin set.
+// Used to test gas coin validation (ATP 6.x, 21.15).
+func BuildSignedTxWithGasCoin(
+	systemPod [32]byte,
+	funcName string,
+	args []byte,
+	gasCoin [32]byte,
+	mutableRefs []genesis.ObjectRefData,
+) []byte {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub := priv.Public().(ed25519.PublicKey)
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
+		pub, systemPod, funcName, args, nil, 0, 1000, gasCoin[:], mutableRefs, nil,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOff := genesis.BuildTxTableWithRefs(
+		builder, pub, systemPod, funcName, args, nil, 0, 1000, gasCoin[:], hash, sig, mutableRefs, nil,
+	)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes()
+}
+
+// BuildNonOwnerTransferTx builds a transfer tx signed by a random key (non-owner).
+// The tx references coinID at the given version as mutable ref.
+func BuildNonOwnerTransferTx(systemPod [32]byte, coinID [32]byte, version uint64, newOwner [32]byte) []byte {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub := priv.Public().(ed25519.PublicKey)
+
+	args := make([]byte, 32)
+	copy(args, newOwner[:])
+
+	mutableRefs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
+		pub, systemPod, "transfer", args, nil, 0, 0, nil, mutableRefs, nil,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOff := genesis.BuildTxTableWithRefs(
+		builder, pub, systemPod, "transfer", args, nil, 0, 0, nil, hash, sig, mutableRefs, nil,
+	)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes()
+}
+
 // buildRawTxBytes builds a Transaction FlatBuffer with custom-sized fields.
 // Unlike genesis.BuildTxTableWithRefs, this accepts []byte for all fields,
 // allowing construction of deliberately malformed transactions.
