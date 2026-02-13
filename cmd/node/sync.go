@@ -272,6 +272,10 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		consensus.WithImportData(result.vertices, result.trackerEntries),
 	}
 
+	if n.cfg.GossipFanout > 0 {
+		opts = append(opts, consensus.WithGossipFanout(n.cfg.GossipFanout))
+	}
+
 	opts = n.appendEpochOpts(opts)
 
 	n.dag = consensus.New(

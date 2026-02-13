@@ -60,6 +60,18 @@ type Config struct {
 	// MaxChurnPerEpoch is the maximum number of validator additions/removals per epoch.
 	// 0 means unlimited churn.
 	MaxChurnPerEpoch int
+
+	// GossipFanout is the number of peers to send each vertex to.
+	// 0 means use default (40).
+	GossipFanout int
+
+	// TransitionGrace is the number of grace rounds after minValidators is reached.
+	// 0 means use default (20).
+	TransitionGrace int
+
+	// TransitionBuffer is the extra buffer rounds after the grace period.
+	// 0 means use default (10).
+	TransitionBuffer int
 }
 
 // parseFlags parses command-line flags into Config.
@@ -80,6 +92,9 @@ func parseFlags() *Config {
 	flag.IntVar(&cfg.SyncBufferSec, "sync-buffer", 12, "Sync buffer duration in seconds (time to buffer vertices before snapshot)")
 	flag.Uint64Var(&cfg.EpochLength, "epoch-length", 1000, "Rounds per epoch (0 = disabled)")
 	flag.IntVar(&cfg.MaxChurnPerEpoch, "max-churn", 0, "Max validator changes per epoch (0 = unlimited)")
+	flag.IntVar(&cfg.GossipFanout, "gossip-fanout", 0, "Gossip fanout (peers per vertex, 0 = default 40)")
+	flag.IntVar(&cfg.TransitionGrace, "transition-grace", 0, "Grace rounds after minValidators reached (0 = default 20)")
+	flag.IntVar(&cfg.TransitionBuffer, "transition-buffer", 0, "Buffer rounds after grace period (0 = default 10)")
 	flag.Parse()
 
 	return cfg

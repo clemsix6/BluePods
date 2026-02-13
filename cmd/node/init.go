@@ -149,14 +149,20 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 		return nil
 	}
 
-	return n.appendEpochOpts([]consensus.Option{
+	opts := []consensus.Option{
 		consensus.WithGenesisTxs(txs),
 		consensus.WithBootstrap(),
 		consensus.WithMinValidators(n.cfg.MinValidators),
-	})
+	}
+
+	if n.cfg.GossipFanout > 0 {
+		opts = append(opts, consensus.WithGossipFanout(n.cfg.GossipFanout))
+	}
+
+	return n.appendEpochOpts(opts)
 }
 
-// appendEpochOpts adds epoch-related options if configured.
+// appendEpochOpts adds epoch and transition options if configured.
 func (n *Node) appendEpochOpts(opts []consensus.Option) []consensus.Option {
 	if n.cfg.EpochLength > 0 {
 		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
@@ -164,6 +170,14 @@ func (n *Node) appendEpochOpts(opts []consensus.Option) []consensus.Option {
 
 	if n.cfg.MaxChurnPerEpoch > 0 {
 		opts = append(opts, consensus.WithMaxChurnPerEpoch(n.cfg.MaxChurnPerEpoch))
+	}
+
+	if n.cfg.TransitionGrace > 0 {
+		opts = append(opts, consensus.WithTransitionGrace(n.cfg.TransitionGrace))
+	}
+
+	if n.cfg.TransitionBuffer > 0 {
+		opts = append(opts, consensus.WithTransitionBuffer(n.cfg.TransitionBuffer))
 	}
 
 	return opts

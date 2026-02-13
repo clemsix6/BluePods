@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func (n *Node) registerAsValidator() error {
 	if err != nil {
 		return fmt.Errorf("send registration tx:\n%w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("registration failed: status %d", resp.StatusCode)

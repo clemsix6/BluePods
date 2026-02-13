@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -66,14 +67,17 @@ func (hr *holderRouter) RouteGetObject(id [32]byte) ([]byte, error) {
 var holderClient = &http.Client{Timeout: 5 * time.Second}
 
 // fetchObjectFromHolder fetches an object from a remote holder via HTTP.
+// Uses ?local=true to prevent routing cascades: without it, each holder
+// that doesn't have the object would recursively route to more holders,
+// creating an exponential explosion of HTTP connections.
 func fetchObjectFromHolder(httpAddr string, id [32]byte) ([]byte, error) {
-	url := "http://" + httpAddr + "/object/" + hex.EncodeToString(id[:])
+	url := "http://" + httpAddr + "/object/" + hex.EncodeToString(id[:]) + "?local=true"
 
 	resp, err := holderClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)

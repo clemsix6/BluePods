@@ -66,9 +66,12 @@ type DAG struct {
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
 
 	// Mode flags
-	listenerMode  bool // listenerMode disables vertex production
-	isBootstrap   bool // isBootstrap allows producing even with few validators
-	minValidators int  // minValidators is the threshold before non-bootstrap nodes produce
+	listenerMode   bool // listenerMode disables vertex production
+	isBootstrap    bool // isBootstrap allows producing even with few validators
+	minValidators  int  // minValidators is the threshold before non-bootstrap nodes produce
+	gossipFanout   int  // gossipFanout is the number of peers to send each vertex to
+	graceRounds    int  // graceRounds is the transition grace period (0 = use default 20)
+	bufferRounds   int  // bufferRounds is the transition buffer period (0 = use default 10)
 
 	// Sync mode: after sync, only reference trusted producers (from snapshot) until
 	// we've produced our first vertex. This prevents referencing vertices from other
@@ -153,6 +156,32 @@ func WithBootstrap() Option {
 func WithMinValidators(n int) Option {
 	return func(d *DAG) {
 		d.minValidators = n
+	}
+}
+
+// WithGossipFanout sets the number of peers to send each vertex to.
+// Higher values increase reliability at the cost of more bandwidth.
+// Default is 40 (defaultGossipFanout).
+func WithGossipFanout(n int) Option {
+	return func(d *DAG) {
+		d.gossipFanout = n
+	}
+}
+
+// WithTransitionGrace sets the number of grace rounds after minValidators is reached.
+// During grace, quorum is relaxed to let the network converge.
+// 0 means use the default (20 rounds).
+func WithTransitionGrace(rounds int) Option {
+	return func(d *DAG) {
+		d.graceRounds = rounds
+	}
+}
+
+// WithTransitionBuffer sets the extra buffer rounds after the grace period.
+// 0 means use the default (10 rounds).
+func WithTransitionBuffer(rounds int) Option {
+	return func(d *DAG) {
+		d.bufferRounds = rounds
 	}
 }
 
@@ -626,6 +655,22 @@ func (d *DAG) disableSyncMode() {
 	}
 }
 
+// effectiveGrace returns the configured grace rounds or the default.
+func (d *DAG) effectiveGrace() uint64 {
+	if d.graceRounds > 0 {
+		return uint64(d.graceRounds)
+	}
+	return transitionGraceRounds
+}
+
+// effectiveBuffer returns the configured buffer rounds or the default.
+func (d *DAG) effectiveBuffer() uint64 {
+	if d.bufferRounds > 0 {
+		return uint64(d.bufferRounds)
+	}
+	return transitionBufferRounds
+}
+
 // isInTransition returns true if we're in the grace period after minValidators was reached.
 // During this period, quorum checks are relaxed to let the network converge.
 func (d *DAG) isInTransition() bool {
@@ -634,7 +679,7 @@ func (d *DAG) isInTransition() bool {
 		return false // minValidators not yet reached
 	}
 
-	return d.round.Load() < uint64(tr)+transitionGraceRounds
+	return d.round.Load() < uint64(tr)+d.effectiveGrace()
 }
 
 // isInTransitionOrBuffer returns true during transition OR the buffer period after.
@@ -647,7 +692,7 @@ func (d *DAG) isInTransitionOrBuffer() bool {
 		return false
 	}
 
-	return d.round.Load() < uint64(tr)+transitionGraceRounds+transitionBufferRounds
+	return d.round.Load() < uint64(tr)+d.effectiveGrace()+d.effectiveBuffer()
 }
 
 // isRoundInTransitionOrBuffer checks if quorum should be relaxed for a given round.
@@ -662,7 +707,7 @@ func (d *DAG) isRoundInTransitionOrBuffer(round uint64) bool {
 	}
 
 	// Fixed window: always relax during grace+buffer
-	if round < uint64(tr)+transitionGraceRounds+transitionBufferRounds {
+	if round < uint64(tr)+d.effectiveGrace()+d.effectiveBuffer() {
 		return true
 	}
 
@@ -682,8 +727,8 @@ func (d *DAG) enterTransition(atRound uint64) {
 	if d.transitionRound.CompareAndSwap(-1, int64(atRound)) {
 		logger.Info("transition started",
 			"commitRound", atRound,
-			"graceRounds", transitionGraceRounds,
-			"bufferRounds", transitionBufferRounds,
+			"graceRounds", d.effectiveGrace(),
+			"bufferRounds", d.effectiveBuffer(),
 		)
 	}
 }
@@ -873,7 +918,11 @@ func (d *DAG) takePendingTxs() [][]byte {
 // sendVertex broadcasts a vertex to the network.
 func (d *DAG) sendVertex(data []byte) {
 	if d.broadcaster != nil {
-		_ = d.broadcaster.Gossip(data, defaultGossipFanout)
+		fanout := d.gossipFanout
+		if fanout == 0 {
+			fanout = defaultGossipFanout
+		}
+		_ = d.broadcaster.Gossip(data, fanout)
 	}
 }
 

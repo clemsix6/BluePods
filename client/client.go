@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -400,7 +401,7 @@ func submitTx(nodeAddr string, txBytes []byte) error {
 	if err != nil {
 		return fmt.Errorf("post tx:\n%w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("tx rejected: status %d", resp.StatusCode)
@@ -428,7 +429,7 @@ func httpGet(url string, result any) error {
 	if err != nil {
 		return fmt.Errorf("GET %s:\n%w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
@@ -448,7 +449,7 @@ func httpPostJSON(url string, body any, result any) error {
 	if err != nil {
 		return fmt.Errorf("POST %s:\n%w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("POST %s: status %d", url, resp.StatusCode)
