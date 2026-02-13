@@ -201,6 +201,13 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return feeSplit
 	}
 
+	// Ownership check: sender must own all mutable_ref objects
+	if !d.validateMutableRefOwnership(tx) {
+		logger.Warn("mutable_ref ownership rejected", "func", funcName)
+		d.emitTransaction(tx, false)
+		return feeSplit
+	}
+
 	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
 	d.handleDeregisterValidator(tx, commitRound)
@@ -323,6 +330,64 @@ func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
 	}
 
 	return nil
+}
+
+// validateMutableRefOwnership checks that all mutable refs are owned by the sender.
+// Returns false if any mutable ref is not owned by the sender.
+func (d *DAG) validateMutableRefOwnership(tx *types.Transaction) bool {
+	count := tx.MutableRefsLength()
+	if count == 0 || d.coinStore == nil {
+		return true
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return false
+	}
+
+	var sender Hash
+	copy(sender[:], senderBytes)
+
+	var ref types.ObjectRef
+
+	for i := 0; i < count; i++ {
+		tx.MutableRefs(&ref, i)
+
+		idBytes := ref.IdBytes()
+		if len(idBytes) != 32 {
+			// Domain refs have no ID — skip ownership check
+			if len(ref.Domain()) > 0 {
+				continue
+			}
+			return false
+		}
+
+		var objectID Hash
+		copy(objectID[:], idBytes)
+
+		data := d.coinStore.GetObject(objectID)
+		if data == nil {
+			logger.Warn("mutable ref not found", "id_prefix", objectID[:4])
+			return false
+		}
+
+		owner, err := readCoinOwner(data)
+		if err != nil {
+			logger.Warn("mutable ref invalid owner", "error", err)
+			return false
+		}
+
+		if owner != sender {
+			logger.Warn("mutable ref ownership mismatch",
+				"id_prefix", objectID[:4],
+				"owner_prefix", owner[:4],
+				"sender_prefix", sender[:4],
+			)
+			return false
+		}
+	}
+
+	return true
 }
 
 // calculateTxFee computes the total fee from transaction header fields.

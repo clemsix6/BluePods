@@ -297,12 +297,38 @@ func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	})
 
 	t.Run("ATP-24.10: non-owner transfer rejected", func(t *testing.T) {
-		// TODO: SECURITY — mutable_ref ownership is not enforced at protocol level.
-		// The node does not verify that tx.sender owns objects in mutable_refs.
-		// Only deletion and gas_coin have ownership checks. The system pod's
-		// transfer function also doesn't check sender == owner.
-		// Re-enable once mutable_ref ownership validation is added to executeTx.
-		t.Skip("mutable_ref ownership not enforced at protocol level — needs security fix")
+		// Alice creates a coin
+		alice := client.NewWallet()
+		coinID := FaucetAndWait(t, cli, alice, consensusFaucetAmount, 30*time.Second)
+
+		obj, err := cli.GetObject(coinID)
+		if err != nil {
+			t.Fatalf("get coin: %v", err)
+		}
+
+		// Bob (random key) tries to transfer Alice's coin
+		bob := client.NewWallet()
+		txBytes := BuildNonOwnerTransferTx(cli.SystemPod(), coinID, obj.Version, bob.Pubkey())
+		code, _ := SubmitRawBytes(addr, txBytes)
+
+		// API accepts (202) but execution should fail (ownership mismatch)
+		if code != http.StatusAccepted {
+			t.Logf("API rejected non-owner tx: status %d (also valid)", code)
+		}
+
+		time.Sleep(consensusTxWait)
+
+		// Verify owner is still Alice
+		afterObj, err := cli.GetObject(coinID)
+		if err != nil {
+			t.Fatalf("get coin after attack: %v", err)
+		}
+
+		alicePK := alice.Pubkey()
+		if afterObj.Owner != alicePK {
+			t.Errorf("non-owner transfer should not change owner: got %s, want %s (alice)",
+				hex.EncodeToString(afterObj.Owner[:8]), hex.EncodeToString(alicePK[:8]))
+		}
 	})
 
 	t.Run("ATP-24.1: replay attack rejected", func(t *testing.T) {

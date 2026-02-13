@@ -1161,6 +1161,217 @@ func TestDeductFees_FeesDisabled(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Mutable Ref Ownership Tests
+// =============================================================================
+
+// TestMutableRefOwnership_SenderIsOwner verifies tx proceeds when sender owns mutable refs.
+func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	dag.SetFeeSystem(coinStore, nil, nil)
+
+	sender := Hash{0x01}
+	objID := Hash{0xAA}
+
+	// Object owned by sender
+	coinStore.SetObject(buildTestCoinObject(objID, 1000, sender, 0))
+
+	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 1, validators[0].pubKey)
+
+	select {
+	case committed := <-dag.Committed():
+		if !committed.Success {
+			t.Error("tx should succeed when sender owns mutable ref")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// TestMutableRefOwnership_NonOwnerRejected verifies tx is rejected when sender doesn't own mutable refs.
+func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	dag.SetFeeSystem(coinStore, nil, nil)
+
+	sender := Hash{0x01}
+	owner := Hash{0x02}
+	objID := Hash{0xAA}
+
+	// Object owned by different key
+	coinStore.SetObject(buildTestCoinObject(objID, 1000, owner, 0))
+
+	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 1, validators[0].pubKey)
+
+	select {
+	case committed := <-dag.Committed():
+		if committed.Success {
+			t.Error("tx should fail when sender doesn't own mutable ref")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// TestMutableRefOwnership_ObjectNotFound verifies tx is rejected when mutable ref object doesn't exist.
+func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	dag.SetFeeSystem(coinStore, nil, nil)
+
+	sender := Hash{0x01}
+	objID := Hash{0xAA}
+
+	// Object NOT in store — but version 0 is default so tracker passes
+
+	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 1, validators[0].pubKey)
+
+	select {
+	case committed := <-dag.Committed():
+		if committed.Success {
+			t.Error("tx should fail when mutable ref object not found")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// TestMutableRefOwnership_NoMutableRefs verifies tx with no mutable refs passes ownership check.
+func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	dag.SetFeeSystem(coinStore, nil, nil)
+
+	atxBytes := buildOwnershipTestATX(t, Hash{0x01}, nil)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 1, validators[0].pubKey)
+
+	select {
+	case committed := <-dag.Committed():
+		if !committed.Success {
+			t.Error("tx with no mutable refs should succeed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// TestMutableRefOwnership_MultipleRefs verifies all mutable refs must be owned by sender.
+func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	dag.SetFeeSystem(coinStore, nil, nil)
+
+	sender := Hash{0x01}
+	other := Hash{0x02}
+	obj1 := Hash{0xAA}
+	obj2 := Hash{0xBB}
+
+	// First object owned by sender, second by someone else
+	coinStore.SetObject(buildTestCoinObject(obj1, 1000, sender, 0))
+	coinStore.SetObject(buildTestCoinObject(obj2, 1000, other, 0))
+
+	refs := []objectRef{
+		{id: obj1, version: 0},
+		{id: obj2, version: 0},
+	}
+
+	atxBytes := buildOwnershipTestATX(t, sender, refs)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 1, validators[0].pubKey)
+
+	select {
+	case committed := <-dag.Committed():
+		if committed.Success {
+			t.Error("tx should fail when any mutable ref is not owned by sender")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for committed tx")
+	}
+}
+
+// buildOwnershipTestATX creates a test ATX with a sender and optional mutable refs.
+func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	mutVec := buildObjectRefVector(builder, mutRefs, true)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(make([]byte, 32))
+	funcNameOff := builder.CreateString("test_func")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	if mutVec != 0 {
+		types.TransactionAddMutableRefs(builder, mutVec)
+	}
+	txOff := types.TransactionEnd(builder)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
+}
+
 // buildFeeTestATX creates a test ATX with sender, gas_coin, max_gas, and optional created objects.
 func buildFeeTestATX(t *testing.T, sender Hash, gasCoin Hash, maxGas uint64, createdReps []uint16) []byte {
 	t.Helper()
