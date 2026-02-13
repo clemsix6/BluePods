@@ -1332,6 +1332,132 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Min Gas Boundary Tests (ATP 5.8-5.9)
+// =============================================================================
+
+// TestDeductFees_MinGasExact verifies max_gas = MinGas (100) proceeds.
+func TestDeductFees_MinGasExact(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams() // MinGas=100
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
+
+	// max_gas=100 == MinGas → should pass
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 100, []uint16{0})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total == 0 {
+		t.Error("expected non-zero fee for max_gas=MinGas")
+	}
+
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance >= 1_000_000 {
+		t.Errorf("balance should be reduced, got %d", balance)
+	}
+}
+
+// TestDeductFees_MinGasAbove verifies max_gas = MinGas+1 proceeds.
+func TestDeductFees_MinGasAbove(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams() // MinGas=100
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
+
+	// max_gas=101 > MinGas → should pass
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 101, []uint16{0})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey)
+
+	if feeSplit.Total == 0 {
+		t.Error("expected non-zero fee for max_gas=MinGas+1")
+	}
+
+	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	if balance >= 1_000_000 {
+		t.Errorf("balance should be reduced, got %d", balance)
+	}
+}
+
+// =============================================================================
+// BLS Proof Skip Tests (ATP 26.3-26.4)
+// =============================================================================
+
+// TestExecuteTx_ZeroProofs_SkipsVerifier verifies ATX with 0 proofs skips BLS verification.
+func TestExecuteTx_ZeroProofs_SkipsVerifier(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Set verifier that would fatal if called
+	dag.SetATXProofVerifier(func(atx *types.AttestedTransaction) error {
+		t.Fatal("verifier should not be called for 0 proofs")
+		return nil
+	})
+
+	// Build ATX with 0 proofs
+	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 0, Hash{})
+	// If we reach here without fatal, the verifier was correctly skipped
+}
+
+// TestExecuteTx_NilVerifier verifies tx succeeds when verifyATXProofs is nil.
+func TestExecuteTx_NilVerifier(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+	// verifyATXProofs is nil by default
+
+	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 0, Hash{})
+
+	// Tx should succeed: emitted to committed channel
+	select {
+	case committed := <-dag.Committed():
+		if committed.Function != "test_func" {
+			t.Errorf("expected function 'test_func', got '%s'", committed.Function)
+		}
+		if !committed.Success {
+			t.Error("expected success=true when verifier is nil")
+		}
+	default:
+		t.Fatal("expected committed tx on channel")
+	}
+}
+
 // buildOwnershipTestATX creates a test ATX with a sender and optional mutable refs.
 func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byte {
 	t.Helper()

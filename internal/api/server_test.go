@@ -373,6 +373,7 @@ type txOptions struct {
 	emptyFuncName    bool                   // force empty function name
 	mutableRefs      []genesis.ObjectRefData // override mutable object refs
 	readRefs         []genesis.ObjectRefData // override read object refs
+	gasCoin          []byte                 // optional gas_coin bytes (nil = absent)
 	corruptSignature bool                   // flip a bit in the signature
 	tamperedHash     bool                   // use a wrong hash
 	wrongSender      bool                   // sign with one key, put different sender
@@ -408,7 +409,7 @@ func buildTestRawTx(t *testing.T, modify func(*txOptions)) []byte {
 	}
 
 	// Build unsigned tx for hashing
-	unsignedBytes := buildUnsignedForTest(sender, podBytes, funcName, opts.mutableRefs, opts.readRefs)
+	unsignedBytes := buildUnsignedForTest(sender, podBytes, funcName, opts.mutableRefs, opts.readRefs, opts.gasCoin)
 	hash := blake3.Sum256(unsignedBytes)
 
 	if opts.tamperedHash {
@@ -428,7 +429,7 @@ func buildTestRawTx(t *testing.T, modify func(*txOptions)) []byte {
 
 	sigBytes := sig[:opts.signatureSize]
 
-	return buildSignedForTest(sender, podBytes, funcName, hash, sigBytes, opts.mutableRefs, opts.readRefs)
+	return buildSignedForTest(sender, podBytes, funcName, hash, sigBytes, opts.mutableRefs, opts.readRefs, opts.gasCoin)
 }
 
 // buildUnsignedForTest creates unsigned Transaction bytes for hashing.
@@ -437,6 +438,7 @@ func buildUnsignedForTest(
 	sender, pod []byte,
 	funcName string,
 	mutableRefs, readRefs []genesis.ObjectRefData,
+	gasCoin []byte,
 ) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
@@ -444,6 +446,11 @@ func buildUnsignedForTest(
 	senderVec := builder.CreateByteVector(sender)
 	podVec := builder.CreateByteVector(pod)
 	funcNameOff := builder.CreateString(funcName)
+
+	var gasCoinVec flatbuffers.UOffsetT
+	if len(gasCoin) > 0 {
+		gasCoinVec = builder.CreateByteVector(gasCoin)
+	}
 
 	mutRefsVec := buildTestRefVector(builder, mutableRefs, true)
 	readRefsVec := buildTestRefVector(builder, readRefs, false)
@@ -453,6 +460,10 @@ func buildUnsignedForTest(
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
+
+	if gasCoinVec != 0 {
+		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
 
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)
@@ -475,6 +486,7 @@ func buildSignedForTest(
 	hash [32]byte,
 	sig []byte,
 	mutableRefs, readRefs []genesis.ObjectRefData,
+	gasCoin []byte,
 ) []byte {
 	builder := flatbuffers.NewBuilder(1024)
 
@@ -484,6 +496,11 @@ func buildSignedForTest(
 	senderVec := builder.CreateByteVector(sender)
 	podVec := builder.CreateByteVector(pod)
 	funcNameOff := builder.CreateString(funcName)
+
+	var gasCoinVec flatbuffers.UOffsetT
+	if len(gasCoin) > 0 {
+		gasCoinVec = builder.CreateByteVector(gasCoin)
+	}
 
 	mutRefsVec := buildTestRefVector(builder, mutableRefs, true)
 	readRefsVec := buildTestRefVector(builder, readRefs, false)
@@ -495,6 +512,10 @@ func buildSignedForTest(
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
+
+	if gasCoinVec != 0 {
+		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
 
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)
@@ -962,7 +983,187 @@ func TestValidators_Success(t *testing.T) {
 	}
 }
 
-// --- Helper for API tests ---
+// =============================================================================
+// Gas Coin Validation Tests (ATP 1.6)
+// =============================================================================
+
+func TestSubmitTx_GasCoinInvalidSize(t *testing.T) {
+	submitter := &mockSubmitter{}
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil, nil)
+
+	// gas_coin = 16 bytes (should be 0 or 32)
+	txData := buildTestRawTx(t, func(o *txOptions) {
+		o.gasCoin = make([]byte, 16)
+	})
+
+	req := httptest.NewRequest("POST", "/tx", bytes.NewReader(txData))
+	w := httptest.NewRecorder()
+
+	server.handleSubmitTx(w, req)
+
+	assertRejected(t, w, submitter, "invalid gas_coin size")
+}
+
+// =============================================================================
+// Duplicate Read Refs Test (ATP 1.12)
+// =============================================================================
+
+func TestSubmitTx_DuplicateReadRefs(t *testing.T) {
+	submitter := &mockSubmitter{}
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil, nil)
+
+	// Same object ID twice in read_refs
+	refs := makeUniqueRefs(1)
+	txData := buildTestRawTx(t, func(o *txOptions) {
+		o.readRefs = append(refs, refs[0])
+	})
+
+	req := httptest.NewRequest("POST", "/tx", bytes.NewReader(txData))
+	w := httptest.NewRecorder()
+
+	server.handleSubmitTx(w, req)
+
+	assertRejected(t, w, submitter, "duplicate in read_refs")
+}
+
+// =============================================================================
+// Domain Ref With No ID Test (ATP 1.17)
+// =============================================================================
+
+func TestSubmitTx_DomainRefNoID(t *testing.T) {
+	submitter := &mockSubmitter{}
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil, nil)
+
+	// Domain-only ref (no object ID) should be accepted
+	txData := buildTxWithDomainRefs(t, []string{"example.pod"}, nil)
+
+	req := httptest.NewRequest("POST", "/tx", bytes.NewReader(txData))
+	w := httptest.NewRecorder()
+
+	server.handleSubmitTx(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202 for domain-only ref, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// Body Too Large Test (ATP 1.20)
+// =============================================================================
+
+func TestSubmitTx_BodyTooLarge(t *testing.T) {
+	submitter := &mockSubmitter{}
+	server := New(":0", submitter, nil, nil, nil, nil, nil, nil, nil)
+
+	// Build a body larger than 1MB. The server reads at most maxTxSize (1MB),
+	// so a 2MB body is truncated and results in malformed FlatBuffer.
+	largeBody := make([]byte, 2*1024*1024)
+
+	req := httptest.NewRequest("POST", "/tx", bytes.NewReader(largeBody))
+	w := httptest.NewRecorder()
+
+	server.handleSubmitTx(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized body, got %d", w.Code)
+	}
+
+	if len(submitter.txs) != 0 {
+		t.Error("should not submit oversized body")
+	}
+}
+
+// =============================================================================
+// Faucet Tests (ATP 1.32-1.34)
+// =============================================================================
+
+func TestFaucet_Valid(t *testing.T) {
+	submitter := &mockSubmitter{}
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var systemPod [32]byte
+	copy(systemPod[:], []byte("test_system_pod_id_1234567890ab"))
+
+	faucetCfg := &FaucetConfig{
+		PrivKey:   priv,
+		SystemPod: systemPod,
+	}
+
+	server := New(":0", submitter, nil, nil, nil, faucetCfg, nil, nil, nil)
+
+	body := `{"pubkey":"` + hex.EncodeToString(make([]byte, 32)) + `","amount":1000}`
+	req := httptest.NewRequest("POST", "/faucet", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	server.handleFaucet(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if resp["hash"] == "" {
+		t.Error("expected hash in response")
+	}
+
+	if resp["coinID"] == "" {
+		t.Error("expected coinID in response")
+	}
+
+	if len(submitter.txs) != 1 {
+		t.Errorf("expected 1 submitted tx, got %d", len(submitter.txs))
+	}
+}
+
+func TestFaucet_ZeroAmount(t *testing.T) {
+	submitter := &mockSubmitter{}
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	faucetCfg := &FaucetConfig{PrivKey: priv}
+
+	server := New(":0", submitter, nil, nil, nil, faucetCfg, nil, nil, nil)
+
+	body := `{"pubkey":"` + hex.EncodeToString(make([]byte, 32)) + `","amount":0}`
+	req := httptest.NewRequest("POST", "/faucet", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	server.handleFaucet(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for zero amount, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if len(submitter.txs) != 0 {
+		t.Error("should not submit on zero amount")
+	}
+}
+
+func TestFaucet_InvalidPubkey(t *testing.T) {
+	submitter := &mockSubmitter{}
+
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	faucetCfg := &FaucetConfig{PrivKey: priv}
+
+	server := New(":0", submitter, nil, nil, nil, faucetCfg, nil, nil, nil)
+
+	body := `{"pubkey":"deadbeef","amount":1000}`
+	req := httptest.NewRequest("POST", "/faucet", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	server.handleFaucet(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid pubkey, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if len(submitter.txs) != 0 {
+		t.Error("should not submit on invalid pubkey")
+	}
+}
 
 // --- Domain ref duplicate validation tests ---
 
