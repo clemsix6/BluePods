@@ -3,6 +3,7 @@ package consensus
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -278,8 +279,10 @@ func (d *DAG) AddVertex(data []byte) bool {
 
 	err := d.validateVertex(vertex, data)
 	if err != nil {
-		// Buffer vertex if parents are missing - they may arrive later
-		if d.isMissingParentError(err) {
+		// Buffer vertex if parents are missing or producer is unknown.
+		// Missing parents arrive later via gossip.
+		// Unknown producers become known when their register_validator tx commits.
+		if d.isMissingParentError(err) || d.isUnknownProducerError(err) {
 			d.bufferPendingVertex(hash, data)
 			return false
 		}
@@ -789,11 +792,6 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 
 	// BFT quorum met: production can proceed
 	if count >= required {
-		// Mark convergence complete once BFT quorum is observed after the
-		// fixed transition window. markFullQuorumAchieved gates on
-		// !isInTransitionOrBuffer() internally, so this is safe to call
-		// every time.
-		d.markFullQuorumAchieved()
 		return true
 	}
 
@@ -811,9 +809,10 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 	return false
 }
 
-// markFullQuorumAchieved records that BFT quorum has been observed after the
-// fixed transition window. Once set, both production and commit paths require
-// strict BFT quorum instead of quorum=1.
+// markFullQuorumAchieved records that BFT quorum has been observed in the commit
+// path after the fixed transition window. This is called from checkCommits when
+// a round is committed with full BFT quorum. Using commit-side (not production-side)
+// observation prevents early-joining nodes from prematurely ending convergence.
 func (d *DAG) markFullQuorumAchieved() {
 	if d.transitionRound.Load() >= 0 && !d.fullQuorumAchieved.Load() && !d.isInTransitionOrBuffer() {
 		d.fullQuorumAchieved.Store(true)
@@ -937,6 +936,26 @@ func (d *DAG) isMissingParentError(err error) bool {
 	return len(errStr) > 16 && errStr[:16] == "parent not found"
 }
 
+// isUnknownProducerError checks if the error is due to an unknown producer.
+// These vertices should be buffered and retried when the producer registers.
+func (d *DAG) isUnknownProducerError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	return len(errStr) > 17 && errStr[:17] == "unknown producer:"
+}
+
+// hasPendingVertex checks if a vertex with the given hash is in the pending buffer.
+func (d *DAG) hasPendingVertex(hash Hash) bool {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	_, exists := d.pendingVertices[hash]
+	return exists
+}
+
 // bufferPendingVertex adds a vertex to the pending buffer.
 // Vertices are deduplicated by hash.
 func (d *DAG) bufferPendingVertex(hash Hash, data []byte) {
@@ -972,48 +991,74 @@ func (d *DAG) processPendingVertices() {
 	}
 }
 
+// pendingEntry holds a pending vertex with its hash for sorted processing.
+type pendingEntry struct {
+	hash  Hash   // hash is the vertex hash
+	data  []byte // data is the serialized vertex
+	round uint64 // round is the vertex round (for sorting)
+}
+
 // tryProcessPending attempts to process all pending vertices once.
+// Vertices are sorted by round so parents are processed before children.
 // Returns the number of vertices successfully processed.
 func (d *DAG) tryProcessPending() int {
-	d.pendingMu.Lock()
-	pending := make(map[Hash][]byte, len(d.pendingVertices))
-	for h, data := range d.pendingVertices {
-		pending[h] = data
+	sorted := d.snapshotPendingSorted()
+	if len(sorted) == 0 {
+		return 0
 	}
-	d.pendingMu.Unlock()
 
 	processed := 0
 
-	for hash, data := range pending {
-		vertex := types.GetRootAsVertex(data, 0)
+	for _, entry := range sorted {
+		vertex := types.GetRootAsVertex(entry.data, 0)
 
-		err := d.validateVertex(vertex, data)
+		err := d.validateVertex(vertex, entry.data)
 		if err != nil {
-			// Still has missing parents, keep in buffer
-			if d.isMissingParentError(err) {
+			// Keep in buffer if parents are missing or producer is unknown.
+			// These conditions resolve when parents arrive or producer registers.
+			if d.isMissingParentError(err) || d.isUnknownProducerError(err) {
 				continue
 			}
 
 			// Other validation error, remove from buffer
-			d.removePendingVertex(hash)
+			d.removePendingVertex(entry.hash)
 			logger.Debug("pending vertex rejected", "round", vertex.Round(), "error", err)
 			continue
 		}
 
 		// Validation passed, add to store
 		producer := extractProducer(vertex)
-		round := vertex.Round()
 
-		if d.store.add(data, hash, round, producer) {
-			d.onVertexAdded(round)
+		if d.store.add(entry.data, entry.hash, entry.round, producer) {
+			d.onVertexAdded(entry.round)
 			processed++
-			logger.Debug("processed pending vertex", "round", round)
+			logger.Debug("processed pending vertex", "round", entry.round)
 		}
 
-		d.removePendingVertex(hash)
+		d.removePendingVertex(entry.hash)
 	}
 
 	return processed
+}
+
+// snapshotPendingSorted returns a copy of pending vertices sorted by round.
+// Lower rounds are processed first so parents are resolved before children.
+func (d *DAG) snapshotPendingSorted() []pendingEntry {
+	d.pendingMu.Lock()
+	entries := make([]pendingEntry, 0, len(d.pendingVertices))
+
+	for h, data := range d.pendingVertices {
+		v := types.GetRootAsVertex(data, 0)
+		entries = append(entries, pendingEntry{hash: h, data: data, round: v.Round()})
+	}
+
+	d.pendingMu.Unlock()
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].round < entries[j].round
+	})
+
+	return entries
 }
 
 // PurgePendingBeforeRound removes pending vertices whose round is before minRound.

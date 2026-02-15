@@ -130,12 +130,30 @@ func (d *DAG) validateParents(v *types.Vertex) error {
 }
 
 // validateParentLink checks a single parent link.
+// If the parent is not found and its producer is unknown, the parent is skipped.
+// This allows vertices from known validators to be accepted even when they
+// reference parents from validators not yet registered on this node.
 func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 	parentHash := extractLinkHash(link)
 	parentProducer := extractLinkProducer(link)
 	parent := d.store.get(parentHash)
 
 	if parent == nil {
+		// If the parent's producer is unknown, skip this parent.
+		// The vertex producer (a known validator) has already validated it.
+		// The parent will be fully validated when its producer registers.
+		if !d.validators.Contains(parentProducer) {
+			return nil
+		}
+
+		// If the parent is in the pending buffer, skip validation.
+		// The parent was received from the network but not yet processed.
+		// With sorted pending processing, it will be added to the store
+		// before or alongside this vertex.
+		if d.hasPendingVertex(parentHash) {
+			return nil
+		}
+
 		logger.Debug("missing parent",
 			"parentHash", hex.EncodeToString(parentHash[:8]),
 			"parentProducer", hex.EncodeToString(parentProducer[:8]),
@@ -151,8 +169,12 @@ func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 	return nil
 }
 
-// validateParentsQuorum ensures parents reference at least 67% of validators.
-// This prevents a vertex from being built on a minority chain.
+// validateParentsQuorum ensures parents reference at least 1 known validator.
+// This is a minimal sanity check for received vertices. The producing validator
+// already enforced BFT quorum from its own perspective. Different validators may
+// have different validator set sizes during convergence, so we cannot enforce the
+// receiving node's quorum threshold on vertices produced by others.
+// Local production quorum is enforced separately in hasQuorumFromRound.
 func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	round := v.Round()
 
@@ -167,8 +189,8 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 		return nil
 	}
 
-	// Collect unique validator producers from parents
-	parentProducers := make(map[Hash]bool)
+	// Count unique known validator producers from parents
+	knownParents := 0
 	var link types.VertexLink
 
 	for i := 0; i < v.ParentsLength(); i++ {
@@ -176,31 +198,15 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 			continue
 		}
 
-		// Get the producer from the parent link
 		producer := extractLinkProducer(&link)
-
-		// Only count if producer is a known validator
 		if d.validators.Contains(producer) {
-			parentProducers[producer] = true
+			knownParents++
+			break // At least 1 known parent is sufficient
 		}
 	}
 
-	quorumSize := d.validators.QuorumSize()
-
-	// Transition + buffer period: relax quorum after minValidators is reached.
-	// Use the vertex's round to determine if quorum should be relaxed.
-	// Vertices produced during the transition/buffer window always get relaxed quorum.
-	if d.isRoundInTransitionOrBuffer(round) {
-		if len(parentProducers) >= 1 {
-			return nil
-		}
-		return fmt.Errorf("transition: need at least 1 parent, got %d", len(parentProducers))
-	}
-
-	// Normal operation: need full quorum
-	if len(parentProducers) < quorumSize {
-		return fmt.Errorf("insufficient parent quorum: got %d, need %d",
-			len(parentProducers), quorumSize)
+	if knownParents == 0 {
+		return fmt.Errorf("no known parent producers for round %d", round)
 	}
 
 	return nil

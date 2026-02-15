@@ -121,8 +121,9 @@ func TestValidateParents_WrongRound(t *testing.T) {
 	}
 }
 
-// TestValidateParentsQuorum_Insufficient verifies too few parent producers is rejected.
-func TestValidateParentsQuorum_Insufficient(t *testing.T) {
+// TestValidateParentsQuorum_MinimumKnownParent verifies that at least 1 known parent
+// producer is required. BFT quorum is only enforced during local production.
+func TestValidateParentsQuorum_MinimumKnownParent(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)
 
@@ -136,19 +137,15 @@ func TestValidateParentsQuorum_Insufficient(t *testing.T) {
 	copy(r0hash[:], r0vertex.HashBytes())
 	dag.store.add(r0data, r0hash, 0, validators[0].pubKey)
 
-	// Build round-1 vertex with only 1 parent (quorum for 4 validators = 3)
+	// Build round-1 vertex with 1 known parent — should pass
 	data := buildTestVertexWithParentLinks(t, validators[1], 1, 1,
 		[]parentLink{{hash: r0hash, producer: validators[0].pubKey}},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	err := dag.validateParentsQuorum(vertex)
-	if err == nil {
-		t.Fatal("expected error for insufficient quorum")
-	}
-
-	if !strings.Contains(err.Error(), "insufficient parent quorum") {
-		t.Errorf("expected 'insufficient parent quorum', got: %v", err)
+	if err != nil {
+		t.Fatalf("expected quorum to pass with 1 known parent, got: %v", err)
 	}
 }
 

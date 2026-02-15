@@ -64,11 +64,13 @@ func (d *DAG) checkCommits() {
 
 // isRoundCommitted checks if a round has reached commit (referenced by N+2 quorum).
 // Only vertices from known validators are counted toward quorum.
+// When a round commits with full BFT quorum (not relaxed), marks fullQuorumAchieved.
 func (d *DAG) isRoundCommitted(round uint64) bool {
 	round2Hashes := d.store.getByRound(round + 2)
 
 	// Determine required quorum for commit
-	requiredQuorum := d.validators.QuorumSize()
+	fullQuorum := d.validators.QuorumSize()
+	requiredQuorum := fullQuorum
 
 	// During init (before minValidators), use quorum=1 to observe bootstrap's chain.
 	// This allows all nodes to see registrations and reach minValidators together.
@@ -78,7 +80,8 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 
 	// During transition + convergence, use quorum=1 for commit.
 	// Matches the isRoundInTransitionOrBuffer logic.
-	if d.isRoundInTransitionOrBuffer(round + 2) {
+	relaxed := d.isRoundInTransitionOrBuffer(round + 2)
+	if relaxed {
 		requiredQuorum = 1
 	}
 
@@ -104,7 +107,15 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 		producers[producer] = true
 	}
 
-	return len(producers) >= requiredQuorum
+	committed := len(producers) >= requiredQuorum
+
+	// Mark full quorum achieved when a round commits with strict BFT quorum.
+	// This is the commit-side signal that the network has truly converged.
+	if committed && !relaxed && len(producers) >= fullQuorum {
+		d.markFullQuorumAchieved()
+	}
+
+	return committed
 }
 
 // commitRound processes all transactions from a committed round.
@@ -620,6 +631,12 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	// Track mid-epoch additions for churn limiting
 	if isNew && d.epochLength > 0 {
 		d.epochAdditions = append(d.epochAdditions, pubkey)
+	}
+
+	// Retry pending vertices — some may be from this newly registered producer.
+	// Run async to avoid blocking the commit path.
+	if isNew {
+		go d.processPendingVertices()
 	}
 
 	// Enter transition immediately when minValidators is reached.
