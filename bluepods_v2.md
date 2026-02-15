@@ -12,11 +12,18 @@ Le réseau cible un profil de validators élitiste avec des machines puissantes 
 
 ## Modèle de Données : Les Objets
 
-Le state global du réseau est découpé en objets. Chaque objet est une unité de données autonome possédant un identifiant unique de 32 bytes qui reste immuable sur toute la durée de vie de l'objet. Cet identifiant est accompagné d'une version, un entier non signé qui s'incrémente à chaque modification. L'objet contient également une référence à son type, qui pointe vers le pod et la structure de données définissant son schéma, ainsi que le contenu sérialisé lui-même, limité à 4 KB maximum.
+Le state global du réseau est découpé en objets. Chaque objet est une unité de données autonome possédant les champs suivants :
 
-Chaque objet possède un facteur de réplication qui détermine sa distribution sur le réseau. Une valeur de 0 indique un singleton, répliqué sur tous les validators. Une valeur supérieure ou égale à 10 indique un objet standard, répliqué sur ce nombre de holders via Rendezvous Hashing. Le minimum pour un objet non-singleton est de 10 holders, garantissant un quorum de 67% atteignable avec 7 holders, une tolérance à 3 pannes simultanées, et une distribution suffisante pour éviter la collusion. Le facteur de réplication est immutable après création.
+- **ID** (32 bytes) : identifiant unique calculé via BLAKE3, immuable sur toute la durée de vie de l'objet
+- **Version** (uint64) : entier non signé qui s'incrémente à chaque modification
+- **Owner** (32 bytes) : clé publique Ed25519 du propriétaire de l'objet
+- **Replication** (uint16) : facteur de réplication déterminant la distribution sur le réseau
+- **Content** : contenu sérialisé, limité à 4 KB maximum
+- **Fees** (uint64) : dépôt de stockage fixé à la création, en lecture seule
 
-La version permet de détecter les conflits de concurrence. Deux transactions déclarant le même objet dans leur liste MutableObjects avec la même version attendue sont en conflit, et seule une des deux pourra être validée. Ce mécanisme garantit la cohérence du state sans nécessiter de locks globaux. La version s'incrémente dès qu'un objet est déclaré comme mutable dans une transaction réussie, indépendamment du fait que son contenu change effectivement ou non.
+Chaque objet possède un facteur de réplication qui détermine sa distribution sur le réseau. Une valeur de 0 indique un singleton, répliqué sur tous les validators. Une valeur supérieure ou égale à 10 indique un objet standard, répliqué sur ce nombre de holders via Rendezvous Hashing. Le minimum pour un objet non-singleton est de 10 holders (valeur initiale susceptible d'être ajustée), garantissant un quorum de 67% atteignable avec 7 holders, une tolérance à 3 pannes simultanées, et une distribution suffisante pour éviter la collusion. Le facteur de réplication est immutable après création.
+
+La version permet de détecter les conflits de concurrence. Deux transactions déclarant le même objet dans leur liste MutableRefs avec la même version attendue sont en conflit, et seule une des deux pourra être validée. Ce mécanisme garantit la cohérence du state sans nécessiter de locks globaux. La version s'incrémente dès qu'un objet est déclaré comme mutable dans une transaction réussie, indépendamment du fait que son contenu change effectivement ou non.
 
 La limite de 4 KB par objet couvre la grande majorité des cas d'usage : un wallet avec ses métadonnées tient en quelques centaines de bytes, un NFT avec son URI et ses attributs en 1-2 KB, une position DeFi en moins de 1 KB. Cette limite permet d'inclure les objets complets dans les transactions, simplifiant considérablement le modèle d'exécution. Pour les données volumineuses dépassant cette limite, un système de stockage off-chain avec erasure coding sera développé séparément, où seules les métadonnées et certificats de disponibilité seront stockés on-chain.
 
@@ -42,13 +49,15 @@ Le réseau propose un système de noms de domaine permettant d'associer des iden
 
 Ce système facilite la découverte des objets système, améliore l'ergonomie des SDK, et permet aux applications de publier des points d'entrée connus sans nécessiter de documentation externe pour les adresses.
 
-### Le DomainRegistry
+### Le Domain Registry
 
-La résolution des domaines repose sur un singleton dédié appelé DomainRegistry. Ce singleton maintient une table de correspondance entre les noms de domaine et les identifiants d'objets.
+Le registre de domaines est stocké dans **Pebble (base locale)** sur chaque validator, au niveau protocole. Ce n'est ni un singleton ni un objet ordinaire. Ce choix d'architecture est motivé par plusieurs raisons :
 
-Le DomainRegistry constitue une exception à la limite de 4 KB imposée aux objets. Cette exception est justifiée par la nature des singletons : ils ne sont jamais inclus dans le corps des transactions puisque tous les validators les possèdent déjà localement. La limite de 4 KB existe principalement pour contraindre la taille des transactions et la bande passante lors de la collecte d'attestations, deux contraintes qui ne s'appliquent pas aux singletons. Le DomainRegistry peut ainsi croître selon les besoins du réseau.
+- Un singleton de plusieurs MB relu et réécrit à chaque enregistrement serait prohibitif en gas
+- Le coût d'un tel singleton croîtrait avec le nombre de domaines enregistrés
+- Le registre est de l'infrastructure protocolaire, pas de la logique métier
 
-Avec une taille moyenne de 80 bytes par entrée (nom de domaine plus identifiant cible), le registry peut contenir 10 000 domaines pour environ 800 KB, ou 100 000 domaines pour environ 8 MB. Ces volumes restent gérables pour un singleton répliqué sur tous les validators.
+La cohérence est garantie car tous les validators traitent les mêmes transactions committées dans le même ordre (déterminé par le DAG) et mettent à jour leur registre localement de manière déterministe. Le registre est inclus dans les **snapshots** pour la synchronisation des nouveaux validators.
 
 ### Organisation des Namespaces
 
@@ -60,17 +69,25 @@ Les autres namespaces sont ouverts aux développeurs selon une politique de prem
 
 ### Enregistrement et Résolution
 
-L'enregistrement d'un nouveau domaine s'effectue via une transaction appelant le pod système. La transaction spécifie le nom de domaine souhaité et l'identifiant de l'objet cible. Le pod système vérifie que le domaine n'est pas déjà pris et que l'appelant a l'autorité pour enregistrer dans le namespace concerné, puis met à jour le DomainRegistry.
+L'enregistrement d'un nouveau domaine passe par l'exécution d'un pod. Le pod déclare les domaines à enregistrer dans un champ `registered_domains` du `PodExecuteOutput`. Chaque entrée contient :
 
-La résolution est une opération locale. Chaque validator possède le DomainRegistry en tant que singleton et peut résoudre n'importe quel domaine instantanément sans communication réseau. Les SDK exposent une fonction de résolution qui interroge le state local du validator.
+- `name` : le nom de domaine à enregistrer
+- `object_index` : index dans `created_objects` (pour un objet créé dans la même transaction)
+- `object_id` : ObjectID direct (pour un objet existant)
+
+Après exécution, le protocole résout l'index en ObjectID réel, vérifie l'unicité du domaine dans Pebble, et insère le mapping. Si le domaine existe déjà, la transaction revert (même pattern que les conflits de version).
+
+La résolution reste une opération locale : lookup direct dans Pebble, sans communication réseau. Les SDK exposent une résolution côté client via l'API du node (`GET /domain/{name}`).
+
+Les références d'objets dans les transactions peuvent utiliser un **nom de domaine** au lieu d'un ID d'objet (domain refs), permettant de référencer des objets par leur nom lisible. Les domain refs sont exemptées de la vérification d'ownership sur les MutableRefs.
 
 Un domaine peut être mis à jour pour pointer vers un nouvel objet, ou supprimé par son propriétaire. Ces opérations suivent le même processus que l'enregistrement initial.
 
 ### Prévention du Spam
 
-Pour éviter que des acteurs malveillants ne saturent le DomainRegistry en enregistrant massivement des domaines, les frais d'enregistrement sont significativement plus élevés que ceux d'une transaction standard. Ce coût dissuasif, de l'ordre de 10 à 100 fois le prix d'une transaction normale, garantit que seuls les domaines réellement utiles sont enregistrés.
+Pour éviter que des acteurs malveillants ne saturent le registre en enregistrant massivement des domaines, le `domain_fee` est fixé à 10 000 unités (valeur temporaire, à affiner), soit environ 100x le coût de compute d'une transaction simple. Ce coût dissuasif garantit que seuls les domaines réellement utiles sont enregistrés.
 
-Les frais de mise à jour et de suppression restent modérés car ces opérations ne font pas croître le registry.
+Les frais de mise à jour et de suppression restent au niveau du compute standard car ces opérations ne font pas croître le registre.
 
 ---
 
@@ -92,25 +109,28 @@ Avec un facteur de réplication de 50, le réseau reste résilient même si 16 h
 
 ### Organisation en Epochs
 
-Le réseau fonctionne par epochs d'une durée de plusieurs heures. Au début de chaque epoch, la liste des validators actifs est figée dans un snapshot. Ce snapshot détermine quels validators participent au consensus et au stockage pour toute la durée de l'epoch. Les changements de composition, comme l'arrivée de nouveaux validators ou le départ de validators existants, ne prennent effet qu'au passage à l'epoch suivante. Cette stabilité simplifie considérablement le raisonnement sur le système pendant une epoch donnée.
+Le réseau fonctionne par epochs dont la durée est configurable en nombre de rounds (paramètre `--epoch-length`). Au début de chaque epoch, la liste des validators actifs est figée dans un snapshot appelé `epochHolders`. Ce snapshot détermine quels validators participent au stockage et au Rendezvous Hashing pour toute la durée de l'epoch. Les changements de composition, comme l'arrivée de nouveaux validators ou le départ de validators existants, ne prennent effet qu'au passage à l'epoch suivante. Une epoch boundary se produit quand `round % epochLength == 0` (le round 0 n'est jamais une boundary). Cette stabilité simplifie considérablement le raisonnement sur le système pendant une epoch donnée.
 
-### Détection des Validators Inactifs par Observation des Votes
+Les **transitions d'epoch** exécutent les étapes suivantes dans l'ordre :
 
-Pendant une epoch, certains validators peuvent tomber en panne ou perdre leur connectivité. Le système doit détecter ces situations pour éviter que des transactions restent bloquées en attendant des votes qui ne viendront jamais.
+1. **Distribution des rewards** aux validators proportionnellement aux rounds produits pendant l'epoch
+2. **Application des suppressions** en attente (avec limitation du churn par epoch : les excédents sont différés à l'epoch suivante)
+3. **Snapshot du validator set** courant → `epochHolders` (gelé pour le Rendezvous Hashing)
+4. **Reset des compteurs** d'epoch (frais accumulés, rounds produits)
+5. **Incrémentation** du compteur d'epoch
 
-La détection repose sur l'observation du comportement de vote des validators, sans nécessiter de protocole heartbeat dédié. Chaque validator est holder d'un certain nombre d'objets calculable via le Rendezvous Hashing. Quand des transactions touchent ces objets, le validator est censé voter. Son absence de vote sur des transactions où il était attendu constitue un signal d'inactivité.
+### Registration et Déregistration des Validators
 
-Au niveau intra-epoch, si un validator n'a émis aucun vote sur les transactions le concernant pendant une période de 30 secondes alors que d'autres transactions touchant ses objets ont circulé, les autres validators le marquent localement comme probablement inactif. Ce marquage n'est pas une exclusion formelle mais permet d'ajuster les attentes de quorum temporairement. Les autres validators savent qu'ils ne doivent pas attendre son vote indéfiniment et peuvent considérer le quorum atteint sans lui si suffisamment d'autres holders ont voté.
+L'implémentation actuelle repose sur des transactions explicites de registration et déregistration :
 
-Ce mécanisme n'ajoute aucun overhead réseau. Les validators observent simplement le flux normal de votes et constatent les absences. Le silence là où on attendait une participation est le signal.
+- **Registration** : transaction `register_validator` contenant la clé publique Ed25519, les adresses HTTP/QUIC, et la clé publique BLS (48 bytes)
+- **Déregistration** : transaction `deregister_validator` qui place le validator en attente de suppression. Le validator reste actif jusqu'à la prochaine epoch boundary
+- **Churn limiting** : le nombre maximum de validators ajoutés ou retirés par epoch est limité pour garantir la stabilité du réseau. Les excédents sont différés à l'epoch suivante. Les suppressions sont triées par clé publique pour un ordre déterministe sur tous les validators
+- **Epoch rewards** : à chaque boundary, les frais accumulés (part epoch de 50%) plus l'issuance (TODO) sont distribués aux validators proportionnellement à leur stake et leur participation (rounds produits / total rounds). Pour le MVP, le stake est égal (1 par validator)
 
-### Exclusion et Pénalités en Fin d'Epoch
+### Détection d'Inactivité et Pénalités (Objectif Futur)
 
-À la fin de chaque epoch, le protocole calcule des statistiques de participation pour chaque validator. Pour chaque validator, on compte le nombre de transactions où il était holder attendu d'au moins un objet impliqué, et parmi celles-ci, combien ont reçu son vote.
-
-Si le taux de participation d'un validator descend sous 67%, il reçoit une pénalité progressive sur son stake. Cette pénalité augmente si le comportement persiste sur plusieurs epochs consécutives. Si le taux de participation reste sous 33% pendant plusieurs epochs consécutives, le validator est exclu du snapshot de l'epoch suivante. Il ne participera plus au consensus ni au stockage jusqu'à ce qu'il démontre sa disponibilité et soit réintégré.
-
-Un validator exclu peut revenir à l'epoch suivante s'il se reconnecte et passe les vérifications d'admission. L'exclusion n'est pas permanente mais reflète l'incapacité momentanée à remplir ses obligations.
+La détection automatique d'inactivité par observation des votes et le système de pénalités progressives ne sont pas encore implémentés. Ces mécanismes restent un objectif pour une version future. Pour le MVP, la gestion des validators repose exclusivement sur les transactions explicites décrites ci-dessus.
 
 ---
 
@@ -118,25 +138,31 @@ Un validator exclu peut revenir à l'epoch suivante s'il se reconnecte et passe 
 
 ### Anatomie d'une Transaction
 
-Une transaction est un message signé demandant l'exécution d'une opération sur le state. Sa taille maximale est de 48 KB. Elle se compose de plusieurs sections.
+Une transaction est un message signé demandant l'exécution d'une opération sur le state. Sa taille maximale est de 1 MB (valeur temporaire, à affiner). Les transactions sont sérialisées en **FlatBuffers** pour un encodage binaire compact et un accès direct aux champs sans désérialisation complète.
 
-Le header contient les métadonnées essentielles. On y trouve l'identifiant unique de la transaction, calculé comme le hash de son contenu canonique. Le header déclare deux listes d'objets. La première liste contient les objets en lecture seule (ReadObjects), dont la version est vérifiée mais ne change pas. La seconde liste contient les objets mutables (MutableObjects), dont la version sera incrémentée si la transaction réussit. Cette séparation explicite permet à tout validator de déduire les changements de version directement depuis le header, sans exécuter la transaction.
+Le header contient les métadonnées essentielles. On y trouve l'identifiant unique de la transaction, calculé comme le hash BLAKE3 de son contenu canonique non signé. Le header déclare deux listes d'objets. La première liste contient les objets en lecture seule (ReadRefs), dont la version est vérifiée mais ne change pas. La seconde liste contient les objets mutables (MutableRefs), dont la version sera incrémentée si la transaction réussit. Cette séparation explicite permet à tout validator de déduire les changements de version directement depuis le header, sans exécuter la transaction.
 
-Les limites par transaction sont de 8 objets standards maximum et 32 singletons maximum. Les singletons ne comptent pas dans la limite des 8 objets car ils ne sont pas inclus dans le corps de la transaction. Cette limite sur les objets standards existe pour contraindre la taille du corps de la transaction et la complexité de la collecte d'attestations. Les singletons n'impactent ni l'un ni l'autre puisque chaque validator les possède déjà localement.
+Les limites par transaction sont de 40 références d'objets maximum au total (ReadRefs + MutableRefs combinés, valeur temporaire à affiner). Cette limite unique couvre à la fois les objets standards et les singletons. Les singletons ne sont pas inclus dans le corps de la transaction car chaque validator les possède déjà localement, mais ils comptent dans cette limite.
 
-Le header contient également un champ booléen `creates_objects` qui indique si la transaction peut créer de nouveaux objets. Si ce flag est activé, la transaction est exécutée par tous les validators du réseau (comme pour les singletons) afin que chacun puisse calculer de manière déterministe le contenu des objets créés.
+Le header contient un vecteur `created_objects_replication` de type `[uint16]` dont chaque élément spécifie le facteur de réplication d'un objet à créer. Un vecteur non vide indique que la transaction crée des objets et force son exécution par tous les validators. Cette approche remplace un simple booléen et permet de déclarer la réplication de chaque objet créé directement dans le header.
 
-La section d'invocation spécifie le pod à appeler, le nom de la fonction, et les arguments sérialisés. Les arguments peuvent inclure des références aux objets déclarés dans le header ainsi que des valeurs scalaires.
+Le header contient également les champs supplémentaires suivants :
+
+- `max_create_domains` (uint16) : nombre maximum de domaines que la transaction peut enregistrer. Sert au calcul des frais. Si le pod produit plus d'enregistrements, la transaction revert.
+- `max_gas` (uint64) : budget de gas maximum déclaré par le sender. Les frais de compute sont basés sur cette valeur. Si l'exécution dépasse ce budget, la transaction revert. Un `min_gas` protocole (actuellement 100, valeur temporaire) empêche le spam de transactions à gas quasi-nul.
+- `gas_coin` (32 bytes, optionnel) : identifiant de l'objet Coin singleton servant à payer les frais. Ce champ est séparé des inputs métier de la transaction.
+
+La section d'invocation spécifie `pod` (32 bytes, identifiant du pod à appeler), `function_name` (string, nom de la fonction), et `args` (bytes, arguments sérialisés en Borsh).
 
 La section des objets contient uniquement les objets standards référencés par la transaction, collectés et attestés par les holders lors de la phase d'agrégation. Les singletons ne sont pas inclus car tous les validators les possèdent déjà. Ces objets standards sont inclus dans la transaction finale avec leurs preuves de quorum.
 
-La section des signatures contient une ou plusieurs signatures autorisant la transaction.
+La section de signature contient une signature Ed25519 unique autorisant la transaction.
 
 ### Objets Inclus dans la Transaction
 
 Les objets standards complets sont inclus directement dans la transaction plutôt que d'extraire uniquement certains champs. Les singletons, en revanche, ne sont pas inclus car chaque validator les possède déjà localement. Cette approche simplifie considérablement le modèle d'exécution en adoptant un paradigme classique similaire à Ethereum ou Solana : la fonction d'exécution reçoit tous les objets en entrée et retourne les nouveaux états en sortie.
 
-Avec la limite de 4 KB par objet et un maximum de 8 objets standards par transaction, la charge maximale en objets est de 32 KB. En ajoutant le header, l'invocation et les signatures, la transaction complète reste sous la limite de 48 KB. Les singletons référencés n'ajoutent que leur identifiant et version dans le header, économisant significativement la bande passante.
+Avec la limite de 4 KB par objet et un maximum de 40 références par transaction, la charge théorique maximale est plus élevée mais reste dans la limite de 1 MB. En pratique, les transactions courantes (transferts, splits) restent largement sous les 10 KB, avec une taille moyenne d'environ 1.5 KB.
 
 Cette architecture offre plusieurs avantages. Le modèle mental est simple : une transaction contient tout ce qu'il faut pour son exécution. Les développeurs de pods n'ont pas à gérer d'extraction partielle de données. La vérification est directe : on peut valider que hash(objet) correspond au hash attesté par le quorum. Tout validator qui doit exécuter la transaction dispose de toutes les données nécessaires, soit incluses dans la transaction pour les objets standards, soit disponibles localement pour les singletons.
 
@@ -148,13 +174,28 @@ La contrepartie est une augmentation de la bande passante par rapport à une app
 
 Les smart contracts s'appellent des pods. Chaque pod est obligatoirement un singleton, répliqué sur l'ensemble des validators du réseau. Cette contrainte garantit que tout validator peut exécuter n'importe quelle transaction sans avoir à récupérer le code du pod auprès d'autres validators.
 
+Les pods sont des modules WebAssembly exécutés via le runtime **wazero**. Chaque module est compilé une fois et mis en cache dans un pool. L'exécution crée une instance isolée par transaction avec une mémoire et des tables fraîches, garantissant l'isolation entre exécutions.
+
+La sandbox WASM expose quatre host functions au pod :
+
+- `gas(cost: u32)` : déclare la consommation de gas. Si le cumul dépasse le budget, l'exécution est interrompue.
+- `input_len() → u32` : retourne la taille du buffer d'entrée.
+- `read_input(ptr: u32)` : copie les données d'entrée dans la mémoire WASM.
+- `write_output(ptr: u32, len: u32)` : copie la sortie depuis la mémoire WASM vers le host.
+
 ### Fonction Execute
 
-Chaque pod expose une fonction execute qui constitue le cœur de la logique métier. Cette fonction prend en entrée la transaction complète incluant tous les objets référencés, et retourne les nouveaux états des objets modifiés.
+Chaque pod exporte une fonction `execute()` sans paramètres ni valeur de retour. Le pod communique avec le host via les host functions ci-dessus. L'entrée est un `PodExecuteInput` sérialisé en FlatBuffers contenant la transaction complète, le sender, et les objets locaux.
+
+Le SDK Rust (`pod-sdk`) fournit des abstractions facilitant le développement :
+
+- La macro `dispatcher!` pour router automatiquement vers les handlers selon le nom de fonction
+- Un type `Context` donnant accès au sender, aux arguments (désérialisés via Borsh), et aux objets locaux
+- Un type `ExecuteResult` avec des builders chaînables (`ok()`, `err(code)`, `with_updated()`, `with_created()`, `log()`)
 
 Ce modèle est similaire aux smart contracts traditionnels comme sur Ethereum ou Solana. La fonction reçoit toutes les données nécessaires en entrée et produit les modifications en sortie. Le développeur n'a pas à se soucier de quels objets sont disponibles localement car la transaction contient tous les objets attestés par le quorum.
 
-L'exécution reste distribuée grâce au sharding horizontal. Chaque holder d'un objet déclaré dans MutableObjects exécute la transaction et calcule le nouvel état de ses objets. Puisque tous les holders reçoivent les mêmes entrées via la transaction, ils calculent tous le même résultat de façon déterministe.
+L'exécution reste distribuée grâce au sharding horizontal. Chaque holder d'un objet déclaré dans MutableRefs exécute la transaction et calcule le nouvel état de ses objets. Puisque tous les holders reçoivent les mêmes entrées via la transaction, ils calculent tous le même résultat de façon déterministe.
 
 ### Transactions sur Singletons Uniquement
 
@@ -164,11 +205,94 @@ Cette optimisation élimine les étapes de collecte des attestations. La transac
 
 Les transactions système comme les opérations de staking, les mises à jour de paramètres du protocole ou les interactions avec le pod système bénéficient naturellement de cette optimisation puisqu'elles manipulent principalement des singletons.
 
+### Pod Système
+
+Le pod système est le seul pod actuellement déployé. Il expose huit fonctions :
+
+- `mint` : crée un nouveau Coin avec un solde initial
+- `split` : divise un Coin en deux (balance originale réduite, nouveau Coin créé)
+- `merge` : fusionne deux Coins en un seul
+- `transfer` : change le propriétaire d'un Coin
+- `create_nft` : crée un objet avec des métadonnées arbitraires
+- `transfer_nft` : change le propriétaire d'un objet
+- `register_validator` : enregistre un nouveau validator sur le réseau
+- `deregister_validator` : planifie le retrait d'un validator
+
+La structure Coin est minimale : un champ `balance` de type uint64, sérialisé en Borsh (8 bytes).
+
 ### Résultats d'Exécution
 
-L'exécution d'une transaction peut produire trois types de résultats. Premièrement, des objets modifiés : tout objet déclaré dans la liste MutableObjects voit sa version incrémentée, même si son contenu n'est pas effectivement modifié par la logique du pod. Cette règle garantit que le versioning est déterministe et déductible du header de la transaction sans exécution. Deuxièmement, des nouveaux objets créés : de nouveaux identifiants apparaissent dans le state, avec une limite de 16 objets créés maximum par transaction. Troisièmement, des objets supprimés : un objet dans MutableObjects peut être supprimé par la logique du pod, auquel cas il est retiré du state.
+Le `PodExecuteOutput` peut contenir cinq types de résultats :
 
-Cette sémantique de versioning place la responsabilité sur le développeur : un objet ne doit être dans MutableObjects que s'il est susceptible d'être modifié. Placer systématiquement tous les objets en MutableObjects "par précaution" augmenterait artificiellement les conflits de version.
+1. **Objets modifiés** (`updated_objects`) : tout objet déclaré dans la liste MutableRefs voit sa version incrémentée, même si son contenu n'est pas effectivement modifié par la logique du pod. Cette règle garantit que le versioning est déterministe et déductible du header de la transaction sans exécution.
+2. **Objets créés** (`created_objects`) : de nouveaux identifiants apparaissent dans le state, avec une limite de 16 objets créés maximum par transaction.
+3. **Objets supprimés** (`deleted_objects`) : un objet dans MutableRefs peut être supprimé par la logique du pod, auquel cas il est retiré du state.
+4. **Domaines enregistrés** (`registered_domains`) : associations nom → ObjectID insérées dans le registre Pebble local.
+5. **Logs** (`logs`) : messages de debug émis par le pod.
+
+Un code d'erreur (`error: u32`, 0 = succès) permet au pod de signaler une erreur qui fera revert la transaction. Les frais sont néanmoins toujours déduits.
+
+Cette sémantique de versioning place la responsabilité sur le développeur : un objet ne doit être dans MutableRefs que s'il est susceptible d'être modifié. Placer systématiquement tous les objets en MutableRefs "par précaution" augmenterait artificiellement les conflits de version.
+
+### Gas Metering
+
+L'instrumentation WASM injecte automatiquement des appels à la host function `gas()` dans le bytecode du pod. Le budget par défaut est de 10 000 000 unités (valeur temporaire, à affiner). Si l'exécution dépasse le budget déclaré dans `max_gas`, elle est immédiatement interrompue et la transaction revert. Les frais sont néanmoins toujours déduits, empêchant les attaques par transactions intentionnellement échouantes.
+
+---
+
+## Système de Frais
+
+Le système de frais est implémenté au niveau protocole, en dehors de l'exécution des pods. Pour les détails complets, voir `ECONOMICS.md`.
+
+### Composantes des Frais
+
+Les frais d'une transaction sont composés de quatre éléments :
+
+- **Compute** : `max_gas × gas_price × replication_ratio` — coût de calcul proportionnel au nombre de validators qui exécutent
+- **Transit** : fixe par objet standard inclus dans l'ATX (le corps de la transaction)
+- **Storage** : fixe par objet créé, pondéré par le ratio de réplication effective
+- **Domain** : fixe par domaine enregistré
+
+### Formule
+
+```
+total = max_gas * gas_price * replication_ratio
+      + nb_objets_standard_ATX * transit_fee
+      + sum(effective_rep(replication_i) / total_validators) * storage_fee
+      + max_create_domains * domain_fee
+```
+
+Où `effective_rep(replication)` vaut `total_validators` pour un singleton (replication=0) et `replication` pour un objet standard.
+
+### Valeurs Actuelles (temporaires, à affiner)
+
+| Constante | Valeur | Description |
+|---|---|---|
+| `gas_price` | 1 | Prix par unité de gas |
+| `min_gas` | 100 | Gas minimum par tx (anti-spam) |
+| `transit_fee` | 10 | Fixe par objet standard dans l'ATX |
+| `storage_fee` | 1 000 | Fixe par objet créé (forfait 4 KB) |
+| `domain_fee` | 10 000 | Par domaine enregistré |
+
+### Distribution
+
+Les frais sont répartis en trois composantes :
+
+- **20%** à l'agrégateur (crédit immédiat au validator qui a inclus la transaction)
+- **30%** brûlés (retirés de la circulation)
+- **50%** accumulés pour les epoch rewards (distribués aux validators à chaque epoch boundary)
+
+Le reste éventuel des arrondis est ajouté à la part epoch.
+
+### Frais au Niveau Protocole
+
+Les frais sont déduits par le protocole, en dehors de l'exécution du pod. Le `gas_coin` est modifié implicitement sans incrémenter sa version, permettant plusieurs transactions en vol simultanément sans conflit sur le coin de gas. Le `gas_coin` doit être un singleton appartenant au sender.
+
+Les frais sont toujours déduits, même en cas d'échec de la transaction (budget gas dépassé, erreur du pod, conflit). Si le solde du `gas_coin` est insuffisant, la transaction est rejetée.
+
+### Storage et Suppression
+
+Chaque objet stocke son dépôt de storage dans le champ `fees`. Le dépôt est calculé comme `storage_fee × effective_rep(replication) / total_validators` à la création. À la suppression d'un objet, 95% du dépôt sont remboursés au propriétaire et 5% sont brûlés (valeurs temporaires, à affiner).
 
 ---
 
@@ -184,37 +308,49 @@ Le design du DAG est leaderless. Il n'y a pas de leader désigné pour proposer 
 
 ### Structure d'un Vertex
 
-Un vertex est produit par un validator spécifique et contient plusieurs éléments. Il contient les transactions complètes que ce validator propose d'inclure, chacune accompagnée de ses objets attestés et de sa preuve de quorum. Chaque preuve de quorum comprend une signature BLS agrégée des holders ayant attesté les objets, avec un bitmap indiquant quels holders ont signé. Le vertex contient également les liens vers les vertices parents dans le DAG, c'est-à-dire les vertices que ce validator a observés avant de produire le sien. Il contient enfin la signature du validator producteur.
+Un vertex est produit par un validator spécifique et contient plusieurs éléments. Il contient les transactions complètes que ce validator propose d'inclure, chacune accompagnée de ses objets attestés et de sa preuve de quorum. Chaque preuve de quorum comprend une signature BLS agrégée des holders ayant attesté les objets, avec un bitmap indiquant quels holders ont signé. Le vertex contient également les liens vers les vertices parents dans le DAG, c'est-à-dire les vertices que ce validator a observés avant de produire le sien. Il contient enfin la signature Ed25519 du validator producteur sur le hash du contenu non signé, calculé avec **BLAKE3**.
 
-Les vertices sont compressés avec zstd avant propagation sur le réseau, offrant un ratio de compression d'environ 2x en moyenne.
+Chaque vertex contient un résumé des frais pré-calculé (`FeeSummary`) avec les champs `total_fees`, `total_aggregator`, `total_burned`, et `total_epoch`. Ce résumé est vérifié par chaque validator à la réception en recalculant depuis les headers des transactions. Il sert de cache pour la distribution des rewards à chaque epoch boundary.
+
+### Compression et Propagation
+
+La compression zstd est utilisée pour les **snapshots** du state. Pour le gossip des vertices, les données sont transmises telles quelles via les streams QUIC, sans compression additionnelle.
 
 ### Règles de Validité d'un Vertex
 
-Pour qu'un vertex soit considéré valide, il doit respecter plusieurs règles. Ses liens parents doivent pointer vers des vertices existants et déjà validés. Le validator producteur doit être dans la liste des validators actifs de l'epoch courante. La signature doit être valide. Les preuves de quorum doivent être vérifiables : la signature BLS agrégée doit être valide pour les holders indiqués dans le bitmap, et ces holders doivent représenter au moins 67% des holders attendus pour chaque objet de la transaction.
+Pour qu'un vertex soit considéré valide, il doit respecter plusieurs règles. Ses liens parents doivent pointer vers des vertices existants et déjà validés. Le validator producteur doit être dans la liste des validators actifs de l'epoch courante. La signature Ed25519 doit être valide. Les preuves de quorum doivent être vérifiables : la signature BLS agrégée doit être valide pour les holders indiqués dans le bitmap, et ces holders doivent représenter au moins 67% des holders attendus pour chaque objet de la transaction.
 
 ### Progression du DAG et Rounds
 
-Le DAG progresse par rounds successifs. À chaque round, les validators produisent de nouveaux vertices qui référencent des vertices du round précédent. Un vertex du round N doit inclure des liens vers des vertices du round N-1 provenant d'au moins 67% des validators pondéré par le stake.
+Le DAG progresse par rounds successifs. À chaque round, les validators produisent de nouveaux vertices qui référencent des vertices du round précédent. Un vertex du round N doit inclure des liens vers des vertices du round N-1 provenant d'au moins **(2n/3 + 1)** validators (où n est le nombre total de validators), assurant un quorum BFT.
 
 Cette règle de quorum sur les liens parents garantit que le DAG ne peut pas se fragmenter. Si un validator produit un vertex qui ne référence pas suffisamment de vertices du round précédent, son vertex sera considéré invalide et ignoré par le reste du réseau.
 
 ### Commit Rule et Finalité
 
-La règle de commit détermine quand une transaction est considérée comme finale et irréversible. Un vertex est committé quand il est référencé directement ou indirectement par des vertices de rounds ultérieurs produits par au moins 67% des validators.
+La règle de commit détermine quand une transaction est considérée comme finale et irréversible. Un vertex est committé quand il est référencé directement ou indirectement par des vertices de rounds ultérieurs produits par au moins **(2n/3 + 1)** validators.
 
 Concrètement, si un vertex V du round N est inclus dans les liens parents directs ou transitifs de vertices du round N+2 produits par un quorum de validators, alors V est committé. Toutes les transactions référencées par V sont alors finales.
 
 Cette règle offre une finalité rapide car elle ne nécessite que 2 rounds de propagation après la production du vertex initial.
 
+### Paramètres Opérationnels
+
+Le consensus utilise plusieurs paramètres opérationnels (valeurs temporaires, à affiner) :
+
+- **Intervalle de vérification des commits** : 50ms
+- **Timeout de liveness** : 500ms (intervalle de production de vertex quand le réseau est idle)
+- **Période de transition au bootstrap** : grace de 20 rounds + buffer de 10 rounds avec quorum relaxé, permettant au réseau de converger après l'atteinte du nombre minimum de validators
+
 ### Gestion des Conflits
 
-Quand deux transactions déclarent le même objet dans leur liste MutableObjects avec la même version attendue, elles sont en conflit. Le DAG détermine laquelle sera exécutée et laquelle sera rejetée.
+Quand deux transactions déclarent le même objet dans leur liste MutableRefs avec la même version attendue, elles sont en conflit. Le DAG détermine laquelle sera exécutée et laquelle sera rejetée.
 
 L'ordre des transactions est déterminé par leur position dans le DAG. Quand un vertex est committé, toutes les transactions qu'il contient sont ordonnées de manière déterministe. Si deux transactions conflictuelles se trouvent dans des vertices différents, l'ordre de commit de ces vertices détermine laquelle est exécutée en premier. La seconde transaction, attendant une version qui ne correspond plus à la version courante, sera rejetée pour conflit de version.
 
 Si deux transactions conflictuelles se trouvent dans le même vertex, une règle de tri déterministe comme l'ordre lexicographique des hashes détermine laquelle est prioritaire.
 
-La détection des conflits ne nécessite pas d'exécution. Chaque validator peut calculer la version courante de n'importe quel objet en suivant l'historique des transactions committées dans le DAG. Pour chaque transaction committée qui déclare un objet dans MutableObjects, la version de cet objet est incrémentée. La version attendue par une nouvelle transaction est comparée à cette version calculée pour détecter les conflits.
+La détection des conflits ne nécessite pas d'exécution. Chaque validator peut calculer la version courante de n'importe quel objet en suivant l'historique des transactions committées dans le DAG. Pour chaque transaction committée qui déclare un objet dans MutableRefs, la version de cet objet est incrémentée. La version attendue par une nouvelle transaction est comparée à cette version calculée pour détecter les conflits.
 
 En cas de conflit de version, la transaction rejetée retourne une erreur au client. Le client ou le wallet peut alors automatiquement re-soumettre la transaction avec la version mise à jour de l'objet. Ce comportement est similaire à celui de Sui et représente un compromis acceptable pour un MVP.
 
@@ -222,11 +358,11 @@ En cas de conflit de version, la transaction rejetée retourne une erreur au cli
 
 Le DAG constitue la source de vérité pour le versioning de tous les objets du réseau. Chaque validator, qu'il soit holder ou non d'un objet donné, peut calculer la version courante de cet objet en suivant l'historique des transactions committées.
 
-L'algorithme est simple : pour chaque transaction committée dans l'ordre du DAG, on examine sa liste MutableObjects. Chaque objet présent dans cette liste voit sa version incrémentée de 1. Les objets dans ReadObjects ne changent pas de version. Ce calcul est purement déterministe et ne nécessite aucune exécution de la logique des pods.
+L'algorithme est simple : pour chaque transaction committée dans l'ordre du DAG, on examine sa liste MutableRefs. Chaque objet présent dans cette liste voit sa version incrémentée de 1. Les objets dans ReadRefs ne changent pas de version. Ce calcul est purement déterministe et ne nécessite aucune exécution de la logique des pods.
 
 Cette propriété est fondamentale pour l'atomicité des transactions multi-objets. Considérons une transaction TX1 qui modifie les objets O1 et O2. Si une transaction TX2 modifie O2 et commit avant TX1, alors quand TX1 tente de s'exécuter, la version de O2 ne correspond plus. Tous les validators peuvent détecter ce conflit indépendamment, sans coordination, simplement en calculant les versions depuis le DAG.
 
-Le coût de ce suivi est minimal. Les validators ne stockent pas le contenu des objets qu'ils ne détiennent pas, seulement un mapping identifiant vers version. Avec 40 bytes par objet (32 bytes d'identifiant + 8 bytes de version), un million d'objets représente 40 MB de mémoire. Ce tracking léger permet le scaling horizontal : les non-holders ne participent pas à l'exécution mais peuvent vérifier la cohérence des versions pour garantir l'atomicité globale.
+Le coût de ce suivi est minimal. Les validators ne stockent pas le contenu des objets qu'ils ne détiennent pas. Le tracking persistant utilise **18 bytes par objet** dans Pebble (8 bytes version + 2 bytes réplication + 8 bytes frais), stocké avec le préfixe `t:` + 32 bytes d'identifiant. Avec un million d'objets, cela représente environ 50 MB de stockage. Ce tracking léger permet le scaling horizontal : les non-holders ne participent pas à l'exécution mais peuvent vérifier la cohérence des versions pour garantir l'atomicité globale.
 
 ---
 
@@ -239,6 +375,18 @@ Chaque validator maintient une connexion QUIC persistante avec tous les autres v
 Les connexions QUIC offrent plusieurs avantages. Le multiplexage de streams permet d'envoyer plusieurs requêtes en parallèle sur une même connexion sans head-of-line blocking. La persistance des connexions élimine le coût des handshakes répétés. Le chiffrement TLS 1.3 intégré assure la sécurité des communications.
 
 Sur des machines puissantes avec 64 GB de RAM ou plus, le coût mémoire d'environ 250 MB pour maintenir 5000 connexions est négligeable.
+
+### API HTTP REST
+
+Les utilisateurs et clients interagissent avec les validators via une **API HTTP REST**, distincte des connexions QUIC inter-validators. Cette API expose les endpoints suivants :
+
+- `POST /tx` : soumission d'une transaction (retourne le hash, code 202)
+- `GET /health` : vérification de santé du node
+- `GET /status` : état du consensus (round, dernier commit, nombre de validators, epoch)
+- `POST /faucet` : mint de tokens de test (retourne le hash et le coinID prédit)
+- `GET /validators` : liste des validators actifs avec leurs adresses
+- `GET /object/{id}` : récupération d'un objet par ID (avec routing automatique vers les holders)
+- `GET /domain/{name}` : résolution d'un nom de domaine en ObjectID
 
 ### Séparation des Flux de Communication
 
@@ -254,9 +402,16 @@ Le broadcast direct, où chaque validator envoie directement ses messages à tou
 
 Le gossip résout ce problème de scaling. Chaque validator n'envoie ses messages qu'à un petit nombre de pairs, appelé fanout. Ces pairs relaient ensuite le message à leurs propres pairs, et ainsi de suite jusqu'à ce que tout le réseau soit couvert. La complexité passe de O(n²) à O(n log n).
 
-Le fanout choisi est d'environ 40. Chaque validator envoie son message à 40 pairs choisis. Avec un fanout de 40, le réseau de plusieurs milliers de validators est couvert en 3 hops environ. Le premier hop atteint 40 validators, le deuxième hop atteint 1600 validators, le troisième hop couvre le reste.
+Le **fanout initial** (production d'un vertex) est de 40 pairs. Le **fanout de relay** (forwarding d'un vertex reçu) est de 10 pairs pour éviter l'amplification. Avec un fanout initial de 40, le réseau de plusieurs milliers de validators est couvert en 3 hops environ. Le premier hop atteint 40 validators, le deuxième hop atteint 1600 validators, le troisième hop couvre le reste.
 
-Les vertices contiennent les transactions complètes avec leurs objets attestés et leurs preuves de quorum. Ils sont compressés avec zstd avant propagation, offrant un ratio de compression d'environ 2x en moyenne.
+### Snapshot et Synchronisation
+
+Le protocole de synchronisation permet aux nouveaux validators de rejoindre le réseau :
+
+- Un snapshot est créé toutes les **10 secondes**, contenant l'état committé (objets stockés), les 100 derniers rounds de vertices, les validators avec leurs adresses et clés BLS, le tracker d'objets (versions, réplication, frais), et les domaines enregistrés
+- Un nouveau validator buffer les vertices pendant une période configurable (défaut 12s), demande un snapshot au bootstrap, l'applique, puis rejoue les vertices bufferisés
+- Les snapshots sont compressés avec **zstd**
+- Le routing inter-holders permet de récupérer un objet stocké par un autre validator : `GET /object/{id}` tente d'abord localement, puis route vers les holders calculés par Rendezvous Hashing. Le paramètre `?local=true` empêche les cascades de routing
 
 ---
 
@@ -282,7 +437,9 @@ Pour chaque objet standard déclaré dans la transaction, l'agrégateur contacte
 
 Chaque holder reçoit la requête contenant l'identifiant de l'objet et la version attendue, vérifie qu'il possède bien cet objet à cette version, et répond avec son attestation.
 
-Le holder classé premier par Rendezvous Hashing sur l'identifiant de l'objet répond avec l'objet complet accompagné de sa signature BLS sur le hash de l'objet concaténé avec sa version. Les N-1 autres holders répondent uniquement avec le hash et leur signature BLS. Cette asymétrie réduit considérablement la bande passante : un seul holder envoie l'objet complet tandis que les autres n'envoient que ~150 bytes chacun (hash + signature BLS).
+Le holder classé premier par Rendezvous Hashing sur l'identifiant de l'objet répond avec l'objet complet accompagné de sa signature BLS sur le hash `H = BLAKE3(content || version_u64_BE)`, où `content` est le contenu brut de l'objet et `version_u64_BE` est la version encodée en big-endian sur 8 bytes. Les N-1 autres holders répondent uniquement avec le hash et leur signature BLS. Cette asymétrie réduit considérablement la bande passante : un seul holder envoie l'objet complet tandis que les autres n'envoient que ~150 bytes chacun (hash + signature BLS).
+
+Les clés BLS sont dérivées de la clé Ed25519 du validator via `BLAKE3("bluepods-bls-keygen" || ed25519_seed)`. La clé publique BLS fait 48 bytes, la signature 96 bytes.
 
 L'utilisation de signatures BLS permet l'agrégation : les signatures individuelles des holders sont combinées en une signature agrégée unique de 96 bytes, réduisant drastiquement la taille des preuves dans les vertices. Avec des implémentations modernes comme blst, la signature BLS prend environ 300μs, ce qui reste négligeable face aux latences réseau de 20-50ms.
 
@@ -330,7 +487,7 @@ Si l'incohérence est due à une corruption réseau et non à une malveillance, 
 
 ### Étape 1 : Soumission
 
-Un utilisateur envoie sa transaction à n'importe quel validator du réseau. La transaction contient le header avec les listes ReadObjects et MutableObjects, chaque objet étant identifié avec sa version attendue. Elle contient aussi le pod à appeler, la fonction, les arguments, et les signatures. Le validator qui reçoit la transaction devient l'agrégateur.
+Un utilisateur envoie sa transaction à n'importe quel validator du réseau. La transaction contient le header avec les listes ReadRefs et MutableRefs, chaque objet étant identifié avec sa version attendue. Elle contient aussi le pod à appeler, la fonction, les arguments, et la signature Ed25519. Le validator qui reçoit la transaction devient l'agrégateur.
 
 ### Étape 2 : Identification des Holders
 
@@ -344,7 +501,7 @@ L'agrégateur contacte tous les holders en parallèle via les connexions QUIC di
 
 Chaque holder qui reçoit la requête vérifie qu'il possède l'objet demandé à la version spécifiée dans la transaction.
 
-Si l'objet existe à la bonne version, le holder calcule H = hash(objet + version). Le holder top-1 pour chaque objet répond avec l'objet complet et sa signature BLS sur H. Les autres holders répondent avec H et leur signature BLS sur H.
+Si l'objet existe à la bonne version, le holder calcule `H = BLAKE3(content || version_u64_BE)`. Le holder top-1 pour chaque objet répond avec l'objet complet et sa signature BLS sur H. Les autres holders répondent avec H et leur signature BLS sur H.
 
 Si l'objet n'existe pas ou n'est pas à la bonne version, le holder répond avec un vote négatif signé.
 
@@ -372,25 +529,33 @@ Le vertex est propagé via le gossip avec un fanout de 40. En 3 hops, le vertex 
 
 ### Étape 10 : Validation du Vertex par le Réseau
 
-Chaque validator qui reçoit le vertex vérifie sa validité. Pour chaque transaction incluse, il vérifie que la signature BLS agrégée est valide pour les holders indiqués dans le bitmap, et que ces holders représentent au moins 67% des holders attendus calculés via Rendezvous Hashing. Il vérifie également les liens parents et la signature du producteur.
+Chaque validator qui reçoit le vertex vérifie sa validité. Pour chaque transaction incluse, il vérifie que la signature BLS agrégée est valide pour les holders indiqués dans le bitmap, et que ces holders représentent au moins 67% des holders attendus calculés via Rendezvous Hashing. Il vérifie également les liens parents, la signature du producteur, et le résumé des frais (FeeSummary).
 
 ### Étape 11 : Commit dans le DAG
 
-Quand le vertex V est référencé par des vertices de 2 rounds ultérieurs produits par 67% des validators, V est committé. La transaction est finale et ordonnée de manière déterministe.
+Quand le vertex V est référencé par des vertices de 2 rounds ultérieurs produits par (2n/3 + 1) validators, V est committé. La transaction est finale et ordonnée de manière déterministe.
 
-### Étape 12 : Vérification des Versions et Exécution
+### Étape 12 : Déduction des Frais
 
-Après commit, chaque validator vérifie que les versions attendues par la transaction correspondent aux versions calculées depuis le DAG. Si une version ne correspond pas (conflit détecté), la transaction est marquée comme échouée et n'est pas exécutée.
+Après le commit, le protocole calcule les frais depuis le header de la transaction et les déduit du `gas_coin` de manière implicite (sans incrémenter la version du coin). Si le solde est insuffisant, la transaction échoue. Les frais sont toujours déduits, même en cas d'échec ultérieur.
 
-Si les versions sont correctes, chaque holder d'au moins un objet dans MutableObjects appelle execute(tx). La transaction contient tous les objets attestés par le quorum. Chaque holder calcule le nouvel état des objets qu'il possède parmi ceux déclarés dans MutableObjects.
+### Étape 13 : Vérification des Versions et Ownership
 
-### Étape 13 : Stockage et Incrémentation des Versions
+Chaque validator vérifie que les versions attendues par la transaction correspondent aux versions calculées depuis le DAG. Si une version ne correspond pas (conflit détecté), la transaction est marquée comme échouée et n'est pas exécutée.
 
-Chaque holder stocke le nouvel état de ses objets déclarés dans MutableObjects. La version de chaque objet mutable est incrémentée de 1, indépendamment du fait que le contenu ait effectivement changé ou non. Les objets dans ReadObjects conservent leur version inchangée.
+Le protocole vérifie ensuite que le sender possède tous les objets déclarés dans MutableRefs (champ Owner de chaque objet). Les domain refs (sans ObjectID, avec un nom de domaine) sont exemptées de cette vérification. Si un objet mutable n'appartient pas au sender, la transaction est rejetée.
 
-### Étape 14 : Création de Nouveaux Objets
+### Étape 14 : Exécution
 
-Si la transaction a le flag `creates_objects: true` dans son header, elle a été exécutée par tous les validators. L'identifiant de chaque nouvel objet est calculé de façon déterministe comme hash(tx_id + index_output). Chaque validator calcule s'il est holder du nouvel objet via Rendezvous Hashing et, si oui, stocke directement l'objet qu'il a lui-même calculé.
+Si les versions et l'ownership sont corrects, chaque holder d'au moins un objet dans MutableRefs appelle `execute()` sur le pod. La transaction contient tous les objets attestés par le quorum. Chaque holder calcule le nouvel état des objets qu'il possède parmi ceux déclarés dans MutableRefs.
+
+### Étape 15 : Stockage et Incrémentation des Versions
+
+Chaque holder stocke le nouvel état de ses objets déclarés dans MutableRefs. La version de chaque objet mutable est incrémentée de 1, indépendamment du fait que le contenu ait effectivement changé ou non. Les objets dans ReadRefs conservent leur version inchangée.
+
+### Étape 16 : Création de Nouveaux Objets
+
+Si le vecteur `created_objects_replication` est non vide dans le header, la transaction a été exécutée par tous les validators. L'identifiant de chaque nouvel objet est calculé de façon déterministe comme `BLAKE3(tx_hash || index_u32_LE)`, où l'index est un entier 32 bits little-endian. Chaque validator calcule s'il est holder du nouvel objet via Rendezvous Hashing et, si oui, stocke directement l'objet qu'il a lui-même calculé.
 
 ---
 
@@ -398,13 +563,13 @@ Si la transaction a le flag `creates_objects: true` dans son header, elle a ét�
 
 ### Calcul Déterministe de l'Identifiant
 
-Quand une transaction crée un nouvel objet, son identifiant est calculé de façon déterministe. L'identifiant est le hash de l'identifiant de la transaction combiné avec l'index de l'output dans la liste des objets créés. Cette méthode garantit l'unicité de l'identifiant et permet de connaître à l'avance les holders cibles via le Rendezvous Hashing. Une transaction peut créer au maximum 16 nouveaux objets.
+Quand une transaction crée un nouvel objet, son identifiant est calculé de façon déterministe : `BLAKE3(tx_hash || index_u32_LE)`, où l'index est un entier 32 bits little-endian représentant la position dans la liste des objets créés. Cette méthode garantit l'unicité de l'identifiant et permet de connaître à l'avance les holders cibles via le Rendezvous Hashing. Une transaction peut créer au maximum 16 nouveaux objets.
 
 ### Exécution par Tous les Validators
 
-Les transactions qui créent de nouveaux objets doivent déclarer le flag `creates_objects: true` dans leur header. Ce flag est explicitement défini par le client lors de la soumission de la transaction.
+Les transactions qui créent de nouveaux objets déclarent un vecteur `created_objects_replication` non vide dans leur header, dont chaque élément uint16 spécifie le facteur de réplication de l'objet à créer. Ce vecteur est explicitement défini par le client lors de la soumission de la transaction.
 
-Lorsqu'une transaction porte ce flag, elle est exécutée par tous les validators du réseau, de la même manière que les transactions touchant uniquement des singletons. Cette exécution universelle permet à chaque validator de calculer de manière déterministe le contenu exact des objets créés.
+Lorsqu'une transaction porte ce vecteur non vide, elle est exécutée par tous les validators du réseau, de la même manière que les transactions touchant uniquement des singletons. Cette exécution universelle permet à chaque validator de calculer de manière déterministe le contenu exact des objets créés.
 
 ### Stockage Direct par les Holders
 
@@ -438,7 +603,7 @@ Les estimations suivantes sont des projections théoriques basées sur l'archite
 
 ### Taille des Transactions
 
-Avec les nouvelles limites (4 KB par objet, 8 objets max par transaction), la taille des transactions varie selon leur complexité. Une transaction simple touchant 2 objets de 500 bytes chacun avec le header et les signatures pèse environ 1.5 KB. Une transaction complexe touchant 8 objets de 2 KB chacun peut atteindre 20 KB. En moyenne, on peut estimer une taille de transaction d'environ 1.5 KB pour des opérations courantes comme les transferts.
+Avec les limites actuelles (4 KB par objet, 40 références max par transaction, valeur temporaire à affiner), la taille des transactions varie selon leur complexité. Une transaction simple touchant 2 objets de 500 bytes chacun avec le header et la signature pèse environ 1.5 KB. Une transaction complexe touchant de nombreux objets peut atteindre plusieurs dizaines de KB. En moyenne, on peut estimer une taille de transaction d'environ 1.5 KB pour des opérations courantes comme les transferts.
 
 ### Collecte des Attestations
 
@@ -446,7 +611,7 @@ Pour chaque objet standard d'une transaction, la collecte génère théoriquemen
 
 ### Gossip des Vertices
 
-La charge principale provient du gossip des vertices contenant les transactions complètes avec leurs objets attestés et preuves BLS. À 25k TPS avec une taille moyenne de 1.5 KB par transaction, le débit de données uniques est de 37.5 MB/s. Avec le mécanisme de gossip (réception + forwarding), chaque validator traite environ 50 MB/s en réception et 70 MB/s en émission. Les vertices sont compressés avec zstd, réduisant la bande passante effective.
+La charge principale provient du gossip des vertices contenant les transactions complètes avec leurs objets attestés et preuves BLS. À 25k TPS avec une taille moyenne de 1.5 KB par transaction, le débit de données uniques est de 37.5 MB/s. Avec le mécanisme de gossip (réception + forwarding), chaque validator traite environ 50 MB/s en réception et 70 MB/s en émission.
 
 ### Charge Totale par Validator
 
@@ -475,6 +640,10 @@ Les votes malicieux sont détectables. Un validator qui vote négativement sur u
 
 Si un holder signe un hash H mais envoie ensuite des données D incompatibles où hash(D) est différent de H, c'est prouvable on-chain. Cette preuve entraîne un slash.
 
+### Validation d'Ownership des MutableRefs
+
+Le protocole vérifie avant l'exécution que le sender possède tous les objets déclarés dans MutableRefs (champ Owner de chaque objet). Un non-propriétaire ne peut pas muter les objets d'un autre utilisateur. Cette validation est appliquée au niveau protocole, pas dans les pods. Les domain refs (identifiées par un nom de domaine plutôt qu'un ObjectID) sont exemptées de cette vérification.
+
 ---
 
 ## Problèmes Ouverts
@@ -490,3 +659,11 @@ Les détails du système de challenge et proof pour le stockage restent à affin
 ### Tolérance aux Pannes de l'Agrégateur
 
 Actuellement, si l'agrégateur tombe en panne pendant la collecte des attestations, la transaction n'aboutit pas et l'utilisateur doit la resoumettre à un autre validator. Un mécanisme de failover automatique où un autre validator reprend le rôle d'agrégateur pourrait être envisagé dans une version future.
+
+### Détection Automatique d'Inactivité
+
+La détection automatique d'inactivité par observation des votes a été décrite conceptuellement mais n'est pas encore implémentée. Le mécanisme prévu consisterait à observer le comportement de vote des validators et à marquer comme inactifs ceux qui ne votent pas sur les transactions les concernant pendant une période prolongée.
+
+### Système de Pénalités Progressives et Slashing
+
+Le système de pénalités progressives (réduction de stake pour participation insuffisante) et d'exclusion automatique des validators inactifs n'est pas encore implémenté. Pour le MVP, seule la déregistration volontaire est supportée.
