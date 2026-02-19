@@ -1,7 +1,7 @@
 # BluePods — Acceptance Test Plan (ATP)
 
 Exhaustive list of tests covering all features, security mechanisms, edge cases and attack vectors.
-Source of truth: the code (not bluepods_v2.md which is outdated).
+Source of truth: the code and `bluepods_v2.md`.
 
 ---
 
