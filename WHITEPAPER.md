@@ -4,7 +4,7 @@
 
 BluePods is a Layer 1 blockchain designed around three core ideas: an object-oriented state model where data is split into independent, versioned objects rather than stored in global account trees; a leaderless DAG-based consensus that achieves finality in two rounds without requiring a designated block proposer; and horizontal execution sharding where each transaction is processed only by the validators that hold the objects it touches.
 
-Together, these properties allow the network to scale throughput with the number of validators rather than being bottlenecked by a single leader or global state. The target is sub-second finality with thousands of validators, while keeping the programming model simple: a transaction declares its inputs, calls a function, and produces outputs — much like a function call with explicit parameters.
+Together, these properties allow the network to scale throughput with the number of validators rather than being bottlenecked by a single leader or global state, while keeping the programming model simple: a transaction declares its inputs, calls a function, and produces outputs — much like a function call with explicit parameters.
 
 This document describes the architecture, the reasoning behind key design decisions, and the tradeoffs involved.
 
@@ -527,48 +527,25 @@ Arithmetic overflow in fee computation is handled through `safeMul` and `safeAdd
 
 ---
 
-## 14. Performance Projections
+## 14. Scaling Characteristics
 
-### Latency Budget
+This section describes the theoretical scaling properties of the architecture. These are not benchmarked numbers — they are back-of-the-envelope analyses based on the protocol design. Real-world performance will depend on network conditions, hardware, geographic distribution, and workload patterns. Proper benchmarking on a distributed testnet remains future work.
 
-The target is sub-second finality. The critical path breaks down as follows:
+### Latency Factors
 
-| Stage | Estimated Latency |
-|---|---|
-| Transaction reception by aggregator | User-dependent |
-| Parallel attestation collection via QUIC | 1 RTT to holders (20-50ms) |
-| BLS signature aggregation | < 1ms |
-| Vertex gossip (3 hops) | 3 × inter-validator RTT |
-| DAG commit (2 rounds) | 2 × round interval |
+Finality latency is determined by the critical path: one round-trip to collect attestations from holders, gossip propagation across ~3 hops, and 2 DAG rounds for the commit rule. Each of these steps depends on inter-validator latency, which varies with network topology and geographic distribution. BLS aggregation itself is negligible (sub-millisecond). The architecture is designed to minimize the number of sequential network round-trips, but actual finality time is an open question until measured on a real distributed deployment.
 
-With validators in data centers with low-latency interconnects, the total time from submission to finality targets approximately 400ms.
+### Bandwidth Scaling
 
-### Bandwidth Per TPS Tier
+Network load scales linearly with throughput because each transaction is a fixed-size message propagated through gossip. With an average transaction size of ~1.5 KB for common operations (transfers, splits), the bandwidth cost per validator is roughly proportional to the total TPS. The gossip mechanism (fanout 40 for production, 10 for relay) adds a constant multiplier. The exact bandwidth requirements at scale depend on vertex batching behavior and the proportion of singleton-only transactions (which skip the attestation phase entirely).
 
-Network load scales linearly with throughput:
+### Storage Costs
 
-| TPS | Bandwidth per Validator | Infrastructure |
-|---|---|---|
-| 1,000 | ~5 MB/s (~40 Mbps) | Residential fiber |
-| 5,000 | ~25 MB/s (~200 Mbps) | Professional fiber / VPS |
-| 10,000 | ~50 MB/s (~400 Mbps) | Entry-level data center |
-| 25,000 | ~120 MB/s (~1 Gbps) | Standard data center |
+Storage costs are deterministic from the protocol parameters:
 
-These estimates assume an average transaction size of ~1.5 KB for common operations (transfers, splits).
+Version tracking requires 18 bytes per object in Pebble (8 bytes version + 2 bytes replication + 8 bytes fees). With the key prefix, this is approximately 50 bytes per tracked object. At 1 million objects, the tracker consumes ~50 MB. At 100 million objects, ~5 GB. Every validator tracks every object regardless of whether it holds it — this is the cost of global version tracking for conflict detection.
 
-### Storage Requirements
-
-Version tracking requires 18 bytes per object in Pebble (8 bytes version + 2 bytes replication + 8 bytes fees). With the key prefix, this is approximately 50 bytes per tracked object:
-
-| Objects | Tracker Storage |
-|---|---|
-| 1 million | ~50 MB |
-| 10 million | ~500 MB |
-| 100 million | ~5 GB |
-
-Object storage depends on holder assignments. A validator holding 1% of objects in a network with 100 validators and 10 million objects of average size 500 bytes stores approximately 50 GB — manageable on commodity hardware.
-
-Singletons are stored by every validator. At 100 bytes per Coin singleton, 10 million coins consume roughly 1 GB per validator.
+Object storage depends on holder assignments. A validator's share of stored objects is roughly `replication / total_validators` for each object it holds. Singletons (replication=0) are stored by every validator. At 100 bytes per Coin singleton, 10 million coins consume roughly 1 GB per validator — the main storage cost at scale.
 
 ---
 
@@ -619,9 +596,7 @@ Several areas remain as future work beyond the current implementation:
 
 BluePods demonstrates that horizontal scaling of a Layer 1 blockchain is achievable by making three fundamental shifts: from global state to independent objects, from leader-based block production to leaderless DAG consensus, and from broadcast voting to direct attestation.
 
-The object-oriented model enables natural parallelism and makes conflict detection a simple version comparison. The DAG consensus achieves fast finality without a leader bottleneck. Direct attestation with BLS aggregation keeps network overhead proportional to object replication rather than total validator count.
-
-These properties compound: a network with 1,000 validators where each transaction involves 50 holders means each validator processes roughly 5% of total transactions — delivering aggregate throughput that scales with network size rather than being capped by individual node performance.
+The object-oriented model enables natural parallelism and makes conflict detection a simple version comparison. The DAG consensus achieves fast finality without a leader bottleneck. Direct attestation with BLS aggregation keeps network overhead proportional to object replication rather than total validator count. Together, these properties mean that adding validators to the network spreads the workload rather than duplicating it.
 
 The system involves real tradeoffs. Distributed state management is more complex than global state. The 40-reference limit constrains transaction complexity. Fee computation is based on declared gas rather than actual consumption. These are deliberate engineering choices, not oversights, and each section of this document explains the reasoning behind them.
 
