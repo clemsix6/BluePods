@@ -242,7 +242,7 @@ L'instrumentation WASM injecte automatiquement des appels à la host function `g
 
 ## Système de Frais
 
-Le système de frais est implémenté au niveau protocole, en dehors de l'exécution des pods. Pour les détails complets, voir `ECONOMICS.md`.
+Le système de frais est implémenté au niveau protocole, en dehors de l'exécution des pods.
 
 ### Composantes des Frais
 
