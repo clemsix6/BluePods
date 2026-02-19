@@ -38,7 +38,7 @@ The result is a system where adding more validators increases the network's tota
 
 ## 2. Design Principles
 
-Several guiding principles shaped the architecture of BluePods. Understanding them helps explain why certain decisions were made over seemingly simpler alternatives.
+These are the assumptions that drive every design decision in BluePods. Some are obvious in retrospect, others were only clear after trying the alternatives.
 
 **Objects over accounts.** Traditional blockchains store state in account-based trees where each address maps to a balance and storage. This couples unrelated data: two users transacting have to reason about the same global state root. BluePods decouples state into independent objects, each versioned and owned separately. Two transactions touching different objects never conflict, enabling natural parallelism without requiring dependency analysis.
 
@@ -48,7 +48,7 @@ Several guiding principles shaped the architecture of BluePods. Understanding th
 
 **Protocol-level simplicity, pod-level flexibility.** Core operations like fee deduction, version tracking, and ownership checks are handled at the protocol level, outside the smart contract runtime. Smart contracts (called pods) focus on business logic. This separation keeps the protocol predictable and auditable while allowing arbitrary logic in the execution layer.
 
-**Honest majority per object, not globally.** Security in BluePods is scoped to individual objects. For an object with a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object — not 34% of the entire network. This is a meaningful distinction in large networks.
+**Honest majority per object, not globally.** Security in BluePods is scoped to individual objects. For an object with a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object — not 34% of the entire network. In a network with thousands of validators, this distinction matters a lot.
 
 ---
 
@@ -67,7 +67,7 @@ The global state of the network is composed of discrete objects. Each object is 
 
 This model is conceptually similar to Sui's object model but diverges in how replication and execution are distributed. In Sui, all validators store all objects and execute all transactions. In BluePods, objects are stored only by their designated holders, and execution is scoped to those holders.
 
-The 4 KB content limit is a deliberate choice. A wallet with metadata fits in a few hundred bytes, an NFT with its URI and attributes in 1-2 KB, a DeFi position in under 1 KB. For larger payloads, an off-chain storage layer with erasure coding is planned, where only metadata and availability certificates would live on-chain.
+Why 4 KB? Because almost everything fits. A wallet with metadata is a few hundred bytes, an NFT with its URI and attributes is 1-2 KB, a DeFi position is under 1 KB. The limit also means objects can be included directly in transactions without blowing up message sizes. For larger payloads, an off-chain storage layer with erasure coding is planned, where only metadata and availability certificates would live on-chain.
 
 ### Standard Objects and Singletons
 
@@ -85,7 +85,7 @@ Every time an object appears in the MutableRefs list of a successful transaction
 
 Conflict detection is straightforward: a transaction declares the expected version of each object it touches. If the current version (computed from the committed DAG history) does not match, the transaction is rejected. No locks, no two-phase commits — just an optimistic version check.
 
-This design means two transactions modifying the same object will conflict if submitted concurrently: the first to commit wins, the second is rejected with a version mismatch. The client can retry with the updated version. This is the same behavior as Sui and represents an acceptable tradeoff for an MVP.
+In practice, this means two transactions modifying the same object will conflict if submitted concurrently: the first to commit wins, the second gets a version mismatch and the client retries. Sui does the same thing. It is not ideal — eventually some form of batching or sequencing would be better — but for an MVP it works.
 
 ### Object References in Transactions
 
@@ -104,7 +104,7 @@ The network provides a protocol-level naming system that maps human-readable ide
 
 ### Architecture
 
-The domain registry is stored in Pebble (a local key-value store) on each validator, maintained at the protocol level. It is not an object or a singleton — it is local infrastructure. This design avoids the prohibitive cost of reading and rewriting a large singleton on every registration, where gas costs would grow with the number of registered domains.
+The domain registry is stored in Pebble (a local key-value store) on each validator, maintained at the protocol level. It is not an object or a singleton — it is local infrastructure. The alternative was making it a singleton, but then every registration would require reading and rewriting the entire registry, with gas costs growing linearly with the number of registered domains. Not worth it.
 
 Consistency is guaranteed because all validators process the same committed transactions in the same DAG-determined order, updating their local registry deterministically. The registry is included in state snapshots for new validator synchronization.
 
@@ -166,7 +166,7 @@ Each validator produces at most one vertex per round. A liveness timer (500ms) t
 
 A vertex V at round N is committed when it is referenced (directly or transitively) by vertices at round N+2 produced by a quorum of validators. This two-round commit rule provides fast finality: once a vertex is committed, all transactions it contains are final and irreversible.
 
-The commit check runs every 50ms. Rounds are committed sequentially — the protocol stops at the first uncommitted round and does not skip ahead, ensuring deterministic ordering.
+The commit check runs every 50ms. Rounds are committed sequentially — the protocol stops at the first uncommitted round and does not skip ahead. Skipping would break determinism: every validator must process commits in the same order.
 
 ### Conflict Resolution Through Ordering
 
@@ -282,7 +282,7 @@ The WASM sandbox exposes four host functions:
 | `read_input` | `(ptr: u32)` | Copies input data into WASM memory. |
 | `write_output` | `(ptr: u32, len: u32)` | Copies output from WASM memory to the host. |
 
-This minimal interface keeps the attack surface small. The pod has no access to the filesystem, network, or system clock. Its only interaction with the outside world is through the structured input/output buffers.
+Four functions. That is the entire attack surface. The pod cannot touch the filesystem, the network, or the system clock — it reads input, runs logic, writes output. Nothing else.
 
 ### Input and Output
 
@@ -305,13 +305,13 @@ A Rust SDK (`pod-sdk`) provides abstractions over the raw host interface:
 - `Context` type giving access to sender, deserialized arguments, and local objects.
 - `ExecuteResult` with chainable builders: `ok()`, `err(code)`, `with_updated()`, `with_created()`, `log()`.
 
-The development model is deliberately similar to Ethereum's Solidity or Sui's Move: a function receives inputs, performs logic, and returns state changes. The key difference is that objects are explicit parameters rather than implicit global state.
+If you have written Solidity or Move, the model will feel familiar: a function receives inputs, performs logic, and returns state changes. The difference is that objects are explicit parameters — you declare what you are going to touch upfront, rather than reaching into a global state tree.
 
 ### Gas Metering
 
 Gas metering is implemented through WASM instrumentation: a separate tool (`wasm-gas`) injects calls to the `gas()` host function into the pod's bytecode before deployment. This ensures metering is transparent to the developer and cannot be bypassed.
 
-The default gas budget is 10,000,000 units per transaction. If execution exceeds this budget, it is immediately aborted and the transaction reverts. Fees are deducted regardless — preventing attacks that submit intentionally-failing transactions to consume validator resources for free.
+The default gas budget is 10,000,000 units per transaction. If execution exceeds this budget, it is immediately aborted and the transaction reverts. Fees are deducted regardless — otherwise, an attacker could spam intentionally-failing transactions and consume validator resources for free.
 
 ### System Pod
 
@@ -328,7 +328,7 @@ The system pod is the foundational smart contract of the network. It exposes eig
 | `register_validator` | Registers a new validator on the network |
 | `deregister_validator` | Schedules a validator for removal |
 
-Coins follow a minimal structure: a single `balance` field of type uint64, serialized in Borsh (8 bytes). This simplicity is intentional — complex financial logic belongs in application-level pods, not the system pod.
+Coins follow a minimal structure: a single `balance` field of type uint64, serialized in Borsh (8 bytes). There is no reason to put complex financial logic in the system pod — that is what application-level pods are for.
 
 ---
 
@@ -336,7 +336,7 @@ Coins follow a minimal structure: a single `balance` field of type uint64, seria
 
 ### Design Rationale
 
-Two non-obvious decisions shape the fee system:
+The fee system looks simple on the surface, but two decisions behind it took a while to get right:
 
 **Fees are at the protocol level, not inside pods.** If fees were deducted by the system pod, the gas coin (a singleton) would need to be executed by every validator for every transaction. This would destroy execution sharding — the system pod would become a bottleneck on 100% of transactions. By moving fee deduction to the protocol layer, it becomes a simple arithmetic operation computed from the transaction header, with no pod execution required.
 
@@ -372,7 +372,7 @@ Where:
 | `storage_fee` | 1,000 | Per created object (flat 4 KB rate) |
 | `domain_fee` | 10,000 | Per domain registration |
 
-These values are provisional and will be adjusted based on mainnet observations.
+These numbers are placeholders. The real values will come from mainnet observation — there is no way to get fee constants right without live traffic.
 
 ### Distribution
 
@@ -384,7 +384,7 @@ Collected fees are split into three components:
 | Burn | 30% | Tokens permanently destroyed |
 | Epoch rewards | 50% | Accumulated and distributed at epoch boundary |
 
-The 30% burn creates deflationary pressure and prevents validators from manipulating fees for profit. The aggregator's 20% share incentivizes validators to accept and process user transactions promptly. Integer rounding remainders are added to the epoch pool.
+The 30% burn creates deflationary pressure and makes it harder for validators to game fees for profit. The aggregator gets 20% as a direct incentive to actually process user transactions instead of ignoring them. Integer rounding remainders go to the epoch pool.
 
 ### Fee Summary Verification
 
@@ -439,9 +439,9 @@ weight_i = stake_i × (rounds_produced_i / total_rounds_in_epoch)
 share_i  = (weight_i / Σ weights) × reward_total
 ```
 
-This formula rewards both stake commitment and active participation. A validator that produces no vertices during an epoch receives no rewards, creating a natural soft penalty for inactivity without requiring explicit slashing.
+A validator that produces nothing during an epoch gets nothing. This acts as a soft penalty for inactivity without needing explicit slashing — which is convenient because slashing is hard to get right and not implemented yet.
 
-For the current implementation, stake is equal across all validators (1 per validator). Stake-weighted participation will be introduced with the staking system.
+For now, stake is equal across all validators (1 per validator). Proper stake-weighted participation comes with the staking system.
 
 ---
 
@@ -451,7 +451,7 @@ For the current implementation, stake is equal across all validators (1 per vali
 
 Every validator maintains a persistent QUIC connection to every other validator. With 5,000 validators, this represents roughly 5,000 connections per node. QUIC provides stream multiplexing (parallel requests without head-of-line blocking), persistent connections (no repeated handshakes), and integrated TLS 1.3 encryption.
 
-On machines with 64 GB of RAM, the memory overhead of 5,000 connections (approximately 250 MB) is negligible. The architecture targets an elite validator profile with powerful hardware and excellent network connectivity.
+On machines with 64 GB of RAM, the memory overhead of 5,000 connections (approximately 250 MB) is negligible. This is not a "run a validator on your laptop" design — it targets machines with serious hardware and good network connectivity.
 
 ### Gossip Protocol
 
@@ -495,7 +495,7 @@ Snapshots are created every 10 seconds. A 2-second delay after genesis prevents 
 
 ### Object Attestation Security
 
-A minority of malicious holders cannot corrupt attested objects. Each holder computes the object hash independently from its local copy. A holder sending a falsified object or hash produces an attestation that differs from honest holders, isolating it from the quorum.
+Can a minority of malicious holders corrupt an attested object? No. Each holder computes the object hash independently from its local copy. A holder sending a falsified object or hash produces an attestation that does not match the honest majority — it is effectively isolated from the quorum.
 
 With a replication factor of 50, an attacker would need to control 34 holders of a specific object to forge a quorum — a targeted attack that becomes exponentially harder as the replication factor increases. The attacker cannot choose which objects they hold: holder assignment is determined by Rendezvous Hashing using the validator's permanent public key.
 
@@ -523,13 +523,13 @@ If the inconsistency is due to network corruption rather than malice, the aggreg
 
 Fees are always deducted, even on failed transactions. This prevents griefing attacks where an attacker submits transactions designed to fail after consuming validator resources. The `min_gas` requirement (currently 100 units) prevents dust transactions that would cost nearly nothing to submit but still consume processing resources.
 
-Arithmetic overflow in fee computation is handled through `safeMul` and `safeAdd` functions that cap at `MaxUint64` instead of wrapping.
+As a safety note: arithmetic overflow in fee computation is handled through `safeMul` and `safeAdd` functions that cap at `MaxUint64` instead of silently wrapping around.
 
 ---
 
 ## 14. Scaling Characteristics
 
-This section describes the theoretical scaling properties of the architecture. These are not benchmarked numbers — they are back-of-the-envelope analyses based on the protocol design. Real-world performance will depend on network conditions, hardware, geographic distribution, and workload patterns. Proper benchmarking on a distributed testnet remains future work.
+Fair warning: nothing in this section is benchmarked. These are back-of-the-envelope estimates based on the protocol design. Real performance will depend on network conditions, hardware, geography, and workload. Proper benchmarking on a distributed testnet is future work — for now, this is just reasoning about what the architecture should allow.
 
 ### Latency Factors
 
@@ -553,19 +553,19 @@ Object storage depends on holder assignments. A validator's share of stored obje
 
 ### vs. Sui
 
-BluePods shares Sui's object-oriented data model and optimistic versioning for conflict detection. The key divergence is in **execution distribution**: Sui requires all validators to execute all transactions and store all objects, while BluePods shards both storage and execution across holders.
+BluePods owes a lot to Sui — the object-oriented data model and optimistic versioning are directly inspired by it. The key divergence is in **execution distribution**: Sui requires all validators to execute all transactions and store all objects, while BluePods shards both storage and execution across holders.
 
-Sui compensates through parallel execution of non-conflicting transactions on each validator. BluePods achieves parallelism by distributing different transactions to different subsets of validators entirely. The tradeoff is complexity: Sui's model is simpler to reason about, while BluePods' model scales better with validator count but requires the attestation mechanism to ensure holders have correct state.
+Sui compensates through parallel execution of non-conflicting transactions on each validator. BluePods achieves parallelism by distributing different transactions to different subsets of validators entirely. To be honest, Sui's model is simpler to reason about. BluePods' model should scale better with validator count, but it adds real complexity with the attestation mechanism — whether that tradeoff is worth it is something only a production deployment can answer.
 
 ### vs. Solana
 
 Solana achieves high throughput through a leader-based pipeline with Proof of History for clock synchronization. BluePods eliminates the leader entirely through a DAG-based consensus where all validators produce blocks in parallel. This removes the single-point bottleneck but introduces the complexity of DAG-based ordering and commit rules.
 
-Solana's hardware requirements limit the validator set in practice. BluePods explicitly targets large validator sets by ensuring each validator only processes a fraction of the total workload.
+Solana's hardware requirements limit the validator set in practice. BluePods targets large validator sets by ensuring each validator only processes a fraction of the total workload — though the full QUIC mesh has its own hardware cost, so "more accessible" is relative.
 
 ### vs. Ethereum
 
-Ethereum's account-based model with a global state trie requires every validator to process every transaction against the complete state. BluePods' object model decouples unrelated state, enabling horizontal scaling. However, BluePods does not currently support the rich cross-contract composability that Ethereum's global state enables — complex DeFi compositions that touch many objects may face practical limits with the 40-reference cap per transaction.
+Ethereum's account-based model with a global state trie requires every validator to process every transaction against the complete state. BluePods' object model decouples unrelated state, enabling horizontal scaling. The honest downside: BluePods does not support the rich cross-contract composability that Ethereum's global state enables. Complex DeFi compositions that touch many objects will hit the 40-reference cap per transaction. Whether this matters depends on the use case — simple transfers and NFTs work fine, but replicating Uniswap-style AMMs with deep routing would require a different approach.
 
 ### What BluePods Borrows
 
@@ -578,26 +578,26 @@ Ethereum's account-based model with a global state trie requires every validator
 
 ## 16. Open Problems
 
-Several areas remain as future work beyond the current implementation:
+These are the problems I know about and have not solved yet:
 
 **Fraud proofs for incorrect execution.** Multiple holders execute the same transaction and should produce identical results for shared objects. A mechanism to detect and penalize incorrect execution — where a holder produces a different state than its peers — is not yet defined. Potential approaches include periodic cross-holder verification or challenge-based fraud proofs.
 
 **Storage challenge system.** Holders can be challenged to prove they still store the objects they are responsible for. The exact proof format, challenge frequency, and spam prevention for challenges remain to be specified.
 
-**Aggregator failover.** If an aggregator fails mid-collection, the transaction is lost and must be resubmitted. An automatic failover mechanism where another validator takes over as aggregator could improve user experience.
+**Aggregator failover.** If an aggregator fails mid-collection, the transaction is just lost — the user has to resubmit to another validator. This works but is not great UX. An automatic failover mechanism where another validator picks up the collection would be better.
 
-**Inactivity detection and progressive penalties.** Automatic detection of validators that stop producing vertices or responding to attestation requests, with graduated penalties (reduced rewards, then stake reduction, then removal), is planned but not yet implemented. The current system relies on voluntary deregistration.
+**Inactivity detection and progressive penalties.** Right now, if a validator stops producing vertices, nothing happens besides it missing out on rewards. There is no automatic detection, no graduated penalties, no forced removal. The system relies on voluntary deregistration, which is obviously not enough for a real network. Graduated penalties (reduced rewards → stake reduction → removal) are planned.
 
-**Cross-shard composability.** Complex transactions touching many objects with different holder sets may face latency challenges in the attestation phase. Patterns for efficient cross-shard composition remain to be explored.
+**Cross-shard composability.** This is probably the hardest open problem. Complex transactions touching many objects with different holder sets will face latency challenges in the attestation phase — the aggregator has to collect from the union of all holder sets. Patterns for efficient cross-shard composition are not obvious, and this might end up being the ceiling on what kinds of applications BluePods can support.
 
 ---
 
 ## 17. Conclusion
 
-BluePods demonstrates that horizontal scaling of a Layer 1 blockchain is achievable by making three fundamental shifts: from global state to independent objects, from leader-based block production to leaderless DAG consensus, and from broadcast voting to direct attestation.
+BluePods is built on a simple bet: that horizontal scaling of a Layer 1 blockchain is possible if you stop requiring every validator to do everything. Split the state into independent objects, let a leaderless DAG handle ordering, and route execution to the validators that hold the data. Adding validators should spread the work, not duplicate it.
 
-The object-oriented model enables natural parallelism and makes conflict detection a simple version comparison. The DAG consensus achieves fast finality without a leader bottleneck. Direct attestation with BLS aggregation keeps network overhead proportional to object replication rather than total validator count. Together, these properties mean that adding validators to the network spreads the workload rather than duplicating it.
+Does it actually work at scale? The prototype says yes for the core protocol — consensus, attestation, execution, fee deduction, storage sharding, domain naming, and validator management all function. But there is a long list of things not built yet (Section 16), and real performance numbers only come from a distributed testnet that does not exist yet.
 
-The system involves real tradeoffs. Distributed state management is more complex than global state. The 40-reference limit constrains transaction complexity. Fee computation is based on declared gas rather than actual consumption. These are deliberate engineering choices, not oversights, and each section of this document explains the reasoning behind them.
+The tradeoffs are real. Distributed state is harder to manage than global state. The 40-reference limit constrains what transactions can do. Fees are based on declared gas, not actual consumption. These are choices made for specific reasons explained in this document — but they have costs, and some of them might turn out to be wrong.
 
-The current implementation covers the core protocol: consensus, attestation, execution, fee deduction, storage sharding, domain naming, and validator management. The open problems outlined in Section 16 represent the natural next steps toward a production-ready network.
+This is a working prototype, not a finished network. But the architecture is taking shape.
