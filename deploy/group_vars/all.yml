@@ -1,0 +1,27 @@
+# Bootstrap node config
+bootstrap_ip: 192.168.1.33
+bootstrap_quic_port: 9000
+bootstrap_http_port: 8080
+
+# Port bases (node N uses base + N)
+http_base: 8080
+quic_base: 9000
+
+# Deploy directory on each host
+bluepods_dir: ~/bluepods-deploy
+
+# Consensus params
+min_validators: 5
+gossip_fanout: 40
+sync_buffer: 15
+transition_grace: 100
+transition_buffer: 100
+epoch_length: 1000
+initial_mint: 1000000000
+
+# Drip-feed config
+batch_size: 5
+batch_delay: 20
+
+# Project root (for build)
+project_root: "{{ playbook_dir }}/../.."

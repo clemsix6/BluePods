@@ -1,0 +1,24 @@
+all:
+  hosts:
+    macbook:
+      ansible_connection: local
+      lan_ip: 192.168.1.16
+      node_count: 10
+      arch: darwin-arm64
+
+    intel:
+      ansible_host: 192.168.1.20
+      ansible_user: clement
+      ansible_port: 22
+      lan_ip: 192.168.1.20
+      node_count: 5
+      arch: linux-amd64
+
+    ryzen:
+      ansible_host: 192.168.1.33
+      ansible_user: clement
+      ansible_port: 2222
+      lan_ip: 192.168.1.33
+      node_count: 25
+      is_bootstrap: true
+      arch: linux-amd64

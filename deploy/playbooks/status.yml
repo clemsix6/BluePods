@@ -1,0 +1,37 @@
+---
+# Health check on all nodes
+
+- name: Check node status
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Query status on each node
+      uri:
+        url: "http://{{ lan_ip }}:{{ http_base | int + item | int }}/status"
+        return_content: true
+        timeout: 5
+      register: status_results
+      loop: "{{ range(0, node_count) | list }}"
+      ignore_errors: true
+
+    - name: Display status
+      debug:
+        msg: >
+          {{ inventory_hostname }} node-{{ item.item }}:
+          round={{ item.json.round | default('N/A') }},
+          lastCommitted={{ item.json.lastCommitted | default('N/A') }},
+          validators={{ item.json.validators | default('N/A') }},
+          epoch={{ item.json.epoch | default('N/A') }},
+          quorum={{ item.json.fullQuorumAchieved | default('N/A') }}
+      loop: "{{ status_results.results }}"
+      loop_control:
+        label: "{{ inventory_hostname }}-node-{{ item.item }}"
+      when: item.status is defined and item.status == 200
+
+    - name: Show unreachable nodes
+      debug:
+        msg: "{{ inventory_hostname }} node-{{ item.item }}: UNREACHABLE"
+      loop: "{{ status_results.results }}"
+      loop_control:
+        label: "{{ inventory_hostname }}-node-{{ item.item }}"
+      when: item.status is not defined or item.status != 200

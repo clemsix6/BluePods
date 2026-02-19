@@ -1,0 +1,76 @@
+---
+# Sync source code, build on each host natively, deploy
+
+# --- Play 1: Sync source code to Linux hosts ---
+- name: Sync source code
+  hosts: intel,ryzen
+  gather_facts: false
+  tasks:
+    - name: Create source directory
+      file:
+        path: "{{ bluepods_dir }}/src"
+        state: directory
+
+    - name: Sync project to remote
+      synchronize:
+        src: "{{ project_root }}/"
+        dest: "{{ bluepods_dir }}/src/"
+        rsync_opts:
+          - "--exclude=deploy/bin"
+          - "--exclude=.git"
+          - "--exclude=test"
+
+# --- Play 2: Build on each host ---
+- name: Build on macbook
+  hosts: macbook
+  gather_facts: false
+  tasks:
+    - name: Create deploy directories
+      file:
+        path: "{{ bluepods_dir }}/{{ item }}"
+        state: directory
+      loop: [bin, data, logs, pids]
+
+    - name: Build darwin/arm64 binary
+      shell: go build -o {{ bluepods_dir }}/bin/bluepods-node ./cmd/node
+      args:
+        chdir: "{{ project_root }}"
+
+    - name: Copy system pod
+      copy:
+        src: "{{ project_root }}/pods/pod-system/build/pod.wasm"
+        dest: "{{ bluepods_dir }}/bin/pod.wasm"
+
+- name: Build on Linux hosts
+  hosts: intel,ryzen
+  gather_facts: false
+  environment:
+    PATH: "/usr/local/go/bin:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+  tasks:
+    - name: Create deploy directories
+      file:
+        path: "{{ bluepods_dir }}/{{ item }}"
+        state: directory
+      loop: [bin, data, logs, pids]
+
+    - name: Build linux/amd64 binary
+      shell: go build -o {{ bluepods_dir }}/bin/bluepods-node ./cmd/node
+      args:
+        chdir: "{{ bluepods_dir }}/src"
+
+    - name: Copy system pod
+      copy:
+        src: "{{ bluepods_dir }}/src/pods/pod-system/build/pod.wasm"
+        dest: "{{ bluepods_dir }}/bin/pod.wasm"
+        remote_src: true
+
+# --- Play 3: Create node data dirs ---
+- name: Create node directories
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Create node data directories
+      file:
+        path: "{{ bluepods_dir }}/data/node-{{ item }}"
+        state: directory
+      loop: "{{ range(0, node_count) | list }}"

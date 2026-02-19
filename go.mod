@@ -1,11 +1,14 @@
 module BluePods
 
-go 1.25
+go 1.26
 
 require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/google/flatbuffers v25.12.19+incompatible
+	github.com/klauspost/compress v1.16.0
 	github.com/quic-go/quic-go v0.59.0
+	github.com/supranational/blst v0.3.16
+	github.com/tetratelabs/wazero v1.11.0
 	github.com/zeebo/blake3 v0.2.4
 )
 
@@ -22,7 +25,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/klauspost/compress v1.16.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -33,8 +35,6 @@ require (
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
 	github.com/rogpeppe/go-internal v1.10.0 // indirect
-	github.com/supranational/blst v0.3.16 // indirect
-	github.com/tetratelabs/wazero v1.11.0 // indirect
 	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
 	golang.org/x/net v0.43.0 // indirect

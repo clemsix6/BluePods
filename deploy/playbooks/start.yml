@@ -1,0 +1,143 @@
+---
+# Orchestrated startup: bootstrap -> init cluster -> verify -> drip-feed
+
+# --- Play 1: Bootstrap node on Ryzen ---
+- name: "Phase 1: Bootstrap"
+  hosts: ryzen
+  gather_facts: false
+  tasks:
+    - name: Start bootstrap node (node 0)
+      template:
+        src: ../templates/start_node.sh.j2
+        dest: "{{ bluepods_dir }}/start-node-0.sh"
+        mode: "0755"
+      vars:
+        node_index: 0
+        http_port: "{{ http_base }}"
+        quic_port: "{{ quic_base }}"
+        is_bootstrap_node: true
+
+    - name: Launch bootstrap
+      shell: "{{ bluepods_dir }}/start-node-0.sh"
+
+    - name: Wait for bootstrap startup
+      pause:
+        seconds: 10
+
+    - name: Check bootstrap health
+      uri:
+        url: "http://{{ lan_ip }}:{{ http_base }}/health"
+        return_content: true
+      register: health
+      retries: 5
+      delay: 3
+      until: health.status == 200
+
+    - name: Show bootstrap health
+      debug:
+        msg: "Bootstrap healthy: {{ health.json }}"
+
+# --- Play 2: Init cluster (nodes 1-4 on Ryzen) ---
+- name: "Phase 2: Init cluster"
+  hosts: ryzen
+  gather_facts: false
+  tasks:
+    - name: Generate start scripts for nodes 1-4
+      template:
+        src: ../templates/start_node.sh.j2
+        dest: "{{ bluepods_dir }}/start-node-{{ item }}.sh"
+        mode: "0755"
+      vars:
+        node_index: "{{ item }}"
+        http_port: "{{ http_base | int + item | int }}"
+        quic_port: "{{ quic_base | int + item | int }}"
+        is_bootstrap_node: false
+      loop: "{{ range(1, 5) | list }}"
+
+    - name: Launch nodes 1-4
+      shell: "{{ bluepods_dir }}/start-node-{{ item }}.sh"
+      loop: "{{ range(1, 5) | list }}"
+
+    - name: Wait for sync + convergence
+      pause:
+        seconds: 25
+
+# --- Play 3: Verify initial cluster ---
+- name: "Phase 3: Verify cluster"
+  hosts: ryzen
+  gather_facts: false
+  tasks:
+    - name: Check status on initial 5 nodes
+      uri:
+        url: "http://{{ lan_ip }}:{{ http_base | int + item | int }}/status"
+        return_content: true
+      register: status_results
+      loop: "{{ range(0, 5) | list }}"
+      ignore_errors: true
+
+    - name: Show cluster status
+      debug:
+        msg: >
+          Node {{ item.item }}: round={{ item.json.round | default('N/A') }},
+          validators={{ item.json.validators | default('N/A') }},
+          epoch={{ item.json.epoch | default('N/A') }}
+      loop: "{{ status_results.results }}"
+      loop_control:
+        label: "node-{{ item.item }}"
+
+# --- Play 4: Drip-feed remaining nodes ---
+- name: "Phase 4: Drip-feed Ryzen nodes 5-24"
+  hosts: ryzen
+  gather_facts: false
+  tasks:
+    - name: "Batch Ryzen nodes {{ item | int }}-{{ [item | int + batch_size | int - 1, 24] | min }}"
+      include_tasks: _start_batch.yml
+      vars:
+        batch_start: "{{ item | int }}"
+        batch_end: "{{ [item | int + batch_size | int - 1, 24] | min }}"
+      loop: "{{ range(5, 25, batch_size | int) | list }}"
+
+- name: "Phase 4: Drip-feed Intel nodes 0-4"
+  hosts: intel
+  gather_facts: false
+  tasks:
+    - name: "Batch Intel nodes 0-4"
+      include_tasks: _start_batch.yml
+      vars:
+        batch_start: 0
+        batch_end: 4
+
+- name: "Phase 4: Drip-feed MacBook nodes 0-9"
+  hosts: macbook
+  gather_facts: false
+  tasks:
+    - name: "Batch MacBook nodes {{ item | int }}-{{ [item | int + batch_size | int - 1, 9] | min }}"
+      include_tasks: _start_batch.yml
+      vars:
+        batch_start: "{{ item | int }}"
+        batch_end: "{{ [item | int + batch_size | int - 1, 9] | min }}"
+      loop: "{{ range(0, 10, batch_size | int) | list }}"
+
+# --- Play 5: Final verification ---
+- name: "Phase 5: Final verification"
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check status on all nodes
+      uri:
+        url: "http://{{ lan_ip }}:{{ http_base | int + item | int }}/status"
+        return_content: true
+      register: final_status
+      loop: "{{ range(0, node_count) | list }}"
+      ignore_errors: true
+
+    - name: Show final status
+      debug:
+        msg: >
+          {{ inventory_hostname }} node-{{ item.item }}:
+          round={{ item.json.round | default('N/A') }},
+          validators={{ item.json.validators | default('N/A') }},
+          epoch={{ item.json.epoch | default('N/A') }}
+      loop: "{{ final_status.results }}"
+      loop_control:
+        label: "{{ inventory_hostname }}-node-{{ item.item }}"
