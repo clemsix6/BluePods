@@ -75,7 +75,7 @@ Objects come in two flavors, determined by their replication factor:
 
 **Standard objects** have a replication factor between 10 and several hundred. They are stored by a subset of validators (holders) determined by Rendezvous Hashing. The minimum replication of 10 guarantees that a 67% quorum is reachable with 7 holders and tolerates up to 3 simultaneous failures. Higher replication increases availability at the cost of higher storage fees.
 
-**Singletons** have a replication factor of 0, meaning they are stored by every validator in the network. Singletons are used for data that must be universally accessible: pod code (smart contracts), system parameters, the active validator list, and gas coins used for fee payment.
+**Singletons** have a replication factor of 0, meaning they are stored by every validator in the network. Singletons are used for data that must be universally accessible: pod code (smart contracts), system parameters, the active validator list, and gas coins used for fee payment. Developers can also create their own singletons for use cases requiring maximum availability guarantees, though the creation and modification fees are significantly higher than for standard objects since the cost scales with the entire validator set.
 
 Singletons benefit from a key optimization: since every validator already has them locally, they are excluded from the transaction body and do not require attestation. Only their ID and expected version appear in the transaction header. This saves bandwidth and eliminates an entire collection round for singleton-only transactions.
 
@@ -112,9 +112,9 @@ Consistency is guaranteed because all validators process the same committed tran
 
 Domains follow a hierarchical convention using `.` as separator. The `system.*` namespace is reserved for protocol objects (validator list, network parameters). Other namespaces are first-come, first-served: once an entity registers a root namespace, only that entity can add sub-domains.
 
-Registration happens through pod execution. A pod declares domains to register in its output, and the protocol resolves the mapping and checks uniqueness at commit time. If a domain already exists, the transaction reverts — the same pattern as version conflicts.
+Registration happens through pod execution. A pod declares domains to register in its `PodExecuteOutput`, specifying for each entry a domain name and either an `object_index` (referencing a newly created object from the same transaction) or a direct `object_id` (for an existing object). After execution, the protocol resolves any index reference into the computed ObjectID, checks uniqueness in Pebble, and inserts the mapping. If a domain already exists, the transaction reverts — the same pattern as version conflicts. Domain resolution is a purely local operation: a direct lookup in the validator's Pebble store with no network communication, exposed to clients via the `GET /domain/{name}` endpoint.
 
-To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee.
+A domain can be updated to point to a different object, or deleted entirely, by its owner through the same pod execution mechanism. To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee.
 
 ---
 
@@ -225,7 +225,7 @@ A complete transaction follows these stages from submission to finality:
 
 ### Submission and Aggregation
 
-The user sends a signed transaction to any validator, which becomes the aggregator. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB.
+The user sends a signed transaction to any validator, which becomes the aggregator. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB. Each transaction is uniquely identified by its hash, computed as `BLAKE3` over the canonical unsigned content.
 
 The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature.
 
@@ -257,7 +257,9 @@ If versions and ownership are valid, each holder of at least one MutableRef obje
 
 ### Post-Execution
 
-Object versions in MutableRefs are incremented. Created objects receive deterministic IDs computed as `BLAKE3(tx_hash || index_u32_LE)` and are stored by their respective holders (computed via Rendezvous Hashing). Deleted objects refund 95% of their storage deposit to the sender's gas coin.
+Object versions in MutableRefs are incremented. Created objects receive deterministic IDs computed as `BLAKE3(tx_hash || index_u32_LE)` and are stored by their respective holders (computed via Rendezvous Hashing). This eliminates the need for a separate object creation transaction — finality is achieved in 2 rounds instead of 4. Deleted objects refund 95% of their storage deposit to the sender's gas coin.
+
+When a validator becomes a new holder of an existing object (due to an epoch change or another validator departing), it recovers the object from the remaining holders via the routing mechanism. The DAG contains the trace of the transaction that created the object, allowing verification of authenticity.
 
 ---
 
@@ -289,7 +291,7 @@ The input is a `PodExecuteInput` serialized in FlatBuffers, containing the sende
 The output is a `PodExecuteOutput` containing:
 
 1. **Updated objects**: modified versions of MutableRef objects.
-2. **Created objects**: new objects, up to 16 per transaction, each with a replication factor declared in the transaction header.
+2. **Created objects**: new objects, each with a replication factor declared in the transaction header via the `created_objects_replication` vector.
 3. **Deleted objects**: objects to remove from the state. The protocol verifies ownership before applying.
 4. **Registered domains**: name-to-ObjectID mappings to insert in the domain registry.
 5. **Logs**: debug messages emitted by the pod.
@@ -319,7 +321,7 @@ The system pod is the foundational smart contract of the network. It exposes eig
 |---|---|
 | `mint` | Creates a new Coin with an initial balance |
 | `split` | Divides a Coin into two (original balance reduced, new Coin created) |
-| `merge` | Combines two or more Coins into one |
+| `merge` | Combines two Coins into one |
 | `transfer` | Changes the owner of a Coin |
 | `create_nft` | Creates an object with arbitrary metadata |
 | `transfer_nft` | Changes the owner of an object |
