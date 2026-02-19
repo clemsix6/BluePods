@@ -117,13 +117,7 @@ go test ./test/integration/ -v -run "TestSimBootstrap/tx-validation/ATP-1.1" -co
 
 The full [acceptance test plan](ATP.md) documents ~417 test cases across 38 categories, covering every protocol feature, edge case, and attack vector. The integration test [architecture and coverage map](test/integration/TESTING.md) shows which ATP items are covered by which simulation.
 
-## Project layout
-
-The node binary is in `cmd/node/`. All core logic lives in `internal/`, split by domain: `consensus/` handles the DAG, commit rules, epoch transitions, fee calculation, and version tracking. `aggregation/` handles BLS attestation collection and Rendezvous hashing for holder computation. `state/` manages objects, applies execution results, and maintains the domain registry. `podvm/` is the WASM runtime — module compilation, instance pooling, gas metering, and the four host functions. `network/` manages the QUIC mesh and gossip protocol. `api/` is the HTTP REST layer. `sync/` handles snapshot creation and the synchronization protocol for new validators joining the network. `storage/` wraps Pebble for persistence.
-
-The `pods/` directory contains the Rust side: `pod-sdk/` is the development SDK (dispatcher macro, context, result builders), `pod-system/` is the system pod (mint, transfer, split, merge, NFTs, validator registration), and `wasm-gas/` is the tool that instruments WASM modules with gas metering calls.
-
-`types/` holds the FlatBuffers schemas (objects, transactions, vertices, snapshots, pod I/O) and the generated code for both Go and Rust. `client/` is a Go library for building and signing transactions.
+## Stack
 
 The node is written in Go, pods are written in Rust and compiled to WebAssembly (executed via [wazero](https://github.com/tetratelabs/wazero)). Protocol serialization uses [FlatBuffers](https://github.com/google/flatbuffers) for zero-copy access, pod arguments use [Borsh](https://borsh.io). Cryptography: Ed25519 for transaction signatures, [BLS12-381](https://github.com/supranational/blst) for attestation aggregation, [BLAKE3](https://github.com/zeebo/blake3) for all hashing. P2P networking over [QUIC](https://github.com/quic-go/quic-go), storage on [Pebble](https://github.com/cockroachdb/pebble), snapshots compressed with zstd.
 
