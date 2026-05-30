@@ -1110,9 +1110,9 @@ func TestDeductFees_Success(t *testing.T) {
 	}
 
 	// Verify split components
-	if feeSplit.Aggregator+feeSplit.Burned+feeSplit.Epoch != feeSplit.Total {
-		t.Errorf("split parts don't sum to total: %d+%d+%d != %d",
-			feeSplit.Aggregator, feeSplit.Burned, feeSplit.Epoch, feeSplit.Total)
+	if feeSplit.Burned+feeSplit.Epoch != feeSplit.Total {
+		t.Errorf("split parts don't sum to total: %d+%d != %d",
+			feeSplit.Burned, feeSplit.Epoch, feeSplit.Total)
 	}
 }
 

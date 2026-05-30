@@ -13,18 +13,16 @@ type FeeParams struct {
 	TransitFee         uint64 // TransitFee is the fixed fee per standard object in the ATX
 	StorageFee         uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
 	DomainFee          uint64 // DomainFee is the fixed fee per registered domain
-	AggregatorBPS      uint64 // AggregatorBPS is the aggregator share in basis points (2000 = 20%)
 	BurnBPS            uint64 // BurnBPS is the burn share in basis points (3000 = 30%)
-	EpochBPS           uint64 // EpochBPS is the epoch reward share in basis points (5000 = 50%)
+	EpochBPS           uint64 // EpochBPS is the epoch reward share in basis points (7000 = 70%)
 	StorageRefundBPS   uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
 }
 
-// FeeSplit holds the breakdown of a fee into its three components.
+// FeeSplit holds the breakdown of a fee into its two components.
 type FeeSplit struct {
-	Total      uint64 // Total is the full fee amount
-	Aggregator uint64 // Aggregator is the aggregator share (20%)
-	Burned     uint64 // Burned is the burned share (30%)
-	Epoch      uint64 // Epoch is the epoch reward share (50%)
+	Total  uint64 // Total is the full fee amount
+	Burned uint64 // Burned is the burned share (30%)
+	Epoch  uint64 // Epoch is the epoch reward share (70%)
 }
 
 // DefaultFeeParams returns the default fee parameters.
@@ -36,9 +34,8 @@ func DefaultFeeParams() FeeParams {
 		TransitFee:       10,
 		StorageFee:       1000,
 		DomainFee:        10000,
-		AggregatorBPS:    2000,
 		BurnBPS:          3000,
-		EpochBPS:         5000,
+		EpochBPS:         7000,
 		StorageRefundBPS: 9500,
 	}
 }
@@ -173,19 +170,17 @@ func CalculateFee(
 	return total
 }
 
-// SplitFee breaks a total fee into its three components.
-// Uses integer division: aggregator + burned + epoch <= total.
+// SplitFee breaks a total fee into its two components.
+// Uses integer division: burned + epoch <= total.
 // Any remainder (from rounding) is added to epoch.
 func SplitFee(total uint64, params FeeParams) FeeSplit {
-	aggregator := total * params.AggregatorBPS / bpsMax
 	burned := total * params.BurnBPS / bpsMax
-	epoch := total - aggregator - burned
+	epoch := total - burned
 
 	return FeeSplit{
-		Total:      total,
-		Aggregator: aggregator,
-		Burned:     burned,
-		Epoch:      epoch,
+		Total:  total,
+		Burned: burned,
+		Epoch:  epoch,
 	}
 }
 

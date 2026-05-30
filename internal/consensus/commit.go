@@ -143,7 +143,6 @@ func (d *DAG) commitRound(round uint64) {
 			logger.Debug("vertex fees",
 				"round", round,
 				"total", fees.Total,
-				"aggregator", fees.Aggregator,
 				"burned", fees.Burned,
 				"epoch", fees.Epoch,
 			)
@@ -166,7 +165,6 @@ func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) FeeSplit 
 
 		txFees := d.executeTx(&atx, commitRound, producer)
 		vertexFees.Total += txFees.Total
-		vertexFees.Aggregator += txFees.Aggregator
 		vertexFees.Burned += txFees.Burned
 		vertexFees.Epoch += txFees.Epoch
 	}
@@ -297,9 +295,6 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 	// Split the actually deducted amount
 	split := SplitFee(deducted, *d.feeParams)
-
-	// Credit aggregator (vertex producer)
-	d.creditAggregator(producer, split.Aggregator)
 
 	// If insufficient funds: fees partially deducted, tx rejected
 	if !fullyCovered {
@@ -433,23 +428,6 @@ func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransacti
 		totalValidators,
 		*d.feeParams,
 	)
-}
-
-// creditAggregator credits the aggregator's coin with the aggregator share.
-func (d *DAG) creditAggregator(producer Hash, amount uint64) {
-	if amount == 0 || d.coinStore == nil {
-		return
-	}
-
-	// Look up aggregator's coin. For now, the aggregator coin is identified
-	// through ValidatorInfo. If not available, skip credit silently.
-	info := d.validators.Get(producer)
-	if info == nil {
-		return
-	}
-
-	// TODO: aggregator coin lookup via ValidatorInfo once reward_coin is implemented
-	// For now, aggregator credits are accumulated but not distributed to a specific coin.
 }
 
 // extractMutableObjectRefs builds ObjectRef slice from tx mutable refs + ATX replication map.

@@ -2,14 +2,14 @@
 // @generated
 extern crate alloc;
 
-use crate::object_generated::*;
 use crate::transaction_generated::*;
+use crate::object_generated::*;
 
 #[allow(unused_imports, dead_code)]
 pub mod types {
 
-  use crate::object_generated::*;
   use crate::transaction_generated::*;
+  use crate::object_generated::*;
 
 pub enum PodExecuteInputOffset {}
 #[derive(Copy, Clone, PartialEq)]
@@ -141,6 +141,136 @@ impl ::core::fmt::Debug for PodExecuteInput<'_> {
       ds.finish()
   }
 }
+pub enum RegisteredDomainOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct RegisteredDomain<'a> {
+  pub _tab: ::flatbuffers::Table<'a>,
+}
+
+impl<'a> ::flatbuffers::Follow<'a> for RegisteredDomain<'a> {
+  type Inner = RegisteredDomain<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: unsafe { ::flatbuffers::Table::new(buf, loc) } }
+  }
+}
+
+impl<'a> RegisteredDomain<'a> {
+  pub const VT_NAME: ::flatbuffers::VOffsetT = 4;
+  pub const VT_OBJECT_INDEX: ::flatbuffers::VOffsetT = 6;
+  pub const VT_OBJECT_ID: ::flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
+    RegisteredDomain { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args RegisteredDomainArgs<'args>
+  ) -> ::flatbuffers::WIPOffset<RegisteredDomain<'bldr>> {
+    let mut builder = RegisteredDomainBuilder::new(_fbb);
+    if let Some(x) = args.object_id { builder.add_object_id(x); }
+    if let Some(x) = args.name { builder.add_name(x); }
+    builder.add_object_index(args.object_index);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn name(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(RegisteredDomain::VT_NAME, None)}
+  }
+  #[inline]
+  pub fn object_index(&self) -> u16 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u16>(RegisteredDomain::VT_OBJECT_INDEX, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn object_id(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(RegisteredDomain::VT_OBJECT_ID, None)}
+  }
+}
+
+impl ::flatbuffers::Verifiable for RegisteredDomain<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut ::flatbuffers::Verifier, pos: usize
+  ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+    v.visit_table(pos)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("name", Self::VT_NAME, false)?
+     .visit_field::<u16>("object_index", Self::VT_OBJECT_INDEX, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("object_id", Self::VT_OBJECT_ID, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct RegisteredDomainArgs<'a> {
+    pub name: Option<::flatbuffers::WIPOffset<&'a str>>,
+    pub object_index: u16,
+    pub object_id: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+}
+impl<'a> Default for RegisteredDomainArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    RegisteredDomainArgs {
+      name: None,
+      object_index: 0,
+      object_id: None,
+    }
+  }
+}
+
+pub struct RegisteredDomainBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> RegisteredDomainBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_name(&mut self, name: ::flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(RegisteredDomain::VT_NAME, name);
+  }
+  #[inline]
+  pub fn add_object_index(&mut self, object_index: u16) {
+    self.fbb_.push_slot::<u16>(RegisteredDomain::VT_OBJECT_INDEX, object_index, 0);
+  }
+  #[inline]
+  pub fn add_object_id(&mut self, object_id: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(RegisteredDomain::VT_OBJECT_ID, object_id);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> RegisteredDomainBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    RegisteredDomainBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> ::flatbuffers::WIPOffset<RegisteredDomain<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    ::flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl ::core::fmt::Debug for RegisteredDomain<'_> {
+  fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+    let mut ds = f.debug_struct("RegisteredDomain");
+      ds.field("name", &self.name());
+      ds.field("object_index", &self.object_index());
+      ds.field("object_id", &self.object_id());
+      ds.finish()
+  }
+}
 pub enum PodExecuteOutputOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -162,6 +292,7 @@ impl<'a> PodExecuteOutput<'a> {
   pub const VT_CREATED_OBJECTS: ::flatbuffers::VOffsetT = 8;
   pub const VT_DELETED_OBJECTS: ::flatbuffers::VOffsetT = 10;
   pub const VT_LOGS: ::flatbuffers::VOffsetT = 12;
+  pub const VT_REGISTERED_DOMAINS: ::flatbuffers::VOffsetT = 14;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -173,6 +304,7 @@ impl<'a> PodExecuteOutput<'a> {
     args: &'args PodExecuteOutputArgs<'args>
   ) -> ::flatbuffers::WIPOffset<PodExecuteOutput<'bldr>> {
     let mut builder = PodExecuteOutputBuilder::new(_fbb);
+    if let Some(x) = args.registered_domains { builder.add_registered_domains(x); }
     if let Some(x) = args.logs { builder.add_logs(x); }
     if let Some(x) = args.deleted_objects { builder.add_deleted_objects(x); }
     if let Some(x) = args.created_objects { builder.add_created_objects(x); }
@@ -217,6 +349,13 @@ impl<'a> PodExecuteOutput<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<&'a str>>>>(PodExecuteOutput::VT_LOGS, None)}
   }
+  #[inline]
+  pub fn registered_domains(&self) -> Option<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<RegisteredDomain<'a>>>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<RegisteredDomain>>>>(PodExecuteOutput::VT_REGISTERED_DOMAINS, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for PodExecuteOutput<'_> {
@@ -230,6 +369,7 @@ impl ::flatbuffers::Verifiable for PodExecuteOutput<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<Object>>>>("created_objects", Self::VT_CREATED_OBJECTS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("deleted_objects", Self::VT_DELETED_OBJECTS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<&'_ str>>>>("logs", Self::VT_LOGS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<RegisteredDomain>>>>("registered_domains", Self::VT_REGISTERED_DOMAINS, false)?
      .finish();
     Ok(())
   }
@@ -240,6 +380,7 @@ pub struct PodExecuteOutputArgs<'a> {
     pub created_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<Object<'a>>>>>,
     pub deleted_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub logs: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<&'a str>>>>,
+    pub registered_domains: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<RegisteredDomain<'a>>>>>,
 }
 impl<'a> Default for PodExecuteOutputArgs<'a> {
   #[inline]
@@ -250,6 +391,7 @@ impl<'a> Default for PodExecuteOutputArgs<'a> {
       created_objects: None,
       deleted_objects: None,
       logs: None,
+      registered_domains: None,
     }
   }
 }
@@ -280,6 +422,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> PodExecuteOutputBuilder<'a, '
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(PodExecuteOutput::VT_LOGS, logs);
   }
   #[inline]
+  pub fn add_registered_domains(&mut self, registered_domains: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , ::flatbuffers::ForwardsUOffset<RegisteredDomain<'b >>>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(PodExecuteOutput::VT_REGISTERED_DOMAINS, registered_domains);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> PodExecuteOutputBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     PodExecuteOutputBuilder {
@@ -302,6 +448,7 @@ impl ::core::fmt::Debug for PodExecuteOutput<'_> {
       ds.field("created_objects", &self.created_objects());
       ds.field("deleted_objects", &self.deleted_objects());
       ds.field("logs", &self.logs());
+      ds.field("registered_domains", &self.registered_domains());
       ds.finish()
   }
 }

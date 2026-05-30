@@ -28,6 +28,7 @@ impl<'a> Object<'a> {
   pub const VT_OWNER: ::flatbuffers::VOffsetT = 8;
   pub const VT_REPLICATION: ::flatbuffers::VOffsetT = 10;
   pub const VT_CONTENT: ::flatbuffers::VOffsetT = 12;
+  pub const VT_FEES: ::flatbuffers::VOffsetT = 14;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -39,6 +40,7 @@ impl<'a> Object<'a> {
     args: &'args ObjectArgs<'args>
   ) -> ::flatbuffers::WIPOffset<Object<'bldr>> {
     let mut builder = ObjectBuilder::new(_fbb);
+    builder.add_fees(args.fees);
     builder.add_version(args.version);
     if let Some(x) = args.content { builder.add_content(x); }
     if let Some(x) = args.owner { builder.add_owner(x); }
@@ -83,6 +85,13 @@ impl<'a> Object<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Object::VT_CONTENT, None)}
   }
+  #[inline]
+  pub fn fees(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Object::VT_FEES, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Object<'_> {
@@ -96,6 +105,7 @@ impl ::flatbuffers::Verifiable for Object<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("owner", Self::VT_OWNER, false)?
      .visit_field::<u16>("replication", Self::VT_REPLICATION, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("content", Self::VT_CONTENT, false)?
+     .visit_field::<u64>("fees", Self::VT_FEES, false)?
      .finish();
     Ok(())
   }
@@ -106,6 +116,7 @@ pub struct ObjectArgs<'a> {
     pub owner: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub replication: u16,
     pub content: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub fees: u64,
 }
 impl<'a> Default for ObjectArgs<'a> {
   #[inline]
@@ -116,6 +127,7 @@ impl<'a> Default for ObjectArgs<'a> {
       owner: None,
       replication: 0,
       content: None,
+      fees: 0,
     }
   }
 }
@@ -146,6 +158,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> ObjectBuilder<'a, 'b, A> {
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Object::VT_CONTENT, content);
   }
   #[inline]
+  pub fn add_fees(&mut self, fees: u64) {
+    self.fbb_.push_slot::<u64>(Object::VT_FEES, fees, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> ObjectBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     ObjectBuilder {
@@ -168,6 +184,7 @@ impl ::core::fmt::Debug for Object<'_> {
       ds.field("owner", &self.owner());
       ds.field("replication", &self.replication());
       ds.field("content", &self.content());
+      ds.field("fees", &self.fees());
       ds.finish()
   }
 }

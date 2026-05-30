@@ -179,7 +179,7 @@ func TestValidateFeeSummary_Correct(t *testing.T) {
 
 	// Build vertex with correct fee summary
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total, split.Aggregator, split.Burned, split.Epoch},
+		&feeSummaryValues{split.Total, split.Burned, split.Epoch},
 		[][]byte{atxBytes},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -213,7 +213,7 @@ func TestValidateFeeSummary_WrongTotalFees(t *testing.T) {
 
 	// total_fees off by 1
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total + 1, split.Aggregator, split.Burned, split.Epoch},
+		&feeSummaryValues{split.Total + 1, split.Burned, split.Epoch},
 		[][]byte{atxBytes},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -225,43 +225,6 @@ func TestValidateFeeSummary_WrongTotalFees(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "total_fees mismatch") {
 		t.Errorf("expected 'total_fees mismatch', got: %v", err)
-	}
-}
-
-// TestValidateFeeSummary_WrongAggregator verifies wrong aggregator is rejected.
-func TestValidateFeeSummary_WrongAggregator(t *testing.T) {
-	db := newTestStorage(t)
-	validators, vs := newTestValidatorSet(3)
-
-	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
-	defer dag.Close()
-
-	params := DefaultFeeParams()
-	dag.SetFeeSystem(newMockCoinStore(), &params, nil)
-
-	sender := Hash{0x01}
-	gasCoin := Hash{0xCC}
-	atxBytes := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
-
-	fee := dag.calculateTxFee(
-		types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil),
-		types.GetRootAsAttestedTransaction(atxBytes, 0),
-	)
-	split := SplitFee(fee, params)
-
-	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total, split.Aggregator + 1, split.Burned, split.Epoch},
-		[][]byte{atxBytes},
-	)
-	vertex := types.GetRootAsVertex(data, 0)
-
-	err := dag.validateFeeSummary(vertex)
-	if err == nil {
-		t.Fatal("expected error for wrong aggregator")
-	}
-
-	if !strings.Contains(err.Error(), "total_aggregator mismatch") {
-		t.Errorf("expected 'total_aggregator mismatch', got: %v", err)
 	}
 }
 
@@ -287,7 +250,7 @@ func TestValidateFeeSummary_WrongBurned(t *testing.T) {
 	split := SplitFee(fee, params)
 
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total, split.Aggregator, split.Burned + 1, split.Epoch},
+		&feeSummaryValues{split.Total, split.Burned + 1, split.Epoch},
 		[][]byte{atxBytes},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -324,7 +287,7 @@ func TestValidateFeeSummary_WrongEpoch(t *testing.T) {
 	split := SplitFee(fee, params)
 
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total, split.Aggregator, split.Burned, split.Epoch + 1},
+		&feeSummaryValues{split.Total, split.Burned, split.Epoch + 1},
 		[][]byte{atxBytes},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -433,7 +396,7 @@ func TestValidateFeeSummary_TxWithoutGasCoinSkipped(t *testing.T) {
 
 	// Build vertex with correct summary (only counting ATX with gas_coin)
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
-		&feeSummaryValues{split.Total, split.Aggregator, split.Burned, split.Epoch},
+		&feeSummaryValues{split.Total, split.Burned, split.Epoch},
 		[][]byte{atxWithGas, atxWithoutGas},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -454,12 +417,11 @@ type parentLink struct {
 	producer Hash // producer is the parent vertex producer
 }
 
-// feeSummaryValues holds the 4 fee summary fields.
+// feeSummaryValues holds the 3 fee summary fields.
 type feeSummaryValues struct {
-	totalFees      uint64
-	totalAggregator uint64
-	totalBurned    uint64
-	totalEpoch     uint64
+	totalFees   uint64
+	totalBurned uint64
+	totalEpoch  uint64
 }
 
 // buildTestVertexWithParentLinks creates a signed vertex with specific parent links.
@@ -586,7 +548,6 @@ func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64,
 	if summary != nil {
 		types.FeeSummaryStart(builder)
 		types.FeeSummaryAddTotalFees(builder, summary.totalFees)
-		types.FeeSummaryAddTotalAggregator(builder, summary.totalAggregator)
 		types.FeeSummaryAddTotalBurned(builder, summary.totalBurned)
 		types.FeeSummaryAddTotalEpoch(builder, summary.totalEpoch)
 		feeSummaryOff = types.FeeSummaryEnd(builder)
