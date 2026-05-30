@@ -2,11 +2,11 @@
 
 BluePods is a Layer 1 blockchain built from scratch in Go. The core idea is simple: not every validator needs to process every transaction.
 
-Most blockchains today work the same way — every node stores the entire state and executes every transaction. This works, but it means that adding more validators to the network doesn't increase its capacity. Whether you have 100 or 10,000 validators, each one does the same amount of work. Throughput is capped by what a single machine can handle.
+Most blockchains today work the same way: every node stores the entire state and executes every transaction. This works, but it means that adding more validators to the network doesn't increase its capacity. Whether you have 100 or 10,000 validators, each one does the same amount of work. Throughput is capped by what a single machine can handle.
 
-BluePods takes a different approach. The network state is composed of independent objects, each replicated on a specific subset of validators called holders. When a transaction comes in, only the holders of the objects it touches need to execute it. A transfer between two users with objects replicated on 10 holders means 10 validators do the work — not the entire network. Adding more validators means the workload is spread thinner, and the network's aggregate capacity actually grows.
+BluePods takes a different approach. The network state is composed of independent objects, each replicated on a specific subset of validators called holders. When a transaction comes in, only the holders of the objects it touches need to execute it. A transfer between two users with objects replicated on 10 holders means 10 validators do the work, not the entire network. Adding more validators means the workload is spread thinner, and the network's aggregate capacity actually grows.
 
-This isn't a new idea — it's essentially horizontal sharding, the same principle that makes distributed databases scale. The challenge is making it work in a Byzantine environment where you can't trust anyone. That's what most of this codebase is about.
+This isn't a new idea: it's essentially horizontal sharding, the same principle that makes distributed databases scale. The challenge is making it work in a Byzantine environment where you can't trust anyone. That's what most of this codebase is about.
 
 ## How it works
 
@@ -14,13 +14,13 @@ This isn't a new idea — it's essentially horizontal sharding, the same princip
 
 There's no global state tree. The state is a collection of discrete objects, each with an ID, a version, an owner, and a replication factor. An object with replication 10 is stored by 10 holders. An object with replication 0 (a singleton) is stored by everyone.
 
-Two transactions touching different objects can never conflict. When they do touch the same object, conflict detection is trivial — just compare the declared version against the current one. No locks, no speculative execution, no rollbacks.
+Two transactions touching different objects can never conflict. When they do touch the same object, conflict detection is trivial: just compare the declared version against the current one. No locks, no speculative execution, no rollbacks.
 
 ### DAG consensus
 
-Consensus is a leaderless directed acyclic graph inspired by Mysticeti. Every validator produces vertices in parallel — there's no designated block proposer, so there's no leader bottleneck. Vertices reference each other across rounds, and a vertex is committed when it's been acknowledged (directly or transitively) by a supermajority of the network 2 rounds later. Finality is fast and deterministic.
+Consensus is a leaderless directed acyclic graph inspired by Mysticeti. Every validator produces vertices in parallel: there's no designated block proposer, so there's no leader bottleneck. Vertices reference each other across rounds, and a vertex is committed when it's been acknowledged (directly or transitively) by a supermajority of the network 2 rounds later. Finality is fast and deterministic.
 
-The important property of the DAG is that it orders transactions without executing them. Every validator can track object versions just by scanning the committed history. If a transaction declares an object in its mutable list, that object's version gets incremented — regardless of what the smart contract actually does with it. This makes version tracking deterministic and deducible from the DAG alone.
+The important property of the DAG is that it orders transactions without executing them. Every validator can track object versions just by scanning the committed history. If a transaction declares an object in its mutable list, that object's version gets incremented, regardless of what the smart contract actually does with it. This makes version tracking deterministic and deducible from the DAG alone.
 
 ### Direct attestation
 
@@ -32,13 +32,13 @@ The result is that attestation cost scales with the object's replication factor,
 
 ### Pods
 
-Smart contracts are called pods. They're Rust compiled to WebAssembly, executed in a sandboxed wazero runtime with gas metering. The interface is minimal — four host functions (gas, input_len, read_input, write_output) and nothing else. No filesystem, no network, no clock. The pod receives its inputs as a FlatBuffers message, does its logic, and returns the state changes.
+Smart contracts are called pods. They're Rust compiled to WebAssembly, executed in a sandboxed wazero runtime with gas metering. The interface is minimal: four host functions (gas, input_len, read_input, write_output) and nothing else. No filesystem, no network, no clock. The pod receives its inputs as a FlatBuffers message, does its logic, and returns the state changes.
 
 The system pod handles the basics: minting coins, transfers, splits, merges, NFTs, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
 
 ### Fees
 
-Fees are computed at the protocol level, outside of pod execution. This is deliberate — if fees were deducted inside a smart contract, the gas coin (a singleton) would force every validator to execute every transaction, destroying the whole point of sharding.
+Fees are computed at the protocol level, outside of pod execution. This is deliberate: if fees were deducted inside a smart contract, the gas coin (a singleton) would force every validator to execute every transaction, destroying the whole point of sharding.
 
 Instead, fee computation is pure arithmetic on the transaction header. Four components: compute (gas budget × gas price × fraction of validators that execute), transit (per standard object in the transaction body), storage (per created object, weighted by replication), and domain registration. Fees are always deducted, even if the transaction fails. 20% goes to the aggregator, 30% is burned, 50% accumulates for epoch rewards.
 
@@ -68,7 +68,7 @@ curl localhost:8080/status          # round, epoch, validator count
 curl localhost:8080/validators      # active validator list with addresses
 ```
 
-The node supports bootstrap mode (genesis), validator mode (joins an existing network), and listener mode (observe without participating in consensus). Run `./node -help` for all flags — epoch length, churn limits, gossip fanout, sync buffer, etc.
+The node supports bootstrap mode (genesis), validator mode (joins an existing network), and listener mode (observe without participating in consensus). Run `./node -help` for all flags: epoch length, churn limits, gossip fanout, sync buffer, etc.
 
 ## Testing
 
@@ -90,7 +90,7 @@ The integration tests are where it gets interesting. Each test is a simulation t
 
 There are 7 simulations, each targeting a different aspect of the system:
 
-**TestSimBootstrap** starts a single node in bootstrap mode and hammers the API with ~35 test cases. It submits transactions with wrong field sizes, bad hashes, invalid signatures, duplicate object references, oversized bodies, malformed FlatBuffers — everything that should be rejected at the validation layer. It also verifies that valid transactions go through, that the faucet works, and that the pod VM correctly executes mints.
+**TestSimBootstrap** starts a single node in bootstrap mode and hammers the API with ~35 test cases. It submits transactions with wrong field sizes, bad hashes, invalid signatures, duplicate object references, oversized bodies, malformed FlatBuffers, everything that should be rejected at the validation layer. It also verifies that valid transactions go through, that the faucet works, and that the pod VM correctly executes mints.
 
 **TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, NFT creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
 
