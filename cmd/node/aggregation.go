@@ -17,7 +17,6 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 
 	n.blsKey = blsKey
 	n.rendezvous = aggregation.NewRendezvous(validators)
-	n.aggregator = aggregation.NewAggregator(n.network, validators, n.state)
 
 	// Initialize epoch holders and set epoch transition callback
 	if n.dag != nil {
@@ -133,18 +132,16 @@ func (n *Node) scanObjectsForEpoch() {
 
 	result := n.dag.ScanObjects(isHolder, hasLocal)
 
-	// Fetch objects we should hold but don't have
+	// Fetch objects we should hold but don't have, over the QUIC mesh.
 	for _, id := range result.NeedFetch {
 		go func(objectID [32]byte) {
-			if hr := n.newHolderRouter(); hr != nil {
-				data, err := hr.RouteGetObject(objectID)
-				if err != nil {
-					logger.Debug("epoch scan: fetch failed", "id_prefix", objectID[:4], "error", err)
-					return
-				}
-
-				n.state.SetObject(data)
+			data := n.fetchObjectFromHolder(objectID)
+			if data == nil {
+				logger.Debug("epoch scan: fetch failed", "id_prefix", objectID[:4])
+				return
 			}
+
+			n.state.SetObject(data)
 		}(id)
 	}
 

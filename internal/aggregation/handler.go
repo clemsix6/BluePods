@@ -41,29 +41,38 @@ func (h *Handler) HandleRequest(peer *network.Peer, data []byte) ([]byte, error)
 	return h.processRequest(req)
 }
 
-// processRequest handles a decoded attestation request.
-// The object must exist locally and be at the requested (current) version.
-// It serves the stored signature when present, otherwise signs once and stores
-// it, but only for an object this node holds at its current version.
+// processRequest handles a decoded attestation request. The object must exist
+// locally, be replicated (singletons are never attested), and be at the
+// requested current version. It serves the stored signature when present, and
+// otherwise signs once and stores it, but only for an object this node holds at
+// its current version. Every rejection is a cheap static negative with no BLS
+// signature, so an invalid request never costs a signature.
 func (h *Handler) processRequest(req *AttestationRequest) ([]byte, error) {
 	objectData := h.state.GetObject(req.ObjectID)
 	if objectData == nil {
-		return h.buildNegativeResponse(reasonNotFound), nil
+		return buildNegativeResponse(reasonNotFound), nil
 	}
 
 	fbObj := types.GetRootAsObject(objectData, 0)
+
+	// Singletons (replication 0) are held by every validator and never attested.
+	// Reject before any signing work.
+	if fbObj.Replication() == 0 {
+		return buildNegativeResponse(reasonNotFound), nil
+	}
+
 	if fbObj.Version() != req.Version {
-		return h.buildNegativeResponse(reasonWrongVersion), nil
+		return buildNegativeResponse(reasonWrongVersion), nil
 	}
 
 	hash := attest.ComputeObjectHash(fbObj.ContentBytes(), req.Version)
 
 	sig, ok := h.signatureForCurrent(req.ObjectID, req.Version, fbObj, hash)
 	if !ok {
-		return h.buildNegativeResponse(reasonNotFound), nil
+		return buildNegativeResponse(reasonNotFound), nil
 	}
 
-	return h.buildPositiveResponse(objectData, hash, sig, req.WantFull), nil
+	return EncodePositiveResponse(&PositiveResponse{Hash: hash, Signature: sig}), nil
 }
 
 // signatureForCurrent returns the BLS signature for the object's current version.
@@ -94,30 +103,8 @@ func (h *Handler) signatureForCurrent(id [32]byte, version uint64, obj *types.Ob
 	return sig, true
 }
 
-// buildPositiveResponse creates a positive attestation response.
-func (h *Handler) buildPositiveResponse(obj []byte, hash [32]byte, sig []byte, wantFull bool) []byte {
-	resp := &PositiveResponse{
-		Hash:      hash,
-		Signature: sig,
-	}
-
-	if wantFull {
-		resp.Data = obj
-	}
-
-	return EncodePositiveResponse(resp)
-}
-
-// buildNegativeResponse creates a negative attestation response.
-func (h *Handler) buildNegativeResponse(reason byte) []byte {
-	// Sign the negative attestation for accountability
-	msg := []byte{reason}
-	sig := h.blsKey.Sign(msg)
-
-	resp := &NegativeResponse{
-		Reason:    reason,
-		Signature: sig,
-	}
-
-	return EncodeNegativeResponse(resp)
+// buildNegativeResponse creates a static negative attestation response. Negative
+// responses are never signed: an invalid request costs a lookup, not a signature.
+func buildNegativeResponse(reason byte) []byte {
+	return EncodeNegativeResponse(&NegativeResponse{Reason: reason})
 }

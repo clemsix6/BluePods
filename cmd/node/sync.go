@@ -72,8 +72,8 @@ func (n *Node) runValidator() error {
 		return fmt.Errorf("register validator:\n%w", err)
 	}
 
-	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
+	// Start HTTP API (read and operations endpoints only; submission is QUIC).
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.state)
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}

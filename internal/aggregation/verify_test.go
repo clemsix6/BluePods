@@ -10,6 +10,25 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 )
 
+// buildTestObject creates a FlatBuffers Object with the given replication.
+func buildTestObject(id [32]byte, replication uint16) []byte {
+	builder := flatbuffers.NewBuilder(256)
+
+	idOffset := builder.CreateByteVector(id[:])
+	contentOffset := builder.CreateByteVector([]byte("test content"))
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idOffset)
+	types.ObjectAddVersion(builder, 1)
+	types.ObjectAddReplication(builder, replication)
+	types.ObjectAddContent(builder, contentOffset)
+
+	objOffset := types.ObjectEnd(builder)
+	builder.Finish(objOffset)
+
+	return builder.FinishedBytes()
+}
+
 // buildVerifierFixture builds a validator set whose BLS keys are derived from a
 // seed, plus a one-proof ATX over a replicated object stamped with attestationEpoch.
 // It returns the validator set and the serialized ATX.

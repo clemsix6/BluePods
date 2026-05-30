@@ -1,4 +1,4 @@
-package api
+package validation
 
 import (
 	"crypto/ed25519"
@@ -28,9 +28,9 @@ const (
 	maxObjectRefs = 40
 )
 
-// validateTx validates a raw Transaction before aggregation.
-// Checks structural integrity, hash correctness, and Ed25519 signature.
-func validateTx(data []byte) (retErr error) {
+// ValidateTx validates a raw Transaction's structure before it enters consensus.
+// It checks structural integrity, hash correctness, and the Ed25519 signature.
+func ValidateTx(data []byte) (retErr error) {
 	// FlatBuffers panics on malformed data, recover gracefully
 	defer func() {
 		if r := recover(); r != nil {

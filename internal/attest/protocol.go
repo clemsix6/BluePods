@@ -12,11 +12,6 @@ const (
 	msgTypeNegative = 0x03 // Negative attestation (object not found)
 )
 
-// Request flags.
-const (
-	flagWantFull = 0x01 // Requester wants the full object data
-)
-
 // Negative response reasons.
 const (
 	ReasonNotFound     = 0x01 // ReasonNotFound: object not found
@@ -29,32 +24,29 @@ const MsgTypePositive = msgTypePositive
 // MsgTypeNegative is the message-type byte of a negative attestation response.
 const MsgTypeNegative = msgTypeNegative
 
-// AttestationRequest is the request sent to holders.
+// AttestationRequest is the request sent to holders. It carries only the object
+// and the expected version; the response never includes the object itself, so a
+// caller fetches the data with a separate GetObject request when it needs it.
 type AttestationRequest struct {
 	ObjectID [32]byte // ObjectID is the object to attest
 	Version  uint64   // Version is the expected version
-	WantFull bool     // WantFull indicates if full object data is requested
 }
 
 // EncodeRequest encodes an attestation request to bytes.
-// Format: [1B type] [32B objectID] [8B version] [1B flags]
+// Format: [1B type] [32B objectID] [8B version]
 func EncodeRequest(req *AttestationRequest) []byte {
-	buf := make([]byte, 42)
+	buf := make([]byte, 41)
 	buf[0] = msgTypeRequest
 	copy(buf[1:33], req.ObjectID[:])
 	binary.BigEndian.PutUint64(buf[33:41], req.Version)
-
-	if req.WantFull {
-		buf[41] = flagWantFull
-	}
 
 	return buf
 }
 
 // DecodeRequest decodes an attestation request from bytes.
 func DecodeRequest(data []byte) (*AttestationRequest, error) {
-	if len(data) < 42 {
-		return nil, fmt.Errorf("request too short: %d < 42", len(data))
+	if len(data) < 41 {
+		return nil, fmt.Errorf("request too short: %d < 41", len(data))
 	}
 
 	if data[0] != msgTypeRequest {
@@ -62,53 +54,40 @@ func DecodeRequest(data []byte) (*AttestationRequest, error) {
 	}
 
 	req := &AttestationRequest{
-		Version:  binary.BigEndian.Uint64(data[33:41]),
-		WantFull: data[41]&flagWantFull != 0,
+		Version: binary.BigEndian.Uint64(data[33:41]),
 	}
 	copy(req.ObjectID[:], data[1:33])
 
 	return req, nil
 }
 
-// PositiveResponse is a positive attestation response.
+// PositiveResponse is a positive attestation response. It carries only the hash
+// and the BLS signature; the object data travels in a separate GetObject reply.
 type PositiveResponse struct {
 	Hash      [32]byte // Hash is BLAKE3(content || version)
 	Signature []byte   // Signature is the BLS signature (96 bytes)
-	Data      []byte   // Data is the full object (optional, only if requested)
 }
 
 // EncodePositiveResponse encodes a positive response to bytes.
-// Format: [1B type] [32B hash] [96B sig] [4B dataLen] [NB data]
+// Format: [1B type] [32B hash] [96B sig]
 func EncodePositiveResponse(resp *PositiveResponse) []byte {
-	dataLen := len(resp.Data)
-	buf := make([]byte, 1+32+96+4+dataLen)
+	buf := make([]byte, 1+32+96)
 
 	buf[0] = msgTypePositive
 	copy(buf[1:33], resp.Hash[:])
 	copy(buf[33:129], resp.Signature)
-	binary.BigEndian.PutUint32(buf[129:133], uint32(dataLen))
-
-	if dataLen > 0 {
-		copy(buf[133:], resp.Data)
-	}
 
 	return buf
 }
 
 // DecodePositiveResponse decodes a positive response from bytes.
 func DecodePositiveResponse(data []byte) (*PositiveResponse, error) {
-	if len(data) < 133 {
-		return nil, fmt.Errorf("positive response too short: %d < 133", len(data))
+	if len(data) < 129 {
+		return nil, fmt.Errorf("positive response too short: %d < 129", len(data))
 	}
 
 	if data[0] != msgTypePositive {
 		return nil, fmt.Errorf("invalid message type: 0x%02x", data[0])
-	}
-
-	dataLen := binary.BigEndian.Uint32(data[129:133])
-
-	if len(data) < 133+int(dataLen) {
-		return nil, fmt.Errorf("data truncated: need %d, have %d", 133+dataLen, len(data))
 	}
 
 	resp := &PositiveResponse{
@@ -117,49 +96,33 @@ func DecodePositiveResponse(data []byte) (*PositiveResponse, error) {
 	copy(resp.Hash[:], data[1:33])
 	copy(resp.Signature, data[33:129])
 
-	if dataLen > 0 {
-		resp.Data = make([]byte, dataLen)
-		copy(resp.Data, data[133:133+dataLen])
-	}
-
 	return resp, nil
 }
 
-// NegativeResponse is a negative attestation response.
+// NegativeResponse is a negative attestation response. It carries only a reason
+// code and is never signed: an invalid request costs a cheap static reply, not a
+// BLS signature.
 type NegativeResponse struct {
-	Reason    byte   // Reason is the error code
-	Signature []byte // Signature is the BLS signature over the negative attestation
+	Reason byte // Reason is the error code
 }
 
 // EncodeNegativeResponse encodes a negative response to bytes.
-// Format: [1B type] [1B reason] [96B sig]
+// Format: [1B type] [1B reason]
 func EncodeNegativeResponse(resp *NegativeResponse) []byte {
-	buf := make([]byte, 1+1+96)
-
-	buf[0] = msgTypeNegative
-	buf[1] = resp.Reason
-	copy(buf[2:98], resp.Signature)
-
-	return buf
+	return []byte{msgTypeNegative, resp.Reason}
 }
 
 // DecodeNegativeResponse decodes a negative response from bytes.
 func DecodeNegativeResponse(data []byte) (*NegativeResponse, error) {
-	if len(data) < 98 {
-		return nil, fmt.Errorf("negative response too short: %d < 98", len(data))
+	if len(data) < 2 {
+		return nil, fmt.Errorf("negative response too short: %d < 2", len(data))
 	}
 
 	if data[0] != msgTypeNegative {
 		return nil, fmt.Errorf("invalid message type: 0x%02x", data[0])
 	}
 
-	resp := &NegativeResponse{
-		Reason:    data[1],
-		Signature: make([]byte, 96),
-	}
-	copy(resp.Signature, data[2:98])
-
-	return resp, nil
+	return &NegativeResponse{Reason: data[1]}, nil
 }
 
 // GetMessageType returns the type byte of an encoded message.

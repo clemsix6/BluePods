@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -18,11 +17,6 @@ import (
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
-)
-
-const (
-	// maxTxSize is the maximum transaction size in bytes.
-	maxTxSize = 1 << 20 // 1 MB
 )
 
 // TxSubmitter accepts transactions for inclusion in the next vertex.
@@ -51,16 +45,6 @@ type ObjectQuerier interface {
 	GetObject(id [32]byte) []byte
 }
 
-// TxAggregator aggregates a raw Transaction into an AttestedTransaction.
-type TxAggregator interface {
-	Aggregate(ctx context.Context, txData []byte) ([]byte, error)
-}
-
-// HolderRouter routes GetObject requests to holders when object is not local.
-type HolderRouter interface {
-	RouteGetObject(id [32]byte) ([]byte, error)
-}
-
 // DomainResolver resolves domain names to ObjectIDs.
 type DomainResolver interface {
 	ResolveDomain(name string) ([32]byte, bool)
@@ -72,18 +56,17 @@ type FaucetConfig struct {
 	SystemPod [32]byte           // SystemPod is the system pod ID
 }
 
-// Server is the HTTP API server.
+// Server is the HTTP API server. It now exposes only read and operations
+// endpoints; transaction submission moved to the QUIC client surface.
 type Server struct {
-	addr       string         // addr is the HTTP listen address
-	submitter  TxSubmitter    // submitter accepts transactions for consensus
-	gossiper   TxGossiper     // gossiper forwards transactions to peers
-	status     StatusProvider // status provides consensus state for monitoring
-	objects    ObjectQuerier  // objects provides object lookup
-	faucet     *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
-	aggregator TxAggregator   // aggregator transforms raw tx into attested tx (nil = wrap only)
-	router     HolderRouter   // router routes GetObject to holders (nil = local only)
-	domains    DomainResolver // domains resolves domain names to object IDs (nil = disabled)
-	server     *http.Server   // server is the underlying HTTP server
+	addr      string         // addr is the HTTP listen address
+	submitter TxSubmitter    // submitter accepts transactions for consensus (faucet only)
+	gossiper  TxGossiper     // gossiper forwards transactions to peers (faucet only)
+	status    StatusProvider // status provides consensus state for monitoring
+	objects   ObjectQuerier  // objects provides object lookup
+	faucet    *FaucetConfig  // faucet config for mint endpoint (nil = disabled)
+	domains   DomainResolver // domains resolves domain names to object IDs (nil = disabled)
+	server    *http.Server   // server is the underlying HTTP server
 }
 
 // New creates a new HTTP API server.
@@ -94,27 +77,22 @@ func New(
 	status StatusProvider,
 	objects ObjectQuerier,
 	faucet *FaucetConfig,
-	aggregator TxAggregator,
-	router HolderRouter,
 	domains DomainResolver,
 ) *Server {
 	return &Server{
-		addr:       addr,
-		submitter:  submitter,
-		gossiper:   gossiper,
-		status:     status,
-		objects:    objects,
-		faucet:     faucet,
-		aggregator: aggregator,
-		router:     router,
-		domains:    domains,
+		addr:      addr,
+		submitter: submitter,
+		gossiper:  gossiper,
+		status:    status,
+		objects:   objects,
+		faucet:    faucet,
+		domains:   domains,
 	}
 }
 
 // Start starts the HTTP server in a goroutine.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /tx", s.handleSubmitTx)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("POST /faucet", s.handleFaucet)
@@ -150,64 +128,6 @@ func (s *Server) Stop() error {
 	defer cancel()
 
 	return s.server.Shutdown(ctx)
-}
-
-// handleSubmitTx handles POST /tx requests.
-// Accepts a raw Transaction, aggregates it into an ATX, then submits.
-func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxTxSize))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-
-	if len(body) == 0 {
-		writeError(w, http.StatusBadRequest, "empty transaction")
-		return
-	}
-
-	// Validate transaction structure, hash, and signature
-	if err := validateTx(body); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction: %v", err))
-		return
-	}
-
-	// Extract hash from raw Transaction
-	hash, err := extractRawTxHash(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transaction: %v", err))
-		return
-	}
-
-	// Aggregate: raw tx → ATX
-	atxBytes, err := s.aggregateTx(r.Context(), body)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("aggregation failed: %v", err))
-		return
-	}
-
-	s.submitter.SubmitTx(atxBytes)
-
-	if s.gossiper != nil {
-		s.gossiper.GossipTx(atxBytes)
-	}
-
-	logger.Debug("tx submitted", "hash", hex.EncodeToString(hash[:8]))
-
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"hash": hex.EncodeToString(hash),
-	})
-}
-
-// aggregateTx converts a raw Transaction into an AttestedTransaction.
-// If aggregator is available, uses it. Otherwise wraps with empty objects/proofs.
-func (s *Server) aggregateTx(ctx context.Context, txData []byte) ([]byte, error) {
-	if s.aggregator != nil {
-		return s.aggregator.Aggregate(ctx, txData)
-	}
-
-	// No aggregator (bootstrap/early init) — wrap in empty ATX
-	return genesis.WrapInATX(txData), nil
 }
 
 // handleHealth handles GET /health requests.
@@ -360,15 +280,6 @@ func (s *Server) handleGetObject(w http.ResponseWriter, r *http.Request) {
 
 	data := s.objects.GetObject(id)
 
-	// If not local, try routing to holders (unless ?local=true is set)
-	localOnly := r.URL.Query().Get("local") == "true"
-	if data == nil && s.router != nil && !localOnly {
-		routed, err := s.router.RouteGetObject(id)
-		if err == nil && routed != nil {
-			data = routed
-		}
-	}
-
 	if data == nil {
 		writeError(w, http.StatusNotFound, "object not found")
 		return
@@ -408,22 +319,6 @@ func (s *Server) handleGetDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"objectId": hex.EncodeToString(objectID[:]),
 	})
-}
-
-// extractRawTxHash extracts the transaction hash from a raw Transaction FlatBuffer.
-func extractRawTxHash(data []byte) ([]byte, error) {
-	if len(data) < 8 {
-		return nil, fmt.Errorf("data too short")
-	}
-
-	tx := types.GetRootAsTransaction(data, 0)
-
-	hash := tx.HashBytes()
-	if len(hash) != 32 {
-		return nil, fmt.Errorf("invalid hash length: %d", len(hash))
-	}
-
-	return hash, nil
 }
 
 // extractAtxHash extracts the transaction hash from AttestedTransaction bytes.

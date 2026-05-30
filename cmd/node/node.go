@@ -39,10 +39,9 @@ type Node struct {
 	systemPod   [32]byte
 
 	// Aggregation components
-	aggregator *aggregation.Aggregator  // aggregator orchestrates attestation collection
-	blsKey     *aggregation.BLSKeyPair  // blsKey is the BLS key for signing attestations
-	attHandler *aggregation.Handler     // attHandler responds to attestation requests
-	rendezvous *aggregation.Rendezvous  // rendezvous computes object-holder mappings
+	blsKey     *aggregation.BLSKeyPair // blsKey is the BLS key for signing attestations
+	attHandler *aggregation.Handler    // attHandler responds to attestation requests
+	rendezvous *aggregation.Rendezvous // rendezvous computes object-holder mappings
 }
 
 // NewNode creates and initializes a new node.
@@ -124,8 +123,8 @@ func (n *Node) runBootstrap() error {
 	n.setupMessageHandlers()
 	n.setupRequestHandlers()
 
-	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
+	// Start HTTP API (read and operations endpoints only; submission is QUIC).
+	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.state)
 	if err := n.api.Start(); err != nil {
 		return fmt.Errorf("start api:\n%w", err)
 	}

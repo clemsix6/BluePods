@@ -69,8 +69,7 @@ func newMockHolder(t *testing.T, objData []byte, negate bool) *mockHolder {
 
 		if h.negate {
 			return attest.EncodeNegativeResponse(&attest.NegativeResponse{
-				Reason:    attest.ReasonWrongVersion,
-				Signature: make([]byte, 96),
+				Reason: attest.ReasonWrongVersion,
 			}), nil
 		}
 

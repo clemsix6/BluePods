@@ -1,7 +1,6 @@
 package aggregation
 
 import (
-	"bytes"
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -81,7 +80,6 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 	req := &AttestationRequest{
 		ObjectID: objectID,
 		Version:  version,
-		WantFull: false,
 	}
 
 	respData, err := handler.processRequest(req)
@@ -115,46 +113,39 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 	if len(resp.Signature) != BLSSignatureSize {
 		t.Errorf("signature size: got %d, want %d", len(resp.Signature), BLSSignatureSize)
 	}
-
-	// WantFull=false should not include data
-	if len(resp.Data) != 0 {
-		t.Errorf("expected no data, got %d bytes", len(resp.Data))
-	}
 }
 
-// TestHandleRequest_WantFull tests that full object is returned when requested.
-func TestHandleRequest_WantFull(t *testing.T) {
+// TestHandleRequest_Singleton tests that a singleton (replication 0) is never
+// attested: the handler returns a static negative without signing.
+func TestHandleRequest_Singleton(t *testing.T) {
 	handler, st, cleanup := setupTestHandler(t)
 	defer cleanup()
 
-	// Create and store test object
-	objectID := [32]byte{4, 5, 6}
-	version := uint64(1)
-	content := []byte("full object content")
+	objectID := [32]byte{0xAB, 0xCD}
+	version := uint64(2)
 
-	objData := createTestObject(t, objectID, version, 10, content)
+	objData := createTestObject(t, objectID, version, 0, []byte("coin"))
 	st.SetObject(objData)
 
-	// Create request with WantFull=true
-	req := &AttestationRequest{
-		ObjectID: objectID,
-		Version:  version,
-		WantFull: true,
-	}
+	req := &AttestationRequest{ObjectID: objectID, Version: version}
 
 	respData, err := handler.processRequest(req)
 	if err != nil {
 		t.Fatalf("process request: %v", err)
 	}
 
-	resp, err := DecodePositiveResponse(respData)
+	msgType, _ := GetMessageType(respData)
+	if msgType != msgTypeNegative {
+		t.Fatalf("expected negative response for singleton, got type 0x%02x", msgType)
+	}
+
+	resp, err := DecodeNegativeResponse(respData)
 	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// Should include full object data
-	if !bytes.Equal(resp.Data, objData) {
-		t.Error("object data mismatch")
+	if resp.Reason != reasonNotFound {
+		t.Errorf("reason: got 0x%02x, want 0x%02x", resp.Reason, reasonNotFound)
 	}
 }
 
@@ -167,7 +158,6 @@ func TestHandleRequest_NotFound(t *testing.T) {
 	req := &AttestationRequest{
 		ObjectID: [32]byte{99, 99, 99},
 		Version:  1,
-		WantFull: false,
 	}
 
 	respData, err := handler.processRequest(req)
@@ -193,11 +183,6 @@ func TestHandleRequest_NotFound(t *testing.T) {
 	if resp.Reason != reasonNotFound {
 		t.Errorf("reason: got 0x%02x, want 0x%02x", resp.Reason, reasonNotFound)
 	}
-
-	// Negative responses should be signed
-	if len(resp.Signature) != BLSSignatureSize {
-		t.Errorf("signature size: got %d, want %d", len(resp.Signature), BLSSignatureSize)
-	}
 }
 
 // TestHandleRequest_WrongVersion tests negative response when version mismatches.
@@ -216,7 +201,6 @@ func TestHandleRequest_WrongVersion(t *testing.T) {
 	req := &AttestationRequest{
 		ObjectID: objectID,
 		Version:  3, // Wrong version
-		WantFull: false,
 	}
 
 	respData, err := handler.processRequest(req)
