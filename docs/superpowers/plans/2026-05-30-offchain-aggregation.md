@@ -399,3 +399,44 @@ EOF
 - **Spec coverage:** daemon library (B5), QUIC-only incl. inter-node routing + on-chain HTTPAddr removal (B4 GetObject, B6 routing, B7 purge), eager-signature defense + bounded fallback + Retry/scopes/rate-limit (B3, B4), canonical content-hash fix (B1), fee 70/30 across all sites (B2), singleton fast path + singletons-never-in-ATX (B5/B6), WantFull/top-1 removal (B6), daemon/consensus/state decoupling via validators+attest leaf packages (B1), client SDK port (B7), complete reverification with lifecycle layering (B6 + B5 verifier), epoch determinism + grace + attestation_epoch on wire + serializeAttestedTx (B5), tests + ATP + whitepaper (B8). PoW/VDF/capital rejected, not reintroduced.
 - **Green-at-each-step:** B1-B5 additive; B6 and B7 unit-green with integration deferred (called out); B8 full-green.
 - **Type consistency:** `internal/validators`/`internal/attest`, the `objsig:` layout, the verifier callback signature `func(atx, commitRound)`, `attestation_epoch`, `EpochGraceRounds`, `HoldersForEpoch`, `commitEpochForRound`, and the daemon API are defined once in Shared contracts and referenced identically across batches.
+
+---
+
+## Final-review corrections (apply within the named batch)
+
+A second review found these. Line numbers elsewhere in this plan are indicative; reference symbols and confirm against the code. The `State` struct, its setters, and the apply functions live in `internal/state/state.go` (not `store.go`): `SetOnObjectCreated`, `applyUpdatedObjects` (~373), `applyCreatedObjects` (~414), `creditGasCoin` (~573), `SetObject` (~193).
+
+Cross-cutting:
+- **Attestation codec is a leaf.** Move the attestation request/response codec (`EncodeRequest`, `DecodePositiveResponse`, `DecodeNegativeResponse`, `GetMessageType`, `AttestationRequest`) out of `internal/aggregation/protocol.go` into `internal/attest` so both the holder `Handler` and the daemon import it without pulling `state`/`network`. This makes the daemon's clean-import contract actually hold.
+- **Two distinct `QuorumSize`.** `attest.QuorumSize(replication int)` is the per-object attestation quorum (today `rendezvous.go:80`). `validators.ValidatorSet.QuorumSize()` is the BFT consensus quorum (`2n/3+1`, `types.go:152`) and stays a method on the type. Do not conflate or merge them.
+- **`ComputeHolders` shape.** Expose it as a free function `attest.ComputeHolders(vs, objectID, replication)`; update the verifier and the daemon to use the free form (today it is a `Rendezvous` method).
+
+Batch 1:
+- Add `internal/aggregation/handler_test.go` to the modify list: it recomputes the hash over full object bytes (~106) and must switch to `ContentBytes()` when the handler does.
+
+Batch 2:
+- Also update `validate_test.go:~589` (`buildVertexWithFeeSummaryInner` calls `FeeSummaryAddTotalAggregator`) and remove the `totalAgg` accumulation in `validate.go`.
+
+Batch 3:
+- **Sign the new version.** `applyUpdatedObjects` persists the object at `obj.Version()+1` (`rebuildObjectIncrementVersion`); the loop variable is the OLD version. The signer must hash `BLAKE3(content || (obj.Version()+1))`, i.e. the version actually written, or every stored signature is over the wrong version and fails verification.
+- `applyUpdatedObjects` has no holder filter today, so the signer call there must add the `isHolder` guard explicitly (unlike `applyCreatedObjects`, which already filters).
+- The object write and the `objsig:` write are two separate `Set` calls (no batch is threaded through the apply path); drop the "atomic via `SetBatch`" wording and rely on the bounded sign-on-miss fallback for the crash window, unless a real batch is threaded.
+
+Batch 4:
+- **Validator/client classification needs an injected predicate.** `internal/network` has no validator set. Add `node.SetValidatorPredicate(func(ed25519.PublicKey) bool)` wired from `cmd/node`, and branch in `handleIncoming` BEFORE `setupPeer` (which errors on empty `PeerCertificates`). The ephemeral client path must never touch `peers`, `knownAddrs`, `receiveLoop`, or reconnect.
+- Set `VerifySourceAddress` on the `quic.Transport` at its construction (`node.go:~114`), before `Listen`, not in `clientconn.go`.
+- Route new client message tags by explicit first-byte tag (reserve `>= 0x04`; `0x01`-`0x03` are attestation) BEFORE the `IsSnapshotRequest` heuristic, which has no tag and matches on `RequestId() > 0`.
+
+Batch 5:
+- **`d.epoch` is not redundant.** It is the vertex-stamped epoch (`build.go` `VertexAddEpoch`) and the vertex-validation epoch (`validate.go:56-57`), set once at `New` and never incremented. Leave it and `build.go`/`validate.go` untouched. Use `currentEpoch` only for the snapshot, grace, and `commitEpochForRound` logic.
+- **Boundary-round off-by-one.** Round `R = k*epochLength` is committed (and its ATXs verified) BEFORE `transitionEpoch` increments `currentEpoch`, so that round still uses epoch `k-1`'s holders. Define `commitEpochForRound` to match: for a round that is a nonzero multiple of `epochLength`, the commit epoch is `R/epochLength - 1`. Add a unit test pinning the boundary-round epoch to the `snapshotEpochHolders` timing.
+- The "any other ATX builder" check: `serializeAttestedTx` (~765) is the main one; also inspect `build.go:~236`. Genesis builders are proofless, so the verifier (which only runs when `ProofsLength() > 0`) skips them.
+
+Batch 6:
+- `internal/api/server.go` survives until Batch 7, and `api.New` still requires its aggregator and holder-router params. At both call sites (`node.go:128`, `sync.go:76`) pass `nil` for the now-removed `TxAggregator` and holder-router arguments.
+
+Batch 7:
+- **The `Validator` table is in `types/validator.fbs`** (the `http_address` field), not `vertex.fbs`. Fix the target.
+- **Update and recompile the Rust pod.** Removing `http_address` from the `Validator` type and the register-validator borsh args changes `pods/pod-system/src/functions/register_validator/args.rs` (drop the field) and `execute.rs` (drop `add_http_address` and the param). After `bash types/generate.sh` (which regenerates the Rust types too), run `cd pods/pod-system && make release` and refresh the embedded WASM. The pod's WASM hash (its ID) changes, so update genesis accordingly. Check `deregister` and any other consumer of the `Validator` table.
+- Missed Go sites: `sync.go:316,319`; `BuildRegisterValidatorRawTx` (`genesis/transaction.go:27`, the one `registration.go` actually calls); `registration.go:69`.
+- **Registration submission over QUIC.** `cmd/node/registration.go` currently submits the register-validator transaction via `http.Post(/tx)`. After HTTP removal it must submit over QUIC `MsgSubmitTx`. Wire this.
