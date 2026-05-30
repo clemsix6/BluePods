@@ -54,7 +54,8 @@ func setupTestHandler(t *testing.T) (*Handler, *state.State, func()) {
 		t.Fatalf("generate BLS key: %v", err)
 	}
 
-	handler := NewHandler(st, blsKey)
+	isHolder := func(objectID [32]byte, replication uint16) bool { return true }
+	handler := NewHandler(st, blsKey, db, isHolder)
 
 	cleanup := func() {
 		db.Close()

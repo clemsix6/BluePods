@@ -18,11 +18,19 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 4
+	snapshotVersion = 5
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
+
+	// blsSignatureSize is the size of a stored BLS signature in bytes.
+	blsSignatureSize = 96
 )
+
+// prefixObjectSig is the storage prefix for eager per-object signatures.
+// It mirrors aggregation's sigstore key layout ("objsig:" || id[32]); kept
+// local so sync does not import the aggregation package.
+var prefixObjectSig = []byte("objsig:")
 
 // Storage key prefixes used by consensus (must be skipped when iterating objects).
 var (
@@ -41,7 +49,12 @@ func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators [
 		return nil, fmt.Errorf("collect objects:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries)
+	signatures, err := collectSignatures(db)
+	if err != nil {
+		return nil, fmt.Errorf("collect signatures:\n%w", err)
+	}
+
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures)
 
 	return data, nil
 }
@@ -88,6 +101,49 @@ type objectEntry struct {
 	data []byte
 }
 
+// sigEntry holds an eager per-object signature for snapshot transport.
+type sigEntry struct {
+	id      [32]byte // id is the object identifier
+	version uint64   // version is the attested object version
+	sig     []byte   // sig is the 96-byte BLS signature
+}
+
+// collectSignatures scans the objsig: prefix and returns the stored signatures.
+// Stored values are version_u64_BE(8) || sig(96); malformed entries are skipped.
+func collectSignatures(db *storage.Storage) ([]sigEntry, error) {
+	var sigs []sigEntry
+
+	err := db.IteratePrefix(prefixObjectSig, func(key, value []byte) error {
+		if len(key) != len(prefixObjectSig)+32 || len(value) != 8+blsSignatureSize {
+			return nil
+		}
+
+		var e sigEntry
+		copy(e.id[:], key[len(prefixObjectSig):])
+		e.version = binary.BigEndian.Uint64(value[:8])
+
+		e.sig = make([]byte, blsSignatureSize)
+		copy(e.sig, value[8:])
+
+		sigs = append(sigs, e)
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return sigs, nil
+}
+
+// sortSignatures sorts signatures by object ID for deterministic ordering.
+func sortSignatures(sigs []sigEntry) {
+	sort.Slice(sigs, func(i, j int) bool {
+		return bytes.Compare(sigs[i].id[:], sigs[j].id[:]) < 0
+	})
+}
+
 // isConsensusKey returns true if the key belongs to consensus data.
 func isConsensusKey(key []byte) bool {
 	return bytes.HasPrefix(key, prefixVertex) ||
@@ -98,15 +154,18 @@ func isConsensusKey(key []byte) bool {
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
 	// Sort validators for deterministic checksum
 	sortValidatorInfos(validators)
 
+	// Sort signatures by ID for deterministic checksum
+	sortSignatures(signatures)
+
 	// Compute checksum over canonical data (includes tracker entries and domain entries)
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -192,6 +251,25 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	domainsVector := builder.EndVector(len(domainOffsets))
 
+	// Build signatures vector (sorted above for determinism)
+	sigOffsets := make([]flatbuffers.UOffsetT, len(signatures))
+	for i, s := range signatures {
+		idOffset := builder.CreateByteVector(s.id[:])
+		sigOffset := builder.CreateByteVector(s.sig)
+
+		types.ObjectSigStart(builder)
+		types.ObjectSigAddId(builder, idOffset)
+		types.ObjectSigAddVersion(builder, s.version)
+		types.ObjectSigAddSig(builder, sigOffset)
+		sigOffsets[i] = types.ObjectSigEnd(builder)
+	}
+
+	types.SnapshotStartSignaturesVector(builder, len(sigOffsets))
+	for i := len(sigOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(sigOffsets[i])
+	}
+	signaturesVector := builder.EndVector(len(sigOffsets))
+
 	types.SnapshotStart(builder)
 	types.SnapshotAddVersion(builder, snapshotVersion)
 	types.SnapshotAddLastCommittedRound(builder, lastCommittedRound)
@@ -201,6 +279,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	types.SnapshotAddVertices(builder, verticesVector)
 	types.SnapshotAddObjectVersions(builder, versionsVector)
 	types.SnapshotAddDomains(builder, domainsVector)
+	types.SnapshotAddSignatures(builder, signaturesVector)
 	offset := types.SnapshotEnd(builder)
 	builder.Finish(offset)
 
@@ -299,8 +378,8 @@ func sortObjects(objects []objectEntry) {
 }
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
-// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) [32]byte {
+// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -351,6 +430,18 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(buf[:4])
 		hasher.Write(nameBytes)
 		hasher.Write(entry.ObjectID[:])
+	}
+
+	// Write signatures (sorted by ID for determinism)
+	sortSignatures(signatures)
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(signatures)))
+	hasher.Write(buf[:4])
+
+	for _, s := range signatures {
+		hasher.Write(s.id[:])
+		binary.BigEndian.PutUint64(buf[:], s.version)
+		hasher.Write(buf[:])
+		hasher.Write(s.sig)
 	}
 
 	var checksum [32]byte
@@ -419,12 +510,73 @@ func ApplySnapshot(db *storage.Storage, data []byte) (*types.Snapshot, error) {
 		}
 	}
 
-	// Write all objects atomically
+	// Append eager signatures to the same batch (objsig: keys, distinct from objects)
+	for _, s := range extractSignatures(snapshot) {
+		pairs = append(pairs, storage.KeyValue{
+			Key:   sigStorageKey(s.id),
+			Value: encodeSigValue(s.version, s.sig),
+		})
+	}
+
+	// Write all objects and signatures atomically
 	if err := db.SetBatch(pairs); err != nil {
 		return nil, fmt.Errorf("write objects:\n%w", err)
 	}
 
 	return snapshot, nil
+}
+
+// sigStorageKey builds the objsig: storage key for an object ID.
+func sigStorageKey(id [32]byte) []byte {
+	k := make([]byte, len(prefixObjectSig)+32)
+	copy(k, prefixObjectSig)
+	copy(k[len(prefixObjectSig):], id[:])
+
+	return k
+}
+
+// encodeSigValue encodes a signature store value: version_u64_BE(8) || sig(96).
+func encodeSigValue(version uint64, sig []byte) []byte {
+	val := make([]byte, 8+len(sig))
+	binary.BigEndian.PutUint64(val[:8], version)
+	copy(val[8:], sig)
+
+	return val
+}
+
+// extractSignatures reads the eager per-object signatures from a snapshot.
+// Malformed entries (wrong id or signature length) are skipped.
+func extractSignatures(snapshot *types.Snapshot) []sigEntry {
+	length := snapshot.SignaturesLength()
+	if length == 0 {
+		return nil
+	}
+
+	sigs := make([]sigEntry, 0, length)
+	var s types.ObjectSig
+
+	for i := 0; i < length; i++ {
+		if !snapshot.Signatures(&s, i) {
+			continue
+		}
+
+		idBytes := s.IdBytes()
+		sigBytes := s.SigBytes()
+		if len(idBytes) != 32 || len(sigBytes) != blsSignatureSize {
+			continue
+		}
+
+		var e sigEntry
+		copy(e.id[:], idBytes)
+		e.version = s.Version()
+
+		e.sig = make([]byte, blsSignatureSize)
+		copy(e.sig, sigBytes)
+
+		sigs = append(sigs, e)
+	}
+
+	return sigs
 }
 
 // verifyChecksum verifies the snapshot's integrity.
@@ -469,10 +621,13 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	domainEntries := ExtractDomains(snapshot)
 	sortDomainEntries(domainEntries)
 
+	// Extract signatures
+	signatures := extractSignatures(snapshot)
+
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries)
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures)
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {

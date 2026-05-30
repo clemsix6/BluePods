@@ -2,6 +2,7 @@ package main
 
 import (
 	"BluePods/internal/aggregation"
+	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
 )
@@ -15,7 +16,6 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	}
 
 	n.blsKey = blsKey
-	n.attHandler = aggregation.NewHandler(n.state, n.blsKey)
 	n.rendezvous = aggregation.NewRendezvous(validators)
 	n.aggregator = aggregation.NewAggregator(n.network, validators, n.state)
 
@@ -45,9 +45,24 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	n.dag.SetIsHolder(isHolder)
 	n.state.SetIsHolder(isHolder)
 
+	// Attestation handler serves stored signatures and may sign on a bounded miss
+	// for objects it holds at their current version.
+	n.attHandler = aggregation.NewHandler(n.state, n.blsKey, n.storage, isHolder)
+
 	// Wire object creation callback to tracker
 	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
 		n.dag.TrackObject(id, version, replication, fees)
+	})
+
+	// Eager signing: at execution, a holder signs the persisted version and
+	// stores it durably next to the object so attestation requests are pure reads.
+	n.state.SetObjectSigner(func(id [32]byte, content []byte, version uint64, replication uint16) {
+		hash := attest.ComputeObjectHash(content, version)
+		sig := n.blsKey.Sign(hash[:])
+
+		if err := aggregation.PutObjectSig(n.storage, id, version, sig); err != nil {
+			logger.Warn("store object signature failed", "id_prefix", id[:4], "error", err)
+		}
 	})
 
 	// Set up ATX proof verifier. Holders are resolved from the DAG's frozen

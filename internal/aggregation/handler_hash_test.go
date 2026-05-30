@@ -28,7 +28,8 @@ func TestHandlerHashAgreement(t *testing.T) {
 		t.Fatalf("generate BLS key: %v", err)
 	}
 
-	handler := NewHandler(st, blsKey)
+	isHolder := func(objectID [32]byte, replication uint16) bool { return true }
+	handler := NewHandler(st, blsKey, db, isHolder)
 
 	objectID := [32]byte{0xAA, 0xBB}
 	version := uint64(9)
