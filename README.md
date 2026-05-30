@@ -115,7 +115,7 @@ go test ./test/integration/ -v -run TestSimConsensus -count=1 -timeout 5m
 go test ./test/integration/ -v -run "TestSimBootstrap/tx-validation/ATP-1.1" -count=1
 ```
 
-The full [acceptance test plan](ATP.md) documents ~417 test cases across 38 categories, covering every protocol feature, edge case, and attack vector. The integration test [architecture and coverage map](test/integration/TESTING.md) shows which ATP items are covered by which simulation.
+The full [acceptance test plan](docs/ATP.md) documents ~417 test cases across 38 categories, covering every protocol feature, edge case, and attack vector. The integration test [architecture and coverage map](test/integration/TESTING.md) shows which ATP items are covered by which simulation.
 
 ## Stack
 
@@ -123,6 +123,8 @@ The node is written in Go, pods are written in Rust and compiled to WebAssembly 
 
 ## Documentation
 
-The **[design document](WHITEPAPER.md)** covers the full architecture in detail: data model, consensus mechanism, attestation protocol, fee system, validator management, security analysis, performance projections, and a comparison with Sui, Solana, and Ethereum.
+The **[vision](docs/VISION.md)** covers why the project exists: the goal of a decentralized cloud, the properties it will not compromise, the tradeoff it accepts, and how it positions against ICP, Sui, Solana, and Ethereum.
 
-The **[acceptance test plan](ATP.md)** is an exhaustive list of ~417 test cases across 38 categories, covering every protocol feature, security mechanism, edge case, and attack vector.
+The **[design document](docs/WHITEPAPER.md)** covers how it works: object model, consensus, attestation, execution sharding, fee system, validator management, and security analysis.
+
+The **[acceptance test plan](docs/ATP.md)** is an exhaustive list of ~417 test cases across 38 categories, covering every protocol feature, security mechanism, edge case, and attack vector.
