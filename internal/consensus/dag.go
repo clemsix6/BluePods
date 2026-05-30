@@ -429,6 +429,11 @@ func (d *DAG) Epoch() uint64 {
 	return d.currentEpoch
 }
 
+// EpochLength returns the number of rounds per epoch (0 when epochs are disabled).
+func (d *DAG) EpochLength() uint64 {
+	return d.epochLength
+}
+
 // EpochHoldersCount returns the number of validators in the frozen epoch set.
 // Falls back to the active validator count if epochs are not initialized.
 func (d *DAG) EpochHoldersCount() int {

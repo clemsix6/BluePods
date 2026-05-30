@@ -54,9 +54,14 @@ func (n *Node) GossipTx(tx []byte) {
 }
 
 // setupRequestHandlers configures bidirectional request handlers.
+// Dispatch order is load-bearing: explicit attestation and client tags are
+// checked before the snapshot heuristic (which has no tag and matches on
+// RequestId() > 0), so a tagged client message can never be misrouted.
 func (n *Node) setupRequestHandlers() {
+	n.setupValidatorPredicate()
+
 	n.network.OnRequest(func(peer *network.Peer, data []byte) ([]byte, error) {
-		// Handle attestation requests
+		// Handle attestation requests (tags 0x01-0x03)
 		if aggregation.IsAttestationRequest(data) {
 			if n.attHandler == nil {
 				return nil, fmt.Errorf("no attestation handler")
@@ -64,7 +69,12 @@ func (n *Node) setupRequestHandlers() {
 			return n.attHandler.HandleRequest(peer, data)
 		}
 
-		// Handle snapshot requests
+		// Handle client-facing messages (explicit tags >= 0x04)
+		if network.IsClientMessage(data) {
+			return n.handleClientMessage(data)
+		}
+
+		// Handle snapshot requests (untagged FlatBuffers, RequestId() > 0)
 		if sync.IsSnapshotRequest(data) {
 			if n.snapManager == nil {
 				return nil, fmt.Errorf("no snapshot manager")
@@ -73,6 +83,25 @@ func (n *Node) setupRequestHandlers() {
 		}
 
 		return nil, fmt.Errorf("unknown request type")
+	})
+}
+
+// setupValidatorPredicate injects the connection-classification test into the
+// network layer. A connection presenting a certificate whose Ed25519 public key
+// is in the validator set joins the trusted mesh; every other connection is
+// served in the ephemeral, rate-limited client tier. Before the DAG exists
+// (early sync), it accepts any cert-presenting peer so mesh formation is not
+// blocked.
+func (n *Node) setupValidatorPredicate() {
+	n.network.SetValidatorPredicate(func(pubkey ed25519.PublicKey) bool {
+		if n.dag == nil {
+			return true
+		}
+
+		var h consensus.Hash
+		copy(h[:], pubkey)
+
+		return n.dag.ValidatorSet().Contains(h)
 	})
 }
 

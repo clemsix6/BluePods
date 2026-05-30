@@ -61,6 +61,11 @@ type Node struct {
 	onRequest    func(*Peer, []byte) ([]byte, error) // onRequest handles bidirectional request/response
 	handlersMu   sync.RWMutex                        // handlersMu protects event handlers
 
+	isValidator   func(ed25519.PublicKey) bool // isValidator classifies a peer cert as a mesh validator
+	isValidatorMu sync.RWMutex                 // isValidatorMu protects isValidator
+
+	clientGate *clientGate // clientGate enforces per-IP ingress limits on ephemeral clients
+
 	ctx    context.Context    // ctx is the node's context
 	cancel context.CancelFunc // cancel cancels the node's context
 	wg     sync.WaitGroup     // wg waits for goroutines to finish
@@ -87,8 +92,11 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		ClientAuth:         tls.RequireAnyClientCert,
+		Certificates: []tls.Certificate{cert},
+		// RequestClientCert (not RequireAnyClientCert) lets certless clients
+		// connect: mesh validators still present a cert and are classified as
+		// peers, while clients connect anonymously into the ephemeral tier.
+		ClientAuth:         tls.RequestClientCert,
 		InsecureSkipVerify: true, // We verify the public key manually
 		NextProtos:         []string{alpnProtocol},
 	}
@@ -111,7 +119,13 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("bind UDP socket: %w", err)
 	}
 
-	transport := &quic.Transport{Conn: udpConn}
+	transport := &quic.Transport{
+		Conn: udpConn,
+		// VerifySourceAddress forces every unvalidated source through a QUIC
+		// Retry round-trip before any connection work, proving it owns a
+		// routable address and eliminating spoofed-source amplification.
+		VerifySourceAddress: func(net.Addr) bool { return true },
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -126,6 +140,7 @@ func NewNode(cfg Config) (*Node, error) {
 		knownAddrs:     make(map[string]string),
 		reconnectDelay: reconnectDelay,
 		dedup:          NewDedup(),
+		clientGate:     newClientGate(),
 		ctx:            ctx,
 		cancel:         cancel,
 	}, nil
@@ -305,6 +320,40 @@ func (n *Node) OnRequest(fn func(*Peer, []byte) ([]byte, error)) {
 	n.handlersMu.Unlock()
 }
 
+// SetValidatorPredicate injects the test that classifies an incoming connection
+// as a mesh validator. The network layer has no validator set of its own; the
+// predicate (wired from the node) reports whether a presented certificate's
+// derived public key belongs to the validator set. A connection that fails the
+// predicate (or presents no certificate) is served in the ephemeral client tier.
+func (n *Node) SetValidatorPredicate(fn func(ed25519.PublicKey) bool) {
+	n.isValidatorMu.Lock()
+	n.isValidator = fn
+	n.isValidatorMu.Unlock()
+}
+
+// isValidatorConn reports whether a connection should join the trusted mesh.
+// A connection that presents no certificate is always an ephemeral client.
+// When a predicate is set, the certificate's derived public key must satisfy
+// it. When no predicate is set, any cert-presenting connection is treated as a
+// mesh peer, preserving the legacy behavior for the bare network layer (the
+// production node always injects the real predicate via SetValidatorPredicate).
+func (n *Node) isValidatorConn(conn *quic.Conn) bool {
+	pubKey, err := extractPublicKey(conn.ConnectionState().TLS)
+	if err != nil {
+		return false
+	}
+
+	n.isValidatorMu.RLock()
+	fn := n.isValidator
+	n.isValidatorMu.RUnlock()
+
+	if fn == nil {
+		return true
+	}
+
+	return fn(pubKey)
+}
+
 // Close stops the node and closes all connections.
 func (n *Node) Close() error {
 	n.cancel()
@@ -345,7 +394,16 @@ func (n *Node) acceptLoop() {
 }
 
 // handleIncoming handles an incoming connection.
+// It classifies the connection before setupPeer (which errors on an empty peer
+// certificate): a connection that presents a validator certificate joins the
+// trusted mesh, every other connection is served in the ephemeral client tier
+// and never touches the peer map, the known-address map, or reconnection.
 func (n *Node) handleIncoming(conn *quic.Conn) {
+	if !n.isValidatorConn(conn) {
+		n.handleClientConn(conn)
+		return
+	}
+
 	peer, err := n.setupPeer(conn, conn.RemoteAddr().String())
 	if err != nil {
 		conn.CloseWithError(1, "setup failed")
