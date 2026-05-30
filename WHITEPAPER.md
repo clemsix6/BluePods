@@ -10,33 +10,7 @@ This document describes the architecture, the reasoning behind key design decisi
 
 ---
 
-## 1. Introduction
-
-### The Scalability Trilemma in Practice
-
-Most Layer 1 blockchains make a fundamental tradeoff between throughput, decentralization, and state management:
-
-- **Ethereum** achieves strong decentralization but every validator must store and process the entire global state, capping throughput at roughly 15-30 TPS on L1.
-- **Solana** achieves high throughput (thousands of TPS) through a leader-based pipeline, but the leader becomes a performance bottleneck and hardware requirements limit validator participation.
-- **Sui** introduces an object-oriented model that enables parallel execution of non-conflicting transactions, but still relies on all validators processing all transactions.
-
-The common thread is that scaling typically requires either trusting fewer validators (centralization) or offloading work to Layer 2 solutions (complexity).
-
-### A Different Approach
-
-BluePods takes a different path: instead of having every validator process every transaction, it splits the workload across the validator set. Each object in the network has a defined set of holders — validators responsible for storing it, attesting to its state, and executing transactions that modify it. A simple transfer between two users only involves the 10-50 holders of the objects involved, not the entire network.
-
-This is made possible by three design choices working together:
-
-1. **Object-oriented state**: the network state is composed of independent objects, each with its own version, owner, and replication factor. There is no global state tree to synchronize.
-2. **DAG consensus for ordering**: a leaderless directed acyclic graph determines transaction ordering and finality, without requiring every validator to execute every transaction.
-3. **Direct attestation**: instead of broadcasting votes through the entire network, an aggregator contacts object holders directly over persistent QUIC connections, collecting cryptographic proofs in a single round-trip.
-
-The result is a system where adding more validators increases the network's total capacity rather than adding overhead. The tradeoff is increased complexity in managing distributed state — a tradeoff this document explores in detail.
-
----
-
-## 2. Design Principles
+## 1. Design Principles
 
 These are the assumptions that drive every design decision in BluePods. Some are obvious in retrospect, others were only clear after trying the alternatives.
 
@@ -52,7 +26,7 @@ These are the assumptions that drive every design decision in BluePods. Some are
 
 ---
 
-## 3. Data Model
+## 2. Data Model
 
 ### Objects
 
@@ -94,11 +68,11 @@ A transaction declares its object dependencies through two lists:
 - **ReadRefs**: objects read but not modified. Their version is checked but not incremented.
 - **MutableRefs**: objects that may be modified. Their version is incremented upon success.
 
-A transaction may reference up to 40 objects total across both lists. References can use either a 32-byte object ID or a human-readable domain name (see Section 4). Domain references are resolved at execution time and are exempt from ownership validation on MutableRefs, enabling shared-access patterns.
+A transaction may reference up to 40 objects total across both lists. References can use either a 32-byte object ID or a human-readable domain name (see Section 3). Domain references are resolved at execution time and are exempt from ownership validation on MutableRefs, enabling shared-access patterns.
 
 ---
 
-## 4. Domain Name System
+## 3. Domain Name System
 
 The network provides a protocol-level naming system that maps human-readable identifiers to object IDs. Instead of referencing `0x7a3f8b2c...`, developers and users can use names like `system.validators` or `myapp.config`.
 
@@ -118,7 +92,7 @@ A domain can be updated to point to a different object, or deleted entirely, by 
 
 ---
 
-## 5. Storage Distribution
+## 4. Storage Distribution
 
 ### Rendezvous Hashing
 
@@ -143,7 +117,7 @@ Applications choose the appropriate factor based on their availability requireme
 
 ---
 
-## 6. Consensus
+## 5. Consensus
 
 ### The DAG Structure
 
@@ -185,7 +159,7 @@ When the network starts or new validators join, a grace period relaxes the quoru
 
 ---
 
-## 7. Attestation and Aggregation
+## 6. Attestation and Aggregation
 
 ### The Problem with Broadcast Voting
 
@@ -219,7 +193,7 @@ Transactions involving only singletons skip the entire attestation phase. Since 
 
 ---
 
-## 8. Transaction Lifecycle
+## 7. Transaction Lifecycle
 
 A complete transaction follows these stages from submission to finality:
 
@@ -263,7 +237,7 @@ When a validator becomes a new holder of an existing object (due to an epoch cha
 
 ---
 
-## 9. Execution Model: Pods
+## 8. Execution Model: Pods
 
 ### WASM Runtime
 
@@ -332,7 +306,7 @@ Coins follow a minimal structure: a single `balance` field of type uint64, seria
 
 ---
 
-## 10. Fee System
+## 9. Fee System
 
 ### Design Rationale
 
@@ -404,7 +378,7 @@ Gas coin modifications are **implicit protocol operations**: they change the bal
 
 ---
 
-## 11. Validator Management
+## 10. Validator Management
 
 ### Epochs
 
@@ -445,7 +419,7 @@ For now, stake is equal across all validators (1 per validator). Proper stake-we
 
 ---
 
-## 12. Network Architecture
+## 11. Network Architecture
 
 ### QUIC Mesh
 
@@ -491,7 +465,7 @@ Snapshots are created every 10 seconds. A 2-second delay after genesis prevents 
 
 ---
 
-## 13. Security Analysis
+## 12. Security Analysis
 
 ### Object Attestation Security
 
@@ -527,7 +501,7 @@ As a safety note: arithmetic overflow in fee computation is handled through `saf
 
 ---
 
-## 14. Scaling Characteristics
+## 13. Scaling Characteristics
 
 Fair warning: nothing in this section is benchmarked. These are back-of-the-envelope estimates based on the protocol design. Real performance will depend on network conditions, hardware, geography, and workload. Proper benchmarking on a distributed testnet is future work — for now, this is just reasoning about what the architecture should allow.
 
@@ -549,34 +523,7 @@ Object storage depends on holder assignments. A validator's share of stored obje
 
 ---
 
-## 15. Comparison with Existing Systems
-
-### vs. Sui
-
-BluePods owes a lot to Sui — the object-oriented data model and optimistic versioning are directly inspired by it. The key divergence is in **execution distribution**: Sui requires all validators to execute all transactions and store all objects, while BluePods shards both storage and execution across holders.
-
-Sui compensates through parallel execution of non-conflicting transactions on each validator. BluePods achieves parallelism by distributing different transactions to different subsets of validators entirely. To be honest, Sui's model is simpler to reason about. BluePods' model should scale better with validator count, but it adds real complexity with the attestation mechanism — whether that tradeoff is worth it is something only a production deployment can answer.
-
-### vs. Solana
-
-Solana achieves high throughput through a leader-based pipeline with Proof of History for clock synchronization. BluePods eliminates the leader entirely through a DAG-based consensus where all validators produce blocks in parallel. This removes the single-point bottleneck but introduces the complexity of DAG-based ordering and commit rules.
-
-Solana's hardware requirements limit the validator set in practice. BluePods targets large validator sets by ensuring each validator only processes a fraction of the total workload — though the full QUIC mesh has its own hardware cost, so "more accessible" is relative.
-
-### vs. Ethereum
-
-Ethereum's account-based model with a global state trie requires every validator to process every transaction against the complete state. BluePods' object model decouples unrelated state, enabling horizontal scaling. The honest downside: BluePods does not support the rich cross-contract composability that Ethereum's global state enables. Complex DeFi compositions that touch many objects will hit the 40-reference cap per transaction. Whether this matters depends on the use case — simple transfers and NFTs work fine, but replicating Uniswap-style AMMs with deep routing would require a different approach.
-
-### What BluePods Borrows
-
-- **From Sui**: the object-oriented state model with version-based conflict detection.
-- **From Solana**: the philosophy of dedicated gas payment separate from business inputs, and simplicity in the fee model.
-- **From Ethereum EIP-1559**: fee burning for anti-manipulation and deflationary pressure.
-- **Original to BluePods**: the `replication_ratio`-based fee model that creates a natural equilibrium between network size and per-validator revenue, the direct attestation mechanism replacing broadcast voting, and the execution sharding where compute follows data.
-
----
-
-## 16. Open Problems
+## 14. Open Problems
 
 These are the problems I know about and have not solved yet:
 
@@ -592,11 +539,11 @@ These are the problems I know about and have not solved yet:
 
 ---
 
-## 17. Conclusion
+## 15. Conclusion
 
 BluePods is built on a simple bet: that horizontal scaling of a Layer 1 blockchain is possible if you stop requiring every validator to do everything. Split the state into independent objects, let a leaderless DAG handle ordering, and route execution to the validators that hold the data. Adding validators should spread the work, not duplicate it.
 
-Does it actually work at scale? The prototype says yes for the core protocol — consensus, attestation, execution, fee deduction, storage sharding, domain naming, and validator management all function. But there is a long list of things not built yet (Section 16), and real performance numbers only come from a distributed testnet that does not exist yet.
+Does it actually work at scale? The prototype says yes for the core protocol — consensus, attestation, execution, fee deduction, storage sharding, domain naming, and validator management all function. But there is a long list of things not built yet (Section 14), and real performance numbers only come from a distributed testnet that does not exist yet.
 
 The tradeoffs are real. Distributed state is harder to manage than global state. The 40-reference limit constrains what transactions can do. Fees are based on declared gas, not actual consumption. These are choices made for specific reasons explained in this document — but they have costs, and some of them might turn out to be wrong.
 
