@@ -6,6 +6,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/podvm"
 	"BluePods/internal/state"
 	"BluePods/internal/storage"
@@ -102,8 +103,9 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// Verify hash
-	expectedHash := ComputeObjectHash(objData, version)
+	// Verify hash over the object's content bytes (canonical form)
+	fbObj := types.GetRootAsObject(objData, 0)
+	expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), version)
 	if resp.Hash != expectedHash {
 		t.Error("hash mismatch")
 	}
@@ -245,31 +247,5 @@ func TestHandleRequest_InvalidRequest(t *testing.T) {
 	_, err := handler.HandleRequest(nil, []byte{0x00, 0x01, 0x02})
 	if err == nil {
 		t.Error("expected error for invalid request")
-	}
-}
-
-// TestComputeObjectHash tests hash computation consistency.
-func TestComputeObjectHash(t *testing.T) {
-	content := []byte("test content for hashing")
-	version := uint64(42)
-
-	hash1 := ComputeObjectHash(content, version)
-	hash2 := ComputeObjectHash(content, version)
-
-	// Same input should produce same hash
-	if hash1 != hash2 {
-		t.Error("hash not deterministic")
-	}
-
-	// Different version should produce different hash
-	hash3 := ComputeObjectHash(content, version+1)
-	if hash1 == hash3 {
-		t.Error("different version should produce different hash")
-	}
-
-	// Different content should produce different hash
-	hash4 := ComputeObjectHash([]byte("different content"), version)
-	if hash1 == hash4 {
-		t.Error("different content should produce different hash")
 	}
 }

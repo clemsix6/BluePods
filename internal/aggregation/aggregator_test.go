@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 	"BluePods/internal/network"
 	"BluePods/internal/types"
@@ -154,7 +155,7 @@ func TestAggregatorWithObjects(t *testing.T) {
 
 	objID := [32]byte{0x01, 0x02, 0x03}
 	testObjData := buildTestObject(objID, 3) // replication=3
-	testObjHash := ComputeObjectHash(testObjData, types.GetRootAsObject(testObjData, 0).Version())
+	testObjHash := attest.ComputeObjectHash(types.GetRootAsObject(testObjData, 0).ContentBytes(), types.GetRootAsObject(testObjData, 0).Version())
 
 	for i := 1; i < len(nodes); i++ {
 		idx := i
@@ -227,7 +228,7 @@ func TestAggregatorSingleton(t *testing.T) {
 
 	objID := [32]byte{0x01}
 	singletonObjData := buildTestObject(objID, 0) // singleton
-	singletonObjHash := ComputeObjectHash(singletonObjData, types.GetRootAsObject(singletonObjData, 0).Version())
+	singletonObjHash := attest.ComputeObjectHash(types.GetRootAsObject(singletonObjData, 0).ContentBytes(), types.GetRootAsObject(singletonObjData, 0).Version())
 
 	for i := 1; i < len(nodes); i++ {
 		idx := i
@@ -292,9 +293,9 @@ func TestAggregatorMixedObjects(t *testing.T) {
 
 	// Pre-build objects and compute hashes
 	stdObjData := buildTestObject(standardObj, 3)
-	stdObjHash := ComputeObjectHash(stdObjData, types.GetRootAsObject(stdObjData, 0).Version())
+	stdObjHash := attest.ComputeObjectHash(types.GetRootAsObject(stdObjData, 0).ContentBytes(), types.GetRootAsObject(stdObjData, 0).Version())
 	singletonObjData := buildTestObject(singletonObj, 0)
-	singletonObjHash := ComputeObjectHash(singletonObjData, types.GetRootAsObject(singletonObjData, 0).Version())
+	singletonObjHash := attest.ComputeObjectHash(types.GetRootAsObject(singletonObjData, 0).ContentBytes(), types.GetRootAsObject(singletonObjData, 0).Version())
 
 	for i := 1; i < len(nodes); i++ {
 		idx := i

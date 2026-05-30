@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
-
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
-	"BluePods/internal/types"
 )
 
 // initAggregation initializes the aggregation subsystem.
@@ -54,8 +50,12 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.dag.TrackObject(id, version, replication, fees)
 	})
 
-	// Set up ATX proof verifier
-	n.dag.SetATXProofVerifier(n.buildATXVerifier(validators))
+	// Set up ATX proof verifier. Holders are resolved from the DAG's frozen
+	// epoch snapshot so the verifier always uses the current epoch's set.
+	atxVerifier := aggregation.NewATXVerifier(func() *consensus.ValidatorSet {
+		return n.dag.EpochHolders()
+	})
+	n.dag.SetATXProofVerifier(atxVerifier.Verify)
 
 	// Set up fee system
 	n.initFeeSystem(validators)
@@ -100,105 +100,6 @@ func (n *Node) buildIsHolder(myPubkey consensus.Hash) func(objectID [32]byte, re
 
 		return false
 	}
-}
-
-// buildATXVerifier returns a closure that verifies all BLS quorum proofs in an ATX.
-func (n *Node) buildATXVerifier(validators *consensus.ValidatorSet) func(*types.AttestedTransaction) error {
-	return func(atx *types.AttestedTransaction) error {
-		var proof types.QuorumProof
-
-		for i := 0; i < atx.ProofsLength(); i++ {
-			if !atx.Proofs(&proof, i) {
-				return fmt.Errorf("cannot read proof %d", i)
-			}
-
-			if err := n.verifySingleProof(atx, &proof, validators); err != nil {
-				return fmt.Errorf("proof %d:\n%w", i, err)
-			}
-		}
-
-		return nil
-	}
-}
-
-// verifySingleProof verifies one QuorumProof against the ATX objects and validator BLS keys.
-func (n *Node) verifySingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof, validators *consensus.ValidatorSet) error {
-	// Find the matching object in the ATX
-	objIdx := findATXObjectIndex(atx, proof.ObjectIdBytes())
-	if objIdx < 0 {
-		return fmt.Errorf("object not found in ATX")
-	}
-
-	var obj types.Object
-	if !atx.Objects(&obj, objIdx) {
-		return fmt.Errorf("cannot read object at index %d", objIdx)
-	}
-
-	// Recompute expected hash from object data
-	hash := aggregation.ComputeObjectHash(obj.ContentBytes(), obj.Version())
-
-	// Compute holders using rendezvous
-	var objectID [32]byte
-	copy(objectID[:], proof.ObjectIdBytes())
-	holders := n.rendezvous.ComputeHolders(objectID, int(obj.Replication()))
-
-	// Extract signer BLS keys from bitmap
-	blsKeys, signerCount := extractSignerBLSKeys(proof.SignerBitmapBytes(), holders, validators)
-	if signerCount == 0 {
-		return fmt.Errorf("no signers in bitmap")
-	}
-
-	// Verify quorum
-	quorum := aggregation.QuorumSize(len(holders))
-	if signerCount < quorum {
-		return fmt.Errorf("insufficient signers: got %d, need %d", signerCount, quorum)
-	}
-
-	// Verify aggregated BLS signature
-	if !aggregation.VerifyAggregated(proof.BlsSignatureBytes(), hash[:], blsKeys) {
-		return fmt.Errorf("aggregated BLS signature invalid")
-	}
-
-	return nil
-}
-
-// findATXObjectIndex returns the index of the object with the given ID in the ATX, or -1.
-func findATXObjectIndex(atx *types.AttestedTransaction, objectID []byte) int {
-	var obj types.Object
-
-	for i := 0; i < atx.ObjectsLength(); i++ {
-		if !atx.Objects(&obj, i) {
-			continue
-		}
-
-		if bytes.Equal(obj.IdBytes(), objectID) {
-			return i
-		}
-	}
-
-	return -1
-}
-
-// extractSignerBLSKeys maps a signer bitmap to BLS public keys via rendezvous holders.
-// Returns the BLS keys and the number of signers.
-func extractSignerBLSKeys(bitmap []byte, holders []consensus.Hash, validators *consensus.ValidatorSet) ([][]byte, int) {
-	indices := aggregation.ParseSignerBitmap(bitmap)
-	var keys [][]byte
-
-	for _, idx := range indices {
-		if idx >= len(holders) {
-			continue
-		}
-
-		info := validators.Get(holders[idx])
-		if info == nil || info.BLSPubkey == [48]byte{} {
-			continue
-		}
-
-		keys = append(keys, info.BLSPubkey[:])
-	}
-
-	return keys, len(keys)
 }
 
 // scanObjectsForEpoch performs a background scan after epoch transitions.

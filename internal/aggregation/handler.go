@@ -1,14 +1,12 @@
 package aggregation
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/network"
 	"BluePods/internal/state"
 	"BluePods/internal/types"
-
-	"github.com/zeebo/blake3"
 )
 
 // Handler processes attestation requests from other validators.
@@ -48,7 +46,8 @@ func (h *Handler) processRequest(req *AttestationRequest) ([]byte, error) {
 		return h.buildNegativeResponse(reasonWrongVersion), nil
 	}
 
-	hash := ComputeObjectHash(objectData, req.Version)
+	// Sign over the canonical content-bytes hash so signer and verifier agree.
+	hash := attest.ComputeObjectHash(fbObj.ContentBytes(), req.Version)
 	sig := h.blsKey.Sign(hash[:])
 
 	return h.buildPositiveResponse(objectData, hash, sig, req.WantFull), nil
@@ -80,19 +79,4 @@ func (h *Handler) buildNegativeResponse(reason byte) []byte {
 	}
 
 	return EncodeNegativeResponse(resp)
-}
-
-// ComputeObjectHash computes BLAKE3(content || version) for signing.
-func ComputeObjectHash(content []byte, version uint64) [32]byte {
-	hasher := blake3.New()
-	hasher.Write(content)
-
-	var versionBytes [8]byte
-	binary.BigEndian.PutUint64(versionBytes[:], version)
-	hasher.Write(versionBytes[:])
-
-	var hash [32]byte
-	hasher.Sum(hash[:0])
-
-	return hash
 }

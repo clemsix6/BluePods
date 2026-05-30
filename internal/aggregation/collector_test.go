@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 	"BluePods/internal/network"
 	"BluePods/internal/types"
@@ -106,7 +107,7 @@ func TestCollectorBasic(t *testing.T) {
 	// Pre-build the object data and compute the real hash for all handlers
 	testObjData := buildTestObject(objID, 3) // replication=3
 	fbObj := types.GetRootAsObject(testObjData, 0)
-	objHash := ComputeObjectHash(testObjData, fbObj.Version())
+	objHash := attest.ComputeObjectHash(fbObj.ContentBytes(), fbObj.Version())
 
 	// Set up handlers - return object with replication=3
 	for i := 1; i < len(nodes); i++ {
@@ -180,7 +181,7 @@ func TestCollectorSingleton(t *testing.T) {
 
 	// Pre-build singleton object and compute hash
 	singletonData := buildTestObject(objID, 0) // singleton
-	singletonHash := ComputeObjectHash(singletonData, types.GetRootAsObject(singletonData, 0).Version())
+	singletonHash := attest.ComputeObjectHash(types.GetRootAsObject(singletonData, 0).ContentBytes(), types.GetRootAsObject(singletonData, 0).Version())
 
 	// Set up handlers - return object with replication=0 (singleton)
 	for i := 1; i < len(nodes); i++ {
@@ -245,7 +246,7 @@ func TestCollectorQuorum(t *testing.T) {
 
 	objID := [32]byte{0x03}
 	quorumTestObjData := buildTestObject(objID, 3)
-	quorumTestHash := ComputeObjectHash(quorumTestObjData, types.GetRootAsObject(quorumTestObjData, 0).Version())
+	quorumTestHash := attest.ComputeObjectHash(types.GetRootAsObject(quorumTestObjData, 0).ContentBytes(), types.GetRootAsObject(quorumTestObjData, 0).Version())
 
 	respondersCount := 0
 
@@ -669,7 +670,7 @@ func TestCollectorLocalStandard(t *testing.T) {
 
 	// Compute the real hash of the local object for matching
 	localObjData := buildTestObject(objID, 3)
-	localObjHash := ComputeObjectHash(localObjData, types.GetRootAsObject(localObjData, 0).Version())
+	localObjHash := attest.ComputeObjectHash(types.GetRootAsObject(localObjData, 0).ContentBytes(), types.GetRootAsObject(localObjData, 0).Version())
 
 	// Track requests - none should request WantFull=true
 	var wantFullRequests atomic.Int32

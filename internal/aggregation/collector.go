@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 	"BluePods/internal/network"
 	"BluePods/internal/state"
@@ -399,7 +400,8 @@ func (c *Collector) finalizeResult(
 
 	// Verify object data matches the attested hash
 	if len(result.ObjectData) > 0 && len(positives) > 0 {
-		expectedHash := ComputeObjectHash(result.ObjectData, result.Version)
+		fbObj := types.GetRootAsObject(result.ObjectData, 0)
+		expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), result.Version)
 		if expectedHash != positives[0].Hash {
 			result.Error = fmt.Errorf("object data does not match attested hash")
 			return result
