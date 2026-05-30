@@ -1,7 +1,6 @@
 # BluePods status
 
-Last updated: 2026-05-29
-Scope: the gap between the design and the code. What works, what is partial, what is missing, and known spec-code mismatches. For the intended design, see WHITEPAPER.md.
+This is the gap between the design in WHITEPAPER.md and the code: what works, what is partial, what is missing, and the known spec-code mismatches.
 
 ## Done
 

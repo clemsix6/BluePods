@@ -1,8 +1,5 @@
 # BluePods vision
 
-Last updated: 2026-05-29
-Scope: why this project exists, what it refuses to compromise, and how it positions against other systems. For how it works, see WHITEPAPER.md. For current state, see STATUS.md.
-
 ## What this is
 
 BluePods is a decentralized cloud. The goal is to host arbitrary backends, written as WASM modules called pods, on a subset of nodes rather than on every node in the network. The native token exists, but it is a means, not the point. The point is to be a place where someone can deploy a backend and its state, and have the network run it, store it, and keep it consistent, without that backend living on all machines.

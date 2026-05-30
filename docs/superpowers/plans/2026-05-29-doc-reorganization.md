@@ -29,7 +29,7 @@
 
 Content mapping from the current whitepaper (`WHITEPAPER.md`, section numbers as of today):
 
-- Section 1 Introduction (Scalability Trilemma, A Different Approach), Section 2 Design Principles -> VISION (motivation and principles). The whitepaper keeps only a one-paragraph statement of what the system is.
+- Section 1 Introduction (Scalability Trilemma, A Different Approach) -> VISION (motivation). The whitepaper keeps a one-paragraph statement of what the system is. Section 2 Design Principles stays in the whitepaper; it is design philosophy, not project-level why.
 - Section 14 Scaling Characteristics: the bandwidth bet and the atomicity-over-scaling tradeoff -> VISION. The factual latency and storage-cost analysis stays in the whitepaper.
 - Section 15 Comparison with Existing Systems -> VISION as positioning (vs Sui, Solana, Ethereum). Add a new "vs ICP" entry; ICP is absent from the current docs and must be written fresh.
 - Section 16 Open Problems -> STATUS (to do).
@@ -193,18 +193,13 @@ The whitepaper is still at the repository root for this task; it moves in Task 5
 **Files:**
 - Modify: `WHITEPAPER.md`
 
-- [ ] **Step 1: Add the header**
+- [ ] **Step 1: Confirm no metadata header**
 
-Add at the top of `WHITEPAPER.md`, under the title:
-
-```markdown
-Last updated: 2026-05-29
-Scope: how the system works (the target design). For why it exists and how it compares to others, see VISION.md. For what is actually implemented, see STATUS.md.
-```
+The whitepaper gets no dated or scope header. The date comes from git, and cross-references between docs live in the README index. Leave the title and abstract as the opening.
 
 - [ ] **Step 2: Remove the migrated sections**
 
-Delete Section 1 (Introduction) down to a single one-paragraph statement of what the system is, delete Section 2 (Design Principles), delete Section 15 (Comparison with Existing Systems), and delete Section 16 (Open Problems). From Section 14, remove the bandwidth-bet and tradeoff framing, keeping the factual latency and storage-cost analysis. Renumber remaining sections.
+Reduce Section 1 (Introduction) to a single one-paragraph statement of what the system is. Keep Section 2 (Design Principles): it is design philosophy and stays. Delete Section 15 (Comparison with Existing Systems) and Section 16 (Open Problems). From Section 14, remove the bandwidth-bet and tradeoff framing, keeping the factual latency and storage-cost analysis. Renumber remaining sections.
 
 - [ ] **Step 3: Disambiguate "sharding"**
 
@@ -216,12 +211,10 @@ Where the whitepaper states something wrong in absolute terms (a wrong constant,
 
 - [ ] **Step 5: Verify the purge**
 
-Run: `grep -c 'vs. Sui\|Open Problems\|Design Principles' WHITEPAPER.md`
+Run: `grep -c 'vs. Sui\|## 16. Open Problems' WHITEPAPER.md`
 Expected: `0`.
 Run: `grep -c 'execution sharding' WHITEPAPER.md`
 Expected: `1` or more.
-Run: `grep -c 'Last updated:' WHITEPAPER.md`
-Expected: `1`.
 
 - [ ] **Step 6: Commit**
 
@@ -342,4 +335,4 @@ git commit -m "[-] Delete obsolete bluepods_v2.md (superseded by docs/ pillars)"
 
 - [ ] Run: `git log --oneline docs-reorganization` and confirm the sequence of commits matches the seven tasks.
 - [ ] Run: `grep -rln 'bluepods_v2\|pods/ARCHITECTURE.md\|BluePods-Node' . --include='*.md' | grep -v 'docs/superpowers/'` and confirm no matches.
-- [ ] Open `docs/VISION.md`, `docs/WHITEPAPER.md`, `docs/STATUS.md` and confirm each has the `Last updated` header and a scope line, and that no topic is covered in two pillars.
+- [ ] Open `docs/VISION.md`, `docs/WHITEPAPER.md`, `docs/STATUS.md` and confirm no topic is covered in two pillars and that each opens cleanly without a metadata header.
