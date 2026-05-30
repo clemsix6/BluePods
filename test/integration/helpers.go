@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeebo/blake3"
+
 	"BluePods/client"
 )
 
@@ -39,19 +41,20 @@ func (sb *safeBuffer) String() string {
 
 // Node represents a running BluePods node process.
 type Node struct {
-	index    int               // index is the node's position in the cluster
-	cmd      *exec.Cmd         // cmd is the running process
-	httpAddr string            // httpAddr is the HTTP API address
-	quicAddr string            // quicAddr is the QUIC network address
-	dataDir  string            // dataDir is the node's data directory
-	keyPath  string            // keyPath is the node's private key file
-	stdout   *safeBuffer       // stdout captures process output
-	stderr   *safeBuffer       // stderr captures process errors
+	index    int                // index is the node's position in the cluster
+	cmd      *exec.Cmd          // cmd is the running process
+	addr     string             // addr is the node's QUIC client/mesh address
+	quicAddr string             // quicAddr is the QUIC network address
+	dataDir  string             // dataDir is the node's data directory
+	keyPath  string             // keyPath is the node's private key file
+	stdout   *safeBuffer        // stdout captures process output
+	stderr   *safeBuffer        // stderr captures process errors
 	cancel   context.CancelFunc // cancel stops the process
 }
 
-// HTTPAddr returns the node's HTTP address.
-func (n *Node) HTTPAddr() string { return n.httpAddr }
+// Addr returns the node's QUIC client/mesh address, used for all client and
+// operational queries (the node is QUIC-only).
+func (n *Node) Addr() string { return n.addr }
 
 // IsRunning checks if the node process is alive and started successfully.
 func (n *Node) IsRunning() bool {
@@ -153,12 +156,13 @@ func WithTransitionBuffer(n int) ClusterOption {
 
 // Cluster manages a group of nodes for a simulation.
 type Cluster struct {
-	t          *testing.T  // t is the test context
-	nodes      []*Node     // nodes is the list of running nodes
-	binaryPath string      // binaryPath is the compiled node binary
-	systemPod  string      // systemPod is the path to the system pod WASM
-	testDir    string      // testDir is the temporary directory for node data
-	opts       clusterOpts // opts is the cluster configuration
+	t           *testing.T  // t is the test context
+	nodes       []*Node     // nodes is the list of running nodes
+	binaryPath  string      // binaryPath is the compiled node binary
+	systemPod   string      // systemPod is the path to the system pod WASM
+	systemPodID [32]byte    // systemPodID is the system pod ID (blake3 of the WASM)
+	testDir     string      // testDir is the temporary directory for node data
+	opts        clusterOpts // opts is the cluster configuration
 }
 
 // NewCluster builds the binary, starts N nodes, and registers cleanup.
@@ -194,11 +198,14 @@ func NewCluster(t *testing.T, size int, options ...ClusterOption) *Cluster {
 		opts.transitionBuffer = 100
 	}
 
+	systemPod := findSystemPod(t)
+
 	c := &Cluster{
-		t:          t,
-		binaryPath: buildBinary(t),
-		systemPod:  findSystemPod(t),
-		opts:       opts,
+		t:           t,
+		binaryPath:  buildBinary(t),
+		systemPod:   systemPod,
+		systemPodID: systemPodID(t, systemPod),
+		opts:        opts,
 	}
 
 	testDir, err := os.MkdirTemp("", "bluepods_sim_*")
@@ -337,10 +344,12 @@ func (c *Cluster) verifyNodesRunning(from, to int) {
 func (c *Cluster) startNode(index int, bootstrapQUIC string, isBootstrap bool) *Node {
 	c.t.Helper()
 
+	quicAddr := fmt.Sprintf("127.0.0.1:%d", c.opts.quicBase+index)
+
 	node := &Node{
 		index:    index,
-		httpAddr: fmt.Sprintf("127.0.0.1:%d", c.opts.httpBase+index),
-		quicAddr: fmt.Sprintf("127.0.0.1:%d", c.opts.quicBase+index),
+		addr:     quicAddr,
+		quicAddr: quicAddr,
 		dataDir:  filepath.Join(c.testDir, fmt.Sprintf("node-%d", index)),
 		stdout:   &safeBuffer{},
 		stderr:   &safeBuffer{},
@@ -374,7 +383,6 @@ func (c *Cluster) startNode(index int, bootstrapQUIC string, isBootstrap bool) *
 func (c *Cluster) buildNodeArgs(node *Node, bootstrapQUIC string, isBootstrap bool) []string {
 	args := []string{
 		"--data", node.dataDir,
-		"--http", node.httpAddr,
 		"--quic", node.quicAddr,
 		"--key", node.keyPath,
 		"--system-pod", c.systemPod,
@@ -447,17 +455,20 @@ func (c *Cluster) Size() int { return len(c.nodes) }
 // Nodes returns all nodes.
 func (c *Cluster) Nodes() []*Node { return c.nodes }
 
-// Client creates a client.Client connected to a node.
+// Client creates a client.Client connected to a node over QUIC.
 func (c *Cluster) Client(nodeIndex int) *client.Client {
 	c.t.Helper()
 
-	cli, err := client.NewClient(c.nodes[nodeIndex].httpAddr)
+	cli, err := client.NewClient(c.nodes[nodeIndex].addr, c.systemPodID)
 	if err != nil {
 		c.t.Fatalf("create client for node %d: %v", nodeIndex, err)
 	}
 
 	return cli
 }
+
+// SystemPodID returns the system pod ID for the cluster's pod WASM.
+func (c *Cluster) SystemPodID() [32]byte { return c.systemPodID }
 
 // AddNodes starts additional validator nodes and appends them to the cluster.
 func (c *Cluster) AddNodes(count int) []*Node {
@@ -505,7 +516,7 @@ func (c *Cluster) waitForRoundConvergence(timeout time.Duration) {
 		allResponded := true
 
 		for _, i := range checkNodes {
-			status := QueryStatusSafe(c.nodes[i].httpAddr)
+			status := QueryStatusSafe(c.nodes[i].addr)
 			if status == nil {
 				allResponded = false
 				break
@@ -627,7 +638,7 @@ func (c *Cluster) countConvergedNodes(indices []int, expected int) int {
 			continue
 		}
 
-		status := QueryStatusSafe(node.httpAddr)
+		status := QueryStatusSafe(node.addr)
 		if status != nil && status.Validators >= expected {
 			converged++
 		}
@@ -643,7 +654,7 @@ func (c *Cluster) logNodeStates() {
 			continue
 		}
 
-		status := QueryStatusSafe(node.httpAddr)
+		status := QueryStatusSafe(node.addr)
 		if status != nil {
 			c.t.Logf("Node %d: round=%d validators=%d", i, status.Round, status.Validators)
 		} else {
@@ -659,7 +670,7 @@ func (c *Cluster) WaitForRound(round uint64, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		status := QueryStatusSafe(c.nodes[0].httpAddr)
+		status := QueryStatusSafe(c.nodes[0].addr)
 
 		if status != nil && status.Round >= round {
 			c.t.Logf("Round reached: %d (target %d)", status.Round, round)
@@ -679,7 +690,7 @@ func (c *Cluster) WaitForEpoch(epoch uint64, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		status := QueryStatusSafe(c.nodes[0].httpAddr)
+		status := QueryStatusSafe(c.nodes[0].addr)
 
 		if status != nil && status.Epoch >= epoch {
 			c.t.Logf("Epoch reached: %d (target %d)", status.Epoch, epoch)
@@ -730,6 +741,20 @@ func findSystemPod(t *testing.T) string {
 	}
 
 	return path
+}
+
+// systemPodID computes the system pod ID, which the node derives as the BLAKE3
+// hash of the pod WASM. A client needs it up front since it is not discoverable
+// before connecting.
+func systemPodID(t *testing.T, podPath string) [32]byte {
+	t.Helper()
+
+	wasm, err := os.ReadFile(podPath)
+	if err != nil {
+		t.Fatalf("read system pod %s: %v", podPath, err)
+	}
+
+	return blake3.Sum256(wasm)
 }
 
 // getProjectRoot returns the project root directory (containing go.mod).

@@ -3,7 +3,6 @@ package integration
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"net/http"
 	"testing"
 	"time"
 
@@ -245,7 +244,7 @@ func runFeeConsistencyTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 		// Coins are singletons (rep=0), so all nodes hold them
 		var balances []uint64
 		for i := 0; i < cluster.Size(); i++ {
-			nodeCli, err := client.NewClient(cluster.Node(i).HTTPAddr())
+			nodeCli, err := client.NewClient(cluster.Node(i).Addr(), cluster.SystemPodID())
 			if err != nil {
 				continue
 			}
@@ -297,7 +296,7 @@ func encodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 // during execution — the state change (transfer) does not take effect.
 func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
-	addr := cluster.Bootstrap().HTTPAddr()
+	addr := cluster.Bootstrap().Addr()
 
 	t.Run("ATP-6.1: gas coin not found rejects tx", func(t *testing.T) {
 		// Create a coin to attempt transfer
@@ -320,7 +319,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx with fake gas coin: %d (also valid)", code)
 			return
 		}
@@ -362,7 +361,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx: %d (also valid)", code)
 			return
 		}
@@ -406,7 +405,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx: %d (also valid)", code)
 			return
 		}

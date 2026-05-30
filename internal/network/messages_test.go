@@ -112,14 +112,55 @@ func TestGetValidatorsRoundTrip(t *testing.T) {
 }
 
 func TestStatusRoundTrip(t *testing.T) {
-	enc := EncodeStatusResp(&StatusResponse{Round: 123, EpochLength: 1000, Epoch: 0})
+	var pod [32]byte
+	pod[0], pod[31] = 0xAB, 0xCD
+
+	enc := EncodeStatusResp(&StatusResponse{
+		Round:         123,
+		EpochLength:   1000,
+		Epoch:         2,
+		LastCommitted: 120,
+		Validators:    5,
+		EpochHolders:  4,
+		SystemPod:     pod,
+	})
 	dec, err := DecodeStatusResp(enc)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 
-	if dec.Round != 123 || dec.EpochLength != 1000 || dec.Epoch != 0 {
+	if dec.Round != 123 || dec.EpochLength != 1000 || dec.Epoch != 2 {
 		t.Fatalf("status mismatch: %+v", dec)
+	}
+
+	if dec.LastCommitted != 120 || dec.Validators != 5 || dec.EpochHolders != 4 || dec.SystemPod != pod {
+		t.Fatalf("operational fields mismatch: %+v", dec)
+	}
+}
+
+func TestGetObjectLocalFlagRoundTrip(t *testing.T) {
+	var id [32]byte
+	id[0] = 0x7F
+
+	enc := EncodeGetObject(&GetObjectRequest{ObjectID: id, LocalOnly: true})
+	dec, err := DecodeGetObject(enc)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if dec.ObjectID != id || !dec.LocalOnly {
+		t.Fatalf("local flag mismatch: %+v", dec)
+	}
+
+	// A legacy 33-byte request decodes with LocalOnly defaulting to false.
+	legacy := []byte{MsgTagGetObject}
+	legacy = append(legacy, id[:]...)
+	decLegacy, err := DecodeGetObject(legacy)
+	if err != nil {
+		t.Fatalf("decode legacy: %v", err)
+	}
+	if decLegacy.LocalOnly {
+		t.Fatalf("legacy request should default LocalOnly to false")
 	}
 }
 
@@ -178,8 +219,8 @@ func TestDomainResolveRoundTrip(t *testing.T) {
 }
 
 func TestClientTagsDoNotCollideWithAttestation(t *testing.T) {
-	// Attestation tags are 0x01-0x03; client tags must all be >= 0x04.
-	clientTags := []byte{
+	// Attestation tags are 0x01-0x03; all client tags must be >= 0x04.
+	allTags := []byte{
 		MsgTagSubmitTx, MsgTagGetObject, MsgTagGetObjectResp,
 		MsgTagGetValidators, MsgTagGetValidatorsResp, MsgTagStatus,
 		MsgTagStatusResp, MsgTagHealth, MsgTagHealthResp,
@@ -187,12 +228,52 @@ func TestClientTagsDoNotCollideWithAttestation(t *testing.T) {
 		MsgTagDomainResolveResp, MsgTagSubmitTxResp,
 	}
 
-	for _, tag := range clientTags {
+	for _, tag := range allTags {
 		if tag < 0x04 {
 			t.Fatalf("client tag 0x%02x collides with attestation range", tag)
 		}
+	}
+
+	// Only request tags are classified as inbound client messages; response tags
+	// are produced by the node and never received as requests.
+	requestTags := []byte{
+		MsgTagSubmitTx, MsgTagGetObject, MsgTagGetValidators,
+		MsgTagStatus, MsgTagHealth, MsgTagFaucet, MsgTagDomainResolve,
+	}
+
+	for _, tag := range requestTags {
 		if !IsClientMessage([]byte{tag}) {
-			t.Fatalf("tag 0x%02x not classified as client message", tag)
+			t.Fatalf("request tag 0x%02x not classified as a client message", tag)
 		}
+	}
+
+	// A snapshot request's FlatBuffer root offset (0x0c) must not be classified
+	// as a client message, or it would be misrouted away from the snapshot path.
+	if IsClientMessage([]byte{0x0c, 0x00, 0x00, 0x00}) {
+		t.Fatal("snapshot root offset 0x0c misclassified as a client message")
+	}
+}
+
+func TestGossipTxRoundTrip(t *testing.T) {
+	body := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02}
+
+	enc := EncodeGossipTx(body)
+	if enc[0] != MsgTagGossipTx {
+		t.Fatalf("gossip-tx tag missing: got 0x%02x", enc[0])
+	}
+
+	decoded, ok := DecodeGossipTx(enc)
+	if !ok {
+		t.Fatal("DecodeGossipTx should recognize a tagged gossip transaction")
+	}
+
+	if string(decoded) != string(body) {
+		t.Fatalf("gossip-tx body mismatch: got %x, want %x", decoded, body)
+	}
+
+	// A vertex (untagged FlatBuffer, first byte is a small root offset) must not be
+	// classified as a gossiped transaction.
+	if _, ok := DecodeGossipTx([]byte{0x0c, 0x00, 0x00, 0x00}); ok {
+		t.Fatal("an untagged vertex must not decode as a gossip transaction")
 	}
 }

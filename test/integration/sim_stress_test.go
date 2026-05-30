@@ -285,7 +285,7 @@ func runEpochUnderLoadTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 		time.Sleep(stressTxWait)
 
 		// Network should still be alive
-		status := QueryStatus(t, cluster.Bootstrap().HTTPAddr())
+		status := QueryStatus(t, cluster.Bootstrap().Addr())
 		if status.Round == 0 {
 			t.Error("network stalled during epoch transitions")
 		}
@@ -294,9 +294,9 @@ func runEpochUnderLoadTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 	})
 
 	t.Run("stability: rapid round progression", func(t *testing.T) {
-		initial := QueryStatus(t, cluster.Bootstrap().HTTPAddr())
+		initial := QueryStatus(t, cluster.Bootstrap().Addr())
 		time.Sleep(15 * time.Second)
-		after := QueryStatus(t, cluster.Bootstrap().HTTPAddr())
+		after := QueryStatus(t, cluster.Bootstrap().Addr())
 
 		if after.Round <= initial.Round {
 			t.Errorf("round stalled: %d -> %d", initial.Round, after.Round)

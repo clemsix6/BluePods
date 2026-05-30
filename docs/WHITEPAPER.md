@@ -165,27 +165,25 @@ When the network starts or new validators join, a grace period relaxes the quoru
 
 In traditional BFT consensus, validators broadcast their votes to the entire network. With N validators, each vote generates N messages, and each round generates N² total messages. At 200 validators this is manageable (40,000 messages). At 2,000 validators it becomes untenable (4 million messages per round).
 
-### Direct Collection
+### Direct Collection, off-chain
 
-BluePods replaces broadcast voting with **direct collection**. When a validator receives a transaction from a user, it becomes the **aggregator** for that transaction. The aggregator contacts only the holders of the referenced objects, not the entire network, over persistent QUIC connections. With a typical replication factor of 50, this means 50 direct messages instead of thousands of broadcasts.
+BluePods replaces broadcast voting with **direct collection**, and the collection runs off-chain in a client daemon rather than on a validator. The daemon contacts only the holders of the referenced objects, not the entire network, over QUIC. With a typical replication factor of 50, this means 50 direct messages instead of thousands of broadcasts.
 
-The aggregator's role is purely coordinative: it cannot forge attestations because it does not possess the holders' private keys. If the aggregator fails, the user resubmits to another validator.
+The daemon's role is purely coordinative: it cannot forge attestations because it does not possess the holders' private keys. A validator never trusts the daemon and reverifies every attested transaction on receipt. If a holder is unreachable, the daemon collects from the others; if the quorum becomes impossible, it fails fast and the client retries.
 
-### BLS Signatures and Aggregation
+### BLS signatures and stored attestations
 
-Each holder attests to an object's state by signing `H = BLAKE3(content || version_u64_BE)` with its BLS key. BLS keys are derived deterministically from the validator's Ed25519 seed: `BLAKE3("bluepods-bls-keygen" || ed25519_seed)`.
+Each holder attests to an object's state by signing `H = BLAKE3(content || version_u64_BE)` over the object's content bytes with its BLS key. BLS keys are derived deterministically from the validator's Ed25519 seed: `BLAKE3("bluepods-bls-keygen" || ed25519_seed)`.
 
-An asymmetric response pattern minimizes bandwidth:
-- The **top-ranked holder** (by Rendezvous score) sends the full object content plus its BLS signature (~500 bytes + 96 bytes).
-- All **other holders** send only the hash and their BLS signature (32 + 96 = 128 bytes each).
+The signature is deterministic: it is identical for every requester for as long as the object stays at that version. A holder therefore computes it once, eagerly, at execution time, and stores it next to the object. An attestation request is then a pure read of stored bytes. There is no designated top-ranked holder and no full-object response: every holder answers with the same hash and its stored signature (32 + 96 bytes), and a holder that does not hold the object, or holds it at a different version, answers with a static error and signs nothing. Getting the object content is a separate request the daemon makes to any holder it chooses.
 
-Once the quorum is reached (67% of holders signing the same hash), the aggregator combines the individual BLS signatures into a single **aggregated signature** of 96 bytes, accompanied by a bitmap indicating which holders signed. This aggregated proof is compact and verifiable by any validator.
+Once the quorum is reached (67% of holders signing the same hash), the daemon combines the individual BLS signatures into a single **aggregated signature** of 96 bytes, accompanied by a bitmap indicating which holders signed. This aggregated proof is compact and verifiable by any validator.
 
-### Quorum Validation and Fail-Fast
+### Quorum validation and fail-fast
 
-The quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic.
+The per-object attestation quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic. (This is distinct from the BFT consensus quorum of 2n/3+1 used to commit vertices.)
 
-The aggregator implements fail-fast: as soon as enough negative votes accumulate to make the quorum mathematically impossible, it abandons the collection immediately. For example, with 50 holders and a quorum of 34, receiving 17 negative votes means only 33 positive votes are possible, so the transaction is rejected without waiting for remaining responses.
+The daemon implements fail-fast: as soon as enough negative responses accumulate to make the quorum mathematically impossible, it abandons the collection immediately. For example, with 50 holders and a quorum of 34, receiving 17 negatives means only 33 positives are possible, so the collection is abandoned without waiting for the rest.
 
 ### Singleton Optimization
 
@@ -197,23 +195,29 @@ Transactions involving only singletons skip the entire attestation phase. Since 
 
 A complete transaction follows these stages from submission to finality:
 
-### Submission and Aggregation
+### Submission
 
-The user sends a signed transaction to any validator, which becomes the aggregator. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB. Each transaction is uniquely identified by its hash, computed as `BLAKE3` over the canonical unsigned content.
+A transaction that touches only singletons is submitted raw to any validator over QUIC, which wraps it into a trivial attested transaction with no objects and no proofs. A transaction that touches replicated objects is collected off-chain by the client daemon and submitted as a full attested transaction. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB. Each transaction is uniquely identified by its hash, computed as `BLAKE3` over the canonical unsigned content.
 
 The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature.
 
 ### Object Collection
 
-The aggregator identifies holders for each standard object via Rendezvous Hashing and contacts them in parallel over QUIC. Singletons are skipped, since every validator has them locally. Upon reaching quorum for all objects, the aggregator assembles the attested transaction (ATX) with the collected objects, aggregated BLS signatures, and signer bitmaps.
+The daemon refreshes the live epoch and holder set before collecting, so the attested transaction it builds carries the current attestation epoch rather than a stale one cached at startup. It then identifies holders for each standard object via Rendezvous Hashing and contacts them in parallel over QUIC. Singletons are skipped, since every validator has them locally and they are never attested. Upon reaching quorum for all replicated objects, the daemon assembles the attested transaction (ATX) with the collected objects, aggregated BLS signatures, signer bitmaps, and the epoch the attestation was collected in, and submits it to any validator.
 
 ### Vertex Production and Gossip
 
-The ATX is included in the aggregator's next vertex along with other pending transactions. The vertex is gossipped with a production fanout of 40 peers. Relaying validators forward with a reduced fanout of 10 to prevent amplification. With these parameters, a vertex reaches the entire network in approximately 3 hops: first hop reaches 40 validators, second hop reaches ~400, third hop covers the rest.
+The receiving validator reverifies the ATX, adds it to its pending set, and forwards it to mesh peers over the one-way gossip stream. The forwarded transaction is tagged so a peer tells it apart from a vertex (both are FlatBuffers on the same stream) and adds it to its own pending set rather than misparsing it; without the tag the transaction would be read as a malformed vertex and dropped, stranding any submission that did not land directly on a producer. The validator then includes the pending transaction in its next vertex. The vertex is gossipped with a production fanout of 40 peers. Relaying validators forward with a reduced fanout of 10 to prevent amplification. With these parameters, a vertex reaches the entire network in approximately 3 hops: first hop reaches 40 validators, second hop reaches ~400, third hop covers the rest.
 
 ### Consensus and Commit
 
 The vertex enters the DAG. When referenced by vertices two rounds later from a quorum of validators, it is committed. All transactions in the vertex become final.
+
+Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate.
+
+### Attestation Epoch Validity
+
+Holders change at epoch boundaries, so an attested transaction carries the epoch its attestations were collected in. At commit, each validator recomputes the quorum against the holder snapshot of that epoch, but only after validating the epoch against the round the transaction commits at. The deterministic commit epoch is always accepted; the immediately preceding epoch is accepted only when the commit round still falls within a fixed grace window after the boundary, so an attestation collected late in an epoch and committed shortly into the next still verifies. An attestation that lands outside this window is rejected, and the client recollects against the current epoch and resubmits. The grace window is sized so that, at production epoch lengths, an attestation always commits well within it; only artificially short epochs make the window tight.
 
 ### Fee Deduction
 
@@ -350,19 +354,18 @@ These numbers are placeholders. The real values will come from mainnet observati
 
 ### Distribution
 
-Collected fees are split into three components:
+Collected fees are split into two components:
 
 | Destination | Share | Timing |
 |---|---|---|
-| Aggregator | 20% | Immediate credit to the aggregator's coin |
+| Epoch rewards | 70% | Accumulated and distributed at epoch boundary |
 | Burn | 30% | Tokens permanently destroyed |
-| Epoch rewards | 50% | Accumulated and distributed at epoch boundary |
 
-The 30% burn creates deflationary pressure and makes it harder for validators to game fees for profit. The aggregator gets 20% as a direct incentive to actually process user transactions instead of ignoring them. Integer rounding remainders go to the epoch pool.
+Aggregation moved off-chain to the client, so there is no aggregator role and no aggregator share; the work that used to earn it is no longer done by a validator. The share it would have received now goes to the epoch reward pool, so the operational fees attach to a single incentive, securing the network, distributed to validators by consensus participation. The 30% burn creates deflationary pressure and makes it harder for validators to game fees for profit. Integer rounding remainders go to the epoch pool.
 
 ### Fee Summary Verification
 
-Each vertex contains a pre-computed `FeeSummary` with fields `total_fees`, `total_aggregator`, `total_burned`, and `total_epoch`. Every receiving validator recalculates this summary from the transaction headers and rejects the vertex if it does not match. This summary serves as a cache for epoch reward distribution: instead of re-scanning all transactions at epoch boundary, validators sum the `total_epoch` fields across committed vertices.
+Each vertex contains a pre-computed `FeeSummary` with fields `total_fees`, `total_burned`, and `total_epoch`. Every receiving validator recalculates this summary from the transaction headers and rejects the vertex if it does not match. This summary serves as a cache for epoch reward distribution: instead of re-scanning all transactions at epoch boundary, validators sum the `total_epoch` fields across committed vertices.
 
 ### Storage Deposits and Refunds
 
@@ -384,6 +387,8 @@ Gas coin modifications are **implicit protocol operations**: they change the bal
 
 The network operates in epochs of configurable length (measured in consensus rounds). At each epoch boundary, the active validator set is frozen into a snapshot called `epochHolders`, which determines storage distribution and Rendezvous Hashing for the entire epoch. Changes to the validator set (additions, removals) only take effect at the next epoch boundary.
 
+The genesis epoch is the exception: it holds no frozen snapshot. Its set is still forming as the founding validators register, so freezing it at process startup would capture a partial, per-node-divergent membership, and attestation verification would then recompute holders against a set the client daemon never collected from. The genesis epoch therefore tracks the live validator set, which converges to the same set the daemon syncs. The first frozen snapshot is taken at the first epoch boundary, where the set is already stable.
+
 ### Epoch Transitions
 
 At each epoch boundary, the protocol executes the following steps in order:
@@ -396,7 +401,7 @@ At each epoch boundary, the protocol executes the following steps in order:
 
 ### Registration and Deregistration
 
-Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, HTTP and QUIC addresses, and BLS public key (48 bytes). They are added to the active set and tracked in the epoch's additions for churn limiting.
+Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, and BLS public key (48 bytes). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
 
 Deregistration is a two-phase process: a `deregister_validator` transaction places the validator in a pending removal list, but the validator remains active until the next epoch boundary. This ensures no disruption mid-epoch.
 
@@ -436,21 +441,21 @@ Vertices are propagated through gossip rather than direct broadcast to avoid the
 
 With a production fanout of 40, a vertex reaches the entire network in approximately 3 hops: 40 → 400 → 4,000+. A deduplication cache with TTL prevents message amplification loops.
 
-### REST API
+### QUIC Client Surface
 
-Users interact with the network through a standard HTTP REST API:
+There is no HTTP. Clients interact with the network over the same QUIC transport the validators use among themselves, through a small set of length-prefixed messages on the node's single listener:
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/tx` | POST | Submit a transaction (returns hash, 202 Accepted) |
-| `/health` | GET | Node health check |
-| `/status` | GET | Consensus state (round, last commit, validators, epoch) |
-| `/faucet` | POST | Mint test tokens (returns hash and predicted coin ID) |
-| `/validators` | GET | Active validator list with addresses |
-| `/object/{id}` | GET | Retrieve an object by ID (with automatic holder routing) |
-| `/domain/{name}` | GET | Resolve a domain name to an object ID |
+| Message | Description |
+|---|---|
+| Submit | Submit a raw transaction or a full attested transaction (returns the tx hash) |
+| Health | Node liveness probe |
+| Status | Consensus state (round, last commit, validators, epoch, system pod) |
+| Faucet | Mint test tokens (returns the tx hash and predicted coin ID) |
+| Validators | Active validator set with QUIC addresses and BLS keys, plus the current epoch |
+| GetObject | Retrieve an object by ID (with automatic holder routing) |
+| DomainResolve | Resolve a domain name to an object ID |
 
-Object retrieval includes transparent routing: if the queried validator is not a holder of the requested object, it forwards the request to the computed holders via Rendezvous Hashing. The `?local=true` parameter disables routing to prevent cascading queries.
+A connection that presents a validator certificate joins the trusted mesh; every other connection is served in an ephemeral, rate-limited client tier with per-IP caps and a QUIC Retry source-address check, separate from the mesh. Object retrieval includes transparent routing: if the queried validator is not a holder, it forwards the request to a computed holder over the QUIC mesh via Rendezvous Hashing. A local-only flag disables routing to prevent cascading queries. The operational messages replace the former REST API; HTTP liveness probes and metrics scraping are covered by a small CLI built on the client library.
 
 ### Snapshot and Synchronization
 
@@ -475,13 +480,13 @@ With a replication factor of 50, an attacker would need to control 34 holders of
 
 ### Double-Spend Prevention
 
-Double-spending is prevented by version tracking. If a user submits two transactions spending the same coin, both declare the same version. The first transaction to be committed increments the version; the second encounters a version mismatch and is rejected. This holds even if the transactions are processed by different aggregators and included in different vertices. The DAG's deterministic ordering ensures consistent conflict resolution.
+Double-spending is prevented by version tracking. If a user submits two transactions spending the same coin, both declare the same version. The first transaction to be committed increments the version; the second encounters a version mismatch and is rejected. This holds even if the transactions are collected by different clients and included in different vertices. The DAG's deterministic ordering ensures consistent conflict resolution.
 
-### Aggregator Trust Model
+### Client Daemon Trust Model
 
-The aggregator has limited trust requirements. It cannot forge holder signatures (it lacks their private keys), cannot exclude valid attestations (any validator can verify the quorum independently), and cannot alter transaction content (the user's Ed25519 signature covers the transaction hash).
+The client daemon that collects attestations has no trust requirements at all: the validator reverifies every attested transaction on receipt and trusts nothing the daemon sends. The daemon cannot forge holder signatures (it lacks their private keys), cannot exclude valid attestations (any validator recomputes the quorum independently), and cannot alter transaction content (the user's Ed25519 signature covers the transaction hash). Because the attestation binds only the object hash, a daemon could in principle staple valid attestations to a different transaction touching the same objects at the same versions; the lifecycle layer (the owner and version checks) is what rejects that, which is why it runs in full on every attested transaction and is not optional.
 
-The aggregator can only cause liveness failures (by not including a transaction in a vertex), which the user resolves by resubmitting to another validator. This is a Byzantine fault tolerance property: the system remains safe even with a malicious aggregator.
+A misbehaving daemon can only cause a liveness failure for its own submission, which the client resolves by recollecting and resubmitting. The system remains safe regardless of what the daemon does.
 
 ### Ownership Enforcement
 
@@ -491,13 +496,19 @@ The protocol validates that the transaction sender owns all objects in MutableRe
 
 If a holder signs a hash H but provides data D where `BLAKE3(D) ≠ H`, this constitutes provable on-chain misbehavior. The signed hash and the incompatible data serve as a fraud proof, leading to stake slashing.
 
-If the inconsistency is due to network corruption rather than malice, the aggregator simply requests the data from another holder that signed the same hash. No fraud proof is generated, and no penalty is applied.
+If the inconsistency is due to network corruption rather than malice, the client simply requests the data from another holder that signed the same hash. No fraud proof is generated, and no penalty is applied.
 
 ### Fee Deduction Safety
 
 Fees are always deducted, even on failed transactions. This prevents griefing attacks where an attacker submits transactions designed to fail after consuming validator resources. The `min_gas` requirement (currently 100 units) prevents dust transactions that would cost nearly nothing to submit but still consume processing resources.
 
 As a safety note: arithmetic overflow in fee computation is handled through `safeMul` and `safeAdd` functions that cap at `MaxUint64` instead of silently wrapping around.
+
+### Attestation Flood Defense
+
+Moving collection to the client opens one new surface: any client can ask an object's holders for attestations without ever submitting a paid transaction. The primary defense is structural. An attestation signature is deterministic, so a holder computes it once, eagerly, at execution time and stores it next to the object; an attestation request is then a pure read of stored bytes, not fresh signing work. The current-version signature always exists by the time anyone could request it, because a version only becomes current after a holder has executed the transaction that produced it, so there is no cold window an attacker can exploit by enumerating object IDs. Negative and non-current requests are answered with a static error and never a signature, and that rejection sits before the read. A bounded fallback covers a crash or a holder-set reshuffle: on a store miss a holder signs and stores only for an object it actually holds at its current version, so the work stays bounded by the real, paid rate of state change.
+
+What remains is a generic network flood, handled by standard ingress hardening layered cheapest first: a QUIC Retry round-trip that validates the source address before any work, per-IP caps on connections, in-flight streams, and pending memory, and per-IP rate limiting. A cert-presenting validator joins the mesh; every certless client stays in this ephemeral tier. This is a filter, not a wall: IP-based limiting does not stop botnets or address rotation, and on-protocol punishment for a Byzantine holder awaits the slashing and fraud-proof systems.
 
 ---
 
@@ -531,11 +542,11 @@ These are the problems I know about and have not solved yet:
 
 **Storage challenge system.** Holders can be challenged to prove they still store the objects they are responsible for. The exact proof format, challenge frequency, and spam prevention for challenges remain to be specified.
 
-**Aggregator failover.** If an aggregator fails mid-collection, the transaction is just lost. The user has to resubmit to another validator. This works but is not great UX. An automatic failover mechanism where another validator picks up the collection would be better.
+**Contended-object collection.** Client-side collection over several round-trips widens the version-race window compared to the old in-node collection, so on a hot, contended object a client can lose repeatedly. The daemon retries with bounded randomized backoff and a validator-set resync, then surfaces a typed error. Genuinely hot objects need an application-level batching or sequencing pattern, which remains an open problem.
 
 **Inactivity detection and progressive penalties.** Right now, if a validator stops producing vertices, nothing happens besides it missing out on rewards. There is no automatic detection, no graduated penalties, no forced removal. The system relies on voluntary deregistration, which is obviously not enough for a real network. Graduated penalties (reduced rewards → stake reduction → removal) are planned.
 
-**Cross-shard composability.** This is probably the hardest open problem. Complex transactions touching many objects with different holder sets will face latency challenges in the attestation phase, since the aggregator has to collect from the union of all holder sets. Patterns for efficient cross-shard composition are not obvious, and this might end up being the ceiling on what kinds of applications BluePods can support.
+**Cross-shard composability.** This is probably the hardest open problem. Complex transactions touching many objects with different holder sets will face latency challenges in the attestation phase, since the client has to collect from the union of all holder sets. Patterns for efficient cross-shard composition are not obvious, and this might end up being the ceiling on what kinds of applications BluePods can support.
 
 ---
 

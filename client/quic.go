@@ -81,7 +81,21 @@ func (t *QUICTransport) Validators() (*network.GetValidatorsResponse, error) {
 // GetObject fetches an object FlatBuffer by ID. It returns nil bytes when the
 // object is not found.
 func (t *QUICTransport) GetObject(id [32]byte) ([]byte, error) {
-	resp, err := t.roundTrip(network.EncodeGetObject(&network.GetObjectRequest{ObjectID: id}))
+	return t.getObject(id, false)
+}
+
+// GetObjectLocal fetches an object only from the node's local state, never
+// routing to a remote holder. It returns nil bytes when the node does not hold
+// the object, which lets a caller probe local holdership.
+func (t *QUICTransport) GetObjectLocal(id [32]byte) ([]byte, error) {
+	return t.getObject(id, true)
+}
+
+// getObject performs a GetObject round-trip with the given local-only flag.
+func (t *QUICTransport) getObject(id [32]byte, localOnly bool) ([]byte, error) {
+	req := &network.GetObjectRequest{ObjectID: id, LocalOnly: localOnly}
+
+	resp, err := t.roundTrip(network.EncodeGetObject(req))
 	if err != nil {
 		return nil, fmt.Errorf("get object:\n%w", err)
 	}
@@ -115,6 +129,32 @@ func (t *QUICTransport) SubmitTx(body []byte) ([]byte, error) {
 	}
 
 	return parsed.Hash, nil
+}
+
+// Health probes the node's liveness over QUIC.
+func (t *QUICTransport) Health() (bool, error) {
+	resp, err := t.roundTrip(network.EncodeHealth())
+	if err != nil {
+		return false, fmt.Errorf("health:\n%w", err)
+	}
+
+	return network.DecodeHealthResp(resp)
+}
+
+// DomainResolve resolves a domain name to an object ID over QUIC. It returns the
+// object ID and a found flag.
+func (t *QUICTransport) DomainResolve(name string) ([32]byte, bool, error) {
+	resp, err := t.roundTrip(network.EncodeDomainResolve(&network.DomainResolveRequest{Name: name}))
+	if err != nil {
+		return [32]byte{}, false, fmt.Errorf("domain resolve:\n%w", err)
+	}
+
+	parsed, err := network.DecodeDomainResolveResp(resp)
+	if err != nil {
+		return [32]byte{}, false, err
+	}
+
+	return parsed.ObjectID, parsed.Found, nil
 }
 
 // Faucet requests a faucet mint and returns the minted coin ID.

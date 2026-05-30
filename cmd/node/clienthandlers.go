@@ -228,6 +228,12 @@ func (n *Node) handleGetObject(data []byte) ([]byte, error) {
 		}
 	}
 
+	// A local-only request never routes to a remote holder, so a non-holder
+	// answers not-found and a caller can probe local holdership.
+	if req.LocalOnly {
+		return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: false}), nil
+	}
+
 	if fetched := n.fetchObjectFromHolder(req.ObjectID); fetched != nil {
 		return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: true, Data: fetched}), nil
 	}
@@ -307,16 +313,20 @@ func (n *Node) handleGetValidators() ([]byte, error) {
 	}), nil
 }
 
-// handleStatus returns the current round, epoch length, and epoch.
+// handleStatus returns the node's consensus status and operational counters.
 func (n *Node) handleStatus() ([]byte, error) {
 	if n.dag == nil {
 		return nil, fmt.Errorf("consensus not available")
 	}
 
 	return network.EncodeStatusResp(&network.StatusResponse{
-		Round:       n.dag.Round(),
-		EpochLength: n.dag.EpochLength(),
-		Epoch:       n.dag.Epoch(),
+		Round:         n.dag.Round(),
+		EpochLength:   n.dag.EpochLength(),
+		Epoch:         n.dag.Epoch(),
+		LastCommitted: n.dag.LastCommittedRound(),
+		Validators:    uint32(len(n.dag.ValidatorsInfo())),
+		EpochHolders:  uint32(n.dag.EpochHoldersCount()),
+		SystemPod:     n.systemPod,
 	}), nil
 }
 

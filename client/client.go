@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"BluePods/daemon"
+	"BluePods/internal/network"
 	"BluePods/internal/types"
 )
 
@@ -154,6 +155,34 @@ func (c *Client) GetObject(id [32]byte) (*ObjectInfo, error) {
 	}
 
 	return parseObject(data), nil
+}
+
+// GetObjectLocal retrieves an object only if the node holds it locally, without
+// routing to a remote holder. It returns nil (no error) when the node is not a
+// holder, which a caller uses to probe holdership.
+func (c *Client) GetObjectLocal(id [32]byte) (*ObjectInfo, error) {
+	data, err := c.transport.GetObjectLocal(id)
+	if err != nil {
+		return nil, fmt.Errorf("get object local:\n%w", err)
+	}
+
+	if data == nil {
+		return nil, nil
+	}
+
+	return parseObject(data), nil
+}
+
+// Status returns the node's consensus status and operational counters over QUIC.
+func (c *Client) Status() (*network.StatusResponse, error) {
+	return c.transport.Status()
+}
+
+// ParseObject parses an Object FlatBuffer into an ObjectInfo. It is exported for
+// callers (such as the integration tests) that fetch raw object bytes over the
+// QUIC transport and need to decode them.
+func ParseObject(data []byte) *ObjectInfo {
+	return parseObject(data)
 }
 
 // parseObject parses an Object FlatBuffer into an ObjectInfo.

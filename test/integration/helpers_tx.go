@@ -1,12 +1,9 @@
 package integration
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
-	"io"
-	"net/http"
+	"encoding/hex"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
@@ -15,32 +12,52 @@ import (
 	"BluePods/internal/types"
 )
 
-// SubmitRawBytes sends arbitrary bytes to POST /tx, returns HTTP status code and body.
+const (
+	// statusAccepted mirrors the old HTTP 202 (transaction accepted). A QUIC
+	// submission that returns a hash and no error maps to it.
+	statusAccepted = 202
+
+	// statusBadRequest mirrors the old HTTP 400 (rejected at ingress). A QUIC
+	// submission that returns an error maps to it.
+	statusBadRequest = 400
+)
+
+// SubmitRawBytes submits arbitrary bytes over the QUIC submit-tx message and maps
+// the result onto the former HTTP status codes: 202 when the node accepts the
+// transaction, 400 when it rejects it at ingress (malformed, replicated ref, or
+// any structural failure). The returned string is the node's error message, if
+// any.
 func SubmitRawBytes(addr string, data []byte) (int, string) {
-	resp, err := http.Post("http://"+addr+"/tx", "application/octet-stream", bytes.NewReader(data))
+	hash, err := transportFor(addr).SubmitTx(data)
 	if err != nil {
-		return 0, err.Error()
+		return statusBadRequest, err.Error()
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
-	return resp.StatusCode, string(body)
+	return statusAccepted, hex.EncodeToString(hash)
 }
 
-// SubmitJSON sends JSON to a POST endpoint, returns status code and body.
-func SubmitJSON(addr, path string, payload any) (int, string) {
-	jsonBytes, _ := json.Marshal(payload)
-
-	resp, err := http.Post("http://"+addr+path, "application/json", bytes.NewReader(jsonBytes))
-	if err != nil {
-		return 0, err.Error()
+// SubmitFaucet requests a faucet mint over QUIC and maps the result onto the
+// former HTTP status codes: 400 when the amount is zero or the pubkey is invalid,
+// 202 when the mint is accepted.
+func SubmitFaucet(addr string, pubkeyHex string, amount uint64) (int, string) {
+	if amount == 0 {
+		return statusBadRequest, "amount must be > 0"
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	raw, err := hex.DecodeString(pubkeyHex)
+	if err != nil || len(raw) != 32 {
+		return statusBadRequest, "invalid pubkey"
+	}
 
-	return resp.StatusCode, string(body)
+	var pubkey [32]byte
+	copy(pubkey[:], raw)
+
+	coinID, err := transportFor(addr).Faucet(pubkey, amount)
+	if err != nil {
+		return statusBadRequest, err.Error()
+	}
+
+	return statusAccepted, hex.EncodeToString(coinID[:])
 }
 
 // BuildValidTx builds a correctly signed raw Transaction.

@@ -14,10 +14,11 @@ import (
 // SubmitTransaction submits a signed transaction to the network. A transaction
 // that touches only singletons (replication 0, including the gas coin) is
 // submitted raw and wrapped into a trivial ATX by the receiving validator. A
-// transaction that references replicated objects has its attestations collected,
-// is assembled into an ATX (with the synced attestation epoch), and submitted.
-// On a quorum-impossible result it resyncs the validator set and epoch once and
-// retries with bounded randomized backoff before surfacing ErrQuorumImpossible.
+// transaction that references replicated objects first resyncs the live epoch and
+// holder set, then has its attestations collected, is assembled into an ATX (with
+// the current attestation epoch), and submitted. On a quorum-impossible result it
+// resyncs and retries with bounded randomized backoff before surfacing
+// ErrQuorumImpossible.
 func (d *Daemon) SubmitTransaction(ctx context.Context, rawTx []byte) ([]byte, error) {
 	refs, err := replicatedRefs(d, ctx, rawTx)
 	if err != nil {
@@ -32,10 +33,17 @@ func (d *Daemon) SubmitTransaction(ctx context.Context, rawTx []byte) ([]byte, e
 	return d.collectBuildSubmit(ctx, rawTx, refs)
 }
 
-// collectBuildSubmit collects attestations, builds the ATX, and submits it,
-// resyncing and retrying once on a quorum-impossible result.
+// collectBuildSubmit collects attestations, builds the ATX, and submits it. It
+// resyncs the validator set and epoch up front so the ATX is stamped with the live
+// attestation epoch: the epoch counter advances every epoch even when the
+// validator set is unchanged, and an ATX stamped with a stale epoch is rejected at
+// commit (past grace) with no feedback, since collection itself still succeeds
+// against an unchanged holder set. On a quorum-impossible result it resyncs again
+// and retries with bounded randomized backoff before surfacing ErrQuorumImpossible.
 func (d *Daemon) collectBuildSubmit(ctx context.Context, rawTx []byte, refs []objectRef) ([]byte, error) {
-	resynced := false
+	// Refresh the epoch and holder set before collecting so the ATX carries the
+	// current attestation epoch, not the one cached when the daemon was created.
+	_ = d.SyncValidators()
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		results, err := d.CollectAttestations(ctx, refs)
@@ -48,13 +56,9 @@ func (d *Daemon) collectBuildSubmit(ctx context.Context, rawTx []byte, refs []ob
 			return nil, err
 		}
 
-		// Quorum impossible: resync once (a missed epoch transition surfaces here),
-		// then keep retrying with bounded backoff for transient version races.
-		if !resynced {
-			_ = d.SyncValidators()
-			resynced = true
-		}
-
+		// Quorum impossible: a version race or a holder set that moved under us.
+		// Resync and keep retrying with bounded backoff.
+		_ = d.SyncValidators()
 		backoff(ctx, attempt)
 	}
 

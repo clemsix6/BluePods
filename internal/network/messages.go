@@ -53,14 +53,64 @@ const (
 	// MsgTagSubmitTxResp is the response to a transaction submission.
 	MsgTagSubmitTxResp = 0x11
 
+	// MsgTagGossipTx carries a transaction (raw or ATX) gossiped between mesh peers
+	// over the one-way message stream. It is distinct from MsgSubmitTx (a
+	// request/response submission) and from a vertex (an untagged FlatBuffer on the
+	// same stream): the tag lets a receiver tell a forwarded transaction apart from
+	// a vertex so the transaction enters the producer's pending set instead of being
+	// misparsed as a vertex and dropped.
+	MsgTagGossipTx = 0x12
+
 	// minClientTag is the lowest tag value reserved for client messages.
 	minClientTag = MsgTagSubmitTx
 )
 
-// IsClientMessage reports whether data carries a client message tag.
-// It is used to classify a request before the snapshot heuristic.
+// EncodeGossipTx wraps a transaction body for gossip on the one-way message
+// stream. Format: [1B tag] [body].
+func EncodeGossipTx(body []byte) []byte {
+	buf := make([]byte, 1+len(body))
+	buf[0] = MsgTagGossipTx
+	copy(buf[1:], body)
+
+	return buf
+}
+
+// DecodeGossipTx returns the transaction body of a gossiped-transaction message,
+// or ok=false when data does not carry the gossip-tx tag.
+func DecodeGossipTx(data []byte) (body []byte, ok bool) {
+	if len(data) < 1 || data[0] != MsgTagGossipTx {
+		return nil, false
+	}
+
+	return data[1:], true
+}
+
+// clientRequestTags is the exact set of first-byte tags a node serves as client
+// requests. Classification matches this set rather than a broad ">= 0x04" range:
+// a snapshot request is an untagged FlatBuffer whose root offset (0x0c) falls in
+// that range, so a range test would misroute it. Only request tags appear here;
+// response tags are never received as inbound requests.
+var clientRequestTags = map[byte]struct{}{
+	MsgTagSubmitTx:      {},
+	MsgTagGetObject:     {},
+	MsgTagGetValidators: {},
+	MsgTagStatus:        {},
+	MsgTagHealth:        {},
+	MsgTagFaucet:        {},
+	MsgTagDomainResolve: {},
+}
+
+// IsClientMessage reports whether data carries a known client request tag. It is
+// used to classify a request before the snapshot heuristic. Matching the exact
+// request-tag set (not a range) keeps a snapshot request, whose FlatBuffer root
+// offset happens to land in the client-tag range, from being misrouted here.
 func IsClientMessage(data []byte) bool {
-	return len(data) > 0 && data[0] >= minClientTag
+	if len(data) == 0 {
+		return false
+	}
+
+	_, ok := clientRequestTags[data[0]]
+	return ok
 }
 
 // MessageTag returns the first-byte tag of a message, or an error if empty.
@@ -139,22 +189,30 @@ func DecodeSubmitTxResp(data []byte) (*SubmitTxResponse, error) {
 	return resp, nil
 }
 
-// GetObjectRequest requests an object by ID.
+// GetObjectRequest requests an object by ID. When LocalOnly is set, the node
+// answers only from its local state and never routes to a remote holder, which
+// lets a caller probe whether a specific node holds an object.
 type GetObjectRequest struct {
-	ObjectID [32]byte // ObjectID is the object to fetch
+	ObjectID  [32]byte // ObjectID is the object to fetch
+	LocalOnly bool     // LocalOnly suppresses inter-node routing
 }
 
 // EncodeGetObject encodes a GetObject request.
-// Format: [1B tag] [32B objectID].
+// Format: [1B tag] [32B objectID] [1B localOnly].
 func EncodeGetObject(req *GetObjectRequest) []byte {
-	buf := make([]byte, 33)
+	buf := make([]byte, 34)
 	buf[0] = MsgTagGetObject
-	copy(buf[1:], req.ObjectID[:])
+	copy(buf[1:33], req.ObjectID[:])
+
+	if req.LocalOnly {
+		buf[33] = 1
+	}
 
 	return buf
 }
 
-// DecodeGetObject decodes a GetObject request.
+// DecodeGetObject decodes a GetObject request. The local-only flag is optional
+// so older 33-byte requests still decode (LocalOnly defaults to false).
 func DecodeGetObject(data []byte) (*GetObjectRequest, error) {
 	if len(data) < 33 || data[0] != MsgTagGetObject {
 		return nil, fmt.Errorf("not a get-object message")
@@ -162,6 +220,10 @@ func DecodeGetObject(data []byte) (*GetObjectRequest, error) {
 
 	req := &GetObjectRequest{}
 	copy(req.ObjectID[:], data[1:33])
+
+	if len(data) >= 34 && data[33] == 1 {
+		req.LocalOnly = true
+	}
 
 	return req, nil
 }
@@ -295,36 +357,56 @@ func EncodeStatus() []byte {
 	return []byte{MsgTagStatus}
 }
 
-// StatusResponse carries the node's consensus status.
+// StatusResponse carries the node's consensus status and a few operational
+// fields the daemon and operators read over QUIC (the former HTTP /status).
 type StatusResponse struct {
-	Round       uint64 // Round is the current consensus round
-	EpochLength uint64 // EpochLength is the number of rounds per epoch
-	Epoch       uint64 // Epoch is the current epoch
+	Round         uint64   // Round is the current consensus round
+	EpochLength   uint64   // EpochLength is the number of rounds per epoch
+	Epoch         uint64   // Epoch is the current epoch
+	LastCommitted uint64   // LastCommitted is the last committed round
+	Validators    uint32   // Validators is the active validator count
+	EpochHolders  uint32   // EpochHolders is the frozen holder-snapshot count
+	SystemPod     [32]byte // SystemPod is the system pod ID
 }
 
 // EncodeStatusResp encodes a status response.
-// Format: [1B tag] [8B round] [8B epochLength] [8B epoch].
+// Format: [1B tag] [8B round] [8B epochLength] [8B epoch] [8B lastCommitted]
+// [4B validators] [4B epochHolders] [32B systemPod].
 func EncodeStatusResp(resp *StatusResponse) []byte {
-	buf := make([]byte, 25)
+	buf := make([]byte, 73)
 	buf[0] = MsgTagStatusResp
 	binary.BigEndian.PutUint64(buf[1:9], resp.Round)
 	binary.BigEndian.PutUint64(buf[9:17], resp.EpochLength)
 	binary.BigEndian.PutUint64(buf[17:25], resp.Epoch)
+	binary.BigEndian.PutUint64(buf[25:33], resp.LastCommitted)
+	binary.BigEndian.PutUint32(buf[33:37], resp.Validators)
+	binary.BigEndian.PutUint32(buf[37:41], resp.EpochHolders)
+	copy(buf[41:73], resp.SystemPod[:])
 
 	return buf
 }
 
-// DecodeStatusResp decodes a status response.
+// DecodeStatusResp decodes a status response. The operational fields past the
+// first 25 bytes are optional so a peer that only sets round/epoch still decodes.
 func DecodeStatusResp(data []byte) (*StatusResponse, error) {
 	if len(data) < 25 || data[0] != MsgTagStatusResp {
 		return nil, fmt.Errorf("not a status response")
 	}
 
-	return &StatusResponse{
+	resp := &StatusResponse{
 		Round:       binary.BigEndian.Uint64(data[1:9]),
 		EpochLength: binary.BigEndian.Uint64(data[9:17]),
 		Epoch:       binary.BigEndian.Uint64(data[17:25]),
-	}, nil
+	}
+
+	if len(data) >= 73 {
+		resp.LastCommitted = binary.BigEndian.Uint64(data[25:33])
+		resp.Validators = binary.BigEndian.Uint32(data[33:37])
+		resp.EpochHolders = binary.BigEndian.Uint32(data[37:41])
+		copy(resp.SystemPod[:], data[41:73])
+	}
+
+	return resp, nil
 }
 
 // EncodeHealth encodes a health probe.

@@ -184,20 +184,42 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	funcName := string(tx.FunctionName())
 	logger.Debug("processing tx", "func", funcName)
 
-	// Check and update versions atomically
-	if !d.tracker.checkAndUpdate(tx) {
-		logger.Debug("version conflict", "func", funcName)
-		d.emitTransaction(tx, false) // conflict
-		return FeeSplit{}
-	}
-
-	// Verify BLS quorum proofs (skip genesis/singletons/creates_objects with no proofs)
+	// Verify BLS quorum proofs first (skip genesis/singletons/creates_objects with
+	// no proofs). This runs before the commit-once guard on purpose: a proof or
+	// epoch failure depends on the attested-transaction wrapper (its proofs and
+	// attestation epoch), not on the inner transaction, so a client that recollects
+	// against the current epoch and resubmits sends the same inner transaction hash
+	// with fresh proofs. Marking that hash on a proof failure would block the
+	// legitimate recollect-after-grace resubmission, so a proof failure returns
+	// without recording the hash.
 	if d.verifyATXProofs != nil && atx.ProofsLength() > 0 {
 		if err := d.verifyATXProofs(atx, commitRound); err != nil {
 			logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
 			d.emitTransaction(tx, false)
 			return FeeSplit{}
 		}
+	}
+
+	// Commit-once guard: a transaction can reach the commit path more than once
+	// when several producers include the same gossiped transaction in their
+	// vertices. The first occurrence proceeds; later occurrences are skipped so
+	// object creation, fees, and validator changes are never applied twice. The
+	// hash covers the mutable refs (with versions), so a legitimate retry against a
+	// newer version has a different hash and is not blocked.
+	if txHash, ok := txCommitHash(tx); ok {
+		if d.tracker.wasCommitted(txHash) {
+			logger.Debug("duplicate tx skipped", "func", funcName)
+			return FeeSplit{}
+		}
+
+		d.tracker.markCommitted(txHash)
+	}
+
+	// Check and update versions atomically
+	if !d.tracker.checkAndUpdate(tx) {
+		logger.Debug("version conflict", "func", funcName)
+		d.emitTransaction(tx, false) // conflict
+		return FeeSplit{}
 	}
 
 	// Protocol-level fee deduction (before execution)
@@ -676,6 +698,21 @@ func (d *DAG) isRegisterValidatorTx(tx *types.Transaction) bool {
 
 	funcName := string(tx.FunctionName())
 	return funcName == registerValidatorFunc
+}
+
+// txCommitHash returns a transaction's 32-byte hash, or ok=false when the hash
+// field is malformed (such a transaction is processed without the commit-once
+// guard rather than being dropped on a bad hash length).
+func txCommitHash(tx *types.Transaction) (Hash, bool) {
+	hashBytes := tx.HashBytes()
+	if len(hashBytes) != 32 {
+		return Hash{}, false
+	}
+
+	var hash Hash
+	copy(hash[:], hashBytes)
+
+	return hash, true
 }
 
 // emitTransaction sends a committed transaction to the output channel.

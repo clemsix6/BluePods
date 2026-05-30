@@ -45,7 +45,13 @@ func (d *DAG) transitionEpoch(round uint64) {
 	// Retain the outgoing epoch's snapshot for the grace window so an ATX
 	// collected late in the previous epoch still verifies shortly after the
 	// boundary. snapshotEpochHolders overwrites d.epochHolders, so capture first.
-	d.prevEpochHolders = d.epochHolders
+	// The genesis epoch holds no frozen snapshot (it tracks the live set), so
+	// freeze the current validators as its retained snapshot at this first boundary.
+	if d.epochHolders != nil {
+		d.prevEpochHolders = d.epochHolders
+	} else {
+		d.prevEpochHolders = snapshotOf(d.validators)
+	}
 
 	d.snapshotEpochHolders()
 	d.clearEpochState()
@@ -189,6 +195,16 @@ func (d *DAG) snapshotEpochHolders() {
 	}
 }
 
+// snapshotOf returns a frozen copy of a validator set's full membership.
+func snapshotOf(vs *validators.ValidatorSet) *validators.ValidatorSet {
+	frozen := NewValidatorSet(nil)
+	for _, v := range vs.All() {
+		frozen.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
+	}
+
+	return frozen
+}
+
 // sortedAdditions sorts additions by pubkey and returns the first `limit` entries.
 func sortedAdditions(additions []Hash, limit int) []Hash {
 	sorted := make([]Hash, len(additions))
@@ -213,15 +229,19 @@ func (d *DAG) clearEpochState() {
 	d.epochTotalRounds = 0
 }
 
-// InitEpochHolders initializes epochHolders from the current validator set.
-// Called once at startup or after snapshot import to establish the initial epoch state.
-func (d *DAG) InitEpochHolders() {
-	if d.epochLength == 0 {
-		return
-	}
-
-	d.snapshotEpochHolders()
-}
+// InitEpochHolders is a no-op during the genesis epoch on purpose.
+//
+// At process startup the validator set is still forming: the bootstrap knows only
+// itself, and each joining node knows only the validators it has synced so far.
+// A snapshot taken here would freeze that partial, per-node-divergent set as the
+// epoch-0 holder set, and attestation verification would then recompute holders
+// against it while the client daemon collected against the converged live set,
+// so quorum proofs would never match. Leaving epochHolders nil makes
+// HoldersForEpoch fall back to the live validator set for the genesis epoch,
+// which converges to the same set the daemon syncs. The first real frozen
+// snapshot is taken at the first epoch boundary by transitionEpoch, where the
+// set is already stable.
+func (d *DAG) InitEpochHolders() {}
 
 // commitEpochForRound returns the epoch whose holder snapshot an ATX committed
 // at the given round must be verified against. The boundary round R = k*epochLength

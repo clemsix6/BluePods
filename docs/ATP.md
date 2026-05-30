@@ -5,9 +5,15 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 ---
 
-## 1. Transaction Validation (API Layer)
+## 1. Transaction Validation (ingress layer)
 
-`internal/api/validate.go`, `internal/api/server.go`
+`internal/validation/validate.go`, `cmd/node/clienthandlers.go`
+
+The node is QUIC only. A client submits a raw transaction or a full attested
+transaction over the `MsgSubmitTx` message, and the operational queries (status,
+validators, object, domain, health, faucet) are QUIC messages on the same
+listener. There is no HTTP. A submission the node accepts maps to the former 202;
+one it rejects at ingress maps to the former 400.
 
 | # | Test | Detail |
 |---|------|--------|
@@ -30,23 +36,21 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 1.17 | Object refs — domain ref with no ID (valid) | Accept, skip ID check |
 | 1.18 | FlatBuffers panic recovery — malformed data | defer/recover catches panic |
 | 1.19 | Transaction data too short (< 8 bytes) | Reject |
-| 1.20 | POST /tx — body > 1MB | Reject |
-| 1.21 | POST /tx — empty body | Reject |
-| 1.22 | POST /tx — valid tx returns 202 + hash | Success path |
-| 1.23 | GET /health | Returns {"status": "ok"} |
-| 1.24 | GET /status — fields present | round, lastCommitted, validators, epoch, epochHolders, fullQuorumAchieved, systemPod (conditional) |
-| 1.25 | GET /validators | Array of {pubkey, http} |
-| 1.26 | GET /object/{id} — valid hex ID | Returns object fields |
-| 1.27 | GET /object/{id} — invalid hex | 400 error |
-| 1.28 | GET /object/{id} — not found | 404 |
-| 1.29 | GET /object/{id}?local=true | Skip remote routing |
-| 1.30 | GET /domain/{name} — found | Returns {objectId} |
-| 1.31 | GET /domain/{name} — not found | 404 |
-| 1.32 | POST /faucet — valid | 202 + hash + coinID |
-| 1.33 | POST /faucet — amount=0 | Reject |
-| 1.34 | POST /faucet — invalid pubkey | Reject |
-| 1.35 | GET /object/{id} — no FlatBuffers panic recovery | GetRootAsObject at line 377 has no defer/recover (unlike POST /tx) |
-| 1.36 | GET /status — systemPod field conditional on faucet | Only present when faucet != nil |
+| 1.20 | submit-tx — body over 1MB | Reject |
+| 1.21 | submit-tx — empty body | Reject |
+| 1.22 | submit-tx — valid tx accepted, returns hash | Success path |
+| 1.23 | health message | Reports ok |
+| 1.24 | status message — fields present | round, lastCommitted, validators, epoch, epochHolders, systemPod |
+| 1.25 | validators message | Per validator: pubkey, BLS key, QUIC address; plus current epoch |
+| 1.26 | get-object — found | Returns object fields |
+| 1.28 | get-object — not found | Returns not-found |
+| 1.29 | get-object — local-only flag | Skip remote routing, answer from local state only |
+| 1.30 | domain-resolve — found | Returns object ID |
+| 1.31 | domain-resolve — not found | Returns not-found |
+| 1.32 | faucet — valid | Accepted, returns hash and coinID |
+| 1.33 | faucet — amount=0 | Reject |
+| 1.34 | faucet — invalid pubkey | Reject |
+| 1.36 | status — systemPod field | BLAKE3 of the system pod WASM |
 
 ---
 
@@ -114,9 +118,9 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 4.3 | CalculateFee — storage component: sum(effRep/totalValidators * storage_fee) | Per created object |
 | 4.4 | CalculateFee — domain component: max_create_domains * domain_fee | Per domain |
 | 4.5 | CalculateFee — all four components summed | Total = gas + transit + storage + domain |
-| 4.6 | SplitFee — 20% aggregator, 30% burned, 50% epoch | Basis points: 2000/3000/5000 |
-| 4.7 | SplitFee — remainder goes to epoch | epoch = total - aggregator - burned |
-| 4.8 | SplitFee — rounding: aggregator + burned + epoch <= total | Integer division |
+| 4.6 | SplitFee — 70% epoch, 30% burned | Basis points: 7000/3000, no aggregator share |
+| 4.7 | SplitFee — epoch is the remainder | epoch = total - burned |
+| 4.8 | SplitFee — invariant: burned + epoch == total | EpochBPS + BurnBPS == 10000 |
 | 4.9 | ReplicationRatio — creating objects → 1/1 | All validators execute |
 | 4.10 | ReplicationRatio — creating domains → 1/1 | All validators execute |
 | 4.11 | ReplicationRatio — mutable singleton → 1/1 | Singleton = all validators |
@@ -171,7 +175,6 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 6.10 | deductCoinFee — balance < fee → deducted=balance, fullyCovered=false | Partial deduction |
 | 6.11 | creditCoin — overflow check (balance + amount wraps) → error | Prevents uint64 overflow |
 | 6.12 | creditCoin — amount=0 → no-op | Early return |
-| 6.13 | Aggregator credit — TODO: not yet distributed to specific coin | creditAggregator is a no-op |
 
 ---
 
@@ -181,9 +184,8 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 | # | Test | Detail |
 |---|------|--------|
-| 7.1 | Fee summary matches recalculation — all 4 fields | total_fees, total_aggregator, total_burned, total_epoch |
+| 7.1 | Fee summary matches recalculation — all 3 fields | total_fees, total_burned, total_epoch |
 | 7.2 | Fee summary mismatch — total_fees wrong | Reject vertex |
-| 7.3 | Fee summary mismatch — total_aggregator wrong | Reject vertex |
 | 7.4 | Fee summary mismatch — total_burned wrong | Reject vertex |
 | 7.5 | Fee summary mismatch — total_epoch wrong | Reject vertex |
 | 7.6 | No fee summary + 0 transactions → accept | No summary needed |
@@ -284,9 +286,15 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 ---
 
-## 12. Aggregation & BLS
+## 12. Off-chain aggregation & BLS
 
-`internal/aggregation/`
+Aggregation is off-chain. The client daemon (`daemon/`) fetches each replicated
+object, computes its holders by rendezvous hashing (`internal/attest`), requests
+attestations, aggregates them, and submits the attested transaction. A node
+holder (`internal/aggregation/handler.go`) serves the deterministic signature it
+stored at execution and answers a negative request with a static error and no
+signature. There is no node-side collector, no designated top-1 holder, and no
+`WantFull` flag.
 
 | # | Test | Detail |
 |---|------|--------|
@@ -300,20 +308,24 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 12.8 | BLS invalid input sizes → reject | Wrong sig/pubkey lengths |
 | 12.9 | Signer bitmap — build and parse | Bit i = validator i signed |
 | 12.10 | Signer bitmap — out-of-range index | Bounds check |
-| 12.11 | Quorum size — (replication * 67 + 99) / 100 | 67% threshold |
-| 12.12 | Collector — singleton detection (replication=0) → skip attestation | Local lookup, immediate return |
-| 12.13 | Collector — standard object: top-1 sends full object + BLS sig | Others send hash + sig |
-| 12.14 | Collector — quorum reached → early exit | Enough positive attestations |
-| 12.15 | Collector — fail-fast impossible quorum | Too many negatives |
-| 12.16 | Collector — timeout handling | No response within deadline |
-| 12.17 | Collector — hash mismatch detection | Object hash inconsistency |
-| 12.18 | ATX build — singletons excluded from body | buildAttestedTransaction skips rep=0 |
-| 12.19 | Handler — object found → positive response | With BLS sig + optional data |
-| 12.20 | Handler — not found → negative response | reason=notFound |
-| 12.21 | Handler — wrong version → negative response | reason=wrongVersion |
+| 12.11 | attest.QuorumSize — (replication * 67 + 99) / 100 | 67% per-object threshold |
+| 12.12 | Daemon — singleton (replication=0) excluded from collection | Never attested, submitted raw |
+| 12.13 | Daemon — fetch object, then rendezvous holders, then request attestations | Any holder serves the object |
+| 12.14 | Daemon — quorum reached → early exit | Enough positive attestations |
+| 12.15 | Daemon — fail-fast impossible quorum → typed error | Too many negatives |
+| 12.16 | Daemon — version race → bounded randomized backoff and resync | Eventual success or ErrQuorumImpossible |
+| 12.17 | Daemon — local verification: every signature on the same H, H matches the fetched object | Reject otherwise |
+| 12.18 | ATX build — singletons excluded from body and proofs | Only replicated objects |
+| 12.19 | Handler — held object at current version → stored signature | Served from the objsig store |
+| 12.20 | Handler — not held → negative, no signature | Static error |
+| 12.21 | Handler — non-current version → negative, no signature | Static error |
 | 12.22 | Rendezvous hashing — deterministic holders | blake3(objectID \|\| pubkey) scoring |
 | 12.23 | Rendezvous hashing — stability on validator change | Minimal reshuffling |
 | 12.24 | Rendezvous hashing — different objects get different holders | Distribution check |
+| 12.25 | Eager signing — holder signs at execution and stores the current-version signature | objsig store, evicted on version advance |
+| 12.26 | Bounded fallback — store miss for a held current version → sign and store once | Never for unheld or non-current versions |
+| 12.27 | Snapshot warmth — a node that applies a snapshot can serve attestations without signing | Stored signatures travel in snapshots |
+| 12.28 | Attestation hash — H = BLAKE3(content \|\| version_u64_BE) over content bytes | Signer and verifier agree |
 
 ---
 
@@ -330,7 +342,8 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 13.5 | Snapshot version = 4 | snapshotVersion constant |
 | 13.6 | Snapshot roundtrip — create then apply | All data preserved |
 | 13.7 | zstd compression/decompression | Roundtrip |
-| 13.8 | Validator encoding — pubkey + u16 http + u16 quic + 48B BLS | Format |
+| 13.8 | Validator encoding — pubkey + u16 quic + 48B BLS | Format (no HTTP address) |
+| 13.10 | Snapshot carries objsig signatures (format version 6) | New holder is warm after sync |
 | 13.9 | Validator decoding — truncated data | Graceful stop |
 | 13.10 | Object sorting by ID for determinism | sortObjects |
 | 13.11 | Consensus keys excluded from objects | v:, r:, m:, t:, d: prefixes skipped |
@@ -499,7 +512,7 @@ Source of truth: the code and `WHITEPAPER.md`.
 | # | Test | Detail |
 |---|------|--------|
 | 22.1 | Object modified while in transit (being attested) | ATX has version V, but object is now V+1 — version conflict at commit |
-| 22.2 | Two txs from different aggregators modify same object | Second to commit gets conflict |
+| 22.2 | Two clients aggregate and submit txs modifying the same object | Second to commit gets a version conflict |
 | 22.3 | Tx A creates object, Tx B (same vertex, later) tries to use it | B doesn't know the ID yet (deterministic from A's hash) |
 | 22.4 | Object deleted by Tx A, Tx B (later in vertex) reads it | B has version conflict (tracker deleted entry?) |
 | 22.5 | Singleton modified between attestation and commit | Local state may differ — ensureMutableVersions handles gap |
@@ -529,7 +542,11 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 24.5 | Sybil attack — fake validators | Only registered validators accepted |
 | 24.6 | Double-spend — same gas_coin in two txs | Version conflict (coin modified) |
 | 24.7 | Fee overflow attack — craft max_gas * gas_price to wrap to 0 | safeMul prevents |
-| 24.8 | Transit data DoS — tx with 40 large objects | Memory pressure on aggregator |
+| 24.8 | Transit data DoS — tx with 40 large objects | Memory pressure on the client daemon, not the node |
+| 24.14 | Attestation flood DoS — client requests attestations without paying | Holder serves a stored signature (a read), signs nothing new; negatives are static |
+| 24.15 | Cold-holder DoS — request current versions of many held objects | Eager signing leaves no cold window; bounded sign-on-miss only for held current versions |
+| 24.16 | Certless connection flood | Ephemeral client tier: per-IP caps, rate limiting, QUIC Retry source validation |
+| 24.17 | Duplicate inclusion — same gossiped tx in several producers' vertices | Commit-once guard by tx hash: first occurrence executes, repeats skipped (no double create/fee/validator change) |
 | 24.9 | Pending vertex buffer DoS — unlimited buffering | No cap on pendingVertices map |
 | 24.10 | Non-owner deletion attempt | Owner check blocks it |
 | 24.11 | Gas coin owned by different sender | Ownership check blocks it |
@@ -662,34 +679,37 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 ---
 
-## 33. Aggregation Protocol Encoding
+## 33. Attestation Protocol Encoding
 
-`internal/aggregation/protocol.go`
+`internal/attest` (codec), `internal/aggregation/handler.go`
+
+The response carries only the hash and the signature; there is no `WantFull`
+flag and no full-object response. Getting the object is a separate request.
 
 | # | Test | Detail |
 |---|------|--------|
 | 33.1 | Truncated request (< 42 bytes) | Partial read handling |
 | 33.2 | Truncated response (header ok, body missing) | Partial body parse |
-| 33.3 | Invalid type byte (0xFF) | Unknown message type |
-| 33.4 | Object content at max buffer size | Boundary |
-| 33.5 | Positive response with 0-byte content | Existing object, empty content |
+| 33.3 | Invalid type byte | Unknown message type |
+| 33.4 | Positive response — hash + signature only | No object payload |
+| 33.5 | Negative response — static error, no signature | Cheap rejection |
 | 33.6 | Concurrent requests on same connection | Multiplexing / ordering |
 
 ---
 
-## 34. Collector Edge Cases
+## 34. Daemon Collection Edge Cases
 
-`internal/aggregation/collector.go`
+`daemon/aggregation.go`, `daemon/submit.go`
 
 | # | Test | Detail |
 |---|------|--------|
 | 34.1 | Quorum partial — exactly threshold-1 responses | Fail just below quorum |
 | 34.2 | All holders timeout | No response received |
-| 34.3 | Hash mismatch — top-1 sends object, others have different hash | Inconsistent attestation |
-| 34.4 | Holder returns different version than requested | Stale version in response |
-| 34.5 | Fail-fast impossible quorum | (replication - negatives) < threshold |
-| 34.6 | Singleton detected locally but deleted meanwhile | Race condition on local lookup |
-| 34.7 | Local standard object — WantFull=false optimization | Attestation-only collection |
+| 34.3 | Hash mismatch — a holder serves a different hash | Local verification rejects |
+| 34.4 | Holder returns a negative for a non-current version | Refused, counts toward fail-fast |
+| 34.5 | Fail-fast impossible quorum → typed error | (holders - negatives) < threshold |
+| 34.6 | Singleton-only transaction → submitted raw | Wrapped into a trivial ATX by the validator |
+| 34.7 | Version race → bounded backoff and one resync | Eventual success or ErrQuorumImpossible |
 
 ---
 
@@ -736,46 +756,48 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 ---
 
-## 37. Object Routing
+## 37. Object Routing (QUIC)
 
-`cmd/node/routing.go`, `internal/api/server.go`
+`cmd/node/clienthandlers.go`
+
+Inter-node object retrieval runs over the QUIC mesh as a `MsgGetObject` to a
+computed holder's QUIC address; there is no HTTP path and no on-chain HTTP
+address.
 
 | # | Test | Detail |
 |---|------|--------|
-| 37.1 | holderRouter — nil rendezvous → nil router | newHolderRouter returns nil |
-| 37.2 | RouteGetObject — replication=10 minimum probe | ComputeHolders(id, 10) hardcoded |
-| 37.3 | RouteGetObject — skips self (ownPubkey) | h == hr.ownPubkey → continue |
-| 37.4 | RouteGetObject — skips validators without HTTPAddr | info.HTTPAddr == "" → continue |
-| 37.5 | RouteGetObject — tries holders sequentially until success | First successful fetch returns |
-| 37.6 | RouteGetObject — all holders fail → error | "object not found on any holder" |
-| 37.7 | fetchObjectFromHolder — 5s HTTP timeout | holderClient.Timeout = 5s |
-| 37.8 | fetchObjectFromHolder — non-200 status → error | StatusCode check |
-| 37.9 | rebuildObjectFromJSON — valid → FlatBuffer roundtrip | Hex decode → FlatBuffer build |
-| 37.10 | rebuildObjectFromJSON — invalid hex → error | DecodeString failure |
-| 37.11 | ?local=true skips remote routing | localOnly flag in handleGetObject |
+| 37.2 | fetchObjectFromHolder — probes holders with replication 10 | ComputeHolders(id, 10) |
+| 37.3 | fetchObjectFromHolder — skips self | holder == own → continue |
+| 37.5 | fetchObjectFromHolder — asks each holder locally until success | Remote answers local-only, no cascade |
+| 37.6 | fetchObjectFromHolder — all holders fail → not-found | Returns nil |
+| 37.7 | inter-node fetch — 5s QUIC timeout | interNodeFetchTimeout |
+| 37.11 | local-only flag skips remote routing | A non-holder answers not-found |
 
 ---
 
-## 38. ATX Verification at Commit
+## 38. ATX Verification at Commit (epoch-aware)
 
-`cmd/node/aggregation.go`
+`internal/aggregation/verify.go`, wired at `cmd/node/aggregation.go`
 
 | # | Test | Detail |
 |---|------|--------|
-| 38.1 | buildATXVerifier — iterates all proofs | Loop over atx.ProofsLength() |
-| 38.2 | verifySingleProof — finds matching object by ID | findATXObjectIndex linear search |
-| 38.3 | verifySingleProof — object not found in ATX → error | objIdx < 0 |
-| 38.4 | verifySingleProof — recomputes hash: blake3(content \|\| version_BE) | ComputeObjectHash |
-| 38.5 | verifySingleProof — quorum check (signerCount >= QuorumSize) | 67% threshold |
-| 38.6 | verifySingleProof — insufficient signers → error | signerCount < quorum |
-| 38.7 | verifySingleProof — invalid aggregated BLS → error | VerifyAggregated returns false |
+| 38.1 | Verifier iterates all proofs | Loop over atx.ProofsLength() |
+| 38.2 | Finds the matching object by ID | findATXObjectIndex linear search |
+| 38.3 | Object not found in ATX → error | objIdx < 0 |
+| 38.4 | Recomputes H = blake3(content \|\| version_BE) | attest.ComputeObjectHash |
+| 38.5 | Quorum check (signerCount >= attest.QuorumSize) | 67% per-object threshold |
+| 38.6 | Insufficient signers → error | signerCount < quorum |
+| 38.7 | Invalid aggregated BLS → error | VerifyAggregated returns false |
 | 38.8 | extractSignerBLSKeys — bitmap to BLS keys mapping | ParseSignerBitmap + validator lookup |
 | 38.9 | extractSignerBLSKeys — out-of-range bitmap index → skipped | idx >= len(holders) |
 | 38.10 | extractSignerBLSKeys — missing validator BLS key → skipped | info.BLSPubkey == zero |
-| 38.11 | buildIsHolder — singleton (rep=0) → always true | Singleton shortcut |
-| 38.12 | buildIsHolder — standard → Rendezvous check | ComputeHolders + linear scan |
-| 38.13 | scanObjectsForEpoch — fetches missing objects via routing | Background goroutines per NeedFetch |
-| 38.14 | initFeeSystem — wires fee params into DAG and state | SetFeeSystem + SetStorageFees |
+| 38.15 | Epoch rule — attestation_epoch == commit epoch → accept | commitEpochForRound(commitRound) |
+| 38.16 | Epoch rule — attestation_epoch == commit epoch - 1, within grace → accept | commitRound within EpochGraceRounds |
+| 38.17 | Epoch rule — previous epoch past grace → reject | Daemon must recollect |
+| 38.18 | Epoch rule — future epoch → reject | attestation_epoch > commit epoch |
+| 38.19 | Holders recomputed from HoldersForEpoch(attestation_epoch) | Deterministic snapshot selection |
+| 38.20 | Lifecycle layer still runs at commit | Version, owner, gas, replay checked independently of the ATX proof |
+| 38.21 | Genesis epoch (0) → holders resolve to the live validator set | No frozen snapshot until the first boundary; matches the set the daemon syncs |
 
 ---
 
@@ -783,7 +805,7 @@ Source of truth: the code and `WHITEPAPER.md`.
 
 | Section | Tests |
 |---------|-------|
-| 1. Transaction Validation (API) | 36 |
+| 1. Transaction Validation (ingress) | 33 |
 | 2. Consensus DAG | 20 |
 | 3. Version Tracking | 15 |
 | 4. Fee System | 23 |
@@ -794,7 +816,7 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 9. Epoch System | 19 |
 | 10. State Management | 20 |
 | 11. Domain Registry | 7 |
-| 12. Aggregation & BLS | 24 |
+| 12. Off-chain aggregation & BLS | 28 |
 | 13. Snapshot & Sync | 14 |
 | 14. Network & Gossip | 15 |
 | 15. Client Operations | 8 |
@@ -816,9 +838,9 @@ Source of truth: the code and `WHITEPAPER.md`.
 | 31. BLS Signature Edge Cases | 6 |
 | 32. Rendezvous Edge Cases | 5 |
 | 33. Protocol Encoding | 6 |
-| 34. Collector Edge Cases | 7 |
+| 34. Daemon Collection Edge Cases | 7 |
 | 35. Network Edge Cases | 7 |
 | 36. Sync Protocol | 18 |
 | 37. Object Routing | 11 |
-| 38. ATX Verification at Commit | 14 |
-| **TOTAL** | **~417** |
+| 38. ATX Verification at Commit | 15 |
+| **TOTAL** | **~418** |

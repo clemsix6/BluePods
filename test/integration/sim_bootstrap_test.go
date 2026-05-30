@@ -3,7 +3,6 @@ package integration
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"net/http"
 	"testing"
 	"time"
 
@@ -17,7 +16,7 @@ func TestSimBootstrap(t *testing.T) {
 	cluster := NewCluster(t, 1, WithHTTPBase(18100), WithQUICBase(18100+920))
 	cluster.WaitReady(30 * time.Second)
 
-	addr := cluster.Bootstrap().HTTPAddr()
+	addr := cluster.Bootstrap().Addr()
 	cli := cluster.Client(0)
 	systemPod := cli.SystemPod()
 
@@ -51,42 +50,42 @@ func runTxFieldSizeTests(t *testing.T, addr string, systemPod [32]byte) {
 
 	t.Run("ATP-1.1: hash must be 32 bytes", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithFieldSize(systemPod, "hash", 16))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.2: sender must be 32 bytes", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithFieldSize(systemPod, "sender", 16))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.3: signature must be 64 bytes", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithFieldSize(systemPod, "signature", 32))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.4: pod must be 32 bytes", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithFieldSize(systemPod, "pod", 16))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.5: function name must be non-empty", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithEmptyFuncName(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.6: gas_coin must be 0 or 32 bytes", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithFieldSize(systemPod, "gas_coin", 16))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -98,21 +97,21 @@ func runTxContentTests(t *testing.T, addr string, systemPod [32]byte) {
 
 	t.Run("ATP-1.7: hash mismatch rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithBadHash(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.9: invalid signature rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithBadSig(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.10: wrong sender key rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithWrongSender(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -123,7 +122,7 @@ func runTxContentTests(t *testing.T, addr string, systemPod [32]byte) {
 		args := genesis.EncodeMintArgs(100, pk)
 
 		code, _ := SubmitRawBytes(addr, BuildValidTx(systemPod, "mint", args))
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Errorf("expected 202, got %d", code)
 		}
 	})
@@ -135,42 +134,42 @@ func runTxRefTests(t *testing.T, addr string, systemPod [32]byte) {
 
 	t.Run("ATP-1.11: too many refs rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithTooManyRefs(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.12: duplicate read_refs rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithDuplicateRefs(systemPod, false, true))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.13: duplicate mutable_refs rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithDuplicateRefs(systemPod, true, false))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.14: cross-list duplicate rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithDuplicateRefs(systemPod, true, true))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.15: duplicate domain refs rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithDuplicateDomainRefs(systemPod, "test.bp"))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.16: invalid ref ID size rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithBadRefIDSize(systemPod, 16))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -179,7 +178,7 @@ func runTxRefTests(t *testing.T, addr string, systemPod [32]byte) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithDomainRef(systemPod, "test.bp"))
 		// Should not be rejected at validation layer (400)
 		// May fail at aggregation (500) or succeed (202)
-		if code == http.StatusBadRequest {
+		if code == statusBadRequest {
 			t.Errorf("domain ref should not be rejected by validation, got 400")
 		}
 	})
@@ -194,14 +193,14 @@ func runTxEdgeCaseTests(t *testing.T, addr string, systemPod [32]byte) {
 		rand.Read(garbage)
 
 		code, _ := SubmitRawBytes(addr, garbage)
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.19: data too short rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, []byte{0x01, 0x02, 0x03, 0x04})
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -212,31 +211,31 @@ func runTxEdgeCaseTests(t *testing.T, addr string, systemPod [32]byte) {
 
 		code, _ := SubmitRawBytes(addr, bigData)
 		// Server truncates to 1MB via LimitReader, validates truncated data → fails
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-1.21: empty body rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, []byte{})
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 }
 
-// runAPITests tests the HTTP API endpoints.
+// runAPITests tests the QUIC operational and query messages.
 func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]byte) {
 	t.Helper()
 
-	t.Run("ATP-1.23: GET /health", func(t *testing.T) {
+	t.Run("ATP-1.23: health probe", func(t *testing.T) {
 		result := QueryHealth(t, addr)
 		if result["status"] != "ok" {
 			t.Errorf("expected status=ok, got %q", result["status"])
 		}
 	})
 
-	t.Run("ATP-1.24: GET /status fields", func(t *testing.T) {
+	t.Run("ATP-1.24: status fields", func(t *testing.T) {
 		status := QueryStatus(t, addr)
 
 		if status.Validators < 1 {
@@ -248,14 +247,14 @@ func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]by
 		}
 	})
 
-	t.Run("ATP-1.25: GET /validators", func(t *testing.T) {
+	t.Run("ATP-1.25: validators message", func(t *testing.T) {
 		validators := QueryValidators(t, addr)
 		if len(validators) != 1 {
 			t.Errorf("expected 1 validator, got %d", len(validators))
 		}
 	})
 
-	t.Run("ATP-1.26: GET /object valid hex", func(t *testing.T) {
+	t.Run("ATP-1.26: get object found", func(t *testing.T) {
 		w := client.NewWallet()
 		coinID := FaucetAndWait(t, cli, w, 1000, 15*time.Second)
 
@@ -269,19 +268,7 @@ func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]by
 		}
 	})
 
-	t.Run("ATP-1.27: GET /object invalid hex", func(t *testing.T) {
-		resp, err := httpClient.Get("http://" + addr + "/object/zzz")
-		if err != nil {
-			t.Fatalf("request failed: %v", err)
-		}
-		drainClose(resp.Body)
-
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("ATP-1.28: GET /object not found", func(t *testing.T) {
+	t.Run("ATP-1.28: get object not found", func(t *testing.T) {
 		var randomID [32]byte
 		rand.Read(randomID[:])
 
@@ -291,25 +278,25 @@ func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]by
 		}
 	})
 
-	t.Run("ATP-1.29: GET /object local=true", func(t *testing.T) {
+	t.Run("ATP-1.29: get object local-only", func(t *testing.T) {
 		w := client.NewWallet()
 		coinID := FaucetAndWait(t, cli, w, 1000, 15*time.Second)
 
-		// Singletons (rep=0) are stored by all validators, so local=true should work
+		// Singletons (rep=0) are stored by all validators, so local-only succeeds.
 		obj := QueryObjectLocal(t, addr, coinID)
 		if obj == nil {
-			t.Fatal("object not found with local=true")
+			t.Fatal("object not found with local-only")
 		}
 	})
 
-	t.Run("ATP-1.31: GET /domain not found", func(t *testing.T) {
+	t.Run("ATP-1.31: domain resolve not found", func(t *testing.T) {
 		_, found := QueryDomain(t, addr, "nonexistent.bp")
 		if found {
-			t.Error("expected 404 for non-existent domain")
+			t.Error("expected not-found for non-existent domain")
 		}
 	})
 
-	t.Run("ATP-1.36: systemPod in /status", func(t *testing.T) {
+	t.Run("ATP-1.36: systemPod in status", func(t *testing.T) {
 		status := QueryStatus(t, addr)
 
 		if len(status.SystemPod) != 64 {
@@ -323,45 +310,33 @@ func runAPITests(t *testing.T, addr string, cli *client.Client, systemPod [32]by
 	})
 }
 
-// runFaucetTests tests the POST /faucet endpoint.
+// runFaucetTests tests the QUIC faucet message.
 func runFaucetTests(t *testing.T, addr string, cli *client.Client) {
 	t.Helper()
 
-	t.Run("ATP-1.32: POST /faucet valid", func(t *testing.T) {
+	t.Run("ATP-1.32: faucet valid", func(t *testing.T) {
 		w := client.NewWallet()
 		pk := w.Pubkey()
 
-		code, body := SubmitJSON(addr, "/faucet", map[string]any{
-			"pubkey": hex.EncodeToString(pk[:]),
-			"amount": 1000,
-		})
-
-		if code != http.StatusAccepted {
+		code, body := SubmitFaucet(addr, hex.EncodeToString(pk[:]), 1000)
+		if code != statusAccepted {
 			t.Errorf("expected 202, got %d: %s", code, body)
 		}
 	})
 
-	t.Run("ATP-1.33: POST /faucet amount=0", func(t *testing.T) {
+	t.Run("ATP-1.33: faucet amount=0", func(t *testing.T) {
 		w := client.NewWallet()
 		pk := w.Pubkey()
 
-		code, _ := SubmitJSON(addr, "/faucet", map[string]any{
-			"pubkey": hex.EncodeToString(pk[:]),
-			"amount": 0,
-		})
-
-		if code != http.StatusBadRequest {
+		code, _ := SubmitFaucet(addr, hex.EncodeToString(pk[:]), 0)
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
-	t.Run("ATP-1.34: POST /faucet invalid pubkey", func(t *testing.T) {
-		code, _ := SubmitJSON(addr, "/faucet", map[string]any{
-			"pubkey": "abcd",
-			"amount": 1000,
-		})
-
-		if code != http.StatusBadRequest {
+	t.Run("ATP-1.34: faucet invalid pubkey", func(t *testing.T) {
+		code, _ := SubmitFaucet(addr, "abcd", 1000)
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -407,13 +382,9 @@ func runPodVMTests(t *testing.T, addr string, cli *client.Client) {
 		w := client.NewWallet()
 		pk := w.Pubkey()
 
-		// Faucet with amount=0 should be rejected at the API layer
-		code, _ := SubmitJSON(addr, "/faucet", map[string]any{
-			"pubkey": hex.EncodeToString(pk[:]),
-			"amount": 0,
-		})
-
-		if code != http.StatusBadRequest {
+		// Faucet with amount=0 should be rejected at the ingress layer.
+		code, _ := SubmitFaucet(addr, hex.EncodeToString(pk[:]), 0)
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})

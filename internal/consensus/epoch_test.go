@@ -410,20 +410,22 @@ func TestInitEpochHolders(t *testing.T) {
 	)
 	defer dag.Close()
 
-	// Before InitEpochHolders, epochHolders is nil
-	if dag.epochHolders != nil {
-		t.Fatal("epochHolders should be nil before init")
-	}
-
 	dag.InitEpochHolders()
 
-	// After init, epochHolders should have all validators
-	if dag.epochHolders == nil {
-		t.Fatal("epochHolders should not be nil after init")
+	// The genesis epoch keeps no frozen snapshot: epochHolders stays nil so that
+	// the still-forming set is never frozen at a partial, per-node-divergent
+	// membership. HoldersForEpoch must then resolve epoch 0 to the live set.
+	if dag.epochHolders != nil {
+		t.Fatal("epochHolders should remain nil in the genesis epoch")
 	}
 
-	if dag.epochHolders.Len() != 4 {
-		t.Errorf("expected 4 epoch holders, got %d", dag.epochHolders.Len())
+	holders, ok := dag.HoldersForEpoch(0)
+	if !ok {
+		t.Fatal("genesis epoch holders should resolve to the live set")
+	}
+
+	if holders.Len() != 4 {
+		t.Errorf("expected 4 genesis epoch holders, got %d", holders.Len())
 	}
 }
 
