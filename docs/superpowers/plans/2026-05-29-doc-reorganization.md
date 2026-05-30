@@ -14,6 +14,8 @@
 
 **Commit convention (this repo):** `[+]` add, `[-]` remove, `[&]` change, `[!]` fix. One change per line; minor sub-points on their own `\t-` line. No footers, no co-author trailer.
 
+**Update:** The STATUS pillar was dropped at the maintainer's request (solo project, nothing to keep in sync). The design is now two pillars, VISION and WHITEPAPER, and the whitepaper keeps its design principles and open problems instead of moving them out. Skip Task 2, and ignore the STATUS-related steps in Tasks 3 to 7. The spec is the source of truth.
+
 ---
 
 ## File structure
