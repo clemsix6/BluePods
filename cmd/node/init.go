@@ -137,7 +137,6 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 	genesisCfg := genesis.Config{
 		PrivateKey:  n.cfg.PrivateKey,
 		InitialMint: n.cfg.InitialMint,
-		HTTPAddress: n.cfg.HTTPAddress,
 		QUICAddress: n.cfg.QUICAddress,
 		SystemPodID: n.systemPod,
 		BLSPubkey:   blsKey.PublicKeyBytes(),

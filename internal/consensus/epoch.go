@@ -163,7 +163,7 @@ func (d *DAG) snapshotEpochHolders() {
 	// If churn is unlimited or additions fit within limit, include all
 	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
 		for _, v := range validators {
-			d.epochHolders.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+			d.epochHolders.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		}
 		return
 	}
@@ -184,7 +184,7 @@ func (d *DAG) snapshotEpochHolders() {
 	for _, v := range validators {
 		// Include validator if it was NOT a new addition, or if it's in the allowed set
 		if !additionSet[v.Pubkey] || allowedSet[v.Pubkey] {
-			d.epochHolders.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+			d.epochHolders.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		}
 	}
 }

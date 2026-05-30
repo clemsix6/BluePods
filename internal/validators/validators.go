@@ -8,7 +8,6 @@ type Hash [32]byte
 // ValidatorInfo holds information about a validator.
 type ValidatorInfo struct {
 	Pubkey    Hash     // Pubkey is the validator's Ed25519 public key
-	HTTPAddr  string   // HTTPAddr is the HTTP API endpoint (may be empty)
 	QUICAddr  string   // QUICAddr is the QUIC P2P endpoint (may be empty)
 	BLSPubkey [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
 }
@@ -47,20 +46,17 @@ func (vs *ValidatorSet) OnAdd(fn func(*ValidatorInfo)) {
 	vs.onAdd = fn
 }
 
-// Add adds a validator with network addresses and BLS public key.
+// Add adds a validator with its QUIC address and BLS public key.
 // Returns true if added or updated, false if already exists with same addresses.
-// If the validator exists but had empty addresses, the addresses are updated.
+// If the validator exists but had an empty address, the address is updated.
 // If the validator exists but had zero BLS key, the BLS key is updated.
 // The callback (if set) is called outside the lock only for new validators.
-func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string, blsPubkey [48]byte) bool {
+func (vs *ValidatorSet) Add(pubkey Hash, quicAddr string, blsPubkey [48]byte) bool {
 	vs.mu.Lock()
 
 	if idx, exists := vs.index[pubkey]; exists {
 		// Validator exists - check if we need to update fields
 		existing := vs.validators[idx]
-		if existing.HTTPAddr == "" && httpAddr != "" {
-			existing.HTTPAddr = httpAddr
-		}
 		if existing.QUICAddr == "" && quicAddr != "" {
 			existing.QUICAddr = quicAddr
 		}
@@ -73,7 +69,6 @@ func (vs *ValidatorSet) Add(pubkey Hash, httpAddr, quicAddr string, blsPubkey [4
 
 	info := &ValidatorInfo{
 		Pubkey:    pubkey,
-		HTTPAddr:  httpAddr,
 		QUICAddr:  quicAddr,
 		BLSPubkey: blsPubkey,
 	}
@@ -171,7 +166,6 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 		// Return a copy to avoid races
 		return &ValidatorInfo{
 			Pubkey:    info.Pubkey,
-			HTTPAddr:  info.HTTPAddr,
 			QUICAddr:  info.QUICAddr,
 			BLSPubkey: info.BLSPubkey,
 		}
@@ -189,7 +183,6 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	for i, v := range vs.validators {
 		result[i] = &ValidatorInfo{
 			Pubkey:    v.Pubkey,
-			HTTPAddr:  v.HTTPAddr,
 			QUICAddr:  v.QUICAddr,
 			BLSPubkey: v.BLSPubkey,
 		}

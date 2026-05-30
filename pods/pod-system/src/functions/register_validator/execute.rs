@@ -12,7 +12,6 @@ use super::Args;
 /// The validator's pubkey is taken from the transaction sender.
 ///
 /// # Arguments (Borsh encoded)
-/// - `http_address`: HTTP API endpoint
 /// - `quic_address`: QUIC attestation endpoint
 ///
 /// # Returns
@@ -35,7 +34,7 @@ pub fn execute(ctx: &Context) -> ExecuteResult {
     };
 
     // Build Validator FlatBuffer
-    let content = build_validator_content(&pubkey, &args.http_address, &args.quic_address);
+    let content = build_validator_content(&pubkey, &args.quic_address);
 
     // Create validator as singleton (replication=0)
     let created = CreatedObject {
@@ -48,16 +47,14 @@ pub fn execute(ctx: &Context) -> ExecuteResult {
 }
 
 /// Builds Validator content as FlatBuffer bytes.
-fn build_validator_content(pubkey: &[u8; 32], http_address: &[u8], quic_address: &[u8]) -> Vec<u8> {
+fn build_validator_content(pubkey: &[u8; 32], quic_address: &[u8]) -> Vec<u8> {
     let mut builder = FlatBufferBuilder::with_capacity(256);
 
     let pubkey_vec = builder.create_vector(pubkey);
-    let http_vec = builder.create_vector(http_address);
     let quic_vec = builder.create_vector(quic_address);
 
     let mut vb = ValidatorBuilder::new(&mut builder);
     vb.add_pubkey(pubkey_vec);
-    vb.add_http_address(http_vec);
     vb.add_quic_address(quic_vec);
     let validator = vb.finish();
 

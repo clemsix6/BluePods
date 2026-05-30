@@ -29,7 +29,6 @@ const (
 	// throttled to the liveness loop (500ms). This prevents round-jumping
 	// from vertex-triggered production and ensures sequential vertex creation.
 	transitionBufferRounds = 10
-
 )
 
 // Executor executes committed transactions.
@@ -39,9 +38,9 @@ type Executor interface {
 
 // DAG manages the Mysticeti consensus.
 type DAG struct {
-	store      *store
-	tracker    *objectTracker
-	validators *ValidatorSet
+	store       *store
+	tracker     *objectTracker
+	validators  *ValidatorSet
 	executor    Executor
 	broadcaster Broadcaster
 	systemPod   Hash
@@ -67,12 +66,12 @@ type DAG struct {
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
 
 	// Mode flags
-	listenerMode   bool // listenerMode disables vertex production
-	isBootstrap    bool // isBootstrap allows producing even with few validators
-	minValidators  int  // minValidators is the threshold before non-bootstrap nodes produce
-	gossipFanout   int  // gossipFanout is the number of peers to send each vertex to
-	graceRounds    int  // graceRounds is the transition grace period (0 = use default 20)
-	bufferRounds   int  // bufferRounds is the transition buffer period (0 = use default 10)
+	listenerMode  bool // listenerMode disables vertex production
+	isBootstrap   bool // isBootstrap allows producing even with few validators
+	minValidators int  // minValidators is the threshold before non-bootstrap nodes produce
+	gossipFanout  int  // gossipFanout is the number of peers to send each vertex to
+	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
+	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
 
 	// Sync mode: after sync, only reference trusted producers (from snapshot) until
 	// we've produced our first vertex. This prevents referencing vertices from other
@@ -87,13 +86,13 @@ type DAG struct {
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
 
 	// Epoch: frozen validator set for Rendezvous hashing.
-	epochLength      uint64          // epochLength is the number of rounds per epoch (0 = disabled)
-	currentEpoch     uint64          // currentEpoch is the current epoch number
-	epochHolders     *ValidatorSet   // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
-	prevEpochHolders *ValidatorSet   // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
-	pendingRemovals  map[Hash]bool   // pendingRemovals are validators to remove at next epoch
-	epochAdditions   []Hash          // epochAdditions are validators added this epoch
-	maxChurnPerEpoch int             // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
+	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
+	currentEpoch      uint64             // currentEpoch is the current epoch number
+	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
+	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
+	epochAdditions    []Hash             // epochAdditions are validators added this epoch
+	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
 	onEpochTransition func(epoch uint64) // onEpochTransition is called when an epoch boundary is reached
 
 	// Sharding: isHolder determines if this node stores/executes a given object.
@@ -109,9 +108,9 @@ type DAG struct {
 	computeHolders HolderFunc // computeHolders computes holders for replication ratio
 
 	// Epoch rewards: accumulated fees and round tracking per validator.
-	epochFees           uint64           // epochFees accumulates total_epoch from all committed vertices this epoch
-	epochRoundsProduced map[Hash]uint64  // epochRoundsProduced counts vertices produced per validator this epoch
-	epochTotalRounds    uint64           // epochTotalRounds is total committed rounds this epoch
+	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
+	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
+	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
 
 	// Lifecycle
 	stop chan struct{}
@@ -230,16 +229,16 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	copy(pubKey[:], privKey.Public().(ed25519.PublicKey))
 
 	d := &DAG{
-		store:           newStore(db),
-		tracker:         newObjectTracker(db),
-		validators:      validators,
-		executor:        executor,
-		broadcaster:     broadcaster,
-		systemPod:       systemPod,
-		epoch:           epoch,
-		privKey:         privKey,
-		pubKey:          pubKey,
-		committed:       make(chan CommittedTx, channelBuffer),
+		store:               newStore(db),
+		tracker:             newObjectTracker(db),
+		validators:          validators,
+		executor:            executor,
+		broadcaster:         broadcaster,
+		systemPod:           systemPod,
+		epoch:               epoch,
+		privKey:             privKey,
+		pubKey:              pubKey,
+		committed:           make(chan CommittedTx, channelBuffer),
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
 		epochRoundsProduced: make(map[Hash]uint64),
@@ -373,8 +372,8 @@ func (d *DAG) OnValidatorAdded(fn func(*ValidatorInfo)) {
 // AddValidator adds a validator to the local validator set.
 // Used for self-registration to allow immediate vertex production.
 // Also triggers transition if this addition reaches minValidators threshold.
-func (d *DAG) AddValidator(pubkey Hash, httpAddr, quicAddr string, blsPubkey [48]byte) {
-	d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
+func (d *DAG) AddValidator(pubkey Hash, quicAddr string, blsPubkey [48]byte) {
+	d.validators.Add(pubkey, quicAddr, blsPubkey)
 
 	// Fire transition when the threshold is reached (same logic as handleRegisterValidator).
 	// For synced nodes, the self-add may be what pushes the count to minValidators.
@@ -828,7 +827,6 @@ func (d *DAG) markFullQuorumAchieved() {
 		logger.Info("full quorum achieved, transition complete")
 	}
 }
-
 
 // countValidatorVertices counts vertices at a round that are from known validators.
 func (d *DAG) countValidatorVertices(round uint64) int {

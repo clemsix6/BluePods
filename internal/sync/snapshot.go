@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 5
+	snapshotVersion = 6
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -293,8 +293,8 @@ func sortValidatorInfos(validators []*consensus.ValidatorInfo) {
 	})
 }
 
-// encodeValidators encodes validators with their addresses and BLS pubkey.
-// Format: for each validator: 32-byte pubkey + u16 http_len + http_bytes + u16 quic_len + quic_bytes + 48-byte bls_pubkey
+// encodeValidators encodes validators with their QUIC address and BLS pubkey.
+// Format: for each validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte bls_pubkey
 func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 	var buf bytes.Buffer
 
@@ -302,15 +302,9 @@ func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 		// Pubkey (32 bytes)
 		buf.Write(v.Pubkey[:])
 
-		// HTTP address (u16 len + bytes)
-		httpBytes := []byte(v.HTTPAddr)
-		lenBuf := make([]byte, 2)
-		binary.LittleEndian.PutUint16(lenBuf, uint16(len(httpBytes)))
-		buf.Write(lenBuf)
-		buf.Write(httpBytes)
-
 		// QUIC address (u16 len + bytes)
 		quicBytes := []byte(v.QUICAddr)
+		lenBuf := make([]byte, 2)
 		binary.LittleEndian.PutUint16(lenBuf, uint16(len(quicBytes)))
 		buf.Write(lenBuf)
 		buf.Write(quicBytes)
@@ -332,18 +326,6 @@ func decodeValidators(data []byte) []*consensus.ValidatorInfo {
 		// Pubkey (32 bytes)
 		copy(v.Pubkey[:], data[:32])
 		data = data[32:]
-
-		// HTTP address
-		if len(data) < 2 {
-			break
-		}
-		httpLen := binary.LittleEndian.Uint16(data[:2])
-		data = data[2:]
-		if len(data) < int(httpLen) {
-			break
-		}
-		v.HTTPAddr = string(data[:httpLen])
-		data = data[httpLen:]
 
 		// QUIC address
 		if len(data) < 2 {

@@ -111,7 +111,7 @@ func newDaemonWithHolders(holders []*mockHolder) *Daemon {
 	for _, h := range holders {
 		var blsPub [48]byte
 		copy(blsPub[:], h.blsKey.PublicKeyBytes())
-		vs.Add(h.pubkey, "", h.node.Addr(), blsPub)
+		vs.Add(h.pubkey, h.node.Addr(), blsPub)
 	}
 
 	addrs := make([]string, len(holders))
@@ -200,7 +200,7 @@ func TestComputeHoldersMatchesAttest(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		var pk validators.Hash
 		pk[0] = byte(i + 1)
-		vs.Add(pk, "", "addr", [48]byte{byte(i)})
+		vs.Add(pk, "addr", [48]byte{byte(i)})
 	}
 
 	objID := [32]byte{0x99}

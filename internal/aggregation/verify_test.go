@@ -55,7 +55,7 @@ func buildVerifierFixture(t *testing.T, attestationEpoch uint64) (*validators.Va
 
 		var blsPub [48]byte
 		copy(blsPub[:], key.PublicKeyBytes())
-		vs.Add(pubkey, "", "addr", blsPub)
+		vs.Add(pubkey, "addr", blsPub)
 	}
 
 	objID := [32]byte{0x42}

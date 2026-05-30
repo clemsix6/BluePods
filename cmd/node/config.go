@@ -13,9 +13,6 @@ type Config struct {
 	// DataPath is the directory for persistent storage.
 	DataPath string
 
-	// HTTPAddress is the HTTP API listen address.
-	HTTPAddress string
-
 	// QUICAddress is the QUIC P2P listen address.
 	QUICAddress string
 
@@ -79,7 +76,6 @@ func parseFlags() *Config {
 	cfg := &Config{}
 
 	flag.StringVar(&cfg.DataPath, "data", "./data", "Data directory path")
-	flag.StringVar(&cfg.HTTPAddress, "http", ":8080", "HTTP API address")
 	flag.StringVar(&cfg.QUICAddress, "quic", ":9000", "QUIC P2P address")
 	flag.StringVar(&cfg.KeyPath, "key", "", "Ed25519 private key path (generates new if missing)")
 	flag.BoolVar(&cfg.Bootstrap, "bootstrap", false, "Bootstrap mode (genesis validator)")

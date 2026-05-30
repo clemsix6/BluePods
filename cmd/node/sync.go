@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"BluePods/internal/api"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
@@ -19,10 +18,10 @@ import (
 // snapshotResult holds the result of applying a snapshot.
 type snapshotResult struct {
 	lastCommittedRound uint64                         // lastCommittedRound is the round of the last committed vertex
-	validators         []*consensus.ValidatorInfo      // validators is the set of validators from the snapshot
-	vertices           []consensus.VertexEntry         // vertices is the set of vertices from the snapshot
-	trackerEntries     []consensus.ObjectTrackerEntry  // trackerEntries is the set of object tracker entries
-	domainEntries      []state.DomainEntry             // domainEntries is the set of domain mappings from the snapshot
+	validators         []*consensus.ValidatorInfo     // validators is the set of validators from the snapshot
+	vertices           []consensus.VertexEntry        // vertices is the set of vertices from the snapshot
+	trackerEntries     []consensus.ObjectTrackerEntry // trackerEntries is the set of object tracker entries
+	domainEntries      []state.DomainEntry            // domainEntries is the set of domain mappings from the snapshot
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -70,12 +69,6 @@ func (n *Node) runValidator() error {
 	// Register as validator by sending raw tx to bootstrap
 	if err := n.registerAsValidator(); err != nil {
 		return fmt.Errorf("register validator:\n%w", err)
-	}
-
-	// Start HTTP API (read and operations endpoints only; submission is QUIC).
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.state)
-	if err := n.api.Start(); err != nil {
-		return fmt.Errorf("start api:\n%w", err)
 	}
 
 	// Start snapshot manager
@@ -311,12 +304,11 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 		"count", len(validators),
 	)
 
-	// Add each validator with their full info (pubkey + addresses + BLS key)
+	// Add each validator with their full info (pubkey + QUIC address + BLS key)
 	for _, v := range validators {
-		vs.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+		vs.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
-			"http", v.HTTPAddr,
 			"quic", v.QUICAddr,
 		)
 	}

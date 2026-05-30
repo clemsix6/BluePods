@@ -1,20 +1,41 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"net/http"
-	"strconv"
-	"strings"
+	"time"
+
+	"github.com/quic-go/quic-go"
 
 	"BluePods/internal/consensus"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
+	"BluePods/internal/network"
 )
 
-// registerAsValidator sends a register_validator raw transaction to the bootstrap node.
+const (
+	// registrationALPN matches the node's QUIC ALPN identifier.
+	registrationALPN = "bluepods/1"
+
+	// registrationDialTimeout bounds the dial to the registration target.
+	registrationDialTimeout = 5 * time.Second
+
+	// registrationRequestTimeout bounds the registration round-trip.
+	registrationRequestTimeout = 8 * time.Second
+
+	// registrationLengthPrefix is the framing prefix width, matching internal/network.
+	registrationLengthPrefix = 4
+
+	// registrationMaxResponse caps a registration response.
+	registrationMaxResponse = 1 << 20
+)
+
+// registerAsValidator submits a register_validator raw transaction over QUIC to
+// the registration target. The receiving validator wraps it into a trivial ATX.
 func (n *Node) registerAsValidator() error {
 	var blsPubkeyBytes []byte
 	if n.blsKey != nil {
@@ -24,26 +45,15 @@ func (n *Node) registerAsValidator() error {
 	tx := genesis.BuildRegisterValidatorRawTx(
 		n.cfg.PrivateKey,
 		n.systemPod,
-		n.cfg.HTTPAddress,
 		n.cfg.QUICAddress,
 		blsPubkeyBytes,
 	)
 
-	registrationHTTP := n.getRegistrationHTTPAddr()
-	logger.Info("registering as validator", "target", registrationHTTP)
+	target := n.registrationAddr()
+	logger.Info("registering as validator", "target", target)
 
-	resp, err := http.Post(
-		"http://"+registrationHTTP+"/tx",
-		"application/octet-stream",
-		bytes.NewReader(tx),
-	)
-	if err != nil {
-		return fmt.Errorf("send registration tx:\n%w", err)
-	}
-	defer func() { io.Copy(io.Discard, resp.Body); resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("registration failed: status %d", resp.StatusCode)
+	if err := submitTxOverQUIC(target, tx); err != nil {
+		return fmt.Errorf("submit registration tx:\n%w", err)
 	}
 
 	// Optimistic self-add: add ourselves to the local validator set immediately
@@ -66,34 +76,106 @@ func (n *Node) selfAddToValidatorSet() {
 		copy(blsPub[:], n.blsKey.PublicKeyBytes())
 	}
 
-	n.dag.AddValidator(pubHash, n.cfg.HTTPAddress, n.cfg.QUICAddress, blsPub)
+	n.dag.AddValidator(pubHash, n.cfg.QUICAddress, blsPub)
 }
 
-// getRegistrationHTTPAddr derives the HTTP address for validator registration.
-// Uses RegistrationAddr if set, otherwise falls back to BootstrapAddr.
-// Convention: HTTP port = QUIC port - 920 (e.g., QUIC 9000 -> HTTP 8080).
-func (n *Node) getRegistrationHTTPAddr() string {
-	quicAddr := n.cfg.RegistrationAddr
-	if quicAddr == "" {
-		quicAddr = n.cfg.BootstrapAddr
+// registrationAddr returns the QUIC address used for validator registration.
+// It uses RegistrationAddr if set, otherwise falls back to BootstrapAddr.
+func (n *Node) registrationAddr() string {
+	if n.cfg.RegistrationAddr != "" {
+		return n.cfg.RegistrationAddr
 	}
 
-	host := quicAddr
-	portStr := ""
+	return n.cfg.BootstrapAddr
+}
 
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		portStr = host[idx+1:]
-		host = host[:idx]
+// submitTxOverQUIC dials the target node and submits a raw transaction or ATX
+// body via a single MsgSubmitTx round-trip.
+func submitTxOverQUIC(addr string, body []byte) error {
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), registrationDialTimeout)
+	defer dialCancel()
+
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true, // the node authenticates the client; we trust by quorum
+		NextProtos:         []string{registrationALPN},
 	}
 
-	if portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil {
-			httpPort := port - 920
-			if httpPort > 0 {
-				return fmt.Sprintf("%s:%d", host, httpPort)
-			}
-		}
+	conn, err := quic.DialAddr(dialCtx, addr, tlsConfig, &quic.Config{})
+	if err != nil {
+		return fmt.Errorf("dial %s:\n%w", addr, err)
+	}
+	defer conn.CloseWithError(0, "")
+
+	resp, err := registrationRoundTrip(conn, body)
+	if err != nil {
+		return err
 	}
 
-	return host + ":8080"
+	parsed, err := network.DecodeSubmitTxResp(resp)
+	if err != nil {
+		return fmt.Errorf("decode registration response:\n%w", err)
+	}
+
+	if parsed.Err != "" {
+		return fmt.Errorf("registration rejected: %s", parsed.Err)
+	}
+
+	return nil
+}
+
+// registrationRoundTrip opens a stream, writes the submit request, and reads the
+// length-prefixed response.
+func registrationRoundTrip(conn *quic.Conn, body []byte) ([]byte, error) {
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), registrationRequestTimeout)
+	defer reqCancel()
+
+	stream, err := conn.OpenStreamSync(reqCtx)
+	if err != nil {
+		return nil, fmt.Errorf("open stream:\n%w", err)
+	}
+	defer stream.Close()
+
+	if deadline, ok := reqCtx.Deadline(); ok {
+		stream.SetDeadline(deadline)
+	}
+
+	request := network.EncodeSubmitTx(&network.SubmitTxRequest{Body: body})
+	if err := writeRegistrationFrame(stream, request); err != nil {
+		return nil, fmt.Errorf("write request:\n%w", err)
+	}
+
+	return readRegistrationFrame(stream)
+}
+
+// writeRegistrationFrame writes a length-prefixed message, matching node framing.
+func writeRegistrationFrame(w io.Writer, data []byte) error {
+	var prefix [registrationLengthPrefix]byte
+	binary.BigEndian.PutUint32(prefix[:], uint32(len(data)))
+
+	if _, err := w.Write(prefix[:]); err != nil {
+		return err
+	}
+
+	_, err := w.Write(data)
+	return err
+}
+
+// readRegistrationFrame reads a length-prefixed message, matching node framing.
+func readRegistrationFrame(r io.Reader) ([]byte, error) {
+	var prefix [registrationLengthPrefix]byte
+	if _, err := io.ReadFull(r, prefix[:]); err != nil {
+		return nil, err
+	}
+
+	length := binary.BigEndian.Uint32(prefix[:])
+	if length > registrationMaxResponse {
+		return nil, fmt.Errorf("registration response too large: %d", length)
+	}
+
+	data := make([]byte, length)
+	if _, err := io.ReadFull(r, data); err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }

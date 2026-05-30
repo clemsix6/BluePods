@@ -596,15 +596,15 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	var pubkey Hash
 	copy(pubkey[:], sender)
 
-	// Parse network addresses and BLS pubkey from transaction args
-	httpAddr, quicAddr, blsPubkeyBytes := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
+	// Parse network address and BLS pubkey from transaction args
+	quicAddr, blsPubkeyBytes := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
 
 	var blsPubkey [48]byte
 	if len(blsPubkeyBytes) == 48 {
 		copy(blsPubkey[:], blsPubkeyBytes)
 	}
 
-	isNew := d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
+	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
 
 	// Track mid-epoch additions for churn limiting
 	if isNew && d.epochLength > 0 {

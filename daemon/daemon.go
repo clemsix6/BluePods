@@ -115,7 +115,7 @@ func (d *Daemon) SyncValidators() error {
 	vs := validators.NewValidatorSet(nil)
 	for i := range parsed.Validators {
 		v := &parsed.Validators[i]
-		vs.Add(validators.Hash(v.Pubkey), "", v.QUICAddr, v.BLSPubkey)
+		vs.Add(validators.Hash(v.Pubkey), v.QUICAddr, v.BLSPubkey)
 	}
 
 	d.mu.Lock()

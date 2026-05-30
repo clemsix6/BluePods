@@ -236,7 +236,7 @@ func TestMidEpochRegistration_NotInEpochHolders(t *testing.T) {
 
 	// Add a new validator mid-epoch
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// New validator is in active set but NOT in epoch holders
@@ -264,7 +264,7 @@ func TestMidEpochRegistration_InEpochHoldersAfterTransition(t *testing.T) {
 
 	// Add new validator mid-epoch
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// Second epoch transition should include the new validator
 	dag.transitionEpoch(200)
@@ -342,7 +342,7 @@ func TestMultipleEpochTransitions(t *testing.T) {
 
 	// Epoch 2: add new validator, remove validator 3
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.pendingRemovals[validators[3].pubKey] = true
 	dag.transitionEpoch(20)
 
@@ -505,7 +505,7 @@ func TestChurnLimit_CapsAdditions(t *testing.T) {
 	newVals := make([]testValidator, 5)
 	for i := 0; i < 5; i++ {
 		newVals[i] = newTestValidator()
-		dag.validators.Add(newVals[i].pubKey, "", "", [48]byte{})
+		dag.validators.Add(newVals[i].pubKey, "", [48]byte{})
 		dag.epochAdditions = append(dag.epochAdditions, newVals[i].pubKey)
 	}
 
@@ -643,7 +643,7 @@ func TestEpochHolders_FrozenIndependence(t *testing.T) {
 
 	// Add a new validator to the live set
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// epochHolders should STILL be 4, NOT 5
 	if dag.EpochHolders().Len() != 4 {
@@ -718,7 +718,7 @@ func TestRegisterAndDeregisterSameEpoch(t *testing.T) {
 
 	// Mid-epoch: add a new validator
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// Mid-epoch: also mark the same validator for removal
@@ -787,7 +787,7 @@ func TestChurnLimit_DeterministicOrder(t *testing.T) {
 		pubkeys := make([]Hash, 6)
 		for i := 0; i < 6; i++ {
 			pubkeys[i] = Hash{byte(i + 1)} // deterministic keys: 01, 02, 03, 04, 05, 06
-			vs.Add(pubkeys[i], "", "", [48]byte{})
+			vs.Add(pubkeys[i], "", [48]byte{})
 		}
 
 		// Use first validator's key as privKey (doesn't matter for this test)
@@ -846,7 +846,7 @@ func TestChurnLimit_DeferredAppliedNextEpoch(t *testing.T) {
 	pubkeys := make([]Hash, 5)
 	for i := 0; i < 5; i++ {
 		pubkeys[i] = Hash{byte(i + 1)}
-		vs.Add(pubkeys[i], "", "", [48]byte{})
+		vs.Add(pubkeys[i], "", [48]byte{})
 	}
 
 	v := newTestValidator()
@@ -921,7 +921,7 @@ func TestEpochTransition_ScannerSeesNewHolders(t *testing.T) {
 
 	// Now a new validator joins
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// Epoch 2: new validator in the set changes Rendezvous hashing
 	dag.transitionEpoch(20)
@@ -1510,7 +1510,7 @@ func TestFullEpochHappyPath_ObjectRedistribution(t *testing.T) {
 
 	// --- Phase 2: Add a new validator ---
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// Epoch 2: new validator included

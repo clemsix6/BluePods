@@ -24,8 +24,7 @@ impl<'a> ::flatbuffers::Follow<'a> for Validator<'a> {
 
 impl<'a> Validator<'a> {
   pub const VT_PUBKEY: ::flatbuffers::VOffsetT = 4;
-  pub const VT_HTTP_ADDRESS: ::flatbuffers::VOffsetT = 6;
-  pub const VT_QUIC_ADDRESS: ::flatbuffers::VOffsetT = 8;
+  pub const VT_QUIC_ADDRESS: ::flatbuffers::VOffsetT = 6;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -38,7 +37,6 @@ impl<'a> Validator<'a> {
   ) -> ::flatbuffers::WIPOffset<Validator<'bldr>> {
     let mut builder = ValidatorBuilder::new(_fbb);
     if let Some(x) = args.quic_address { builder.add_quic_address(x); }
-    if let Some(x) = args.http_address { builder.add_http_address(x); }
     if let Some(x) = args.pubkey { builder.add_pubkey(x); }
     builder.finish()
   }
@@ -50,13 +48,6 @@ impl<'a> Validator<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Validator::VT_PUBKEY, None)}
-  }
-  #[inline]
-  pub fn http_address(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Validator::VT_HTTP_ADDRESS, None)}
   }
   #[inline]
   pub fn quic_address(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
@@ -74,7 +65,6 @@ impl ::flatbuffers::Verifiable for Validator<'_> {
   ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
     v.visit_table(pos)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("pubkey", Self::VT_PUBKEY, false)?
-     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("http_address", Self::VT_HTTP_ADDRESS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("quic_address", Self::VT_QUIC_ADDRESS, false)?
      .finish();
     Ok(())
@@ -82,7 +72,6 @@ impl ::flatbuffers::Verifiable for Validator<'_> {
 }
 pub struct ValidatorArgs<'a> {
     pub pubkey: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
-    pub http_address: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub quic_address: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
 }
 impl<'a> Default for ValidatorArgs<'a> {
@@ -90,7 +79,6 @@ impl<'a> Default for ValidatorArgs<'a> {
   fn default() -> Self {
     ValidatorArgs {
       pubkey: None,
-      http_address: None,
       quic_address: None,
     }
   }
@@ -104,10 +92,6 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> ValidatorBuilder<'a, 'b, A> {
   #[inline]
   pub fn add_pubkey(&mut self, pubkey: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Validator::VT_PUBKEY, pubkey);
-  }
-  #[inline]
-  pub fn add_http_address(&mut self, http_address: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
-    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Validator::VT_HTTP_ADDRESS, http_address);
   }
   #[inline]
   pub fn add_quic_address(&mut self, quic_address: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
@@ -132,7 +116,6 @@ impl ::core::fmt::Debug for Validator<'_> {
   fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
     let mut ds = f.debug_struct("Validator");
       ds.field("pubkey", &self.pubkey());
-      ds.field("http_address", &self.http_address());
       ds.field("quic_address", &self.quic_address());
       ds.finish()
   }

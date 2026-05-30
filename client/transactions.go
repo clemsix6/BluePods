@@ -25,7 +25,7 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "split", args, []uint16{0}, mutableRefs, nil)
 	newCoinID := computeNewObjectID(txHash)
 
-	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+	if err := c.submit(txBytes); err != nil {
 		return [32]byte{}, fmt.Errorf("submit split tx:\n%w", err)
 	}
 
@@ -44,7 +44,7 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 
 	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer", args, nil, mutableRefs, nil)
 
-	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit transfer tx:\n%w", err)
 	}
 
@@ -59,7 +59,7 @@ func (w *Wallet) CreateNFT(c *Client, replication uint16, metadata []byte) ([32]
 	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_nft", args, []uint16{replication}, nil, nil)
 	nftID := computeNewObjectID(txHash)
 
-	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+	if err := c.submit(txBytes); err != nil {
 		return [32]byte{}, fmt.Errorf("submit create_nft tx:\n%w", err)
 	}
 
@@ -78,7 +78,7 @@ func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) erro
 
 	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_nft", args, nil, mutableRefs, nil)
 
-	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit transfer_nft tx:\n%w", err)
 	}
 
@@ -90,7 +90,7 @@ func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) erro
 func (w *Wallet) DeregisterValidator(c *Client) error {
 	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "deregister_validator", nil, nil, nil, nil)
 
-	if err := submitTx(c.nodeAddr, txBytes); err != nil {
+	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit deregister_validator tx:\n%w", err)
 	}
 
@@ -134,7 +134,9 @@ func encodeCreateNftArgs(owner [32]byte, replication uint16, metadata []byte) []
 }
 
 // buildSignedTx builds a signed raw Transaction (not ATX).
-// Per spec: the client sends a raw Transaction to the validator, which becomes the aggregator.
+// The client submits it through the daemon, which aggregates attestations for any
+// replicated objects before submission; singleton-only transactions are submitted
+// raw and wrapped by the validator.
 // Returns the serialized Transaction bytes and the transaction hash.
 func buildSignedTx(
 	privKey ed25519.PrivateKey,

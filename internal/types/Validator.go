@@ -75,42 +75,8 @@ func (rcv *Validator) MutatePubkey(j int, n byte) bool {
 	return false
 }
 
-func (rcv *Validator) HttpAddress(j int) byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
-	}
-	return 0
-}
-
-func (rcv *Validator) HttpAddressLength() int {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		return rcv._tab.VectorLen(o)
-	}
-	return 0
-}
-
-func (rcv *Validator) HttpAddressBytes() []byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		return rcv._tab.ByteVector(o + rcv._tab.Pos)
-	}
-	return nil
-}
-
-func (rcv *Validator) MutateHttpAddress(j int, n byte) bool {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		a := rcv._tab.Vector(o)
-		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
-	}
-	return false
-}
-
 func (rcv *Validator) QuicAddress(j int) byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		a := rcv._tab.Vector(o)
 		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
@@ -119,7 +85,7 @@ func (rcv *Validator) QuicAddress(j int) byte {
 }
 
 func (rcv *Validator) QuicAddressLength() int {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		return rcv._tab.VectorLen(o)
 	}
@@ -127,7 +93,7 @@ func (rcv *Validator) QuicAddressLength() int {
 }
 
 func (rcv *Validator) QuicAddressBytes() []byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		return rcv._tab.ByteVector(o + rcv._tab.Pos)
 	}
@@ -135,7 +101,7 @@ func (rcv *Validator) QuicAddressBytes() []byte {
 }
 
 func (rcv *Validator) MutateQuicAddress(j int, n byte) bool {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		a := rcv._tab.Vector(o)
 		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
@@ -144,7 +110,7 @@ func (rcv *Validator) MutateQuicAddress(j int, n byte) bool {
 }
 
 func ValidatorStart(builder *flatbuffers.Builder) {
-	builder.StartObject(3)
+	builder.StartObject(2)
 }
 func ValidatorAddPubkey(builder *flatbuffers.Builder, pubkey flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(pubkey), 0)
@@ -152,14 +118,8 @@ func ValidatorAddPubkey(builder *flatbuffers.Builder, pubkey flatbuffers.UOffset
 func ValidatorStartPubkeyVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
 }
-func ValidatorAddHttpAddress(builder *flatbuffers.Builder, httpAddress flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(httpAddress), 0)
-}
-func ValidatorStartHttpAddressVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
-	return builder.StartVector(1, numElems, 1)
-}
 func ValidatorAddQuicAddress(builder *flatbuffers.Builder, quicAddress flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(quicAddress), 0)
+	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(quicAddress), 0)
 }
 func ValidatorStartQuicAddressVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)

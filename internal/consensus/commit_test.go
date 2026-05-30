@@ -595,7 +595,7 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xAA, 0xBB}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://new:8080", "quic://new:9090", blsKey)
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	// Verify new validator is NOT in the set yet
@@ -615,9 +615,6 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 	if info == nil {
 		t.Fatal("validator info should exist")
 	}
-	if info.HTTPAddr != "http://new:8080" {
-		t.Fatalf("expected http addr 'http://new:8080', got '%s'", info.HTTPAddr)
-	}
 	if info.QUICAddr != "quic://new:9090" {
 		t.Fatalf("expected quic addr 'quic://new:9090', got '%s'", info.QUICAddr)
 	}
@@ -634,7 +631,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	newVal := newTestValidator()
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, wrongPod, "http://x:1", "quic://x:2", [48]byte{})
+	atxBytes := buildRegisterATX(t, newVal.pubKey, wrongPod, "quic://x:2", [48]byte{})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
@@ -701,13 +698,13 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 	blsKey := [48]byte{0xCC}
 
 	// Register once
-	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5, Hash{})
 
 	countAfterFirst := dag.validators.Len()
 
 	// Register again with same pubkey
-	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6, Hash{})
 
 	if dag.validators.Len() != countAfterFirst {
@@ -730,7 +727,7 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xDD}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 5, Hash{})
@@ -765,7 +762,7 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xEE}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "http://x:1", "quic://x:2", blsKey)
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 10, Hash{})
@@ -1966,14 +1963,14 @@ func buildSystemPodATX(t *testing.T, sender Hash, pod Hash, funcName string) []b
 	return builder.FinishedBytes()
 }
 
-// buildRegisterATX creates a register_validator ATX with network addresses and BLS key.
-func buildRegisterATX(t *testing.T, sender Hash, pod Hash, httpAddr, quicAddr string, blsPubkey [48]byte) []byte {
+// buildRegisterATX creates a register_validator ATX with a QUIC address and BLS key.
+func buildRegisterATX(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey [48]byte) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Encode args in Borsh format (same as genesis.encodeRegisterValidatorArgs)
-	args := encodeRegisterValidatorArgsBorsh([]byte(httpAddr), []byte(quicAddr), blsPubkey[:])
+	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey[:])
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(sender[:])
@@ -2007,14 +2004,10 @@ func buildRegisterATX(t *testing.T, sender Hash, pod Hash, httpAddr, quicAddr st
 }
 
 // encodeRegisterValidatorArgsBorsh encodes register_validator args in Borsh format.
-// Format: u32 len + http bytes + u32 len + quic bytes + u32 len + bls bytes
-func encodeRegisterValidatorArgsBorsh(httpAddr, quicAddr, blsPubkey []byte) []byte {
-	buf := make([]byte, 0, 4+len(httpAddr)+4+len(quicAddr)+4+len(blsPubkey))
+// Format: u32 len + quic bytes + u32 len + bls bytes
+func encodeRegisterValidatorArgsBorsh(quicAddr, blsPubkey []byte) []byte {
+	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey))
 	lenBuf := make([]byte, 4)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(httpAddr)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, httpAddr...)
 
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
 	buf = append(buf, lenBuf...)

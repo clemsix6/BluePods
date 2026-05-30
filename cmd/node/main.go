@@ -45,7 +45,6 @@ func printStartupInfo(cfg *Config) {
 
 	logger.Info("starting BluePods node",
 		"pubkey", pubKeyHex,
-		"http", cfg.HTTPAddress,
 		"quic", cfg.QUICAddress,
 		"data", cfg.DataPath,
 		"bootstrap", cfg.Bootstrap,
