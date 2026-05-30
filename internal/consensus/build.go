@@ -235,6 +235,7 @@ func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (o
 	types.AttestedTransactionAddTransaction(builder, txOffset)
 	types.AttestedTransactionAddObjects(builder, objectsVec)
 	types.AttestedTransactionAddProofs(builder, proofsVec)
+	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
 
 	return types.AttestedTransactionEnd(builder), true
 }

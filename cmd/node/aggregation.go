@@ -65,10 +65,14 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		}
 	})
 
-	// Set up ATX proof verifier. Holders are resolved from the DAG's frozen
-	// epoch snapshot so the verifier always uses the current epoch's set.
-	atxVerifier := aggregation.NewATXVerifier(func() *consensus.ValidatorSet {
-		return n.dag.EpochHolders()
+	// Set up ATX proof verifier. The verifier selects the holder snapshot from
+	// the attestation epoch carried on the ATX, validated against the commit
+	// round's deterministic epoch (same epoch, or previous within grace).
+	atxVerifier := aggregation.NewATXVerifier(aggregation.EpochResolver{
+		HoldersForEpoch:     n.dag.HoldersForEpoch,
+		CommitEpochForRound: n.dag.CommitEpochForRound,
+		EpochLength:         n.dag.EpochLength(),
+		GraceRounds:         consensus.EpochGraceRounds,
 	})
 	n.dag.SetATXProofVerifier(atxVerifier.Verify)
 

@@ -160,6 +160,7 @@ impl<'a> AttestedTransaction<'a> {
   pub const VT_TRANSACTION: ::flatbuffers::VOffsetT = 4;
   pub const VT_OBJECTS: ::flatbuffers::VOffsetT = 6;
   pub const VT_PROOFS: ::flatbuffers::VOffsetT = 8;
+  pub const VT_ATTESTATION_EPOCH: ::flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -171,6 +172,7 @@ impl<'a> AttestedTransaction<'a> {
     args: &'args AttestedTransactionArgs<'args>
   ) -> ::flatbuffers::WIPOffset<AttestedTransaction<'bldr>> {
     let mut builder = AttestedTransactionBuilder::new(_fbb);
+    builder.add_attestation_epoch(args.attestation_epoch);
     if let Some(x) = args.proofs { builder.add_proofs(x); }
     if let Some(x) = args.objects { builder.add_objects(x); }
     if let Some(x) = args.transaction { builder.add_transaction(x); }
@@ -199,6 +201,13 @@ impl<'a> AttestedTransaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<QuorumProof>>>>(AttestedTransaction::VT_PROOFS, None)}
   }
+  #[inline]
+  pub fn attestation_epoch(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(AttestedTransaction::VT_ATTESTATION_EPOCH, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for AttestedTransaction<'_> {
@@ -210,6 +219,7 @@ impl ::flatbuffers::Verifiable for AttestedTransaction<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<Transaction>>("transaction", Self::VT_TRANSACTION, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<Object>>>>("objects", Self::VT_OBJECTS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<QuorumProof>>>>("proofs", Self::VT_PROOFS, false)?
+     .visit_field::<u64>("attestation_epoch", Self::VT_ATTESTATION_EPOCH, false)?
      .finish();
     Ok(())
   }
@@ -218,6 +228,7 @@ pub struct AttestedTransactionArgs<'a> {
     pub transaction: Option<::flatbuffers::WIPOffset<Transaction<'a>>>,
     pub objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<Object<'a>>>>>,
     pub proofs: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<QuorumProof<'a>>>>>,
+    pub attestation_epoch: u64,
 }
 impl<'a> Default for AttestedTransactionArgs<'a> {
   #[inline]
@@ -226,6 +237,7 @@ impl<'a> Default for AttestedTransactionArgs<'a> {
       transaction: None,
       objects: None,
       proofs: None,
+      attestation_epoch: 0,
     }
   }
 }
@@ -248,6 +260,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> AttestedTransactionBuilder<'a
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(AttestedTransaction::VT_PROOFS, proofs);
   }
   #[inline]
+  pub fn add_attestation_epoch(&mut self, attestation_epoch: u64) {
+    self.fbb_.push_slot::<u64>(AttestedTransaction::VT_ATTESTATION_EPOCH, attestation_epoch, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> AttestedTransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     AttestedTransactionBuilder {
@@ -268,6 +284,7 @@ impl ::core::fmt::Debug for AttestedTransaction<'_> {
       ds.field("transaction", &self.transaction());
       ds.field("objects", &self.objects());
       ds.field("proofs", &self.proofs());
+      ds.field("attestation_epoch", &self.attestation_epoch());
       ds.finish()
   }
 }

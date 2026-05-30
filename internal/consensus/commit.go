@@ -193,7 +193,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 
 	// Verify BLS quorum proofs (skip genesis/singletons/creates_objects with no proofs)
 	if d.verifyATXProofs != nil && atx.ProofsLength() > 0 {
-		if err := d.verifyATXProofs(atx); err != nil {
+		if err := d.verifyATXProofs(atx, commitRound); err != nil {
 			logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
 			d.emitTransaction(tx, false)
 			return FeeSplit{}
@@ -744,6 +744,7 @@ func serializeAttestedTx(atx *types.AttestedTransaction) []byte {
 	types.AttestedTransactionAddTransaction(builder, txOffset)
 	types.AttestedTransactionAddObjects(builder, objectsVec)
 	types.AttestedTransactionAddProofs(builder, proofsVec)
+	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
 	atxOffset := types.AttestedTransactionEnd(builder)
 
 	builder.Finish(atxOffset)

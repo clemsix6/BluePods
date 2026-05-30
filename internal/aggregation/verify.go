@@ -9,22 +9,50 @@ import (
 	"BluePods/internal/validators"
 )
 
+// EpochResolver supplies the epoch-boundary information the ATX verifier needs:
+// the holder snapshot for a given epoch, the commit epoch a round belongs to,
+// the per-epoch round count, and the grace window. The consensus DAG implements
+// it; injecting it keeps aggregation free of a consensus import.
+type EpochResolver struct {
+	// HoldersForEpoch returns the holder snapshot for an epoch, or false when the
+	// epoch is too old or in the future.
+	HoldersForEpoch func(epoch uint64) (*validators.ValidatorSet, bool)
+
+	// CommitEpochForRound returns the epoch an ATX committed at a round belongs to.
+	CommitEpochForRound func(round uint64) uint64
+
+	// EpochLength is the number of rounds per epoch (0 when epochs are disabled).
+	EpochLength uint64
+
+	// GraceRounds is the number of rounds after a boundary that the previous
+	// epoch's attestations are still accepted.
+	GraceRounds uint64
+}
+
 // ATXVerifier verifies the BLS quorum proofs carried in an attested transaction.
-// It recomputes each object's holders from the validator set provided by holdersFn,
-// so it always uses the current epoch's holder snapshot.
+// It selects the holder snapshot from the epoch the attestations were collected
+// in and validates that epoch against the commit round (same epoch, or the
+// previous epoch within the grace window).
 type ATXVerifier struct {
-	// holdersFn returns the validator set used to recompute object holders.
-	holdersFn func() *validators.ValidatorSet
+	// epoch resolves epoch-boundary information from the consensus layer.
+	epoch EpochResolver
 }
 
-// NewATXVerifier creates an ATXVerifier that resolves holders via holdersFn.
-func NewATXVerifier(holdersFn func() *validators.ValidatorSet) *ATXVerifier {
-	return &ATXVerifier{holdersFn: holdersFn}
+// NewATXVerifier creates an ATXVerifier driven by the given epoch resolver.
+func NewATXVerifier(epoch EpochResolver) *ATXVerifier {
+	return &ATXVerifier{epoch: epoch}
 }
 
-// Verify checks every QuorumProof in the ATX against its included object and
-// the validators' BLS keys. It returns an error on the first invalid proof.
-func (v *ATXVerifier) Verify(atx *types.AttestedTransaction) error {
+// Verify checks every QuorumProof in the ATX against its included object and the
+// holder snapshot of the attestation epoch carried on the wire. It validates the
+// attestation epoch against the deterministic commit epoch and returns an error
+// on the first invalid proof.
+func (v *ATXVerifier) Verify(atx *types.AttestedTransaction, commitRound uint64) error {
+	vs, err := v.resolveHolders(atx.AttestationEpoch(), commitRound)
+	if err != nil {
+		return err
+	}
+
 	var proof types.QuorumProof
 
 	for i := 0; i < atx.ProofsLength(); i++ {
@@ -32,7 +60,7 @@ func (v *ATXVerifier) Verify(atx *types.AttestedTransaction) error {
 			return fmt.Errorf("cannot read proof %d", i)
 		}
 
-		if err := v.verifySingleProof(atx, &proof); err != nil {
+		if err := v.verifySingleProof(atx, &proof, vs); err != nil {
 			return fmt.Errorf("proof %d:\n%w", i, err)
 		}
 	}
@@ -40,8 +68,54 @@ func (v *ATXVerifier) Verify(atx *types.AttestedTransaction) error {
 	return nil
 }
 
-// verifySingleProof verifies one QuorumProof against the ATX objects and BLS keys.
-func (v *ATXVerifier) verifySingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof) error {
+// resolveHolders validates the attestation epoch against the commit round and
+// returns the holder snapshot to recompute the quorum against. It accepts the
+// commit epoch, or the previous epoch when the commit round is within the grace
+// window of the boundary.
+func (v *ATXVerifier) resolveHolders(attestationEpoch, commitRound uint64) (*validators.ValidatorSet, error) {
+	commitEpoch := v.epoch.CommitEpochForRound(commitRound)
+
+	switch {
+	case attestationEpoch == commitEpoch:
+		// Current epoch: always valid.
+	case commitEpoch > 0 && attestationEpoch == commitEpoch-1:
+		if !v.withinGrace(commitRound) {
+			return nil, fmt.Errorf("attestation epoch %d past grace at round %d", attestationEpoch, commitRound)
+		}
+	default:
+		return nil, fmt.Errorf("attestation epoch %d invalid for commit epoch %d", attestationEpoch, commitEpoch)
+	}
+
+	vs, ok := v.epoch.HoldersForEpoch(attestationEpoch)
+	if !ok {
+		return nil, fmt.Errorf("no holder snapshot for epoch %d", attestationEpoch)
+	}
+
+	return vs, nil
+}
+
+// withinGrace reports whether a commit round is still within the grace window of
+// the boundary that separates the commit epoch from the previous one. That
+// boundary is round commitEpoch*epochLength (the round where the previous epoch
+// transitioned into the commit epoch).
+func (v *ATXVerifier) withinGrace(commitRound uint64) bool {
+	if v.epoch.EpochLength == 0 {
+		return false
+	}
+
+	commitEpoch := v.epoch.CommitEpochForRound(commitRound)
+	boundary := commitEpoch * v.epoch.EpochLength
+
+	if commitRound < boundary {
+		return false
+	}
+
+	return commitRound-boundary < v.epoch.GraceRounds
+}
+
+// verifySingleProof verifies one QuorumProof against the ATX objects and the
+// given holder snapshot.
+func (v *ATXVerifier) verifySingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof, vs *validators.ValidatorSet) error {
 	objIdx := findATXObjectIndex(atx, proof.ObjectIdBytes())
 	if objIdx < 0 {
 		return fmt.Errorf("object not found in ATX")
@@ -54,8 +128,6 @@ func (v *ATXVerifier) verifySingleProof(atx *types.AttestedTransaction, proof *t
 
 	// Recompute the canonical hash from the object's content bytes.
 	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version())
-
-	vs := v.holdersFn()
 
 	var objectID [32]byte
 	copy(objectID[:], proof.ObjectIdBytes())

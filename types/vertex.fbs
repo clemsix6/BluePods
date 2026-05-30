@@ -28,6 +28,10 @@ table AttestedTransaction {
 
     // proofs are the quorum proofs for each collected object.
     proofs:[QuorumProof];
+
+    // attestation_epoch is the epoch the attestations were collected in.
+    // Validators select the holder snapshot to recompute the quorum against.
+    attestation_epoch:uint64;
 }
 
 // VertexLink references a parent vertex in the DAG.

@@ -89,7 +89,8 @@ type DAG struct {
 	// Epoch: frozen validator set for Rendezvous hashing.
 	epochLength      uint64          // epochLength is the number of rounds per epoch (0 = disabled)
 	currentEpoch     uint64          // currentEpoch is the current epoch number
-	epochHolders     *ValidatorSet   // epochHolders is the frozen ValidatorSet for Rendezvous
+	epochHolders     *ValidatorSet   // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
+	prevEpochHolders *ValidatorSet   // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
 	pendingRemovals  map[Hash]bool   // pendingRemovals are validators to remove at next epoch
 	epochAdditions   []Hash          // epochAdditions are validators added this epoch
 	maxChurnPerEpoch int             // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
@@ -99,7 +100,8 @@ type DAG struct {
 	isHolder func(objectID [32]byte, replication uint16) bool
 
 	// verifyATXProofs verifies BLS quorum proofs in an AttestedTransaction.
-	verifyATXProofs func(*types.AttestedTransaction) error
+	// It receives the commit round so it can select the correct holder snapshot.
+	verifyATXProofs func(atx *types.AttestedTransaction, commitRound uint64) error
 
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
@@ -396,8 +398,10 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 }
 
 // SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
-// Must be called after DAG creation, before transactions are committed.
-func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
+// The verifier receives the commit round so it can pick the holder snapshot of
+// the epoch the attestations belong to. Must be called after DAG creation,
+// before transactions are committed.
+func (d *DAG) SetATXProofVerifier(fn func(atx *types.AttestedTransaction, commitRound uint64) error) {
 	d.verifyATXProofs = fn
 }
 

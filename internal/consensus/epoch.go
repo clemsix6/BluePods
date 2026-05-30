@@ -5,7 +5,13 @@ import (
 	"sort"
 
 	"BluePods/internal/logger"
+	"BluePods/internal/validators"
 )
+
+// EpochGraceRounds is how many rounds after an epoch boundary an attestation
+// from the previous epoch is still accepted, so an ATX collected late in epoch
+// E and committed shortly into E+1 verifies rather than being rejected.
+const EpochGraceRounds = 50
 
 // isEpochBoundary returns true if the given round is an epoch boundary.
 // Returns false if epochs are disabled (epochLength=0).
@@ -35,6 +41,12 @@ func (d *DAG) transitionEpoch(round uint64) {
 	d.distributeEpochRewards()
 
 	d.applyPendingRemovals()
+
+	// Retain the outgoing epoch's snapshot for the grace window so an ATX
+	// collected late in the previous epoch still verifies shortly after the
+	// boundary. snapshotEpochHolders overwrites d.epochHolders, so capture first.
+	d.prevEpochHolders = d.epochHolders
+
 	d.snapshotEpochHolders()
 	d.clearEpochState()
 
@@ -209,4 +221,49 @@ func (d *DAG) InitEpochHolders() {
 	}
 
 	d.snapshotEpochHolders()
+}
+
+// commitEpochForRound returns the epoch whose holder snapshot an ATX committed
+// at the given round must be verified against. The boundary round R = k*epochLength
+// is committed (and its ATXs verified) BEFORE transitionEpoch increments
+// currentEpoch, so that round still belongs to epoch k-1. Every other round R
+// maps to R/epochLength. Deterministic across all validators.
+func (d *DAG) commitEpochForRound(round uint64) uint64 {
+	if d.epochLength == 0 {
+		return 0
+	}
+
+	epoch := round / d.epochLength
+
+	// A nonzero multiple of epochLength is committed before the transition, so
+	// it is still served by the previous epoch's holders.
+	if epoch > 0 && round%d.epochLength == 0 {
+		return epoch - 1
+	}
+
+	return epoch
+}
+
+// CommitEpochForRound is the exported form of commitEpochForRound, used to wire
+// the ATX verifier from outside the consensus package.
+func (d *DAG) CommitEpochForRound(round uint64) uint64 {
+	return d.commitEpochForRound(round)
+}
+
+// HoldersForEpoch returns the holder snapshot for the given epoch, selecting the
+// current snapshot for currentEpoch and the retained previous snapshot for
+// currentEpoch-1. It returns false for any other epoch (too old or in the future).
+func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
+	if epoch == d.currentEpoch {
+		if d.epochHolders != nil {
+			return d.epochHolders, true
+		}
+		return d.validators, true
+	}
+
+	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
+		return d.prevEpochHolders, true
+	}
+
+	return nil, false
 }

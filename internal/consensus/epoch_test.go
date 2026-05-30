@@ -12,6 +12,81 @@ import (
 	"BluePods/internal/types"
 )
 
+// TestCommitEpochForRound pins the commit epoch a round maps to. A nonzero
+// multiple of epochLength is the boundary round: it commits (and its ATXs verify)
+// BEFORE transitionEpoch increments currentEpoch, so it still belongs to the
+// previous epoch. Every other round R maps to R/epochLength.
+func TestCommitEpochForRound(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	tests := []struct {
+		round uint64
+		want  uint64
+	}{
+		{0, 0},     // before the first boundary
+		{1, 0},     // epoch 0
+		{99, 0},    // last round of epoch 0
+		{100, 0},   // boundary round: committed before the increment, still epoch 0
+		{101, 1},   // first round served by epoch 1's holders
+		{199, 1},   // epoch 1
+		{200, 1},   // boundary round: still epoch 1
+		{201, 2},   // epoch 2
+		{1000, 9},  // boundary round: still epoch 9
+	}
+
+	for _, tt := range tests {
+		if got := dag.commitEpochForRound(tt.round); got != tt.want {
+			t.Errorf("commitEpochForRound(%d) = %d, want %d", tt.round, got, tt.want)
+		}
+	}
+}
+
+// TestCommitEpochForRound_PinnedToSnapshotTiming verifies the boundary round's
+// commit epoch matches the snapshotEpochHolders timing: at round R=k*epochLength,
+// commitRound runs (verifying ATXs against currentEpoch=k-1) before transitionEpoch
+// increments currentEpoch to k. So commitEpochForRound(R) must equal currentEpoch
+// as observed during that round's commit, which is k-1.
+func TestCommitEpochForRound_PinnedToSnapshotTiming(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	dag.InitEpochHolders()
+
+	// Simulate the boundary commit: at round 100 commitRound runs first.
+	const boundaryRound = 100
+
+	epochDuringCommit := dag.currentEpoch // currentEpoch is still 0 here
+	if got := dag.commitEpochForRound(boundaryRound); got != epochDuringCommit {
+		t.Fatalf("commitEpochForRound(%d) = %d, want %d (currentEpoch during commit)",
+			boundaryRound, got, epochDuringCommit)
+	}
+
+	// transitionEpoch fires after the round commits, bumping currentEpoch to 1.
+	dag.transitionEpoch(boundaryRound)
+	if dag.currentEpoch != epochDuringCommit+1 {
+		t.Fatalf("currentEpoch after transition = %d, want %d", dag.currentEpoch, epochDuringCommit+1)
+	}
+
+	// The retained previous snapshot must now resolve epoch 0.
+	if _, ok := dag.HoldersForEpoch(epochDuringCommit); !ok {
+		t.Fatal("previous epoch holders not retained after transition")
+	}
+	if _, ok := dag.HoldersForEpoch(dag.currentEpoch); !ok {
+		t.Fatal("current epoch holders not resolvable after transition")
+	}
+}
+
 // TestIsEpochBoundary tests epoch boundary detection at correct rounds.
 func TestIsEpochBoundary(t *testing.T) {
 	db := newTestStorage(t)

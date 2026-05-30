@@ -1416,7 +1416,7 @@ func TestExecuteTx_ZeroProofs_SkipsVerifier(t *testing.T) {
 	defer dag.Close()
 
 	// Set verifier that would fatal if called
-	dag.SetATXProofVerifier(func(atx *types.AttestedTransaction) error {
+	dag.SetATXProofVerifier(func(atx *types.AttestedTransaction, commitRound uint64) error {
 		t.Fatal("verifier should not be called for 0 proofs")
 		return nil
 	})
