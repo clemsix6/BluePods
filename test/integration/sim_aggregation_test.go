@@ -15,7 +15,7 @@ const (
 	// aggFaucetAmount is the faucet amount for aggregation tests.
 	aggFaucetAmount = 1_000_000
 
-	// aggReplication is the replication factor for the attested NFTs in these
+	// aggReplication is the replication factor for the attested objects in these
 	// tests: high enough to shard across a strict subset of the 5-node cluster.
 	aggReplication = 3
 
@@ -55,35 +55,35 @@ func TestSimAggregation(t *testing.T) {
 	})
 }
 
-// runEndToEndAggregation transfers a replicated NFT through the daemon's
+// runEndToEndAggregation transfers a replicated object through the daemon's
 // collection path and verifies every node converges on the new owner and version.
 func runEndToEndAggregation(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
 
 	owner := client.NewWallet()
 
-	nftID, err := owner.CreateNFT(cli, aggReplication, []byte("e2e-aggregation"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("e2e-aggregation"))
 	if err != nil {
-		t.Fatalf("create NFT: %v", err)
+		t.Fatalf("create object: %v", err)
 	}
 
-	WaitForObject(t, cli, nftID, aggObjectWait)
-	WaitForHolders(t, cluster.Nodes(), nftID, aggReplication, aggObjectWait)
+	WaitForObject(t, cli, objectID, aggObjectWait)
+	WaitForHolders(t, cluster.Nodes(), objectID, aggReplication, aggObjectWait)
 
-	before, err := cli.GetObject(nftID)
+	before, err := cli.GetObject(objectID)
 	if err != nil {
-		t.Fatalf("get NFT before transfer: %v", err)
+		t.Fatalf("get object before transfer: %v", err)
 	}
 
 	recipient := client.NewWallet()
-	if err := owner.TransferNFT(cli, nftID, recipient.Pubkey()); err != nil {
-		t.Fatalf("transfer NFT through aggregation path: %v", err)
+	if err := owner.TransferObject(cli, objectID, recipient.Pubkey()); err != nil {
+		t.Fatalf("transfer object through aggregation path: %v", err)
 	}
 
 	rpk := recipient.Pubkey()
-	WaitForOwner(t, cli, nftID, rpk, aggTxWait)
+	WaitForOwner(t, cli, objectID, rpk, aggTxWait)
 
-	assertAllNodesConverged(t, cluster, nftID, rpk, before.Version)
+	assertAllNodesConverged(t, cluster, objectID, rpk, before.Version)
 }
 
 // assertAllNodesConverged verifies every holder of the object reports the new
@@ -165,7 +165,7 @@ func runSingletonFastPath(t *testing.T, cli *client.Client, cluster *Cluster) {
 }
 
 // runVersionRaceDuringCollection drives concurrent writers against one replicated
-// NFT. The contention forces the daemon's bounded-backoff retry during attestation
+// object. The contention forces the daemon's bounded-backoff retry during attestation
 // collection. The outcome must be coherent: exactly one ownership lineage wins,
 // the object is never corrupted, and the object remains live.
 func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *Cluster) {
@@ -173,15 +173,15 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 
 	owner := client.NewWallet()
 
-	nftID, err := owner.CreateNFT(cli, aggReplication, []byte("version-race"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("version-race"))
 	if err != nil {
-		t.Fatalf("create NFT: %v", err)
+		t.Fatalf("create object: %v", err)
 	}
 
-	WaitForObject(t, cli, nftID, aggObjectWait)
-	WaitForHolders(t, cluster.Nodes(), nftID, aggReplication, aggObjectWait)
+	WaitForObject(t, cli, objectID, aggObjectWait)
+	WaitForHolders(t, cluster.Nodes(), objectID, aggReplication, aggObjectWait)
 
-	// Two transfers of the same NFT, submitted concurrently. Both daemons read the
+	// Two transfers of the same object, submitted concurrently. Both daemons read the
 	// same current version and collect against it; at most one can commit, the
 	// other races on the version and either fails to commit or retries.
 	r1 := client.NewWallet()
@@ -193,11 +193,11 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err1 = owner.TransferNFT(cli, nftID, r1.Pubkey())
+		err1 = owner.TransferObject(cli, objectID, r1.Pubkey())
 	}()
 	go func() {
 		defer wg.Done()
-		err2 = owner.TransferNFT(cli, nftID, r2.Pubkey())
+		err2 = owner.TransferObject(cli, objectID, r2.Pubkey())
 	}()
 	wg.Wait()
 
@@ -207,9 +207,9 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 
 	// The object must remain readable and owned by exactly one of the contenders
 	// (or still by the original owner if neither attested transaction committed).
-	obj, err := cli.GetObject(nftID)
+	obj, err := cli.GetObject(objectID)
 	if err != nil {
-		t.Fatalf("NFT unreadable after version race: %v", err)
+		t.Fatalf("object unreadable after version race: %v", err)
 	}
 
 	r1pk := r1.Pubkey()
@@ -220,12 +220,12 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	case r1pk, r2pk, opk:
 		t.Logf("Version race resolved coherently: owner=%x version=%d", obj.Owner[:8], obj.Version)
 	default:
-		t.Errorf("NFT owner is none of the contenders: %x", obj.Owner[:8])
+		t.Errorf("object owner is none of the contenders: %x", obj.Owner[:8])
 	}
 }
 
 // runColdHolder confirms the cold-holder path leaves no exploitable cold window.
-// A freshly created replicated NFT is attested for a brand new transfer; even
+// A freshly created replicated object is attested for a brand new transfer; even
 // though the new version was just produced, every queried holder serves a valid
 // attestation (eager signing at execution, or the bounded sign-on-miss fallback),
 // so the transfer's attestation collection succeeds without a stall.
@@ -234,35 +234,35 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 
 	owner := client.NewWallet()
 
-	nftID, err := owner.CreateNFT(cli, aggReplication, []byte("cold-holder"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("cold-holder"))
 	if err != nil {
-		t.Fatalf("create NFT: %v", err)
+		t.Fatalf("create object: %v", err)
 	}
 
-	WaitForObject(t, cli, nftID, aggObjectWait)
-	WaitForHolders(t, cluster.Nodes(), nftID, aggReplication, aggObjectWait)
+	WaitForObject(t, cli, objectID, aggObjectWait)
+	WaitForHolders(t, cluster.Nodes(), objectID, aggReplication, aggObjectWait)
 
 	// First transfer: collects attestations on the just-created version. A
 	// successful commit proves a quorum of holders served a signature for the
 	// current version with no cold-window gap.
 	mid := client.NewWallet()
-	if err := owner.TransferNFT(cli, nftID, mid.Pubkey()); err != nil {
+	if err := owner.TransferObject(cli, objectID, mid.Pubkey()); err != nil {
 		t.Fatalf("first transfer (cold version): %v", err)
 	}
 
 	midpk := mid.Pubkey()
-	WaitForOwner(t, cli, nftID, midpk, aggTxWait)
+	WaitForOwner(t, cli, objectID, midpk, aggTxWait)
 
 	// Second transfer immediately on the new version: the holders must again serve
 	// a current-version signature without delay, confirming the new version is
 	// signable the moment it is the current one.
 	final := client.NewWallet()
-	if err := mid.TransferNFT(cli, nftID, final.Pubkey()); err != nil {
+	if err := mid.TransferObject(cli, objectID, final.Pubkey()); err != nil {
 		t.Fatalf("second transfer (newly current version): %v", err)
 	}
 
 	finalpk := final.Pubkey()
-	WaitForOwner(t, cli, nftID, finalpk, aggTxWait)
+	WaitForOwner(t, cli, objectID, finalpk, aggTxWait)
 
 	t.Logf("Cold-holder path: both back-to-back attested transfers committed")
 }
@@ -274,7 +274,7 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 const epochBoundaryEpochLength = 180
 
 // TestSimAggregationEpochBoundary crosses one or more epoch boundaries while a
-// chain of replicated NFT transfers is in flight. Each transfer is submitted in
+// chain of replicated object transfers is in flight. Each transfer is submitted in
 // the mid-epoch safe band, where its attestation is collected and committed well
 // within the same epoch and verifies against that epoch's holder snapshot. Over
 // the chain, the elapsed rounds cross at least one boundary, so the grace window
@@ -294,13 +294,13 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 
 	owner := client.NewWallet()
 
-	nftID, err := owner.CreateNFT(cli, aggReplication, []byte("epoch-boundary"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("epoch-boundary"))
 	if err != nil {
-		t.Fatalf("create NFT: %v", err)
+		t.Fatalf("create object: %v", err)
 	}
 
-	WaitForObject(t, cli, nftID, aggObjectWait)
-	WaitForHolders(t, cluster.Nodes(), nftID, aggReplication, aggObjectWait)
+	WaitForObject(t, cli, objectID, aggObjectWait)
+	WaitForHolders(t, cluster.Nodes(), objectID, aggReplication, aggObjectWait)
 
 	startEpoch := QueryStatus(t, cluster.Bootstrap().Addr()).Epoch
 
@@ -313,7 +313,7 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 		// the previous hop, so the chain crosses a boundary between every hop.
 		waitForMidEpoch(t, cluster, startEpoch+uint64(i))
 
-		next := transferInSafeWindow(t, cli, nftID, current)
+		next := transferInSafeWindow(t, cli, objectID, current)
 		if next == nil {
 			t.Fatalf("hop %d never committed within the recollect budget", i)
 		}
@@ -330,7 +330,7 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 	// The object survived every boundary crossing and is owned by the last
 	// recipient in the chain.
 	finalpk := current.Pubkey()
-	WaitForOwner(t, cli, nftID, finalpk, aggTxWait)
+	WaitForOwner(t, cli, objectID, finalpk, aggTxWait)
 
 	t.Logf("Crossed %d epoch boundaries; all %d attested transfers committed, object coherent",
 		endEpoch-startEpoch, committed)
@@ -363,7 +363,7 @@ func waitForMidEpoch(t *testing.T, cluster *Cluster, minEpoch uint64) {
 	t.Fatalf("timed out waiting for a mid-epoch window at epoch >= %d", minEpoch)
 }
 
-// transferInSafeWindow transfers nftID from `from` to one fixed fresh recipient,
+// transferInSafeWindow transfers objectID from `from` to one fixed fresh recipient,
 // retrying on the recollect-after-grace contract. A submission rejected with the
 // typed ErrQuorumImpossible (a stale holder set) or one whose attested transaction
 // is silently dropped (the owner does not change) is recollected against the
@@ -371,7 +371,7 @@ func waitForMidEpoch(t *testing.T, cluster *Cluster, minEpoch uint64) {
 // retry converge. The object is asserted readable on every attempt. It returns the
 // recipient on commit, or nil when the budget is exhausted; a non-typed submission
 // error fails the test.
-func transferInSafeWindow(t *testing.T, cli *client.Client, nftID [32]byte, from *client.Wallet) *client.Wallet {
+func transferInSafeWindow(t *testing.T, cli *client.Client, objectID [32]byte, from *client.Wallet) *client.Wallet {
 	t.Helper()
 
 	const attempts = 4
@@ -380,12 +380,12 @@ func transferInSafeWindow(t *testing.T, cli *client.Client, nftID [32]byte, from
 	nextpk := next.Pubkey()
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		err := from.TransferNFT(cli, nftID, nextpk)
+		err := from.TransferObject(cli, objectID, nextpk)
 		if err != nil && !errors.Is(err, daemon.ErrQuorumImpossible) {
 			t.Fatalf("transfer failed with non-typed error: %v", err)
 		}
 
-		if obj, getErr := cli.GetObject(nftID); getErr != nil {
+		if obj, getErr := cli.GetObject(objectID); getErr != nil {
 			t.Fatalf("object unreadable during boundary transfer: %v", getErr)
 		} else if obj.Owner == nextpk {
 			return next // committed
@@ -394,7 +394,7 @@ func transferInSafeWindow(t *testing.T, cli *client.Client, nftID [32]byte, from
 		t.Logf("recollect after grace: attempt %d did not commit (err=%v), retrying", attempt+1, err)
 		time.Sleep(aggTxWait)
 
-		if obj, _ := cli.GetObject(nftID); obj != nil && obj.Owner == nextpk {
+		if obj, _ := cli.GetObject(objectID); obj != nil && obj.Owner == nextpk {
 			return next // committed during the wait
 		}
 	}

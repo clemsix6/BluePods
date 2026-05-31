@@ -382,14 +382,14 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 	})
 
 	t.Run("ATP-21.15: gas coin must be singleton", func(t *testing.T) {
-		// Create an NFT (replication=5, NOT a singleton)
+		// Create a replicated object (replication=5, NOT a singleton)
 		w := client.NewWallet()
-		nftID, err := w.CreateNFT(cli, 5, []byte("not-a-coin"))
+		objectID, err := w.CreateObject(cli, 5, []byte("not-a-coin"))
 		if err != nil {
-			t.Fatalf("create NFT: %v", err)
+			t.Fatalf("create object: %v", err)
 		}
 
-		WaitForObject(t, cli, nftID, 30*time.Second)
+		WaitForObject(t, cli, objectID, 30*time.Second)
 
 		// Create a real coin to attempt transfer
 		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
@@ -397,11 +397,11 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 			t.Fatalf("refresh: %v", err)
 		}
 
-		// Try to use the NFT as gas_coin (rep=5, not singleton)
+		// Try to use the object as gas_coin (rep=5, not singleton)
 		r := client.NewWallet()
 		txBytes := BuildSignedTxWithGasCoin(
 			cli.SystemPod(), "transfer", encodeTransferArgs(r.Pubkey()),
-			nftID, buildMutableRef(coinID, w.GetCoin(coinID).Version),
+			objectID, buildMutableRef(coinID, w.GetCoin(coinID).Version),
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)

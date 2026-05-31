@@ -79,7 +79,7 @@ Single bootstrap node. Tests transaction validation, the QUIC operational and qu
 
 ### TestSimConsensus (5 nodes)
 
-Tests DAG consensus, client operations (faucet, split, transfer, NFT create), version tracking, security (replay, hash tampering, signature forgery, non-owner transfer), and convergence.
+Tests DAG consensus, client operations (faucet, split, transfer, object create), version tracking, security (replay, hash tampering, signature forgery, non-owner transfer), and convergence.
 
 ### TestSimFees (5 nodes)
 
@@ -105,9 +105,9 @@ Start a cluster, then add nodes in one batch or in several, and verify all nodes
 
 These exercise the moved-to-client design directly. The first four run on a 5-node cluster (`TestSimAggregation`); the epoch-boundary scenario runs on a separate short-epoch cluster (`TestSimAggregationEpochBoundary`).
 
-- **End-to-end client aggregation.** A transfer of a replicated NFT is collected by the daemon and submitted as an attested transaction; every holder converges on the new owner and an advanced version.
+- **End-to-end client aggregation.** A transfer of a replicated object is collected by the daemon and submitted as an attested transaction; every holder converges on the new owner and an advanced version.
 - **Singleton fast path.** A coin transfer is submitted raw and wrapped by the validator into a trivial attested transaction, with no attestation round, and executes on all validators.
-- **Version race during collection.** Two concurrent transfers of one replicated NFT contend during attestation collection, forcing the daemon's bounded-backoff retry; the object stays readable and ends owned by exactly one contender, never corrupted.
+- **Version race during collection.** Two concurrent transfers of one replicated object contend during attestation collection, forcing the daemon's bounded-backoff retry; the object stays readable and ends owned by exactly one contender, never corrupted.
 - **Epoch boundary during attestation validity.** A chain of replicated transfers spans an epoch boundary. An attestation collected late in an epoch and committed shortly into the next is accepted within the grace window; one committed past the grace window is rejected and the daemon resyncs and recollects against the new epoch. Every transfer eventually commits.
 - **Cold-holder scenario.** Back-to-back transfers attest a just-produced version with no delay: eager signing at execution plus the bounded sign-on-miss fallback means a holder always serves a signature for a held current version, leaving no exploitable cold window.
 

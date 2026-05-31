@@ -93,7 +93,7 @@ func runConsensusDAGTests(t *testing.T, cluster *Cluster) {
 	})
 }
 
-// runClientOperationTests tests faucet, split, transfer, and NFT operations.
+// runClientOperationTests tests faucet, split, transfer, and object operations.
 func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
 
@@ -186,53 +186,53 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		}
 	})
 
-	t.Run("ATP-15.4: create NFT", func(t *testing.T) {
+	t.Run("ATP-15.4: create object", func(t *testing.T) {
 		w := client.NewWallet()
-		metadata := []byte("consensus test NFT")
+		metadata := []byte("consensus test object")
 
-		nftID, err := w.CreateNFT(cli, 5, metadata)
+		objectID, err := w.CreateObject(cli, 5, metadata)
 		if err != nil {
-			t.Fatalf("create NFT: %v", err)
+			t.Fatalf("create object: %v", err)
 		}
 
-		WaitForObject(t, cli, nftID, 15*time.Second)
+		WaitForObject(t, cli, objectID, 15*time.Second)
 
-		obj, err := cli.GetObject(nftID)
+		obj, err := cli.GetObject(objectID)
 		if err != nil {
-			t.Fatalf("get NFT: %v", err)
+			t.Fatalf("get object: %v", err)
 		}
 
 		pk := w.Pubkey()
 		if obj.Owner != pk {
-			t.Error("NFT owner mismatch")
+			t.Error("object owner mismatch")
 		}
 
 		if obj.Replication != 5 {
-			t.Errorf("NFT replication: got %d, want 5", obj.Replication)
+			t.Errorf("object replication: got %d, want 5", obj.Replication)
 		}
 	})
 
-	t.Run("ATP-15.5: transfer NFT", func(t *testing.T) {
-		// Replicated (rep>0) NFT transfer through the daemon's off-chain
+	t.Run("ATP-15.5: transfer object", func(t *testing.T) {
+		// Replicated (rep>0) object transfer through the daemon's off-chain
 		// attestation-collection path: the daemon gathers a quorum of holder
 		// signatures, assembles an attested transaction, and submits it.
 		w := client.NewWallet()
 
-		nftID, err := w.CreateNFT(cli, 3, []byte("transfer NFT"))
+		objectID, err := w.CreateObject(cli, 3, []byte("transfer object"))
 		if err != nil {
-			t.Fatalf("create NFT: %v", err)
+			t.Fatalf("create object: %v", err)
 		}
 
-		WaitForObject(t, cli, nftID, 30*time.Second)
-		WaitForHolders(t, cluster.Nodes(), nftID, 3, 30*time.Second)
+		WaitForObject(t, cli, objectID, 30*time.Second)
+		WaitForHolders(t, cluster.Nodes(), objectID, 3, 30*time.Second)
 
 		recipient := client.NewWallet()
-		if err := w.TransferNFT(cli, nftID, recipient.Pubkey()); err != nil {
-			t.Fatalf("transfer NFT: %v", err)
+		if err := w.TransferObject(cli, objectID, recipient.Pubkey()); err != nil {
+			t.Fatalf("transfer object: %v", err)
 		}
 
 		rpk := recipient.Pubkey()
-		WaitForOwner(t, cli, nftID, rpk, 30*time.Second)
+		WaitForOwner(t, cli, objectID, rpk, 30*time.Second)
 	})
 }
 

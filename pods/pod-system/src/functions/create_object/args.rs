@@ -1,9 +1,9 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-/// Arguments for the create_nft function.
+/// Arguments for the create_object function.
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct Args {
-    /// Owner of the newly created NFT (32 bytes public key).
+    /// Owner of the newly created object (32 bytes public key).
     pub owner: [u8; 32],
     /// Replication factor (number of validators storing this object).
     pub replication: u16,

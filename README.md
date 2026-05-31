@@ -34,7 +34,7 @@ The result is that attestation cost scales with the object's replication factor,
 
 Smart contracts are called pods. They're Rust compiled to WebAssembly, executed in a sandboxed wazero runtime with gas metering. The interface is minimal: four host functions (gas, input_len, read_input, write_output) and nothing else. No filesystem, no network, no clock. The pod receives its inputs as a FlatBuffers message, does its logic, and returns the state changes.
 
-The system pod handles the basics: minting coins, transfers, splits, merges, NFTs, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
+The system pod handles the basics: minting coins, transfers, splits, merges, generic objects, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
 
 ### Fees
 
@@ -92,7 +92,7 @@ There are 7 simulations, each targeting a different aspect of the system:
 
 **TestSimBootstrap** starts a single node in bootstrap mode and hammers the API with ~35 test cases. It submits transactions with wrong field sizes, bad hashes, invalid signatures, duplicate object references, oversized bodies, malformed FlatBuffers, everything that should be rejected at the validation layer. It also verifies that valid transactions go through, that the faucet works, and that the pod VM correctly executes mints.
 
-**TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, NFT creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
+**TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, object creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
 
 **TestSimFees** runs a 5-node cluster with the fee system enabled. It mints coins, performs operations, and verifies that fees are correctly deducted from the gas coin. Tests the exact-balance boundary case (balance equals fee exactly), verifies that transactions without a gas coin skip fee deduction, and checks that all nodes agree on the final balances.
 

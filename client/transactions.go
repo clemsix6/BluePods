@@ -51,35 +51,35 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 	return nil
 }
 
-// CreateNFT creates a new NFT with configurable replication.
-// Returns the predicted NFT object ID.
-func (w *Wallet) CreateNFT(c *Client, replication uint16, metadata []byte) ([32]byte, error) {
-	args := encodeCreateNftArgs(w.Pubkey(), replication, metadata)
+// CreateObject creates a new replicated object with configurable replication.
+// Returns the predicted object ID.
+func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte) ([32]byte, error) {
+	args := encodeCreateObjectArgs(w.Pubkey(), replication, metadata)
 
-	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_nft", args, []uint16{replication}, nil, nil)
-	nftID := computeNewObjectID(txHash)
+	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_object", args, []uint16{replication}, nil, nil)
+	objectID := computeNewObjectID(txHash)
 
 	if err := c.submit(txBytes); err != nil {
-		return [32]byte{}, fmt.Errorf("submit create_nft tx:\n%w", err)
+		return [32]byte{}, fmt.Errorf("submit create_object tx:\n%w", err)
 	}
 
-	return nftID, nil
+	return objectID, nil
 }
 
-// TransferNFT transfers an NFT to a new owner.
-func (w *Wallet) TransferNFT(c *Client, nftID [32]byte, recipient [32]byte) error {
-	obj, err := c.GetObject(nftID)
+// TransferObject transfers an object to a new owner.
+func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte) error {
+	obj, err := c.GetObject(objectID)
 	if err != nil {
-		return fmt.Errorf("get nft object:\n%w", err)
+		return fmt.Errorf("get object:\n%w", err)
 	}
 
 	args := encodeTransferArgs(recipient)
-	mutableRefs := buildMutableRef(nftID, obj.Version)
+	mutableRefs := buildMutableRef(objectID, obj.Version)
 
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_nft", args, nil, mutableRefs, nil)
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_object", args, nil, mutableRefs, nil)
 
 	if err := c.submit(txBytes); err != nil {
-		return fmt.Errorf("submit transfer_nft tx:\n%w", err)
+		return fmt.Errorf("submit transfer_object tx:\n%w", err)
 	}
 
 	return nil
@@ -121,9 +121,9 @@ func encodeTransferArgs(newOwner [32]byte) []byte {
 	return buf
 }
 
-// encodeCreateNftArgs encodes create_nft arguments in Borsh format.
+// encodeCreateObjectArgs encodes create_object arguments in Borsh format.
 // Format: [u8; 32] owner + u16 replication + u32 metadata_len + metadata bytes.
-func encodeCreateNftArgs(owner [32]byte, replication uint16, metadata []byte) []byte {
+func encodeCreateObjectArgs(owner [32]byte, replication uint16, metadata []byte) []byte {
 	buf := make([]byte, 32+2+4+len(metadata))
 	copy(buf[:32], owner[:])
 	binary.LittleEndian.PutUint16(buf[32:], replication)

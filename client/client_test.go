@@ -84,15 +84,15 @@ func TestEncodeTransferArgs(t *testing.T) {
 	}
 }
 
-// TestEncodeCreateNftArgs verifies create_nft args: 32(owner) + 2(rep LE) + 4(meta_len LE) + metadata.
-func TestEncodeCreateNftArgs(t *testing.T) {
+// TestEncodeCreateObjectArgs verifies create_object args: 32(owner) + 2(rep LE) + 4(meta_len LE) + metadata.
+func TestEncodeCreateObjectArgs(t *testing.T) {
 	var owner [32]byte
 	for i := range owner {
 		owner[i] = byte(i)
 	}
 
 	metadata := []byte("test metadata content")
-	args := encodeCreateNftArgs(owner, 500, metadata)
+	args := encodeCreateObjectArgs(owner, 500, metadata)
 
 	expectedLen := 32 + 2 + 4 + len(metadata)
 	if len(args) != expectedLen {
@@ -124,10 +124,10 @@ func TestEncodeCreateNftArgs(t *testing.T) {
 	}
 }
 
-// TestEncodeCreateNftArgs_EmptyMetadata verifies 38 bytes total with 0 metadata_len.
-func TestEncodeCreateNftArgs_EmptyMetadata(t *testing.T) {
+// TestEncodeCreateObjectArgs_EmptyMetadata verifies 38 bytes total with 0 metadata_len.
+func TestEncodeCreateObjectArgs_EmptyMetadata(t *testing.T) {
 	var owner [32]byte
-	args := encodeCreateNftArgs(owner, 10, nil)
+	args := encodeCreateObjectArgs(owner, 10, nil)
 
 	if len(args) != 38 {
 		t.Fatalf("expected 38 bytes with empty metadata, got %d", len(args))

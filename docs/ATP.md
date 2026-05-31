@@ -386,8 +386,8 @@ signature. There is no node-side collector, no designated top-1 holder, and no
 | 15.1 | Faucet request | Mint coins |
 | 15.2 | Split operation | One coin → two |
 | 15.3 | Transfer operation | Change owner |
-| 15.4 | CreateNFT | New object with content |
-| 15.5 | TransferNFT | Change NFT owner |
+| 15.4 | CreateObject | New object with content |
+| 15.5 | TransferObject | Change object owner |
 | 15.6 | DeregisterValidator | System pod call |
 | 15.7 | ObjectRefData — ID mode vs domain mode | Dual-mode references |
 | 15.8 | Wallet coin tracking | Balance management |

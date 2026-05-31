@@ -41,7 +41,7 @@ The global state of the network is composed of discrete objects. Each object is 
 
 This model is conceptually similar to Sui's object model but diverges in how replication and execution are distributed. In Sui, all validators store all objects and execute all transactions. In BluePods, objects are stored only by their designated holders, and execution is scoped to those holders.
 
-Why 4 KB? Because almost everything fits. A wallet with metadata is a few hundred bytes, an NFT with its URI and attributes is 1-2 KB, a DeFi position is under 1 KB. The limit also means objects can be included directly in transactions without blowing up message sizes. For larger payloads, an off-chain storage layer with erasure coding is planned, where only metadata and availability certificates would live on-chain.
+Why 4 KB? Because almost everything fits. A wallet with metadata is a few hundred bytes, a small record with its attributes is 1-2 KB, a DeFi position is under 1 KB. The limit also means objects can be included directly in transactions without blowing up message sizes. For larger payloads, an off-chain storage layer with erasure coding is planned, where only metadata and availability certificates would live on-chain.
 
 ### Standard Objects and Singletons
 
@@ -301,8 +301,8 @@ The system pod is the foundational smart contract of the network. It exposes eig
 | `split` | Divides a Coin into two (original balance reduced, new Coin created) |
 | `merge` | Combines two Coins into one |
 | `transfer` | Changes the owner of a Coin |
-| `create_nft` | Creates an object with arbitrary metadata |
-| `transfer_nft` | Changes the owner of an object |
+| `create_object` | Creates a replicated, owned object holding arbitrary content |
+| `transfer_object` | Changes the owner of an object |
 | `register_validator` | Registers a new validator on the network |
 | `deregister_validator` | Schedules a validator for removal |
 

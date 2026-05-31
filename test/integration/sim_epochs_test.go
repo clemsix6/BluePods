@@ -21,11 +21,11 @@ const (
 	// epochLength is the epoch length in rounds for fast transitions.
 	epochLength = 50
 
-	// epochNftReplication is the replication factor for epoch test NFTs.
-	epochNftReplication = 4
+	// epochObjectReplication is the replication factor for epoch test objects.
+	epochObjectReplication = 4
 
-	// epochNftCount is the number of NFTs to create.
-	epochNftCount = 20
+	// epochObjectCount is the number of objects to create.
+	epochObjectCount = 20
 )
 
 // TestSimEpochs runs a 10-node epoch lifecycle simulation.
@@ -44,8 +44,8 @@ func TestSimEpochs(t *testing.T) {
 		runEpochTransitionTests(t, cluster)
 	})
 
-	// Phase 2: Create NFTs for redistribution tracking
-	nftIDs := createEpochNFTs(t, cli, cluster)
+	// Phase 2: Create objects for redistribution tracking
+	objectIDs := createEpochObjects(t, cli, cluster)
 
 	// Phase 3: Add validators mid-epoch
 	t.Run("validator-addition", func(t *testing.T) {
@@ -59,7 +59,7 @@ func TestSimEpochs(t *testing.T) {
 
 	// Phase 5: Stability checks
 	t.Run("stability", func(t *testing.T) {
-		runEpochStabilityTests(t, cluster, nftIDs)
+		runEpochStabilityTests(t, cluster, objectIDs)
 	})
 }
 
@@ -105,8 +105,8 @@ func runEpochTransitionTests(t *testing.T, cluster *Cluster) {
 	})
 }
 
-// createEpochNFTs creates NFTs for redistribution tracking across epoch changes.
-func createEpochNFTs(t *testing.T, cli *client.Client, cluster *Cluster) [][32]byte {
+// createEpochObjects creates objects for redistribution tracking across epoch changes.
+func createEpochObjects(t *testing.T, cli *client.Client, cluster *Cluster) [][32]byte {
 	t.Helper()
 
 	wallets := make([]*client.Wallet, 3)
@@ -126,38 +126,38 @@ func createEpochNFTs(t *testing.T, cli *client.Client, cluster *Cluster) [][32]b
 
 	time.Sleep(epochTxWait)
 
-	// Create NFTs
-	nftIDs := make([][32]byte, epochNftCount)
-	for i := 0; i < epochNftCount; i++ {
+	// Create objects
+	objectIDs := make([][32]byte, epochObjectCount)
+	for i := 0; i < epochObjectCount; i++ {
 		walletIdx := i % len(wallets)
-		metadata := []byte("epoch-nft-" + string(rune('0'+i)))
+		metadata := []byte("epoch-object-" + string(rune('0'+i)))
 
-		nftID, err := wallets[walletIdx].CreateNFT(cli, epochNftReplication, metadata)
+		objectID, err := wallets[walletIdx].CreateObject(cli, epochObjectReplication, metadata)
 		if err != nil {
-			t.Fatalf("create NFT %d: %v", i, err)
+			t.Fatalf("create object %d: %v", i, err)
 		}
 
-		nftIDs[i] = nftID
+		objectIDs[i] = objectID
 	}
 
-	t.Logf("Created %d NFTs, waiting for commit...", epochNftCount)
+	t.Logf("Created %d objects, waiting for commit...", epochObjectCount)
 	time.Sleep(epochTxWait)
 
-	// Verify at least some NFTs are committed
+	// Verify at least some objects are committed
 	found := 0
-	for _, id := range nftIDs {
+	for _, id := range objectIDs {
 		if QueryObjectLocal(t, cluster.Bootstrap().Addr(), id) != nil {
 			found++
 		}
 	}
 
 	if found == 0 {
-		t.Fatalf("no NFTs found locally on bootstrap")
+		t.Fatalf("no objects found locally on bootstrap")
 	}
 
-	t.Logf("Bootstrap holds %d/%d NFTs locally", found, epochNftCount)
+	t.Logf("Bootstrap holds %d/%d objects locally", found, epochObjectCount)
 
-	return nftIDs
+	return objectIDs
 }
 
 // runValidatorAdditionTests tests adding validators mid-epoch.
@@ -276,7 +276,7 @@ func deregisterNodes(t *testing.T, cli *client.Client, cluster *Cluster, indices
 }
 
 // runEpochStabilityTests verifies network stability after epoch lifecycle.
-func runEpochStabilityTests(t *testing.T, cluster *Cluster, nftIDs [][32]byte) {
+func runEpochStabilityTests(t *testing.T, cluster *Cluster, objectIDs [][32]byte) {
 	t.Helper()
 
 	t.Run("epoch stability: network continues producing", func(t *testing.T) {
@@ -291,19 +291,19 @@ func runEpochStabilityTests(t *testing.T, cluster *Cluster, nftIDs [][32]byte) {
 		t.Logf("Round advanced: %d -> %d", initial.Round, after.Round)
 	})
 
-	t.Run("epoch stability: bootstrap still holds NFTs", func(t *testing.T) {
+	t.Run("epoch stability: bootstrap still holds objects", func(t *testing.T) {
 		found := 0
-		for _, id := range nftIDs {
+		for _, id := range objectIDs {
 			if QueryObjectLocal(t, cluster.Bootstrap().Addr(), id) != nil {
 				found++
 			}
 		}
 
 		if found == 0 {
-			t.Error("bootstrap lost all NFTs after epoch lifecycle")
+			t.Error("bootstrap lost all objects after epoch lifecycle")
 		}
 
-		t.Logf("Bootstrap holds %d/%d NFTs after lifecycle", found, len(nftIDs))
+		t.Logf("Bootstrap holds %d/%d objects after lifecycle", found, len(objectIDs))
 	})
 
 	t.Run("epoch stability: no unexpected errors", func(t *testing.T) {
