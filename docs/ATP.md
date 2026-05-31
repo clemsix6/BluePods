@@ -484,7 +484,7 @@ signature. There is no node-side collector, no designated top-1 holder, and no
 
 | # | Test | Detail |
 |---|------|--------|
-| 21.1 | Standard object included in ATX body | Aggregator fetches + BLS proofs |
+| 21.1 | Standard object included in ATX body | Daemon fetches + BLS proofs |
 | 21.2 | Standard object has transit data in memory | Stored in ATX objects vector |
 | 21.3 | Standard object stored only by holders | isHolder sharding |
 | 21.4 | Standard object has QuorumProof in ATX | BLS aggregate sig + bitmap |
@@ -564,8 +564,8 @@ signature. There is no node-side collector, no designated top-1 holder, and no
 | 25.3 | Min replication=10 NOT enforced | Any uint16 accepted |
 | 25.4 | Vertex size unbounded | No limit on tx count or total size |
 | 25.5 | Gas limit hardcoded, ignores tx.MaxGas | defaultGasLimit = 10M always |
-| 25.6 | Aggregator credits TODO — never distributed | creditAggregator is a no-op |
-| 25.7 | tracker.checkRefList — no FlatBuffer panic recovery | Unlike api/validate.go |
+| 25.6 | Aggregator share removed; operational fees 70 epoch / 30 burn | creditAggregator path deleted |
+| 25.7 | tracker.checkRefList — no FlatBuffer panic recovery | Unlike internal/validation |
 
 ---
 
