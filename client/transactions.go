@@ -85,6 +85,28 @@ func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte
 	return nil
 }
 
+// SetObject overwrites the content of a replicated object. The object is placed
+// in the transaction's mutable refs at its current version, so submission goes
+// through the daemon's off-chain aggregation path (holder attestation collection).
+// Ownership is enforced by the protocol's mutable-ref owner check.
+func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte) error {
+	obj, err := c.GetObject(objectID)
+	if err != nil {
+		return fmt.Errorf("get object:\n%w", err)
+	}
+
+	args := encodeSetObjectArgs(objectID, content)
+	mutableRefs := buildMutableRef(objectID, obj.Version)
+
+	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "set_object", args, nil, mutableRefs, nil)
+
+	if err := c.submit(txBytes); err != nil {
+		return fmt.Errorf("submit set_object tx:\n%w", err)
+	}
+
+	return nil
+}
+
 // DeregisterValidator sends a deregister_validator transaction.
 // The validator is removed from the active set at the next epoch boundary.
 func (w *Wallet) DeregisterValidator(c *Client) error {
@@ -117,6 +139,17 @@ func encodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 func encodeTransferArgs(newOwner [32]byte) []byte {
 	buf := make([]byte, 32)
 	copy(buf, newOwner[:])
+
+	return buf
+}
+
+// encodeSetObjectArgs encodes set_object arguments in Borsh format.
+// Format: [u8; 32] object_id + u32 content_len (LE) + content bytes.
+func encodeSetObjectArgs(objectID [32]byte, content []byte) []byte {
+	buf := make([]byte, 32+4+len(content))
+	copy(buf[:32], objectID[:])
+	binary.LittleEndian.PutUint32(buf[32:], uint32(len(content)))
+	copy(buf[36:], content)
 
 	return buf
 }

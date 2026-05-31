@@ -17,6 +17,7 @@ pod_sdk::dispatcher! {
     "merge" => functions::merge::execute,
     "mint" => functions::mint::execute,
     "register_validator" => functions::register_validator::execute,
+    "set_object" => functions::set_object::execute,
     "split" => functions::split::execute,
     "transfer" => functions::transfer::execute,
     "transfer_object" => functions::transfer_object::execute,

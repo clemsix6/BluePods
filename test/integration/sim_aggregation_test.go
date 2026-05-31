@@ -53,6 +53,85 @@ func TestSimAggregation(t *testing.T) {
 	t.Run("cold-holder", func(t *testing.T) {
 		runColdHolder(t, cli, cluster)
 	})
+
+	t.Run("set-object-content", func(t *testing.T) {
+		runSetObjectContent(t, cli, cluster)
+	})
+}
+
+// runSetObjectContent creates a replicated object with content "v1", overwrites
+// it to "v2" through the daemon's attestation-collection path, then reads it back
+// and asserts the content changed to "v2" and the version incremented.
+func runSetObjectContent(t *testing.T, cli *client.Client, cluster *Cluster) {
+	t.Helper()
+
+	owner := client.NewWallet()
+
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("v1"))
+	if err != nil {
+		t.Fatalf("create object: %v", err)
+	}
+
+	WaitForObject(t, cli, objectID, aggObjectWait)
+	WaitForHolders(t, cluster.Nodes(), objectID, aggReplication, aggObjectWait)
+
+	before, err := cli.GetObject(objectID)
+	if err != nil {
+		t.Fatalf("get object before set: %v", err)
+	}
+
+	if got := decodeObjectContent(before.Content); got != "v1" {
+		t.Fatalf("initial content: got %q, want %q", got, "v1")
+	}
+
+	if err := owner.SetObject(cli, objectID, []byte("v2")); err != nil {
+		t.Fatalf("set object through aggregation path: %v", err)
+	}
+
+	waitForContent(t, cli, objectID, "v2", aggTxWait)
+
+	after, err := cli.GetObject(objectID)
+	if err != nil {
+		t.Fatalf("get object after set: %v", err)
+	}
+
+	if got := decodeObjectContent(after.Content); got != "v2" {
+		t.Errorf("content after set: got %q, want %q", got, "v2")
+	}
+
+	if after.Version <= before.Version {
+		t.Errorf("version not advanced after set: %d <= %d", after.Version, before.Version)
+	}
+
+	t.Logf("set_object overwrote content v1 -> v2, version %d -> %d", before.Version, after.Version)
+}
+
+// waitForContent polls until an object's decoded content matches expected.
+func waitForContent(t *testing.T, cli *client.Client, id [32]byte, expected string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		obj, err := cli.GetObject(id)
+		if err == nil && decodeObjectContent(obj.Content) == expected {
+			return
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	t.Fatalf("timeout waiting for content %q on object %s", expected, hex.EncodeToString(id[:8]))
+}
+
+// decodeObjectContent decodes the Borsh-serialized object body (a Vec<u8>) into
+// its raw content string by stripping the 4-byte little-endian length prefix.
+func decodeObjectContent(content []byte) string {
+	if len(content) < 4 {
+		return ""
+	}
+
+	return string(content[4:])
 }
 
 // runEndToEndAggregation transfers a replicated object through the daemon's
