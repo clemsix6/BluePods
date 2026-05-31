@@ -47,7 +47,64 @@ func NewATXVerifier(epoch EpochResolver) *ATXVerifier {
 // holder snapshot of the attestation epoch carried on the wire. It validates the
 // attestation epoch against the deterministic commit epoch and returns an error
 // on the first invalid proof.
+//
+// It is a thin wrapper over VerifyBatch for a single ATX, so the per-ATX verdict
+// is identical whether an ATX is verified alone or as part of a round's batch.
 func (v *ATXVerifier) Verify(atx *types.AttestedTransaction, commitRound uint64) error {
+	return v.VerifyBatch([]*types.AttestedTransaction{atx}, commitRound)[0]
+}
+
+// VerifyBatch verifies the BLS proofs of every ATX in a committed round in one
+// parallel pass and returns one error per ATX, in input order: results[i] is nil
+// when atxs[i] passes and the same error Verify would return otherwise.
+//
+// It runs in two phases. The prepare phase is cheap and fully deterministic: for
+// each proof it resolves the holder snapshot, looks up the object, recomputes the
+// canonical hash, derives the signer keys, and checks the quorum, recording
+// either an early rejection or an attest.AggCheck. The signature phase verifies
+// every collected AggCheck with attest.VerifyAggregatedBatch across cores. Each
+// AggCheck is a pure function of its own ATX, so parallelism only changes when
+// the signatures are checked, never which ATXs pass or the order of the results.
+func (v *ATXVerifier) VerifyBatch(atxs []*types.AttestedTransaction, commitRound uint64) []error {
+	results := make([]error, len(atxs))
+
+	plan := v.prepareBatch(atxs, commitRound, results)
+
+	verdicts := attest.VerifyAggregatedBatch(plan.checks)
+
+	applyBatchVerdicts(plan, verdicts, results)
+
+	return results
+}
+
+// batchPlan holds the AggChecks gathered across a round's ATXs and, for each
+// check, which ATX it belongs to and the proof index within that ATX.
+type batchPlan struct {
+	checks  []attest.AggCheck // checks are the signature verifications to run in parallel
+	atxOf   []int             // atxOf[k] is the ATX index that check k belongs to
+	proofOf []int             // proofOf[k] is the proof index within that ATX
+}
+
+// prepareBatch runs the cheap deterministic phase for every ATX. It writes an
+// early rejection into results for any ATX that fails before the signature check
+// and collects the surviving proofs into AggChecks for the parallel phase. The
+// first failing proof of an ATX wins, exactly as the sequential loop does.
+func (v *ATXVerifier) prepareBatch(atxs []*types.AttestedTransaction, commitRound uint64, results []error) batchPlan {
+	var plan batchPlan
+
+	for atxIdx, atx := range atxs {
+		results[atxIdx] = v.collectATXChecks(atx, atxIdx, commitRound, &plan)
+	}
+
+	return plan
+}
+
+// collectATXChecks resolves the holder snapshot for one ATX and appends an
+// AggCheck for each proof. It returns the first non-signature error encountered
+// (matching Verify's first-failure semantics); on such an error no AggChecks for
+// later proofs of this ATX are added, so a deterministic signature failure can
+// never override an earlier deterministic rejection.
+func (v *ATXVerifier) collectATXChecks(atx *types.AttestedTransaction, atxIdx int, commitRound uint64, plan *batchPlan) error {
 	vs, err := v.resolveHolders(atx.AttestationEpoch(), commitRound)
 	if err != nil {
 		return err
@@ -60,13 +117,41 @@ func (v *ATXVerifier) Verify(atx *types.AttestedTransaction, commitRound uint64)
 			return fmt.Errorf("cannot read proof %d", i)
 		}
 
-		if err := v.verifySingleProof(atx, &proof, vs); err != nil {
+		check, err := v.prepareSingleProof(atx, &proof, vs)
+		if err != nil {
 			return fmt.Errorf("proof %d:\n%w", i, err)
 		}
+
+		plan.checks = append(plan.checks, check)
+		plan.atxOf = append(plan.atxOf, atxIdx)
+		plan.proofOf = append(plan.proofOf, i)
 	}
 
 	return nil
 }
+
+// applyBatchVerdicts folds the parallel signature verdicts back into the per-ATX
+// results. A false verdict rejects its ATX with the same error verifySingleProof
+// would return; the first failing proof of an ATX wins, and an ATX already
+// rejected in the prepare phase is left untouched.
+func applyBatchVerdicts(plan batchPlan, verdicts []bool, results []error) {
+	for k, ok := range verdicts {
+		if ok {
+			continue
+		}
+
+		atxIdx := plan.atxOf[k]
+		if results[atxIdx] != nil {
+			continue
+		}
+
+		results[atxIdx] = fmt.Errorf("proof %d:\n%w", plan.proofOf[k], errSignatureInvalid)
+	}
+}
+
+// errSignatureInvalid is the error a failing aggregated BLS verification yields,
+// matching the message verifySingleProof returned inline.
+var errSignatureInvalid = fmt.Errorf("aggregated BLS signature invalid")
 
 // resolveHolders validates the attestation epoch against the commit round and
 // returns the holder snapshot to recompute the quorum against. It accepts the
@@ -113,17 +198,20 @@ func (v *ATXVerifier) withinGrace(commitRound uint64) bool {
 	return commitRound-boundary < v.epoch.GraceRounds
 }
 
-// verifySingleProof verifies one QuorumProof against the ATX objects and the
-// given holder snapshot.
-func (v *ATXVerifier) verifySingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof, vs *validators.ValidatorSet) error {
+// prepareSingleProof runs every deterministic check for one QuorumProof except
+// the aggregated BLS verification, and returns the AggCheck that defers that
+// verification to the parallel phase. The checks and their order are identical to
+// the inline verifySingleProof they replace, so a proof rejected here is rejected
+// exactly as before; only the final signature check is deferred.
+func (v *ATXVerifier) prepareSingleProof(atx *types.AttestedTransaction, proof *types.QuorumProof, vs *validators.ValidatorSet) (attest.AggCheck, error) {
 	objIdx := findATXObjectIndex(atx, proof.ObjectIdBytes())
 	if objIdx < 0 {
-		return fmt.Errorf("object not found in ATX")
+		return attest.AggCheck{}, fmt.Errorf("object not found in ATX")
 	}
 
 	var obj types.Object
 	if !atx.Objects(&obj, objIdx) {
-		return fmt.Errorf("cannot read object at index %d", objIdx)
+		return attest.AggCheck{}, fmt.Errorf("cannot read object at index %d", objIdx)
 	}
 
 	// Recompute the canonical hash from the object's content bytes.
@@ -135,19 +223,22 @@ func (v *ATXVerifier) verifySingleProof(atx *types.AttestedTransaction, proof *t
 
 	blsKeys, signerCount := extractSignerBLSKeys(proof.SignerBitmapBytes(), holders, vs)
 	if signerCount == 0 {
-		return fmt.Errorf("no signers in bitmap")
+		return attest.AggCheck{}, fmt.Errorf("no signers in bitmap")
 	}
 
 	quorum := attest.QuorumSize(len(holders))
 	if signerCount < quorum {
-		return fmt.Errorf("insufficient signers: got %d, need %d", signerCount, quorum)
+		return attest.AggCheck{}, fmt.Errorf("insufficient signers: got %d, need %d", signerCount, quorum)
 	}
 
-	if !attest.VerifyAggregated(proof.BlsSignatureBytes(), hash[:], blsKeys) {
-		return fmt.Errorf("aggregated BLS signature invalid")
-	}
-
-	return nil
+	// The flatbuffer fields below are owned by the parent buffer, which is read
+	// only during commit, so the worker pool reads them concurrently without
+	// copying. hash is a local array; take a stable slice over it.
+	return attest.AggCheck{
+		Signature:  proof.BlsSignatureBytes(),
+		Message:    hash[:],
+		PublicKeys: blsKeys,
+	}, nil
 }
 
 // findATXObjectIndex returns the index of the object with the given ID in the ATX, or -1.

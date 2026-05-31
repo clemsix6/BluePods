@@ -98,9 +98,17 @@ type DAG struct {
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
 
-	// verifyATXProofs verifies BLS quorum proofs in an AttestedTransaction.
+	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
+	// Used as the inline fallback when no batch verifier is set (such as direct
+	// unit tests); the round commit loop uses verifyATXProofsBatch instead.
 	verifyATXProofs func(atx *types.AttestedTransaction, commitRound uint64) error
+
+	// verifyATXProofsBatch verifies the BLS quorum proofs of a committed round's
+	// ATXs in one parallel pass, returning one error per ATX in input order. When
+	// set, the round commit loop uses it so the (pure, deterministic) signature
+	// checks run across cores before the sequential apply.
+	verifyATXProofsBatch func(atxs []*types.AttestedTransaction, commitRound uint64) []error
 
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
@@ -396,12 +404,23 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	d.tracker.trackObject(h, version, replication, fees)
 }
 
-// SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
-// The verifier receives the commit round so it can pick the holder snapshot of
-// the epoch the attestations belong to. Must be called after DAG creation,
-// before transactions are committed.
+// SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
+// verifier receives the commit round so it can pick the holder snapshot of the
+// epoch the attestations belong to. The round commit loop prefers the batch
+// verifier; this remains the fallback when no batch verifier is set. Must be
+// called after DAG creation, before transactions are committed.
 func (d *DAG) SetATXProofVerifier(fn func(atx *types.AttestedTransaction, commitRound uint64) error) {
 	d.verifyATXProofs = fn
+}
+
+// SetATXProofBatchVerifier sets the function the round commit loop uses to verify
+// a round's BLS quorum proofs in one parallel pass. It returns one error per ATX
+// in input order (nil when that ATX's proofs are valid). Each verdict must equal
+// what the single verifier would return for the same ATX, so the set of accepted
+// ATXs and their apply order are unchanged. Must be called after DAG creation,
+// before transactions are committed.
+func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction, commitRound uint64) []error) {
+	d.verifyATXProofsBatch = fn
 }
 
 // SetFeeSystem configures protocol-level fee deduction.

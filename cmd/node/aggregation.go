@@ -73,7 +73,12 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		EpochLength:         n.dag.EpochLength(),
 		GraceRounds:         consensus.EpochGraceRounds,
 	})
+
+	// Batch verifier: the round commit loop verifies a round's proofs across
+	// cores in one parallel pass. SetATXProofVerifier stays wired as the inline
+	// fallback, so a single-ATX verdict is identical either way.
 	n.dag.SetATXProofVerifier(atxVerifier.Verify)
+	n.dag.SetATXProofBatchVerifier(atxVerifier.VerifyBatch)
 
 	// Set up fee system
 	n.initFeeSystem(validators)

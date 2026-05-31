@@ -120,9 +120,18 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 
 // commitRound processes all transactions from a committed round.
 // Tracks per-validator round production and accumulates epoch fees.
+//
+// Before applying, it verifies the round's BLS quorum proofs in one parallel
+// gate: collectRoundProofs gathers every proof-bearing ATX in committed order,
+// the batch verifier checks their signatures across cores, and the resulting
+// per-ATX verdicts feed the sequential apply below. The verdict for each ATX is
+// the same value the inline sequential verifier would have produced, so the set
+// of accepted ATXs and their apply order are unchanged.
 func (d *DAG) commitRound(round uint64) {
 	hashes := d.store.getByRound(round)
 	d.epochTotalRounds++
+
+	verdicts := d.verifyRoundProofs(round, hashes)
 
 	for _, h := range hashes {
 		v := d.store.get(h)
@@ -134,7 +143,7 @@ func (d *DAG) commitRound(round uint64) {
 		producer := extractProducer(v)
 		d.epochRoundsProduced[producer]++
 
-		fees := d.processTransactions(v, round)
+		fees := d.processTransactions(v, round, verdicts)
 
 		// Accumulate epoch fees from vertex fee summary
 		d.epochFees += fees.Epoch
@@ -150,9 +159,93 @@ func (d *DAG) commitRound(round uint64) {
 	}
 }
 
+// proofVerdicts carries the parallel proof-verification result of a round to the
+// sequential apply loop. The two loops walk the round's vertices and transactions
+// in the same order, so consuming one verdict per ATX with next() keeps the
+// verdict aligned to its ATX. A nil verdicts pointer means proof verification is
+// disabled, and next() always reports "no error".
+type proofVerdicts struct {
+	errs   []error // errs holds one entry per proof-bearing ATX, in committed order
+	cursor int     // cursor is the index of the next proof-bearing ATX to consume
+}
+
+// next reports the verdict for the next proof-bearing ATX in committed order.
+// hasProofs must mirror the apply loop's "this ATX carries proofs" test so the
+// cursor advances in lockstep with the pre-pass. ATXs without proofs are not
+// represented in errs and never advance the cursor, matching the pre-pass.
+func (p *proofVerdicts) next(hasProofs bool) error {
+	if p == nil || !hasProofs {
+		return nil
+	}
+
+	if p.cursor >= len(p.errs) {
+		return nil
+	}
+
+	err := p.errs[p.cursor]
+	p.cursor++
+
+	return err
+}
+
+// verifyRoundProofs runs the parallel proof gate for a round and returns the
+// per-ATX verdicts the apply loop consumes. It returns nil when proof
+// verification is disabled, so executeTx falls back to its no-verification path.
+func (d *DAG) verifyRoundProofs(round uint64, hashes []Hash) *proofVerdicts {
+	if d.verifyATXProofsBatch == nil {
+		return nil
+	}
+
+	atxs := d.collectRoundProofs(hashes)
+	if len(atxs) == 0 {
+		return &proofVerdicts{}
+	}
+
+	return &proofVerdicts{errs: d.verifyATXProofsBatch(atxs, round)}
+}
+
+// collectRoundProofs walks the round's vertices and transactions in committed
+// order and returns one fresh AttestedTransaction per proof-bearing ATX. It
+// mirrors the apply loop's iteration exactly (same vertex order, same
+// Transactions index, same skip conditions) so the returned slice lines up
+// one-to-one with the apply loop's proof-bearing ATXs.
+func (d *DAG) collectRoundProofs(hashes []Hash) []*types.AttestedTransaction {
+	var atxs []*types.AttestedTransaction
+
+	for _, h := range hashes {
+		v := d.store.get(h)
+		if v == nil {
+			continue
+		}
+
+		for i := 0; i < v.TransactionsLength(); i++ {
+			atx := new(types.AttestedTransaction)
+			if !v.Transactions(atx, i) {
+				continue
+			}
+
+			// Mirror executeTx exactly: an ATX with a nil transaction returns
+			// before the proof check, and an ATX with no proofs skips it, so
+			// neither is part of the batch. Keeping these predicates identical
+			// keeps the verdict cursor aligned with the apply loop.
+			if atx.Transaction(nil) == nil {
+				continue
+			}
+
+			if atx.ProofsLength() == 0 {
+				continue
+			}
+
+			atxs = append(atxs, atx)
+		}
+	}
+
+	return atxs
+}
+
 // processTransactions handles committed transactions from a vertex.
 // Returns the accumulated fee summary for the vertex.
-func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) FeeSplit {
+func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64, verdicts *proofVerdicts) FeeSplit {
 	var atx types.AttestedTransaction
 	var vertexFees FeeSplit
 
@@ -163,7 +256,7 @@ func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) FeeSplit 
 			continue
 		}
 
-		txFees := d.executeTx(&atx, commitRound, producer)
+		txFees := d.executeTx(&atx, commitRound, producer, verdicts)
 		vertexFees.Total += txFees.Total
 		vertexFees.Burned += txFees.Burned
 		vertexFees.Epoch += txFees.Epoch
@@ -174,7 +267,11 @@ func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64) FeeSplit 
 
 // executeTx checks version conflicts, deducts fees, and executes a transaction.
 // Returns the fee split for this transaction (zero if fees disabled).
-func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, producer Hash) FeeSplit {
+//
+// verdicts carries the round's parallel proof-verification result; it is nil
+// only when executeTx is driven outside the round commit loop (such as direct
+// unit tests), in which case proofs are verified inline.
+func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, producer Hash, verdicts *proofVerdicts) FeeSplit {
 	tx := atx.Transaction(nil)
 	if tx == nil {
 		logger.Warn("tx is nil, skipping")
@@ -192,12 +289,10 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// with fresh proofs. Marking that hash on a proof failure would block the
 	// legitimate recollect-after-grace resubmission, so a proof failure returns
 	// without recording the hash.
-	if d.verifyATXProofs != nil && atx.ProofsLength() > 0 {
-		if err := d.verifyATXProofs(atx, commitRound); err != nil {
-			logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
-			d.emitTransaction(tx, false)
-			return FeeSplit{}
-		}
+	if err := d.proofVerdict(atx, commitRound, verdicts); err != nil {
+		logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
+		d.emitTransaction(tx, false)
+		return FeeSplit{}
 	}
 
 	// Commit-once guard: a transaction can reach the commit path more than once
@@ -270,6 +365,26 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	d.emitTransaction(tx, success)
 
 	return feeSplit
+}
+
+// proofVerdict returns the proof-verification verdict for one ATX. An ATX with no
+// proofs is always accepted (genesis/singletons), exactly as before. When the
+// round was verified in parallel, the verdict is read from verdicts in committed
+// order so it lines up with this ATX. When verdicts is nil (direct unit-test
+// calls outside the round loop), it falls back to the inline single verifier so
+// the verdict is still identical to the sequential implementation.
+func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, verdicts *proofVerdicts) error {
+	hasProofs := atx.ProofsLength() > 0
+
+	if verdicts != nil {
+		return verdicts.next(hasProofs)
+	}
+
+	if d.verifyATXProofs != nil && hasProofs {
+		return d.verifyATXProofs(atx, commitRound)
+	}
+
+	return nil
 }
 
 // deductFees performs protocol-level fee deduction from gas_coin.
