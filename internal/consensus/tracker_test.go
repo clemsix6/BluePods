@@ -435,3 +435,30 @@ func TestIncrementPreservesReplication(t *testing.T) {
 		t.Fatalf("expected replication 42 (preserved), got %d", r)
 	}
 }
+
+// TestCommittedTxDedup verifies the commit-once guard records and recognizes
+// transaction hashes so a duplicated transaction is processed only once.
+func TestCommittedTxDedup(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	var h1 Hash
+	h1[0], h1[31] = 0xAA, 0xBB
+
+	var h2 Hash
+	h2[0] = 0xCC
+
+	if ot.wasCommitted(h1) {
+		t.Fatal("hash should not be committed before marking")
+	}
+
+	ot.markCommitted(h1)
+
+	if !ot.wasCommitted(h1) {
+		t.Fatal("hash should be committed after marking")
+	}
+
+	if ot.wasCommitted(h2) {
+		t.Fatal("a different hash must not be reported as committed")
+	}
+}

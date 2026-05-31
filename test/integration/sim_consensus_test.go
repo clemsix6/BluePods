@@ -2,7 +2,6 @@ package integration
 
 import (
 	"encoding/hex"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +52,7 @@ func runConsensusDAGTests(t *testing.T, cluster *Cluster) {
 
 	t.Run("ATP-2.6: quorum advances round", func(t *testing.T) {
 		for i := 0; i < cluster.Size(); i++ {
-			status := QueryStatus(t, cluster.Node(i).HTTPAddr())
+			status := QueryStatus(t, cluster.Node(i).Addr())
 			if status.Round == 0 {
 				t.Errorf("node %d: round is 0, expected advancement", i)
 			}
@@ -62,9 +61,9 @@ func runConsensusDAGTests(t *testing.T, cluster *Cluster) {
 
 	t.Run("ATP-2.8: round progression", func(t *testing.T) {
 		// Capture initial round
-		initial := QueryStatus(t, cluster.Bootstrap().HTTPAddr())
+		initial := QueryStatus(t, cluster.Bootstrap().Addr())
 		time.Sleep(15 * time.Second)
-		after := QueryStatus(t, cluster.Bootstrap().HTTPAddr())
+		after := QueryStatus(t, cluster.Bootstrap().Addr())
 
 		if after.Round <= initial.Round {
 			t.Errorf("round did not advance: %d -> %d", initial.Round, after.Round)
@@ -75,7 +74,7 @@ func runConsensusDAGTests(t *testing.T, cluster *Cluster) {
 
 	t.Run("ATP-2.9: commit order sequential", func(t *testing.T) {
 		for i := 0; i < cluster.Size(); i++ {
-			status := QueryStatus(t, cluster.Node(i).HTTPAddr())
+			status := QueryStatus(t, cluster.Node(i).Addr())
 
 			if status.LastCommitted > status.Round {
 				t.Errorf("node %d: lastCommitted=%d > round=%d",
@@ -94,7 +93,7 @@ func runConsensusDAGTests(t *testing.T, cluster *Cluster) {
 	})
 }
 
-// runClientOperationTests tests faucet, split, transfer, and NFT operations.
+// runClientOperationTests tests faucet, split, transfer, and object operations.
 func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
 
@@ -187,38 +186,53 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		}
 	})
 
-	t.Run("ATP-15.4: create NFT", func(t *testing.T) {
+	t.Run("ATP-15.4: create object", func(t *testing.T) {
 		w := client.NewWallet()
-		metadata := []byte("consensus test NFT")
+		metadata := []byte("consensus test object")
 
-		nftID, err := w.CreateNFT(cli, 5, metadata)
+		objectID, err := w.CreateObject(cli, 5, metadata)
 		if err != nil {
-			t.Fatalf("create NFT: %v", err)
+			t.Fatalf("create object: %v", err)
 		}
 
-		WaitForObject(t, cli, nftID, 15*time.Second)
+		WaitForObject(t, cli, objectID, 15*time.Second)
 
-		obj, err := cli.GetObject(nftID)
+		obj, err := cli.GetObject(objectID)
 		if err != nil {
-			t.Fatalf("get NFT: %v", err)
+			t.Fatalf("get object: %v", err)
 		}
 
 		pk := w.Pubkey()
 		if obj.Owner != pk {
-			t.Error("NFT owner mismatch")
+			t.Error("object owner mismatch")
 		}
 
 		if obj.Replication != 5 {
-			t.Errorf("NFT replication: got %d, want 5", obj.Replication)
+			t.Errorf("object replication: got %d, want 5", obj.Replication)
 		}
 	})
 
-	t.Run("ATP-15.5: transfer NFT", func(t *testing.T) {
-		// TODO: BLS attestation for non-singleton objects (rep>0) is unreliable
-		// in test clusters. The aggregator needs 67% of holders to respond,
-		// but timing/network conditions in CI cause consistent failures.
-		// Re-enable once BLS aggregation is hardened.
-		t.Skip("BLS attestation unreliable in test clusters — needs aggregation hardening")
+	t.Run("ATP-15.5: transfer object", func(t *testing.T) {
+		// Replicated (rep>0) object transfer through the daemon's off-chain
+		// attestation-collection path: the daemon gathers a quorum of holder
+		// signatures, assembles an attested transaction, and submits it.
+		w := client.NewWallet()
+
+		objectID, err := w.CreateObject(cli, 3, []byte("transfer object"))
+		if err != nil {
+			t.Fatalf("create object: %v", err)
+		}
+
+		WaitForObject(t, cli, objectID, 30*time.Second)
+		WaitForHolders(t, cluster.Nodes(), objectID, 3, 30*time.Second)
+
+		recipient := client.NewWallet()
+		if err := w.TransferObject(cli, objectID, recipient.Pubkey()); err != nil {
+			t.Fatalf("transfer object: %v", err)
+		}
+
+		rpk := recipient.Pubkey()
+		WaitForOwner(t, cli, objectID, rpk, 30*time.Second)
 	})
 }
 
@@ -279,19 +293,19 @@ func runVersionTrackingTests(t *testing.T, cli *client.Client) {
 // runSecurityTests tests security-related validations.
 func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
-	addr := cluster.Bootstrap().HTTPAddr()
+	addr := cluster.Bootstrap().Addr()
 	systemPod := cli.SystemPod()
 
 	t.Run("ATP-24.2: hash tampering rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithBadHash(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
 
 	t.Run("ATP-24.3: signature forgery rejected", func(t *testing.T) {
 		code, _ := SubmitRawBytes(addr, BuildTxWithBadSig(systemPod))
-		if code != http.StatusBadRequest {
+		if code != statusBadRequest {
 			t.Errorf("expected 400, got %d", code)
 		}
 	})
@@ -312,7 +326,7 @@ func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 		code, _ := SubmitRawBytes(addr, txBytes)
 
 		// API accepts (202) but execution should fail (ownership mismatch)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected non-owner tx: status %d (also valid)", code)
 		}
 
@@ -379,7 +393,7 @@ func runConvergenceTests(t *testing.T, cluster *Cluster) {
 		statuses := make([]*statusResponse, cluster.Size())
 
 		for i := 0; i < cluster.Size(); i++ {
-			statuses[i] = QueryStatus(t, cluster.Node(i).HTTPAddr())
+			statuses[i] = QueryStatus(t, cluster.Node(i).Addr())
 			t.Logf("Node %d: round=%d lastCommitted=%d validators=%d",
 				i, statuses[i].Round, statuses[i].LastCommitted, statuses[i].Validators)
 		}

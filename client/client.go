@@ -1,17 +1,25 @@
 package client
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
+
+	"BluePods/daemon"
+	"BluePods/internal/network"
+	"BluePods/internal/types"
 )
 
-// Client connects to a BluePods node via HTTP.
+// Client connects to a BluePods node over QUIC. It submits singleton-only
+// transactions raw and routes transactions that touch replicated objects through
+// the client daemon (rendezvous, attestation collection, ATX assembly).
 type Client struct {
-	nodeAddr  string   // nodeAddr is the HTTP address (e.g. "127.0.0.1:8080")
-	systemPod [32]byte // systemPod is the system pod ID
+	nodeAddr  string         // nodeAddr is the node's QUIC address (e.g. "127.0.0.1:9000")
+	systemPod [32]byte       // systemPod is the system pod ID
+	transport *QUICTransport // transport is the SDK's QUIC request transport
+	daemon    *daemon.Daemon // daemon collects attestations for replicated objects
 }
 
 // Wallet holds a keypair and tracks owned coins.
@@ -28,7 +36,7 @@ type CoinInfo struct {
 	Balance uint64   // Balance is the coin amount
 }
 
-// ObjectInfo holds parsed object data from the API.
+// ObjectInfo holds parsed object data.
 type ObjectInfo struct {
 	ID          [32]byte // ID is the object identifier
 	Version     uint64   // Version is the current version
@@ -39,28 +47,31 @@ type ObjectInfo struct {
 
 // ValidatorInfo holds validator network information.
 type ValidatorInfo struct {
-	Pubkey [32]byte // Pubkey is the validator's public key
-	HTTP   string   // HTTP is the HTTP API endpoint
+	Pubkey   [32]byte // Pubkey is the validator's public key
+	QUICAddr string   // QUICAddr is the QUIC endpoint
 }
 
-// NewClient creates a client connected to a node.
-// It fetches the systemPod ID from the node's /status endpoint.
-func NewClient(nodeAddr string) (*Client, error) {
-	var status struct {
-		SystemPod string `json:"systemPod"`
+// NewClient creates a client connected to a node over QUIC. It synchronizes the
+// validator set and epoch through the daemon (MsgGetValidators / MsgStatus). The
+// system pod ID is supplied by the caller, as it is not network-discoverable over
+// the client QUIC surface.
+func NewClient(nodeAddr string, systemPod [32]byte) (*Client, error) {
+	d, err := daemon.New([]string{nodeAddr})
+	if err != nil {
+		return nil, fmt.Errorf("init daemon:\n%w", err)
 	}
 
-	if err := httpGet("http://"+nodeAddr+"/status", &status); err != nil {
+	// Confirm the node is reachable and synced for status.
+	if _, err := NewQUICTransport(nodeAddr).Status(); err != nil {
 		return nil, fmt.Errorf("get status:\n%w", err)
 	}
 
-	podBytes, err := hex.DecodeString(status.SystemPod)
-	if err != nil || len(podBytes) != 32 {
-		return nil, fmt.Errorf("invalid systemPod: %q", status.SystemPod)
+	c := &Client{
+		nodeAddr:  nodeAddr,
+		systemPod: systemPod,
+		transport: NewQUICTransport(nodeAddr),
+		daemon:    d,
 	}
-
-	c := &Client{nodeAddr: nodeAddr}
-	copy(c.systemPod[:], podBytes)
 
 	return c, nil
 }
@@ -103,99 +114,104 @@ func (w *Wallet) GetCoin(id [32]byte) *CoinInfo {
 	return w.coins[id]
 }
 
-// Faucet requests tokens from the faucet endpoint.
+// Faucet requests tokens from the node's faucet over QUIC.
 // Returns the predicted coinID of the minted coin.
 func (c *Client) Faucet(pubkey [32]byte, amount uint64) ([32]byte, error) {
-	body := map[string]any{
-		"pubkey": hex.EncodeToString(pubkey[:]),
-		"amount": amount,
-	}
-
-	var resp struct {
-		CoinID string `json:"coinID"`
-	}
-
-	if err := httpPostJSON("http://"+c.nodeAddr+"/faucet", body, &resp); err != nil {
+	coinID, err := c.transport.Faucet(pubkey, amount)
+	if err != nil {
 		return [32]byte{}, fmt.Errorf("faucet:\n%w", err)
 	}
 
-	return decodeHexID(resp.CoinID)
+	return coinID, nil
 }
 
-// Validators returns the list of active validators.
+// Validators returns the list of active validators from the daemon's synced set.
 func (c *Client) Validators() ([]ValidatorInfo, error) {
-	var resp []struct {
-		Pubkey string `json:"pubkey"`
-		HTTP   string `json:"http"`
+	vs := c.daemon.Validators()
+	if vs == nil {
+		return nil, fmt.Errorf("validator set not synced")
 	}
 
-	if err := httpGet("http://"+c.nodeAddr+"/validators", &resp); err != nil {
-		return nil, fmt.Errorf("get validators:\n%w", err)
-	}
+	all := vs.All()
+	result := make([]ValidatorInfo, len(all))
 
-	return parseValidators(resp)
-}
-
-// parseValidators converts raw validator responses to ValidatorInfo.
-func parseValidators(raw []struct {
-	Pubkey string `json:"pubkey"`
-	HTTP   string `json:"http"`
-}) ([]ValidatorInfo, error) {
-	result := make([]ValidatorInfo, len(raw))
-
-	for i, v := range raw {
-		pkBytes, err := hex.DecodeString(v.Pubkey)
-		if err != nil || len(pkBytes) != 32 {
-			return nil, fmt.Errorf("invalid validator pubkey: %q", v.Pubkey)
-		}
-
-		copy(result[i].Pubkey[:], pkBytes)
-		result[i].HTTP = v.HTTP
+	for i, v := range all {
+		result[i].Pubkey = v.Pubkey
+		result[i].QUICAddr = v.QUICAddr
 	}
 
 	return result, nil
 }
 
-// GetObject retrieves an object by ID from the node.
+// GetObject retrieves an object by ID from the node over QUIC.
 func (c *Client) GetObject(id [32]byte) (*ObjectInfo, error) {
-	var resp struct {
-		ID          string `json:"id"`
-		Version     uint64 `json:"version"`
-		Owner       string `json:"owner"`
-		Replication uint16 `json:"replication"`
-		Content     string `json:"content"`
-	}
-
-	url := "http://" + c.nodeAddr + "/object/" + hex.EncodeToString(id[:])
-	if err := httpGet(url, &resp); err != nil {
+	data, err := c.transport.GetObject(id)
+	if err != nil {
 		return nil, fmt.Errorf("get object:\n%w", err)
 	}
 
-	return parseObjectResp(resp.ID, resp.Owner, resp.Content, resp.Version, resp.Replication)
+	if data == nil {
+		return nil, fmt.Errorf("object not found: %x", id[:8])
+	}
+
+	return parseObject(data), nil
 }
 
-// parseObjectResp parses hex fields from the object API response.
-func parseObjectResp(idHex, ownerHex, contentHex string, version uint64, replication uint16) (*ObjectInfo, error) {
-	info := &ObjectInfo{Version: version, Replication: replication}
-
-	idBytes, err := hex.DecodeString(idHex)
-	if err != nil || len(idBytes) != 32 {
-		return nil, fmt.Errorf("invalid object ID: %q", idHex)
-	}
-	copy(info.ID[:], idBytes)
-
-	ownerBytes, err := hex.DecodeString(ownerHex)
-	if err != nil || len(ownerBytes) != 32 {
-		return nil, fmt.Errorf("invalid owner: %q", ownerHex)
-	}
-	copy(info.Owner[:], ownerBytes)
-
-	info.Content, err = hex.DecodeString(contentHex)
+// GetObjectLocal retrieves an object only if the node holds it locally, without
+// routing to a remote holder. It returns nil (no error) when the node is not a
+// holder, which a caller uses to probe holdership.
+func (c *Client) GetObjectLocal(id [32]byte) (*ObjectInfo, error) {
+	data, err := c.transport.GetObjectLocal(id)
 	if err != nil {
-		return nil, fmt.Errorf("invalid content hex:\n%w", err)
+		return nil, fmt.Errorf("get object local:\n%w", err)
 	}
 
-	return info, nil
+	if data == nil {
+		return nil, nil
+	}
+
+	return parseObject(data), nil
+}
+
+// Status returns the node's consensus status and operational counters over QUIC.
+func (c *Client) Status() (*network.StatusResponse, error) {
+	return c.transport.Status()
+}
+
+// ParseObject parses an Object FlatBuffer into an ObjectInfo. It is exported for
+// callers (such as the integration tests) that fetch raw object bytes over the
+// QUIC transport and need to decode them.
+func ParseObject(data []byte) *ObjectInfo {
+	return parseObject(data)
+}
+
+// parseObject parses an Object FlatBuffer into an ObjectInfo.
+func parseObject(data []byte) *ObjectInfo {
+	obj := types.GetRootAsObject(data, 0)
+
+	info := &ObjectInfo{
+		Version:     obj.Version(),
+		Replication: obj.Replication(),
+	}
+	copy(info.ID[:], obj.IdBytes())
+	copy(info.Owner[:], obj.OwnerBytes())
+
+	info.Content = make([]byte, len(obj.ContentBytes()))
+	copy(info.Content, obj.ContentBytes())
+
+	return info
+}
+
+// submit routes a signed raw transaction through the daemon. A singleton-only
+// transaction is submitted raw and wrapped by the validator; a transaction that
+// touches replicated objects has its attestations collected and is submitted as
+// an ATX.
+func (c *Client) submit(rawTx []byte) error {
+	if _, err := c.daemon.SubmitTransaction(context.Background(), rawTx); err != nil {
+		return fmt.Errorf("submit transaction:\n%w", err)
+	}
+
+	return nil
 }
 
 // RefreshCoin updates a coin's version and balance from the network.
@@ -219,17 +235,4 @@ func (w *Wallet) RefreshCoin(c *Client, coinID [32]byte) error {
 	}
 
 	return nil
-}
-
-// decodeHexID decodes a 64-char hex string to a [32]byte.
-func decodeHexID(hexStr string) ([32]byte, error) {
-	b, err := hex.DecodeString(hexStr)
-	if err != nil || len(b) != 32 {
-		return [32]byte{}, fmt.Errorf("invalid hex ID: %q", hexStr)
-	}
-
-	var id [32]byte
-	copy(id[:], b)
-
-	return id, nil
 }

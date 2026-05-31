@@ -1,5 +1,5 @@
 mod coin;
-mod nft;
+mod object;
 
 pub use coin::Coin;
-pub use nft::Nft;
+pub use object::Object;

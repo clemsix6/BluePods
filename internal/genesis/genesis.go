@@ -13,9 +13,6 @@ type Config struct {
 	// InitialMint is the amount of tokens to mint for the bootstrap account.
 	InitialMint uint64
 
-	// HTTPAddress is the validator's HTTP API endpoint (e.g., "192.168.1.1:8080").
-	HTTPAddress string
-
 	// QUICAddress is the validator's QUIC P2P endpoint (e.g., "192.168.1.1:9000").
 	QUICAddress string
 
@@ -48,7 +45,6 @@ func BuildTransactions(cfg Config) ([][]byte, error) {
 	registerTx := BuildRegisterValidatorTx(
 		cfg.PrivateKey,
 		cfg.SystemPodID,
-		cfg.HTTPAddress,
 		cfg.QUICAddress,
 		cfg.BLSPubkey,
 	)

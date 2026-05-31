@@ -11,6 +11,12 @@ import (
 // trackerKeyPrefix is the Pebble key prefix for tracker entries.
 var trackerKeyPrefix = []byte("t:")
 
+// committedTxPrefix is the Pebble key prefix for committed transaction hashes.
+// It records every transaction hash already processed at commit, so a transaction
+// that reaches the commit path more than once (for example, the same gossiped
+// transaction included by several producers) executes exactly once.
+var committedTxPrefix = []byte("c:")
+
 // ObjectTrackerEntry represents an object with its version, replication, and fees.
 type ObjectTrackerEntry struct {
 	ID          Hash   // ID is the 32-byte object identifier
@@ -126,6 +132,30 @@ func (ot *objectTracker) incrementMutableObjects(tx *types.Transaction) {
 		fees := ot.getFees(objectID)
 		ot.trackObject(objectID, version+1, replication, fees)
 	}
+}
+
+// wasCommitted reports whether a transaction with the given hash has already
+// been processed at commit.
+func (ot *objectTracker) wasCommitted(txHash Hash) bool {
+	value, err := ot.db.Get(ot.committedKey(txHash))
+
+	return err == nil && value != nil
+}
+
+// markCommitted records a transaction hash as processed at commit.
+// TODO: prune committed-tx records past a retention window so the set does not
+// grow without bound over a long-running chain.
+func (ot *objectTracker) markCommitted(txHash Hash) {
+	_ = ot.db.Set(ot.committedKey(txHash), []byte{1})
+}
+
+// committedKey builds the Pebble key for a committed transaction hash.
+func (ot *objectTracker) committedKey(txHash Hash) []byte {
+	key := make([]byte, len(committedTxPrefix)+32)
+	copy(key, committedTxPrefix)
+	copy(key[len(committedTxPrefix):], txHash[:])
+
+	return key
 }
 
 // getVersion returns the current version of an object.

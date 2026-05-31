@@ -213,8 +213,28 @@ func (rcv *Snapshot) DomainsLength() int {
 	return 0
 }
 
+func (rcv *Snapshot) Signatures(obj *ObjectSig, j int) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(20))
+	if o != 0 {
+		x := rcv._tab.Vector(o)
+		x += flatbuffers.UOffsetT(j) * 4
+		x = rcv._tab.Indirect(x)
+		obj.Init(rcv._tab.Bytes, x)
+		return true
+	}
+	return false
+}
+
+func (rcv *Snapshot) SignaturesLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(20))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
 func SnapshotStart(builder *flatbuffers.Builder) {
-	builder.StartObject(8)
+	builder.StartObject(9)
 }
 func SnapshotAddVersion(builder *flatbuffers.Builder, version uint32) {
 	builder.PrependUint32Slot(0, version, 0)
@@ -256,6 +276,12 @@ func SnapshotAddDomains(builder *flatbuffers.Builder, domains flatbuffers.UOffse
 	builder.PrependUOffsetTSlot(7, flatbuffers.UOffsetT(domains), 0)
 }
 func SnapshotStartDomainsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(4, numElems, 4)
+}
+func SnapshotAddSignatures(builder *flatbuffers.Builder, signatures flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(8, flatbuffers.UOffsetT(signatures), 0)
+}
+func SnapshotStartSignaturesVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(4, numElems, 4)
 }
 func SnapshotEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {

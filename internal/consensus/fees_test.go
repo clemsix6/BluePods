@@ -259,9 +259,8 @@ func TestCalculateFee_LargeValues(t *testing.T) {
 
 func TestSplitFee_DefaultRatios(t *testing.T) {
 	params := FeeParams{
-		AggregatorBPS: 2000,
-		BurnBPS:       3000,
-		EpochBPS:      5000,
+		BurnBPS:  3000,
+		EpochBPS: 7000,
 	}
 
 	split := SplitFee(10000, params)
@@ -269,44 +268,37 @@ func TestSplitFee_DefaultRatios(t *testing.T) {
 	if split.Total != 10000 {
 		t.Errorf("total: got %d, want 10000", split.Total)
 	}
-	if split.Aggregator != 2000 {
-		t.Errorf("aggregator: got %d, want 2000", split.Aggregator)
-	}
 	if split.Burned != 3000 {
 		t.Errorf("burned: got %d, want 3000", split.Burned)
 	}
-	if split.Epoch != 5000 {
-		t.Errorf("epoch: got %d, want 5000", split.Epoch)
+	if split.Epoch != 7000 {
+		t.Errorf("epoch: got %d, want 7000", split.Epoch)
 	}
 
 	// Invariant: parts sum to total
-	if split.Aggregator+split.Burned+split.Epoch != split.Total {
+	if split.Burned+split.Epoch != split.Total {
 		t.Error("parts don't sum to total")
 	}
 }
 
 func TestSplitFee_Rounding(t *testing.T) {
 	params := FeeParams{
-		AggregatorBPS: 2000,
-		BurnBPS:       3000,
-		EpochBPS:      5000,
+		BurnBPS:  3000,
+		EpochBPS: 7000,
 	}
 
-	// 999: aggregator=199, burned=299, epoch=999-199-299=501
+	// 999: burned=299, epoch=999-299=700
 	split := SplitFee(999, params)
 
-	if split.Aggregator != 199 {
-		t.Errorf("aggregator: got %d, want 199", split.Aggregator)
-	}
 	if split.Burned != 299 {
 		t.Errorf("burned: got %d, want 299", split.Burned)
 	}
-	if split.Epoch != 501 {
-		t.Errorf("epoch: got %d, want 501", split.Epoch)
+	if split.Epoch != 700 {
+		t.Errorf("epoch: got %d, want 700", split.Epoch)
 	}
 
 	// Invariant: parts always sum to total (remainder goes to epoch)
-	if split.Aggregator+split.Burned+split.Epoch != split.Total {
+	if split.Burned+split.Epoch != split.Total {
 		t.Error("parts don't sum to total after rounding")
 	}
 }
@@ -315,26 +307,25 @@ func TestSplitFee_Zero(t *testing.T) {
 	params := DefaultFeeParams()
 	split := SplitFee(0, params)
 
-	if split.Total != 0 || split.Aggregator != 0 || split.Burned != 0 || split.Epoch != 0 {
+	if split.Total != 0 || split.Burned != 0 || split.Epoch != 0 {
 		t.Error("zero split should be all zeros")
 	}
 }
 
 func TestSplitFee_One(t *testing.T) {
 	params := FeeParams{
-		AggregatorBPS: 2000,
-		BurnBPS:       3000,
-		EpochBPS:      5000,
+		BurnBPS:  3000,
+		EpochBPS: 7000,
 	}
 
 	split := SplitFee(1, params)
 
-	// 1*2000/10000=0, 1*3000/10000=0, epoch=1-0-0=1
-	if split.Aggregator != 0 || split.Burned != 0 || split.Epoch != 1 {
-		t.Errorf("split(1): agg=%d burn=%d epoch=%d", split.Aggregator, split.Burned, split.Epoch)
+	// 1*3000/10000=0, epoch=1-0=1
+	if split.Burned != 0 || split.Epoch != 1 {
+		t.Errorf("split(1): burn=%d epoch=%d", split.Burned, split.Epoch)
 	}
 
-	if split.Aggregator+split.Burned+split.Epoch != 1 {
+	if split.Burned+split.Epoch != 1 {
 		t.Error("parts don't sum to 1")
 	}
 }
@@ -536,8 +527,8 @@ func TestDefaultFeeParams(t *testing.T) {
 	p := DefaultFeeParams()
 
 	// Ratios must sum to 100%
-	if p.AggregatorBPS+p.BurnBPS+p.EpochBPS != bpsMax {
-		t.Errorf("ratios sum to %d, want %d", p.AggregatorBPS+p.BurnBPS+p.EpochBPS, bpsMax)
+	if p.BurnBPS+p.EpochBPS != bpsMax {
+		t.Errorf("ratios sum to %d, want %d", p.BurnBPS+p.EpochBPS, bpsMax)
 	}
 
 	// Refund ratio must be < 100%

@@ -29,7 +29,6 @@ const (
 	// throttled to the liveness loop (500ms). This prevents round-jumping
 	// from vertex-triggered production and ensures sequential vertex creation.
 	transitionBufferRounds = 10
-
 )
 
 // Executor executes committed transactions.
@@ -39,9 +38,9 @@ type Executor interface {
 
 // DAG manages the Mysticeti consensus.
 type DAG struct {
-	store      *store
-	tracker    *objectTracker
-	validators *ValidatorSet
+	store       *store
+	tracker     *objectTracker
+	validators  *ValidatorSet
 	executor    Executor
 	broadcaster Broadcaster
 	systemPod   Hash
@@ -67,12 +66,12 @@ type DAG struct {
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
 
 	// Mode flags
-	listenerMode   bool // listenerMode disables vertex production
-	isBootstrap    bool // isBootstrap allows producing even with few validators
-	minValidators  int  // minValidators is the threshold before non-bootstrap nodes produce
-	gossipFanout   int  // gossipFanout is the number of peers to send each vertex to
-	graceRounds    int  // graceRounds is the transition grace period (0 = use default 20)
-	bufferRounds   int  // bufferRounds is the transition buffer period (0 = use default 10)
+	listenerMode  bool // listenerMode disables vertex production
+	isBootstrap   bool // isBootstrap allows producing even with few validators
+	minValidators int  // minValidators is the threshold before non-bootstrap nodes produce
+	gossipFanout  int  // gossipFanout is the number of peers to send each vertex to
+	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
+	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
 
 	// Sync mode: after sync, only reference trusted producers (from snapshot) until
 	// we've produced our first vertex. This prevents referencing vertices from other
@@ -87,19 +86,29 @@ type DAG struct {
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
 
 	// Epoch: frozen validator set for Rendezvous hashing.
-	epochLength      uint64          // epochLength is the number of rounds per epoch (0 = disabled)
-	currentEpoch     uint64          // currentEpoch is the current epoch number
-	epochHolders     *ValidatorSet   // epochHolders is the frozen ValidatorSet for Rendezvous
-	pendingRemovals  map[Hash]bool   // pendingRemovals are validators to remove at next epoch
-	epochAdditions   []Hash          // epochAdditions are validators added this epoch
-	maxChurnPerEpoch int             // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
+	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
+	currentEpoch      uint64             // currentEpoch is the current epoch number
+	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
+	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
+	epochAdditions    []Hash             // epochAdditions are validators added this epoch
+	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
 	onEpochTransition func(epoch uint64) // onEpochTransition is called when an epoch boundary is reached
 
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
 
-	// verifyATXProofs verifies BLS quorum proofs in an AttestedTransaction.
-	verifyATXProofs func(*types.AttestedTransaction) error
+	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
+	// It receives the commit round so it can select the correct holder snapshot.
+	// Used as the inline fallback when no batch verifier is set (such as direct
+	// unit tests); the round commit loop uses verifyATXProofsBatch instead.
+	verifyATXProofs func(atx *types.AttestedTransaction, commitRound uint64) error
+
+	// verifyATXProofsBatch verifies the BLS quorum proofs of a committed round's
+	// ATXs in one parallel pass, returning one error per ATX in input order. When
+	// set, the round commit loop uses it so the (pure, deterministic) signature
+	// checks run across cores before the sequential apply.
+	verifyATXProofsBatch func(atxs []*types.AttestedTransaction, commitRound uint64) []error
 
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
@@ -107,9 +116,9 @@ type DAG struct {
 	computeHolders HolderFunc // computeHolders computes holders for replication ratio
 
 	// Epoch rewards: accumulated fees and round tracking per validator.
-	epochFees           uint64           // epochFees accumulates total_epoch from all committed vertices this epoch
-	epochRoundsProduced map[Hash]uint64  // epochRoundsProduced counts vertices produced per validator this epoch
-	epochTotalRounds    uint64           // epochTotalRounds is total committed rounds this epoch
+	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
+	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
+	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
 
 	// Lifecycle
 	stop chan struct{}
@@ -228,16 +237,16 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	copy(pubKey[:], privKey.Public().(ed25519.PublicKey))
 
 	d := &DAG{
-		store:           newStore(db),
-		tracker:         newObjectTracker(db),
-		validators:      validators,
-		executor:        executor,
-		broadcaster:     broadcaster,
-		systemPod:       systemPod,
-		epoch:           epoch,
-		privKey:         privKey,
-		pubKey:          pubKey,
-		committed:       make(chan CommittedTx, channelBuffer),
+		store:               newStore(db),
+		tracker:             newObjectTracker(db),
+		validators:          validators,
+		executor:            executor,
+		broadcaster:         broadcaster,
+		systemPod:           systemPod,
+		epoch:               epoch,
+		privKey:             privKey,
+		pubKey:              pubKey,
+		committed:           make(chan CommittedTx, channelBuffer),
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
 		epochRoundsProduced: make(map[Hash]uint64),
@@ -371,8 +380,8 @@ func (d *DAG) OnValidatorAdded(fn func(*ValidatorInfo)) {
 // AddValidator adds a validator to the local validator set.
 // Used for self-registration to allow immediate vertex production.
 // Also triggers transition if this addition reaches minValidators threshold.
-func (d *DAG) AddValidator(pubkey Hash, httpAddr, quicAddr string, blsPubkey [48]byte) {
-	d.validators.Add(pubkey, httpAddr, quicAddr, blsPubkey)
+func (d *DAG) AddValidator(pubkey Hash, quicAddr string, blsPubkey [48]byte) {
+	d.validators.Add(pubkey, quicAddr, blsPubkey)
 
 	// Fire transition when the threshold is reached (same logic as handleRegisterValidator).
 	// For synced nodes, the self-add may be what pushes the count to minValidators.
@@ -395,10 +404,23 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	d.tracker.trackObject(h, version, replication, fees)
 }
 
-// SetATXProofVerifier sets the function used to verify BLS quorum proofs in ATXs.
-// Must be called after DAG creation, before transactions are committed.
-func (d *DAG) SetATXProofVerifier(fn func(*types.AttestedTransaction) error) {
+// SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
+// verifier receives the commit round so it can pick the holder snapshot of the
+// epoch the attestations belong to. The round commit loop prefers the batch
+// verifier; this remains the fallback when no batch verifier is set. Must be
+// called after DAG creation, before transactions are committed.
+func (d *DAG) SetATXProofVerifier(fn func(atx *types.AttestedTransaction, commitRound uint64) error) {
 	d.verifyATXProofs = fn
+}
+
+// SetATXProofBatchVerifier sets the function the round commit loop uses to verify
+// a round's BLS quorum proofs in one parallel pass. It returns one error per ATX
+// in input order (nil when that ATX's proofs are valid). Each verdict must equal
+// what the single verifier would return for the same ATX, so the set of accepted
+// ATXs and their apply order are unchanged. Must be called after DAG creation,
+// before transactions are committed.
+func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction, commitRound uint64) []error) {
+	d.verifyATXProofsBatch = fn
 }
 
 // SetFeeSystem configures protocol-level fee deduction.
@@ -427,6 +449,11 @@ func (d *DAG) EpochHolders() *ValidatorSet {
 // Epoch returns the current epoch number.
 func (d *DAG) Epoch() uint64 {
 	return d.currentEpoch
+}
+
+// EpochLength returns the number of rounds per epoch (0 when epochs are disabled).
+func (d *DAG) EpochLength() uint64 {
+	return d.epochLength
 }
 
 // EpochHoldersCount returns the number of validators in the frozen epoch set.
@@ -819,7 +846,6 @@ func (d *DAG) markFullQuorumAchieved() {
 		logger.Info("full quorum achieved, transition complete")
 	}
 }
-
 
 // countValidatorVertices counts vertices at a round that are from known validators.
 func (d *DAG) countValidatorVertices(round uint64) int {

@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	"BluePods/internal/aggregation"
-	"BluePods/internal/api"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
@@ -33,16 +32,14 @@ type Node struct {
 	state       *state.State
 	network     *network.Node
 	dag         *consensus.DAG
-	api         *api.Server
 	snapManager *sync.SnapshotManager
 	syncBuffer  atomic.Pointer[sync.VertexBuffer] // syncBuffer holds vertices during sync
 	systemPod   [32]byte
 
 	// Aggregation components
-	aggregator *aggregation.Aggregator  // aggregator orchestrates attestation collection
-	blsKey     *aggregation.BLSKeyPair  // blsKey is the BLS key for signing attestations
-	attHandler *aggregation.Handler     // attHandler responds to attestation requests
-	rendezvous *aggregation.Rendezvous  // rendezvous computes object-holder mappings
+	blsKey     *aggregation.BLSKeyPair // blsKey is the BLS key for signing attestations
+	attHandler *aggregation.Handler    // attHandler responds to attestation requests
+	rendezvous *aggregation.Rendezvous // rendezvous computes object-holder mappings
 }
 
 // NewNode creates and initializes a new node.
@@ -124,12 +121,6 @@ func (n *Node) runBootstrap() error {
 	n.setupMessageHandlers()
 	n.setupRequestHandlers()
 
-	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
-	if err := n.api.Start(); err != nil {
-		return fmt.Errorf("start api:\n%w", err)
-	}
-
 	// Start snapshot manager for bootstrap nodes
 	n.snapManager = sync.NewSnapshotManager(n.storage, n.dag)
 	n.snapManager.SetDomainExporter(n.state)
@@ -171,20 +162,8 @@ func (n *Node) myPubkey() consensus.Hash {
 	return pk
 }
 
-// faucetConfig returns the faucet configuration for the API server.
-func (n *Node) faucetConfig() *api.FaucetConfig {
-	return &api.FaucetConfig{
-		PrivKey:   n.cfg.PrivateKey,
-		SystemPod: n.systemPod,
-	}
-}
-
 // Close shuts down all node components gracefully.
 func (n *Node) Close() error {
-	if n.api != nil {
-		n.api.Stop()
-	}
-
 	if n.snapManager != nil {
 		n.snapManager.Stop()
 	}

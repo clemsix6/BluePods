@@ -522,10 +522,10 @@ func TestRegisterValidator_Success(t *testing.T) {
 	// Sender pubkey is used as validator pubkey
 	senderPubkey := [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
 		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
-	httpAddr := []byte("192.168.1.1:8080")
 	quicAddr := []byte("192.168.1.1:9000")
+	blsPubkey := make([]byte, 48)
 
-	input := buildRegisterValidatorInput(senderPubkey, httpAddr, quicAddr)
+	input := buildRegisterValidatorInput(senderPubkey, quicAddr, blsPubkey)
 
 	output, _, err := pool.Execute(wasmID, input, 100000)
 	if err != nil {
@@ -566,16 +566,12 @@ func TestRegisterValidator_Success(t *testing.T) {
 		t.Error("validator pubkey should match sender")
 	}
 
-	if !bytes.Equal(validator.HttpAddressBytes(), httpAddr) {
-		t.Errorf("http_address mismatch: got %s", validator.HttpAddressBytes())
-	}
-
 	if !bytes.Equal(validator.QuicAddressBytes(), quicAddr) {
 		t.Errorf("quic_address mismatch: got %s", validator.QuicAddressBytes())
 	}
 
-	t.Logf("validator created: pubkey=%x, http=%s, quic=%s",
-		validator.PubkeyBytes()[:8], validator.HttpAddressBytes(), validator.QuicAddressBytes())
+	t.Logf("validator created: pubkey=%x, quic=%s",
+		validator.PubkeyBytes()[:8], validator.QuicAddressBytes())
 }
 
 // TestRegisterValidator_InvalidArgs tests registration with malformed args.
@@ -728,21 +724,21 @@ func encodeMergeArgs() []byte {
 }
 
 // encodeRegisterValidatorArgs encodes RegisterValidator args in borsh format.
-// Format: u32 len + http_address bytes + u32 len + quic_address bytes
+// Format: u32 len + quic_address bytes + u32 len + bls_pubkey bytes
 // (pubkey is taken from sender, not args)
-func encodeRegisterValidatorArgs(httpAddr, quicAddr []byte) []byte {
-	buf := make([]byte, 0, 4+len(httpAddr)+4+len(quicAddr))
-
-	// http_address (Vec<u8>: u32 length + bytes)
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(httpAddr)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, httpAddr...)
+func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
+	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey))
 
 	// quic_address (Vec<u8>: u32 length + bytes)
+	lenBuf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
 	buf = append(buf, lenBuf...)
 	buf = append(buf, quicAddr...)
+
+	// bls_pubkey (Vec<u8>: u32 length + bytes)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(blsPubkey)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, blsPubkey...)
 
 	return buf
 }
@@ -1125,10 +1121,10 @@ func buildMergeInputInvalidArgs(balances []uint64, owner [32]byte) []byte {
 
 // buildRegisterValidatorInput creates input for register_validator function.
 // senderPubkey is used as both the tx sender and the validator pubkey.
-func buildRegisterValidatorInput(senderPubkey [32]byte, httpAddr, quicAddr []byte) []byte {
+func buildRegisterValidatorInput(senderPubkey [32]byte, quicAddr, blsPubkey []byte) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
-	txArgs := builder.CreateByteVector(encodeRegisterValidatorArgs(httpAddr, quicAddr))
+	txArgs := builder.CreateByteVector(encodeRegisterValidatorArgs(quicAddr, blsPubkey))
 	txHash := builder.CreateByteVector(make([]byte, 32))
 	txSender := builder.CreateByteVector(senderPubkey[:])
 	txPod := builder.CreateByteVector(make([]byte, 32))

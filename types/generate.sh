@@ -12,7 +12,6 @@ flatc --go -o "$PROJECT_ROOT/internal" \
     "$SCRIPT_DIR/transaction.fbs" \
     "$SCRIPT_DIR/podio.fbs" \
     "$SCRIPT_DIR/validator.fbs" \
-    "$SCRIPT_DIR/domain.fbs" \
     "$SCRIPT_DIR/vertex.fbs" \
     "$SCRIPT_DIR/snapshot.fbs"
 
@@ -27,7 +26,6 @@ flatc --rust -o "$RUST_OUT" \
     "$SCRIPT_DIR/transaction.fbs" \
     "$SCRIPT_DIR/podio.fbs" \
     "$SCRIPT_DIR/validator.fbs" \
-    "$SCRIPT_DIR/domain.fbs" \
     "$SCRIPT_DIR/vertex.fbs"
 
 # Add re-exports to generated Rust files

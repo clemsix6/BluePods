@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"BluePods/internal/api"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
@@ -19,10 +18,10 @@ import (
 // snapshotResult holds the result of applying a snapshot.
 type snapshotResult struct {
 	lastCommittedRound uint64                         // lastCommittedRound is the round of the last committed vertex
-	validators         []*consensus.ValidatorInfo      // validators is the set of validators from the snapshot
-	vertices           []consensus.VertexEntry         // vertices is the set of vertices from the snapshot
-	trackerEntries     []consensus.ObjectTrackerEntry  // trackerEntries is the set of object tracker entries
-	domainEntries      []state.DomainEntry             // domainEntries is the set of domain mappings from the snapshot
+	validators         []*consensus.ValidatorInfo     // validators is the set of validators from the snapshot
+	vertices           []consensus.VertexEntry        // vertices is the set of vertices from the snapshot
+	trackerEntries     []consensus.ObjectTrackerEntry // trackerEntries is the set of object tracker entries
+	domainEntries      []state.DomainEntry            // domainEntries is the set of domain mappings from the snapshot
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -30,8 +29,15 @@ func (n *Node) runValidator() error {
 	// Create buffer to collect vertices during sync
 	n.syncBuffer.Store(sync.NewVertexBuffer())
 
-	// Set up handler to buffer vertices
+	// Set up handler to buffer vertices. A gossiped transaction (tagged) is not a
+	// vertex and must not enter the buffer, where replay would misparse it; the
+	// joining node is not yet producing, and producers re-gossip pending txs, so
+	// dropping it here is safe.
 	n.network.OnMessage(func(peer *network.Peer, data []byte) {
+		if _, ok := network.DecodeGossipTx(data); ok {
+			return
+		}
+
 		logger.Debug("buffering vertex", "from", peer.Address(), "len", len(data))
 		if buf := n.syncBuffer.Load(); buf != nil {
 			buf.Add(data)
@@ -72,12 +78,6 @@ func (n *Node) runValidator() error {
 		return fmt.Errorf("register validator:\n%w", err)
 	}
 
-	// Start HTTP API
-	n.api = api.New(n.cfg.HTTPAddress, n.dag, nil, n.dag, n.state, n.faucetConfig(), n.aggregator, n.newHolderRouter(), n.state)
-	if err := n.api.Start(); err != nil {
-		return fmt.Errorf("start api:\n%w", err)
-	}
-
 	// Start snapshot manager
 	n.snapManager = sync.NewSnapshotManager(n.storage, n.dag)
 	n.snapManager.SetDomainExporter(n.state)
@@ -93,8 +93,13 @@ func (n *Node) runListener() error {
 	// Create buffer to collect vertices during sync
 	n.syncBuffer.Store(sync.NewVertexBuffer())
 
-	// Set up handler to buffer vertices
+	// Set up handler to buffer vertices. Skip gossiped transactions (tagged): they
+	// are not vertices and a listener never produces, so they are dropped here.
 	n.network.OnMessage(func(peer *network.Peer, data []byte) {
+		if _, ok := network.DecodeGossipTx(data); ok {
+			return
+		}
+
 		if buf := n.syncBuffer.Load(); buf != nil {
 			buf.Add(data)
 		}
@@ -161,13 +166,11 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	}
 
 	// Switch message handler BEFORE replay to avoid losing vertices.
-	// New vertices will go directly to DAG while we replay the buffer.
-	// Relay new vertices to other peers for full mesh propagation.
+	// New vertices go directly to the DAG while we replay the buffer; gossiped
+	// transactions enter the pending set (handleGossipMessage tells them apart).
 	n.network.OnMessage(func(peer *network.Peer, data []byte) {
 		logger.Debug("gossip received", "from", peer.Address(), "len", len(data))
-		if n.dag.AddVertex(data) {
-			n.relayVertex(data)
-		}
+		n.handleGossipMessage(peer, data)
 	})
 
 	// Replay buffered vertices through DAG
@@ -311,12 +314,11 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 		"count", len(validators),
 	)
 
-	// Add each validator with their full info (pubkey + addresses + BLS key)
+	// Add each validator with their full info (pubkey + QUIC address + BLS key)
 	for _, v := range validators {
-		vs.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+		vs.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
-			"http", v.HTTPAddr,
 			"quic", v.QUICAddr,
 		)
 	}

@@ -426,9 +426,9 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	defer cleanup()
 
 	// Create validators
-	v1 := &consensus.ValidatorInfo{HTTPAddr: "127.0.0.1:8001"}
+	v1 := &consensus.ValidatorInfo{QUICAddr: "127.0.0.1:9001"}
 	v1.Pubkey[0] = 1
-	v2 := &consensus.ValidatorInfo{HTTPAddr: "127.0.0.1:8002"}
+	v2 := &consensus.ValidatorInfo{QUICAddr: "127.0.0.1:9002"}
 	v2.Pubkey[0] = 2
 	validators := []*consensus.ValidatorInfo{v1, v2}
 

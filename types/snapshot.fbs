@@ -36,6 +36,19 @@ table ObjectVersion {
     fees:uint64;
 }
 
+// ObjectSig carries a holder's eager BLS attestation for an object's current
+// version, so a node that applies the snapshot is warm immediately.
+table ObjectSig {
+    // id is the 32-byte object identifier.
+    id:[ubyte];
+
+    // version is the object version the signature attests.
+    version:uint64;
+
+    // sig is the 96-byte BLS signature over BLAKE3(content || version).
+    sig:[ubyte];
+}
+
 // SnapshotDomain maps a domain name to an object ID in the snapshot.
 table SnapshotDomain {
     // name is the domain name.
@@ -71,6 +84,9 @@ table Snapshot {
 
     // domains contains all registered domain name mappings.
     domains:[SnapshotDomain];
+
+    // signatures contains eager per-object BLS attestations for current versions.
+    signatures:[ObjectSig];
 }
 
 // SnapshotRequest is sent by a node to request the current snapshot.

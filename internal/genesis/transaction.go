@@ -16,16 +16,17 @@ func BuildMintTx(privKey ed25519.PrivateKey, systemPod [32]byte, amount uint64, 
 }
 
 // BuildRegisterValidatorTx creates a signed register_validator transaction as ATX.
-// Used for genesis transactions sent directly via HTTP (bootstrap path).
-func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr string, blsPubkey []byte) []byte {
-	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
+// Used for the genesis bootstrap path. Validators register only a QUIC address.
+func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte) []byte {
+	args := encodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey)
 	return BuildAttestedTx(privKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
 }
 
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
 // Used by validators joining the network — the receiving node wraps it in ATX.
-func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, httpAddr, quicAddr string, blsPubkey []byte) []byte {
-	args := encodeRegisterValidatorArgs([]byte(httpAddr), []byte(quicAddr), blsPubkey)
+// Validators register only a QUIC address.
+func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte) []byte {
+	args := encodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)

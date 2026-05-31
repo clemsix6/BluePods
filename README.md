@@ -22,25 +22,25 @@ Consensus is a leaderless directed acyclic graph inspired by Mysticeti. Every va
 
 The important property of the DAG is that it orders transactions without executing them. Every validator can track object versions just by scanning the committed history. If a transaction declares an object in its mutable list, that object's version gets incremented, regardless of what the smart contract actually does with it. This makes version tracking deterministic and deducible from the DAG alone.
 
-### Direct attestation
+### Off-chain attestation
 
 In traditional BFT consensus, validators broadcast votes to everyone. With N validators, that's N² messages per round. At 200 nodes it's fine. At 2,000 it's a problem.
 
-BluePods replaces this with direct collection. When a validator receives a transaction from a user, it becomes the aggregator. It contacts only the holders of the referenced objects over persistent QUIC connections, collects their BLS signatures on the object hashes, and aggregates them into a single compact proof. The transaction, its objects, and the aggregated BLS proof are then packaged into a vertex and gossipped to the network.
+BluePods replaces this with off-chain collection done by the client. A client daemon contacts only the holders of the referenced objects over QUIC, collects their BLS signatures on the object hashes, aggregates them into a single compact proof, and submits the result as an attested transaction (an ATX). A validator no longer aggregates on the user's behalf: it verifies the ATX and orders it. Holders sign each object version once, eagerly at execution, and serve the stored signature on request, so answering an attestation is a pure read.
 
-The result is that attestation cost scales with the object's replication factor, not with the network size. A transaction involving a 50-holder object generates 50 messages, whether the network has 100 or 5,000 validators.
+The result is that attestation cost scales with the object's replication factor, not with the network size, and the consensus-critical path no longer carries the aggregation work. A transaction involving a 50-holder object contacts 50 holders, whether the network has 100 or 5,000 validators. A transaction touching only singletons (coins) needs no attestation at all and is submitted raw.
 
 ### Pods
 
 Smart contracts are called pods. They're Rust compiled to WebAssembly, executed in a sandboxed wazero runtime with gas metering. The interface is minimal: four host functions (gas, input_len, read_input, write_output) and nothing else. No filesystem, no network, no clock. The pod receives its inputs as a FlatBuffers message, does its logic, and returns the state changes.
 
-The system pod handles the basics: minting coins, transfers, splits, merges, NFTs, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
+The system pod handles the basics: minting coins, transfers, splits, merges, generic objects, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
 
 ### Fees
 
 Fees are computed at the protocol level, outside of pod execution. This is deliberate: if fees were deducted inside a smart contract, the gas coin (a singleton) would force every validator to execute every transaction, destroying the whole point of sharding.
 
-Instead, fee computation is pure arithmetic on the transaction header. Four components: compute (gas budget × gas price × fraction of validators that execute), transit (per standard object in the transaction body), storage (per created object, weighted by replication), and domain registration. Fees are always deducted, even if the transaction fails. 20% goes to the aggregator, 30% is burned, 50% accumulates for epoch rewards.
+Instead, fee computation is pure arithmetic on the transaction header. Four components: compute (gas budget × gas price × fraction of validators that execute), transit (per standard object in the transaction body), storage (per created object, weighted by replication), and domain registration. Fees are always deducted, even if the transaction fails. 70% accumulates for epoch rewards and 30% is burned; there is no aggregator share, since aggregation is off-chain.
 
 ## Build & run
 
@@ -55,17 +55,20 @@ go build -o node ./cmd/node
 Start a local cluster in separate terminals:
 
 ```bash
-./node -bootstrap -http :8080 -quic :9000 -data ./data1
-./node -bootstrap-addr localhost:9000 -http :8081 -quic :9001 -data ./data2
-./node -bootstrap-addr localhost:9000 -http :8082 -quic :9002 -data ./data3
+./node -bootstrap -quic 127.0.0.1:9000 -data ./data1
+./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9001 -data ./data2
+./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9002 -data ./data3
 ```
 
-Hit the API:
+The node is QUIC only; there is no HTTP. Talk to it with the `bpctl` CLI:
 
 ```bash
-curl localhost:8080/health          # {"status":"ok"}
-curl localhost:8080/status          # round, epoch, validator count
-curl localhost:8080/validators      # active validator list with addresses
+go build -o bpctl ./cmd/cli
+./bpctl status                            # round, epoch, validator count
+./bpctl validators                        # active validator list with QUIC addresses
+./bpctl object create --replication 3 --content "hello"
+./bpctl object holders <id>               # which holders store the object
+./bpctl object set <id> "world"           # mutate it through off-chain aggregation
 ```
 
 The node supports bootstrap mode (genesis), validator mode (joins an existing network), and listener mode (observe without participating in consensus). Run `./node -help` for all flags: epoch length, churn limits, gossip fanout, sync buffer, etc.
@@ -78,7 +81,7 @@ The test suite is split into two layers: unit tests that verify individual compo
 
 ### Unit tests
 
-Standard Go tests spread across all packages. They cover the DAG validation logic, fee calculation and overflow safety, BLS signature aggregation and verification, version tracking, snapshot encoding/decoding, Rendezvous hashing, the WASM runtime, and the HTTP API validation layer.
+Standard Go tests spread across all packages. They cover the DAG validation logic, fee calculation and overflow safety, BLS signature aggregation and verification (sequential and parallel-batch), version tracking, snapshot encoding/decoding, Rendezvous hashing, the WASM runtime, and the transaction validation layer.
 
 ```bash
 go test ./internal/... ./client/...
@@ -92,7 +95,7 @@ There are 7 simulations, each targeting a different aspect of the system:
 
 **TestSimBootstrap** starts a single node in bootstrap mode and hammers the API with ~35 test cases. It submits transactions with wrong field sizes, bad hashes, invalid signatures, duplicate object references, oversized bodies, malformed FlatBuffers, everything that should be rejected at the validation layer. It also verifies that valid transactions go through, that the faucet works, and that the pod VM correctly executes mints.
 
-**TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, NFT creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
+**TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, object creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
 
 **TestSimFees** runs a 5-node cluster with the fee system enabled. It mints coins, performs operations, and verifies that fees are correctly deducted from the gas coin. Tests the exact-balance boundary case (balance equals fee exactly), verifies that transactions without a gas coin skip fee deduction, and checks that all nodes agree on the final balances.
 
@@ -105,8 +108,8 @@ There are 7 simulations, each targeting a different aspect of the system:
 **TestSimProgressiveJoining** tests the network's ability to grow. It starts with 5 validators, then adds 5 more one by one, verifying that each new validator syncs, starts producing vertices, and reaches consensus with the rest. A variant (TestSimBatchJoining) adds validators in batches of 5 up to 20 total.
 
 ```bash
-# Run everything (~12 minutes)
-go test ./test/integration/ -v -count=1 -timeout 30m
+# Run everything (slow: the suite is setup-dominated; prefer running sims individually)
+go test ./test/integration/ -count=1 -timeout 40m
 
 # Run a single simulation
 go test ./test/integration/ -v -run TestSimConsensus -count=1 -timeout 5m

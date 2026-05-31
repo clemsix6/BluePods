@@ -76,13 +76,12 @@ func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, pare
 // buildFeeSummary computes and builds the FeeSummary for a set of transactions.
 // Returns the FlatBuffers offset. If fees are disabled, returns an empty summary.
 func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbuffers.UOffsetT {
-	var totalFees, totalAgg, totalBurned, totalEpoch uint64
+	var totalFees, totalBurned, totalEpoch uint64
 
 	if d.feeParams != nil {
 		for _, txBytes := range txs {
 			split := d.computeTxFeeSplit(txBytes)
 			totalFees += split.Total
-			totalAgg += split.Aggregator
 			totalBurned += split.Burned
 			totalEpoch += split.Epoch
 		}
@@ -90,7 +89,6 @@ func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbu
 
 	types.FeeSummaryStart(builder)
 	types.FeeSummaryAddTotalFees(builder, totalFees)
-	types.FeeSummaryAddTotalAggregator(builder, totalAgg)
 	types.FeeSummaryAddTotalBurned(builder, totalBurned)
 	types.FeeSummaryAddTotalEpoch(builder, totalEpoch)
 
@@ -237,6 +235,7 @@ func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (o
 	types.AttestedTransactionAddTransaction(builder, txOffset)
 	types.AttestedTransactionAddObjects(builder, objectsVec)
 	types.AttestedTransactionAddProofs(builder, proofsVec)
+	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
 
 	return types.AttestedTransactionEnd(builder), true
 }

@@ -12,6 +12,8 @@
 
 # Go binaries
 /node
+/bpctl
+bin/
 *.exe
 
 # Runtime data

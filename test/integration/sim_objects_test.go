@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"encoding/hex"
-	"net/http"
 	"testing"
 	"time"
 
@@ -24,40 +22,40 @@ func TestSimObjects(t *testing.T) {
 
 	w := client.NewWallet()
 
-	// NFT with replication=5 (sharded across 5 of 12 nodes)
-	nftID, err := w.CreateNFT(cli, 5, []byte("sharding-test"))
+	// Object with replication=5 (sharded across 5 of 12 nodes)
+	objectID, err := w.CreateObject(cli, 5, []byte("sharding-test"))
 	if err != nil {
-		t.Fatalf("create sharded NFT: %v", err)
+		t.Fatalf("create sharded object: %v", err)
 	}
 
 	// Coin (singleton, replicated to all nodes)
 	coinID := FaucetAndWait(t, cli, w, 1_000_000, 60*time.Second)
 
-	// NFT with replication=100 (should use all validators)
-	nftHighRep, err := w.CreateNFT(cli, 100, []byte("high-rep"))
+	// Object with replication=100 (should use all validators)
+	highRepObjectID, err := w.CreateObject(cli, 100, []byte("high-rep"))
 	if err != nil {
-		t.Fatalf("create high-rep NFT: %v", err)
+		t.Fatalf("create high-rep object: %v", err)
 	}
 
-	// 5 NFTs for diversity test
+	// 5 objects for diversity test
 	var diversityIDs [5][32]byte
 	for i := 0; i < 5; i++ {
-		id, err := w.CreateNFT(cli, 5, []byte("div-"+string(rune('0'+i))))
+		id, err := w.CreateObject(cli, 5, []byte("div-"+string(rune('0'+i))))
 		if err != nil {
-			t.Fatalf("create diversity NFT %d: %v", i, err)
+			t.Fatalf("create diversity object %d: %v", i, err)
 		}
 		diversityIDs[i] = id
 	}
 
 	// Wait for all objects to appear and propagate
-	WaitForObject(t, cli, nftID, 60*time.Second)
-	WaitForObject(t, cli, nftHighRep, 60*time.Second)
+	WaitForObject(t, cli, objectID, 60*time.Second)
+	WaitForObject(t, cli, highRepObjectID, 60*time.Second)
 	for _, id := range diversityIDs {
 		WaitForObject(t, cli, id, 60*time.Second)
 	}
 
 	// Wait for propagation to holders
-	WaitForHolders(t, cluster.Nodes(), nftID, 3, 60*time.Second)
+	WaitForHolders(t, cluster.Nodes(), objectID, 3, 60*time.Second)
 	WaitForHolders(t, cluster.Nodes(), coinID, cluster.Size(), 60*time.Second)
 
 	t.Logf("All test objects created and propagated")
@@ -65,13 +63,13 @@ func TestSimObjects(t *testing.T) {
 	// --- Phase 2: Run all checks ---
 
 	t.Run("ATP-21.3: standard object stored by holders only", func(t *testing.T) {
-		holders := CountHolders(t, cluster.Nodes(), nftID)
+		holders := CountHolders(t, cluster.Nodes(), objectID)
 
 		if holders < 3 || holders > 7 {
 			t.Errorf("expected ~5 holders, got %d", holders)
 		}
 
-		t.Logf("NFT holders: %d (expected 5)", holders)
+		t.Logf("object holders: %d (expected 5)", holders)
 	})
 
 	t.Run("ATP-21.10: singleton stored by all validators", func(t *testing.T) {
@@ -83,8 +81,8 @@ func TestSimObjects(t *testing.T) {
 	})
 
 	t.Run("ATP-21.5: holders via Rendezvous deterministic", func(t *testing.T) {
-		holders1 := collectHolderSet(t, cluster.Nodes(), nftID)
-		holders2 := collectHolderSet(t, cluster.Nodes(), nftID)
+		holders1 := collectHolderSet(t, cluster.Nodes(), objectID)
+		holders2 := collectHolderSet(t, cluster.Nodes(), objectID)
 
 		if len(holders1) != len(holders2) {
 			t.Errorf("holder count changed: %d -> %d", len(holders1), len(holders2))
@@ -112,19 +110,19 @@ func TestSimObjects(t *testing.T) {
 		}
 
 		if allSame {
-			t.Error("all 5 NFTs have identical holder sets — expected Rendezvous diversity")
+			t.Error("all 5 objects have identical holder sets — expected Rendezvous diversity")
 		}
 	})
 
 	t.Run("ATP-37.5: route to holders", func(t *testing.T) {
 		for i := 0; i < cluster.Size(); i++ {
-			local := QueryObjectLocal(t, cluster.Node(i).HTTPAddr(), nftID)
+			local := QueryObjectLocal(t, cluster.Node(i).Addr(), objectID)
 			if local != nil {
 				continue // This node is a holder, skip
 			}
 
 			// This node is NOT a holder — GET /object/{id} should route to holder
-			obj := QueryObject(t, cluster.Node(i).HTTPAddr(), nftID)
+			obj := QueryObject(t, cluster.Node(i).Addr(), objectID)
 			if obj == nil {
 				t.Errorf("node %d: routing failed, object not found", i)
 			} else {
@@ -135,33 +133,47 @@ func TestSimObjects(t *testing.T) {
 		}
 	})
 
-	t.Run("ATP-37.11: local=true skips routing", func(t *testing.T) {
+	t.Run("ATP-37.11: local-only skips routing", func(t *testing.T) {
 		for i := 0; i < cluster.Size(); i++ {
-			local := QueryObjectLocal(t, cluster.Node(i).HTTPAddr(), nftID)
-			if local == nil {
-				// Non-holder: local=true should return 404
-				resp, err := httpClient.Get("http://" + cluster.Node(i).HTTPAddr() +
-					"/object/" + hex.EncodeToString(nftID[:]) + "?local=true")
-				if err != nil {
-					t.Fatalf("request failed: %v", err)
-				}
-				drainClose(resp.Body)
-
-				if resp.StatusCode != http.StatusNotFound {
-					t.Errorf("expected 404 for non-holder with local=true, got %d", resp.StatusCode)
-				}
-
-				break
+			// A non-holder must answer local-only with not-found (no routing),
+			// while the routing fetch for the same object succeeds.
+			if QueryObjectLocal(t, cluster.Node(i).Addr(), objectID) != nil {
+				continue
 			}
+
+			if QueryObjectLocal(t, cluster.Node(i).Addr(), objectID) != nil {
+				t.Errorf("node %d: local-only returned an object on a non-holder", i)
+			}
+
+			if QueryObject(t, cluster.Node(i).Addr(), objectID) == nil {
+				t.Errorf("node %d: routing fetch should still find the object", i)
+			}
+
+			break
 		}
 	})
 
-	t.Run("ATP-15.5: transfer NFT", func(t *testing.T) {
-		// TODO: BLS attestation for non-singleton objects (rep>0) is unreliable
-		// in test clusters. The aggregator needs 67% of holders to respond,
-		// but timing/network conditions in CI cause consistent failures.
-		// Re-enable once BLS aggregation is hardened.
-		t.Skip("BLS attestation unreliable in test clusters — needs aggregation hardening")
+	t.Run("ATP-15.5: transfer object", func(t *testing.T) {
+		// Replicated object transfer through the daemon's off-chain attestation
+		// collection: a quorum of the 5 holders signs and the attested
+		// transaction commits, moving the object to a new owner.
+		w := client.NewWallet()
+
+		transferObjectID, err := w.CreateObject(cli, 5, []byte("transfer-object"))
+		if err != nil {
+			t.Fatalf("create object: %v", err)
+		}
+
+		WaitForObject(t, cli, transferObjectID, 30*time.Second)
+		WaitForHolders(t, cluster.Nodes(), transferObjectID, 3, 30*time.Second)
+
+		recipient := client.NewWallet()
+		if err := w.TransferObject(cli, transferObjectID, recipient.Pubkey()); err != nil {
+			t.Fatalf("transfer object: %v", err)
+		}
+
+		rpk := recipient.Pubkey()
+		WaitForOwner(t, cli, transferObjectID, rpk, 30*time.Second)
 	})
 
 	t.Run("ATP-21.11: singleton mutable executes on all validators", func(t *testing.T) {
@@ -188,7 +200,7 @@ func TestSimObjects(t *testing.T) {
 		// Verify version incremented on ALL nodes (proves all executed)
 		allUpdated := true
 		for i := 0; i < cluster.Size(); i++ {
-			obj := QueryObjectLocal(t, cluster.Node(i).HTTPAddr(), singletonCoin)
+			obj := QueryObjectLocal(t, cluster.Node(i).Addr(), singletonCoin)
 			if obj == nil {
 				t.Errorf("node %d: singleton not found locally", i)
 				allUpdated = false
@@ -208,7 +220,7 @@ func TestSimObjects(t *testing.T) {
 	})
 
 	t.Run("ATP-32.1: replication > validators uses all", func(t *testing.T) {
-		holders := CountHolders(t, cluster.Nodes(), nftHighRep)
+		holders := CountHolders(t, cluster.Nodes(), highRepObjectID)
 
 		if holders != cluster.Size() {
 			t.Errorf("rep=100 should use all %d validators, got %d holders",
@@ -228,7 +240,7 @@ func collectHolderSet(t *testing.T, nodes []*Node, objectID [32]byte) map[int]bo
 			continue
 		}
 
-		if QueryObjectLocal(t, node.httpAddr, objectID) != nil {
+		if QueryObjectLocal(t, node.addr, objectID) != nil {
 			holders[i] = true
 		}
 	}

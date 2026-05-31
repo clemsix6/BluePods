@@ -2,14 +2,14 @@
 // @generated
 extern crate alloc;
 
-use crate::object_generated::*;
 use crate::transaction_generated::*;
+use crate::object_generated::*;
 
 #[allow(unused_imports, dead_code)]
 pub mod types {
 
-  use crate::object_generated::*;
   use crate::transaction_generated::*;
+  use crate::object_generated::*;
 
 pub enum QuorumProofOffset {}
 #[derive(Copy, Clone, PartialEq)]
@@ -160,6 +160,7 @@ impl<'a> AttestedTransaction<'a> {
   pub const VT_TRANSACTION: ::flatbuffers::VOffsetT = 4;
   pub const VT_OBJECTS: ::flatbuffers::VOffsetT = 6;
   pub const VT_PROOFS: ::flatbuffers::VOffsetT = 8;
+  pub const VT_ATTESTATION_EPOCH: ::flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -171,6 +172,7 @@ impl<'a> AttestedTransaction<'a> {
     args: &'args AttestedTransactionArgs<'args>
   ) -> ::flatbuffers::WIPOffset<AttestedTransaction<'bldr>> {
     let mut builder = AttestedTransactionBuilder::new(_fbb);
+    builder.add_attestation_epoch(args.attestation_epoch);
     if let Some(x) = args.proofs { builder.add_proofs(x); }
     if let Some(x) = args.objects { builder.add_objects(x); }
     if let Some(x) = args.transaction { builder.add_transaction(x); }
@@ -199,6 +201,13 @@ impl<'a> AttestedTransaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<QuorumProof>>>>(AttestedTransaction::VT_PROOFS, None)}
   }
+  #[inline]
+  pub fn attestation_epoch(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(AttestedTransaction::VT_ATTESTATION_EPOCH, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for AttestedTransaction<'_> {
@@ -210,6 +219,7 @@ impl ::flatbuffers::Verifiable for AttestedTransaction<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<Transaction>>("transaction", Self::VT_TRANSACTION, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<Object>>>>("objects", Self::VT_OBJECTS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<QuorumProof>>>>("proofs", Self::VT_PROOFS, false)?
+     .visit_field::<u64>("attestation_epoch", Self::VT_ATTESTATION_EPOCH, false)?
      .finish();
     Ok(())
   }
@@ -218,6 +228,7 @@ pub struct AttestedTransactionArgs<'a> {
     pub transaction: Option<::flatbuffers::WIPOffset<Transaction<'a>>>,
     pub objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<Object<'a>>>>>,
     pub proofs: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<QuorumProof<'a>>>>>,
+    pub attestation_epoch: u64,
 }
 impl<'a> Default for AttestedTransactionArgs<'a> {
   #[inline]
@@ -226,6 +237,7 @@ impl<'a> Default for AttestedTransactionArgs<'a> {
       transaction: None,
       objects: None,
       proofs: None,
+      attestation_epoch: 0,
     }
   }
 }
@@ -248,6 +260,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> AttestedTransactionBuilder<'a
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(AttestedTransaction::VT_PROOFS, proofs);
   }
   #[inline]
+  pub fn add_attestation_epoch(&mut self, attestation_epoch: u64) {
+    self.fbb_.push_slot::<u64>(AttestedTransaction::VT_ATTESTATION_EPOCH, attestation_epoch, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> AttestedTransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     AttestedTransactionBuilder {
@@ -268,6 +284,7 @@ impl ::core::fmt::Debug for AttestedTransaction<'_> {
       ds.field("transaction", &self.transaction());
       ds.field("objects", &self.objects());
       ds.field("proofs", &self.proofs());
+      ds.field("attestation_epoch", &self.attestation_epoch());
       ds.finish()
   }
 }
@@ -384,6 +401,136 @@ impl ::core::fmt::Debug for VertexLink<'_> {
       ds.finish()
   }
 }
+pub enum FeeSummaryOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct FeeSummary<'a> {
+  pub _tab: ::flatbuffers::Table<'a>,
+}
+
+impl<'a> ::flatbuffers::Follow<'a> for FeeSummary<'a> {
+  type Inner = FeeSummary<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: unsafe { ::flatbuffers::Table::new(buf, loc) } }
+  }
+}
+
+impl<'a> FeeSummary<'a> {
+  pub const VT_TOTAL_FEES: ::flatbuffers::VOffsetT = 4;
+  pub const VT_TOTAL_BURNED: ::flatbuffers::VOffsetT = 6;
+  pub const VT_TOTAL_EPOCH: ::flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
+    FeeSummary { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args FeeSummaryArgs
+  ) -> ::flatbuffers::WIPOffset<FeeSummary<'bldr>> {
+    let mut builder = FeeSummaryBuilder::new(_fbb);
+    builder.add_total_epoch(args.total_epoch);
+    builder.add_total_burned(args.total_burned);
+    builder.add_total_fees(args.total_fees);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn total_fees(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(FeeSummary::VT_TOTAL_FEES, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn total_burned(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(FeeSummary::VT_TOTAL_BURNED, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn total_epoch(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(FeeSummary::VT_TOTAL_EPOCH, Some(0)).unwrap()}
+  }
+}
+
+impl ::flatbuffers::Verifiable for FeeSummary<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut ::flatbuffers::Verifier, pos: usize
+  ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+    v.visit_table(pos)?
+     .visit_field::<u64>("total_fees", Self::VT_TOTAL_FEES, false)?
+     .visit_field::<u64>("total_burned", Self::VT_TOTAL_BURNED, false)?
+     .visit_field::<u64>("total_epoch", Self::VT_TOTAL_EPOCH, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct FeeSummaryArgs {
+    pub total_fees: u64,
+    pub total_burned: u64,
+    pub total_epoch: u64,
+}
+impl<'a> Default for FeeSummaryArgs {
+  #[inline]
+  fn default() -> Self {
+    FeeSummaryArgs {
+      total_fees: 0,
+      total_burned: 0,
+      total_epoch: 0,
+    }
+  }
+}
+
+pub struct FeeSummaryBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> FeeSummaryBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_total_fees(&mut self, total_fees: u64) {
+    self.fbb_.push_slot::<u64>(FeeSummary::VT_TOTAL_FEES, total_fees, 0);
+  }
+  #[inline]
+  pub fn add_total_burned(&mut self, total_burned: u64) {
+    self.fbb_.push_slot::<u64>(FeeSummary::VT_TOTAL_BURNED, total_burned, 0);
+  }
+  #[inline]
+  pub fn add_total_epoch(&mut self, total_epoch: u64) {
+    self.fbb_.push_slot::<u64>(FeeSummary::VT_TOTAL_EPOCH, total_epoch, 0);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> FeeSummaryBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    FeeSummaryBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> ::flatbuffers::WIPOffset<FeeSummary<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    ::flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl ::core::fmt::Debug for FeeSummary<'_> {
+  fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+    let mut ds = f.debug_struct("FeeSummary");
+      ds.field("total_fees", &self.total_fees());
+      ds.field("total_burned", &self.total_burned());
+      ds.field("total_epoch", &self.total_epoch());
+      ds.finish()
+  }
+}
 pub enum VertexOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -407,6 +554,7 @@ impl<'a> Vertex<'a> {
   pub const VT_PARENTS: ::flatbuffers::VOffsetT = 12;
   pub const VT_TRANSACTIONS: ::flatbuffers::VOffsetT = 14;
   pub const VT_EPOCH: ::flatbuffers::VOffsetT = 16;
+  pub const VT_FEE_SUMMARY: ::flatbuffers::VOffsetT = 18;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -420,6 +568,7 @@ impl<'a> Vertex<'a> {
     let mut builder = VertexBuilder::new(_fbb);
     builder.add_epoch(args.epoch);
     builder.add_round(args.round);
+    if let Some(x) = args.fee_summary { builder.add_fee_summary(x); }
     if let Some(x) = args.transactions { builder.add_transactions(x); }
     if let Some(x) = args.parents { builder.add_parents(x); }
     if let Some(x) = args.signature { builder.add_signature(x); }
@@ -478,6 +627,13 @@ impl<'a> Vertex<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(Vertex::VT_EPOCH, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn fee_summary(&self) -> Option<FeeSummary<'a>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<FeeSummary>>(Vertex::VT_FEE_SUMMARY, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Vertex<'_> {
@@ -493,6 +649,7 @@ impl ::flatbuffers::Verifiable for Vertex<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<VertexLink>>>>("parents", Self::VT_PARENTS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<AttestedTransaction>>>>("transactions", Self::VT_TRANSACTIONS, false)?
      .visit_field::<u64>("epoch", Self::VT_EPOCH, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<FeeSummary>>("fee_summary", Self::VT_FEE_SUMMARY, false)?
      .finish();
     Ok(())
   }
@@ -505,6 +662,7 @@ pub struct VertexArgs<'a> {
     pub parents: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<VertexLink<'a>>>>>,
     pub transactions: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<AttestedTransaction<'a>>>>>,
     pub epoch: u64,
+    pub fee_summary: Option<::flatbuffers::WIPOffset<FeeSummary<'a>>>,
 }
 impl<'a> Default for VertexArgs<'a> {
   #[inline]
@@ -517,6 +675,7 @@ impl<'a> Default for VertexArgs<'a> {
       parents: None,
       transactions: None,
       epoch: 0,
+      fee_summary: None,
     }
   }
 }
@@ -555,6 +714,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> VertexBuilder<'a, 'b, A> {
     self.fbb_.push_slot::<u64>(Vertex::VT_EPOCH, epoch, 0);
   }
   #[inline]
+  pub fn add_fee_summary(&mut self, fee_summary: ::flatbuffers::WIPOffset<FeeSummary<'b >>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<FeeSummary>>(Vertex::VT_FEE_SUMMARY, fee_summary);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> VertexBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     VertexBuilder {
@@ -579,6 +742,7 @@ impl ::core::fmt::Debug for Vertex<'_> {
       ds.field("parents", &self.parents());
       ds.field("transactions", &self.transactions());
       ds.field("epoch", &self.epoch());
+      ds.field("fee_summary", &self.fee_summary());
       ds.finish()
   }
 }

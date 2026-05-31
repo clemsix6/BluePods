@@ -94,8 +94,20 @@ func (rcv *AttestedTransaction) ProofsLength() int {
 	return 0
 }
 
+func (rcv *AttestedTransaction) AttestationEpoch() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *AttestedTransaction) MutateAttestationEpoch(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(10, n)
+}
+
 func AttestedTransactionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(3)
+	builder.StartObject(4)
 }
 func AttestedTransactionAddTransaction(builder *flatbuffers.Builder, transaction flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(transaction), 0)
@@ -111,6 +123,9 @@ func AttestedTransactionAddProofs(builder *flatbuffers.Builder, proofs flatbuffe
 }
 func AttestedTransactionStartProofsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(4, numElems, 4)
+}
+func AttestedTransactionAddAttestationEpoch(builder *flatbuffers.Builder, attestationEpoch uint64) {
+	builder.PrependUint64Slot(3, attestationEpoch, 0)
 }
 func AttestedTransactionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

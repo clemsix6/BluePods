@@ -5,7 +5,13 @@ import (
 	"sort"
 
 	"BluePods/internal/logger"
+	"BluePods/internal/validators"
 )
+
+// EpochGraceRounds is how many rounds after an epoch boundary an attestation
+// from the previous epoch is still accepted, so an ATX collected late in epoch
+// E and committed shortly into E+1 verifies rather than being rejected.
+const EpochGraceRounds = 50
 
 // isEpochBoundary returns true if the given round is an epoch boundary.
 // Returns false if epochs are disabled (epochLength=0).
@@ -35,6 +41,18 @@ func (d *DAG) transitionEpoch(round uint64) {
 	d.distributeEpochRewards()
 
 	d.applyPendingRemovals()
+
+	// Retain the outgoing epoch's snapshot for the grace window so an ATX
+	// collected late in the previous epoch still verifies shortly after the
+	// boundary. snapshotEpochHolders overwrites d.epochHolders, so capture first.
+	// The genesis epoch holds no frozen snapshot (it tracks the live set), so
+	// freeze the current validators as its retained snapshot at this first boundary.
+	if d.epochHolders != nil {
+		d.prevEpochHolders = d.epochHolders
+	} else {
+		d.prevEpochHolders = snapshotOf(d.validators)
+	}
+
 	d.snapshotEpochHolders()
 	d.clearEpochState()
 
@@ -151,7 +169,7 @@ func (d *DAG) snapshotEpochHolders() {
 	// If churn is unlimited or additions fit within limit, include all
 	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
 		for _, v := range validators {
-			d.epochHolders.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+			d.epochHolders.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		}
 		return
 	}
@@ -172,9 +190,19 @@ func (d *DAG) snapshotEpochHolders() {
 	for _, v := range validators {
 		// Include validator if it was NOT a new addition, or if it's in the allowed set
 		if !additionSet[v.Pubkey] || allowedSet[v.Pubkey] {
-			d.epochHolders.Add(v.Pubkey, v.HTTPAddr, v.QUICAddr, v.BLSPubkey)
+			d.epochHolders.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
 		}
 	}
+}
+
+// snapshotOf returns a frozen copy of a validator set's full membership.
+func snapshotOf(vs *validators.ValidatorSet) *validators.ValidatorSet {
+	frozen := NewValidatorSet(nil)
+	for _, v := range vs.All() {
+		frozen.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
+	}
+
+	return frozen
 }
 
 // sortedAdditions sorts additions by pubkey and returns the first `limit` entries.
@@ -201,12 +229,61 @@ func (d *DAG) clearEpochState() {
 	d.epochTotalRounds = 0
 }
 
-// InitEpochHolders initializes epochHolders from the current validator set.
-// Called once at startup or after snapshot import to establish the initial epoch state.
-func (d *DAG) InitEpochHolders() {
+// InitEpochHolders is a no-op during the genesis epoch on purpose.
+//
+// At process startup the validator set is still forming: the bootstrap knows only
+// itself, and each joining node knows only the validators it has synced so far.
+// A snapshot taken here would freeze that partial, per-node-divergent set as the
+// epoch-0 holder set, and attestation verification would then recompute holders
+// against it while the client daemon collected against the converged live set,
+// so quorum proofs would never match. Leaving epochHolders nil makes
+// HoldersForEpoch fall back to the live validator set for the genesis epoch,
+// which converges to the same set the daemon syncs. The first real frozen
+// snapshot is taken at the first epoch boundary by transitionEpoch, where the
+// set is already stable.
+func (d *DAG) InitEpochHolders() {}
+
+// commitEpochForRound returns the epoch whose holder snapshot an ATX committed
+// at the given round must be verified against. The boundary round R = k*epochLength
+// is committed (and its ATXs verified) BEFORE transitionEpoch increments
+// currentEpoch, so that round still belongs to epoch k-1. Every other round R
+// maps to R/epochLength. Deterministic across all validators.
+func (d *DAG) commitEpochForRound(round uint64) uint64 {
 	if d.epochLength == 0 {
-		return
+		return 0
 	}
 
-	d.snapshotEpochHolders()
+	epoch := round / d.epochLength
+
+	// A nonzero multiple of epochLength is committed before the transition, so
+	// it is still served by the previous epoch's holders.
+	if epoch > 0 && round%d.epochLength == 0 {
+		return epoch - 1
+	}
+
+	return epoch
+}
+
+// CommitEpochForRound is the exported form of commitEpochForRound, used to wire
+// the ATX verifier from outside the consensus package.
+func (d *DAG) CommitEpochForRound(round uint64) uint64 {
+	return d.commitEpochForRound(round)
+}
+
+// HoldersForEpoch returns the holder snapshot for the given epoch, selecting the
+// current snapshot for currentEpoch and the retained previous snapshot for
+// currentEpoch-1. It returns false for any other epoch (too old or in the future).
+func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
+	if epoch == d.currentEpoch {
+		if d.epochHolders != nil {
+			return d.epochHolders, true
+		}
+		return d.validators, true
+	}
+
+	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
+		return d.prevEpochHolders, true
+	}
+
+	return nil, false
 }

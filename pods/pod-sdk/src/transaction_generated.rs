@@ -9,6 +9,136 @@ pub mod types {
 
   use crate::object_generated::*;
 
+pub enum ObjectRefOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct ObjectRef<'a> {
+  pub _tab: ::flatbuffers::Table<'a>,
+}
+
+impl<'a> ::flatbuffers::Follow<'a> for ObjectRef<'a> {
+  type Inner = ObjectRef<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: unsafe { ::flatbuffers::Table::new(buf, loc) } }
+  }
+}
+
+impl<'a> ObjectRef<'a> {
+  pub const VT_ID: ::flatbuffers::VOffsetT = 4;
+  pub const VT_VERSION: ::flatbuffers::VOffsetT = 6;
+  pub const VT_DOMAIN: ::flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
+    ObjectRef { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args ObjectRefArgs<'args>
+  ) -> ::flatbuffers::WIPOffset<ObjectRef<'bldr>> {
+    let mut builder = ObjectRefBuilder::new(_fbb);
+    builder.add_version(args.version);
+    if let Some(x) = args.domain { builder.add_domain(x); }
+    if let Some(x) = args.id { builder.add_id(x); }
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn id(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(ObjectRef::VT_ID, None)}
+  }
+  #[inline]
+  pub fn version(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(ObjectRef::VT_VERSION, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn domain(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(ObjectRef::VT_DOMAIN, None)}
+  }
+}
+
+impl ::flatbuffers::Verifiable for ObjectRef<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut ::flatbuffers::Verifier, pos: usize
+  ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+    v.visit_table(pos)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("id", Self::VT_ID, false)?
+     .visit_field::<u64>("version", Self::VT_VERSION, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("domain", Self::VT_DOMAIN, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct ObjectRefArgs<'a> {
+    pub id: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub version: u64,
+    pub domain: Option<::flatbuffers::WIPOffset<&'a str>>,
+}
+impl<'a> Default for ObjectRefArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    ObjectRefArgs {
+      id: None,
+      version: 0,
+      domain: None,
+    }
+  }
+}
+
+pub struct ObjectRefBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> ObjectRefBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_id(&mut self, id: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(ObjectRef::VT_ID, id);
+  }
+  #[inline]
+  pub fn add_version(&mut self, version: u64) {
+    self.fbb_.push_slot::<u64>(ObjectRef::VT_VERSION, version, 0);
+  }
+  #[inline]
+  pub fn add_domain(&mut self, domain: ::flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(ObjectRef::VT_DOMAIN, domain);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> ObjectRefBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    ObjectRefBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> ::flatbuffers::WIPOffset<ObjectRef<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    ::flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl ::core::fmt::Debug for ObjectRef<'_> {
+  fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+    let mut ds = f.debug_struct("ObjectRef");
+      ds.field("id", &self.id());
+      ds.field("version", &self.version());
+      ds.field("domain", &self.domain());
+      ds.finish()
+  }
+}
 pub enum TransactionOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -26,14 +156,17 @@ impl<'a> ::flatbuffers::Follow<'a> for Transaction<'a> {
 
 impl<'a> Transaction<'a> {
   pub const VT_HASH: ::flatbuffers::VOffsetT = 4;
-  pub const VT_READ_OBJECTS: ::flatbuffers::VOffsetT = 6;
-  pub const VT_MUTABLE_OBJECTS: ::flatbuffers::VOffsetT = 8;
-  pub const VT_CREATES_OBJECTS: ::flatbuffers::VOffsetT = 10;
+  pub const VT_READ_REFS: ::flatbuffers::VOffsetT = 6;
+  pub const VT_MUTABLE_REFS: ::flatbuffers::VOffsetT = 8;
+  pub const VT_CREATED_OBJECTS_REPLICATION: ::flatbuffers::VOffsetT = 10;
   pub const VT_SENDER: ::flatbuffers::VOffsetT = 12;
   pub const VT_SIGNATURE: ::flatbuffers::VOffsetT = 14;
   pub const VT_POD: ::flatbuffers::VOffsetT = 16;
   pub const VT_FUNCTION_NAME: ::flatbuffers::VOffsetT = 18;
   pub const VT_ARGS: ::flatbuffers::VOffsetT = 20;
+  pub const VT_MAX_CREATE_DOMAINS: ::flatbuffers::VOffsetT = 22;
+  pub const VT_MAX_GAS: ::flatbuffers::VOffsetT = 24;
+  pub const VT_GAS_COIN: ::flatbuffers::VOffsetT = 26;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -45,15 +178,18 @@ impl<'a> Transaction<'a> {
     args: &'args TransactionArgs<'args>
   ) -> ::flatbuffers::WIPOffset<Transaction<'bldr>> {
     let mut builder = TransactionBuilder::new(_fbb);
+    builder.add_max_gas(args.max_gas);
+    if let Some(x) = args.gas_coin { builder.add_gas_coin(x); }
     if let Some(x) = args.args { builder.add_args(x); }
     if let Some(x) = args.function_name { builder.add_function_name(x); }
     if let Some(x) = args.pod { builder.add_pod(x); }
     if let Some(x) = args.signature { builder.add_signature(x); }
     if let Some(x) = args.sender { builder.add_sender(x); }
-    if let Some(x) = args.mutable_objects { builder.add_mutable_objects(x); }
-    if let Some(x) = args.read_objects { builder.add_read_objects(x); }
+    if let Some(x) = args.created_objects_replication { builder.add_created_objects_replication(x); }
+    if let Some(x) = args.mutable_refs { builder.add_mutable_refs(x); }
+    if let Some(x) = args.read_refs { builder.add_read_refs(x); }
     if let Some(x) = args.hash { builder.add_hash(x); }
-    builder.add_creates_objects(args.creates_objects);
+    builder.add_max_create_domains(args.max_create_domains);
     builder.finish()
   }
 
@@ -66,25 +202,25 @@ impl<'a> Transaction<'a> {
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_HASH, None)}
   }
   #[inline]
-  pub fn read_objects(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+  pub fn read_refs(&self) -> Option<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef<'a>>>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_READ_OBJECTS, None)}
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef>>>>(Transaction::VT_READ_REFS, None)}
   }
   #[inline]
-  pub fn mutable_objects(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+  pub fn mutable_refs(&self) -> Option<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef<'a>>>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_MUTABLE_OBJECTS, None)}
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef>>>>(Transaction::VT_MUTABLE_REFS, None)}
   }
   #[inline]
-  pub fn creates_objects(&self) -> bool {
+  pub fn created_objects_replication(&self) -> Option<::flatbuffers::Vector<'a, u16>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<bool>(Transaction::VT_CREATES_OBJECTS, Some(false)).unwrap()}
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u16>>>(Transaction::VT_CREATED_OBJECTS_REPLICATION, None)}
   }
   #[inline]
   pub fn sender(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
@@ -121,6 +257,27 @@ impl<'a> Transaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_ARGS, None)}
   }
+  #[inline]
+  pub fn max_create_domains(&self) -> u16 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u16>(Transaction::VT_MAX_CREATE_DOMAINS, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn max_gas(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Transaction::VT_MAX_GAS, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn gas_coin(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_GAS_COIN, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Transaction<'_> {
@@ -130,42 +287,51 @@ impl ::flatbuffers::Verifiable for Transaction<'_> {
   ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
     v.visit_table(pos)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("hash", Self::VT_HASH, false)?
-     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("read_objects", Self::VT_READ_OBJECTS, false)?
-     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("mutable_objects", Self::VT_MUTABLE_OBJECTS, false)?
-     .visit_field::<bool>("creates_objects", Self::VT_CREATES_OBJECTS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<ObjectRef>>>>("read_refs", Self::VT_READ_REFS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<ObjectRef>>>>("mutable_refs", Self::VT_MUTABLE_REFS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u16>>>("created_objects_replication", Self::VT_CREATED_OBJECTS_REPLICATION, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("sender", Self::VT_SENDER, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("signature", Self::VT_SIGNATURE, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("pod", Self::VT_POD, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("function_name", Self::VT_FUNCTION_NAME, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("args", Self::VT_ARGS, false)?
+     .visit_field::<u16>("max_create_domains", Self::VT_MAX_CREATE_DOMAINS, false)?
+     .visit_field::<u64>("max_gas", Self::VT_MAX_GAS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("gas_coin", Self::VT_GAS_COIN, false)?
      .finish();
     Ok(())
   }
 }
 pub struct TransactionArgs<'a> {
     pub hash: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
-    pub read_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
-    pub mutable_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
-    pub creates_objects: bool,
+    pub read_refs: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef<'a>>>>>,
+    pub mutable_refs: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<ObjectRef<'a>>>>>,
+    pub created_objects_replication: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u16>>>,
     pub sender: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub signature: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub pod: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub function_name: Option<::flatbuffers::WIPOffset<&'a str>>,
     pub args: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub max_create_domains: u16,
+    pub max_gas: u64,
+    pub gas_coin: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
 }
 impl<'a> Default for TransactionArgs<'a> {
   #[inline]
   fn default() -> Self {
     TransactionArgs {
       hash: None,
-      read_objects: None,
-      mutable_objects: None,
-      creates_objects: false,
+      read_refs: None,
+      mutable_refs: None,
+      created_objects_replication: None,
       sender: None,
       signature: None,
       pod: None,
       function_name: None,
       args: None,
+      max_create_domains: 0,
+      max_gas: 0,
+      gas_coin: None,
     }
   }
 }
@@ -180,16 +346,16 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> TransactionBuilder<'a, 'b, A>
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_HASH, hash);
   }
   #[inline]
-  pub fn add_read_objects(&mut self, read_objects: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
-    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_READ_OBJECTS, read_objects);
+  pub fn add_read_refs(&mut self, read_refs: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , ::flatbuffers::ForwardsUOffset<ObjectRef<'b >>>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_READ_REFS, read_refs);
   }
   #[inline]
-  pub fn add_mutable_objects(&mut self, mutable_objects: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
-    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_MUTABLE_OBJECTS, mutable_objects);
+  pub fn add_mutable_refs(&mut self, mutable_refs: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , ::flatbuffers::ForwardsUOffset<ObjectRef<'b >>>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_MUTABLE_REFS, mutable_refs);
   }
   #[inline]
-  pub fn add_creates_objects(&mut self, creates_objects: bool) {
-    self.fbb_.push_slot::<bool>(Transaction::VT_CREATES_OBJECTS, creates_objects, false);
+  pub fn add_created_objects_replication(&mut self, created_objects_replication: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u16>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_CREATED_OBJECTS_REPLICATION, created_objects_replication);
   }
   #[inline]
   pub fn add_sender(&mut self, sender: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
@@ -212,6 +378,18 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> TransactionBuilder<'a, 'b, A>
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_ARGS, args);
   }
   #[inline]
+  pub fn add_max_create_domains(&mut self, max_create_domains: u16) {
+    self.fbb_.push_slot::<u16>(Transaction::VT_MAX_CREATE_DOMAINS, max_create_domains, 0);
+  }
+  #[inline]
+  pub fn add_max_gas(&mut self, max_gas: u64) {
+    self.fbb_.push_slot::<u64>(Transaction::VT_MAX_GAS, max_gas, 0);
+  }
+  #[inline]
+  pub fn add_gas_coin(&mut self, gas_coin: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_GAS_COIN, gas_coin);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> TransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     TransactionBuilder {
@@ -230,14 +408,17 @@ impl ::core::fmt::Debug for Transaction<'_> {
   fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
     let mut ds = f.debug_struct("Transaction");
       ds.field("hash", &self.hash());
-      ds.field("read_objects", &self.read_objects());
-      ds.field("mutable_objects", &self.mutable_objects());
-      ds.field("creates_objects", &self.creates_objects());
+      ds.field("read_refs", &self.read_refs());
+      ds.field("mutable_refs", &self.mutable_refs());
+      ds.field("created_objects_replication", &self.created_objects_replication());
       ds.field("sender", &self.sender());
       ds.field("signature", &self.signature());
       ds.field("pod", &self.pod());
       ds.field("function_name", &self.function_name());
       ds.field("args", &self.args());
+      ds.field("max_create_domains", &self.max_create_domains());
+      ds.field("max_gas", &self.max_gas());
+      ds.field("gas_coin", &self.gas_coin());
       ds.finish()
   }
 }

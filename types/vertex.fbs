@@ -28,6 +28,10 @@ table AttestedTransaction {
 
     // proofs are the quorum proofs for each collected object.
     proofs:[QuorumProof];
+
+    // attestation_epoch is the epoch the attestations were collected in.
+    // Validators select the holder snapshot to recompute the quorum against.
+    attestation_epoch:uint64;
 }
 
 // VertexLink references a parent vertex in the DAG.
@@ -44,13 +48,10 @@ table FeeSummary {
     // total_fees is the sum of all fees collected from transactions.
     total_fees:uint64;
 
-    // total_aggregator is the 20% portion credited to the vertex producer.
-    total_aggregator:uint64;
-
     // total_burned is the 30% portion permanently removed from supply.
     total_burned:uint64;
 
-    // total_epoch is the 50% portion accumulated for epoch reward distribution.
+    // total_epoch is the 70% portion accumulated for epoch reward distribution.
     total_epoch:uint64;
 }
 

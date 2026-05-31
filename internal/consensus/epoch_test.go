@@ -12,6 +12,81 @@ import (
 	"BluePods/internal/types"
 )
 
+// TestCommitEpochForRound pins the commit epoch a round maps to. A nonzero
+// multiple of epochLength is the boundary round: it commits (and its ATXs verify)
+// BEFORE transitionEpoch increments currentEpoch, so it still belongs to the
+// previous epoch. Every other round R maps to R/epochLength.
+func TestCommitEpochForRound(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	tests := []struct {
+		round uint64
+		want  uint64
+	}{
+		{0, 0},     // before the first boundary
+		{1, 0},     // epoch 0
+		{99, 0},    // last round of epoch 0
+		{100, 0},   // boundary round: committed before the increment, still epoch 0
+		{101, 1},   // first round served by epoch 1's holders
+		{199, 1},   // epoch 1
+		{200, 1},   // boundary round: still epoch 1
+		{201, 2},   // epoch 2
+		{1000, 9},  // boundary round: still epoch 9
+	}
+
+	for _, tt := range tests {
+		if got := dag.commitEpochForRound(tt.round); got != tt.want {
+			t.Errorf("commitEpochForRound(%d) = %d, want %d", tt.round, got, tt.want)
+		}
+	}
+}
+
+// TestCommitEpochForRound_PinnedToSnapshotTiming verifies the boundary round's
+// commit epoch matches the snapshotEpochHolders timing: at round R=k*epochLength,
+// commitRound runs (verifying ATXs against currentEpoch=k-1) before transitionEpoch
+// increments currentEpoch to k. So commitEpochForRound(R) must equal currentEpoch
+// as observed during that round's commit, which is k-1.
+func TestCommitEpochForRound_PinnedToSnapshotTiming(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(100),
+	)
+	defer dag.Close()
+
+	dag.InitEpochHolders()
+
+	// Simulate the boundary commit: at round 100 commitRound runs first.
+	const boundaryRound = 100
+
+	epochDuringCommit := dag.currentEpoch // currentEpoch is still 0 here
+	if got := dag.commitEpochForRound(boundaryRound); got != epochDuringCommit {
+		t.Fatalf("commitEpochForRound(%d) = %d, want %d (currentEpoch during commit)",
+			boundaryRound, got, epochDuringCommit)
+	}
+
+	// transitionEpoch fires after the round commits, bumping currentEpoch to 1.
+	dag.transitionEpoch(boundaryRound)
+	if dag.currentEpoch != epochDuringCommit+1 {
+		t.Fatalf("currentEpoch after transition = %d, want %d", dag.currentEpoch, epochDuringCommit+1)
+	}
+
+	// The retained previous snapshot must now resolve epoch 0.
+	if _, ok := dag.HoldersForEpoch(epochDuringCommit); !ok {
+		t.Fatal("previous epoch holders not retained after transition")
+	}
+	if _, ok := dag.HoldersForEpoch(dag.currentEpoch); !ok {
+		t.Fatal("current epoch holders not resolvable after transition")
+	}
+}
+
 // TestIsEpochBoundary tests epoch boundary detection at correct rounds.
 func TestIsEpochBoundary(t *testing.T) {
 	db := newTestStorage(t)
@@ -161,7 +236,7 @@ func TestMidEpochRegistration_NotInEpochHolders(t *testing.T) {
 
 	// Add a new validator mid-epoch
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// New validator is in active set but NOT in epoch holders
@@ -189,7 +264,7 @@ func TestMidEpochRegistration_InEpochHoldersAfterTransition(t *testing.T) {
 
 	// Add new validator mid-epoch
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// Second epoch transition should include the new validator
 	dag.transitionEpoch(200)
@@ -267,7 +342,7 @@ func TestMultipleEpochTransitions(t *testing.T) {
 
 	// Epoch 2: add new validator, remove validator 3
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.pendingRemovals[validators[3].pubKey] = true
 	dag.transitionEpoch(20)
 
@@ -335,20 +410,22 @@ func TestInitEpochHolders(t *testing.T) {
 	)
 	defer dag.Close()
 
-	// Before InitEpochHolders, epochHolders is nil
-	if dag.epochHolders != nil {
-		t.Fatal("epochHolders should be nil before init")
-	}
-
 	dag.InitEpochHolders()
 
-	// After init, epochHolders should have all validators
-	if dag.epochHolders == nil {
-		t.Fatal("epochHolders should not be nil after init")
+	// The genesis epoch keeps no frozen snapshot: epochHolders stays nil so that
+	// the still-forming set is never frozen at a partial, per-node-divergent
+	// membership. HoldersForEpoch must then resolve epoch 0 to the live set.
+	if dag.epochHolders != nil {
+		t.Fatal("epochHolders should remain nil in the genesis epoch")
 	}
 
-	if dag.epochHolders.Len() != 4 {
-		t.Errorf("expected 4 epoch holders, got %d", dag.epochHolders.Len())
+	holders, ok := dag.HoldersForEpoch(0)
+	if !ok {
+		t.Fatal("genesis epoch holders should resolve to the live set")
+	}
+
+	if holders.Len() != 4 {
+		t.Errorf("expected 4 genesis epoch holders, got %d", holders.Len())
 	}
 }
 
@@ -430,7 +507,7 @@ func TestChurnLimit_CapsAdditions(t *testing.T) {
 	newVals := make([]testValidator, 5)
 	for i := 0; i < 5; i++ {
 		newVals[i] = newTestValidator()
-		dag.validators.Add(newVals[i].pubKey, "", "", [48]byte{})
+		dag.validators.Add(newVals[i].pubKey, "", [48]byte{})
 		dag.epochAdditions = append(dag.epochAdditions, newVals[i].pubKey)
 	}
 
@@ -568,7 +645,7 @@ func TestEpochHolders_FrozenIndependence(t *testing.T) {
 
 	// Add a new validator to the live set
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// epochHolders should STILL be 4, NOT 5
 	if dag.EpochHolders().Len() != 4 {
@@ -643,7 +720,7 @@ func TestRegisterAndDeregisterSameEpoch(t *testing.T) {
 
 	// Mid-epoch: add a new validator
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// Mid-epoch: also mark the same validator for removal
@@ -712,7 +789,7 @@ func TestChurnLimit_DeterministicOrder(t *testing.T) {
 		pubkeys := make([]Hash, 6)
 		for i := 0; i < 6; i++ {
 			pubkeys[i] = Hash{byte(i + 1)} // deterministic keys: 01, 02, 03, 04, 05, 06
-			vs.Add(pubkeys[i], "", "", [48]byte{})
+			vs.Add(pubkeys[i], "", [48]byte{})
 		}
 
 		// Use first validator's key as privKey (doesn't matter for this test)
@@ -771,7 +848,7 @@ func TestChurnLimit_DeferredAppliedNextEpoch(t *testing.T) {
 	pubkeys := make([]Hash, 5)
 	for i := 0; i < 5; i++ {
 		pubkeys[i] = Hash{byte(i + 1)}
-		vs.Add(pubkeys[i], "", "", [48]byte{})
+		vs.Add(pubkeys[i], "", [48]byte{})
 	}
 
 	v := newTestValidator()
@@ -846,7 +923,7 @@ func TestEpochTransition_ScannerSeesNewHolders(t *testing.T) {
 
 	// Now a new validator joins
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 
 	// Epoch 2: new validator in the set changes Rendezvous hashing
 	dag.transitionEpoch(20)
@@ -1435,7 +1512,7 @@ func TestFullEpochHappyPath_ObjectRedistribution(t *testing.T) {
 
 	// --- Phase 2: Add a new validator ---
 	newVal := newTestValidator()
-	dag.validators.Add(newVal.pubKey, "", "", [48]byte{})
+	dag.validators.Add(newVal.pubKey, "", [48]byte{})
 	dag.epochAdditions = append(dag.epochAdditions, newVal.pubKey)
 
 	// Epoch 2: new validator included

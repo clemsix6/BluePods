@@ -21,16 +21,17 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	objects         *objectStore                                          // objects is the object storage
-	domains         *domainStore                                          // domains stores domain name → ObjectID mappings
-	pods            *podvm.Pool                                           // pods is the WASM runtime pool
-	isHolder        func(objectID [32]byte, replication uint16) bool      // isHolder checks if this node stores an object
-	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64) // onObjectCreated is called when a new object is created
+	objects         *objectStore                                                          // objects is the object storage
+	domains         *domainStore                                                          // domains stores domain name → ObjectID mappings
+	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
+	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
+	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
+	signObject      func(id [32]byte, content []byte, version uint64, replication uint16) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
-	storageFee      uint64 // storageFee is the per-object storage fee (0 = disabled)
+	storageFee       uint64 // storageFee is the per-object storage fee (0 = disabled)
 	storageRefundBPS uint64 // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
-	totalValidators int    // totalValidators is the current validator count for fee calculation
+	totalValidators  int    // totalValidators is the current validator count for fee calculation
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -68,6 +69,14 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 // Used by the consensus tracker to register created objects.
 func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
 	s.onObjectCreated = fn
+}
+
+// SetObjectSigner sets a callback that fires when a held, replicated object is
+// persisted at a new version, so the node can eagerly produce and store its BLS
+// attestation. The callback is invoked with the version actually written.
+// State holds only the func, so it never imports the aggregation package.
+func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uint64, replication uint16)) {
+	s.signObject = fn
 }
 
 // SetStorageFees configures protocol-level storage deposits and refunds.
@@ -381,7 +390,26 @@ func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput) {
 		data := rebuildObjectIncrementVersion(&obj)
 		id := extractObjectID(data)
 		s.objects.set(id, data)
+
+		// Eagerly sign the version actually persisted (old version + 1).
+		// There is no holder filter on updates, so guard it explicitly.
+		s.eagerlySign(id, obj.ContentBytes(), obj.Version()+1, obj.Replication())
 	}
+}
+
+// eagerlySign invokes the object-signer callback for a held, replicated object.
+// Singletons (replication 0) are never attested, and objects this node does not
+// hold are skipped, so the work stays bounded by the held-object count.
+func (s *State) eagerlySign(id Hash, content []byte, version uint64, replication uint16) {
+	if s.signObject == nil || replication == 0 {
+		return
+	}
+
+	if s.isHolder != nil && !s.isHolder(id, replication) {
+		return
+	}
+
+	s.signObject(id, content, version, replication)
 }
 
 // rebuildObjectIncrementVersion rebuilds an Object as a standalone FlatBuffer with version+1.
@@ -436,6 +464,9 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 
 		data := rebuildObjectWithIDAndFees(id, &obj, fees)
 		s.objects.set(id, data)
+
+		// Eagerly sign the created object at its initial version.
+		s.eagerlySign(id, obj.ContentBytes(), obj.Version(), obj.Replication())
 	}
 }
 

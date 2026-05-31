@@ -17,6 +17,21 @@ func GetRootAsFeeSummary(buf []byte, offset flatbuffers.UOffsetT) *FeeSummary {
 	return x
 }
 
+func FinishFeeSummaryBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.Finish(offset)
+}
+
+func GetSizePrefixedRootAsFeeSummary(buf []byte, offset flatbuffers.UOffsetT) *FeeSummary {
+	n := flatbuffers.GetUOffsetT(buf[offset+flatbuffers.SizeUint32:])
+	x := &FeeSummary{}
+	x.Init(buf, n+offset+flatbuffers.SizeUint32)
+	return x
+}
+
+func FinishSizePrefixedFeeSummaryBuffer(builder *flatbuffers.Builder, offset flatbuffers.UOffsetT) {
+	builder.FinishSizePrefixed(offset)
+}
+
 func (rcv *FeeSummary) Init(buf []byte, i flatbuffers.UOffsetT) {
 	rcv._tab.Bytes = buf
 	rcv._tab.Pos = i
@@ -38,7 +53,7 @@ func (rcv *FeeSummary) MutateTotalFees(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(4, n)
 }
 
-func (rcv *FeeSummary) TotalAggregator() uint64 {
+func (rcv *FeeSummary) TotalBurned() uint64 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		return rcv._tab.GetUint64(o + rcv._tab.Pos)
@@ -46,11 +61,11 @@ func (rcv *FeeSummary) TotalAggregator() uint64 {
 	return 0
 }
 
-func (rcv *FeeSummary) MutateTotalAggregator(n uint64) bool {
+func (rcv *FeeSummary) MutateTotalBurned(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(6, n)
 }
 
-func (rcv *FeeSummary) TotalBurned() uint64 {
+func (rcv *FeeSummary) TotalEpoch() uint64 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
 	if o != 0 {
 		return rcv._tab.GetUint64(o + rcv._tab.Pos)
@@ -58,36 +73,21 @@ func (rcv *FeeSummary) TotalBurned() uint64 {
 	return 0
 }
 
-func (rcv *FeeSummary) MutateTotalBurned(n uint64) bool {
+func (rcv *FeeSummary) MutateTotalEpoch(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(8, n)
 }
 
-func (rcv *FeeSummary) TotalEpoch() uint64 {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
-	if o != 0 {
-		return rcv._tab.GetUint64(o + rcv._tab.Pos)
-	}
-	return 0
-}
-
-func (rcv *FeeSummary) MutateTotalEpoch(n uint64) bool {
-	return rcv._tab.MutateUint64Slot(10, n)
-}
-
 func FeeSummaryStart(builder *flatbuffers.Builder) {
-	builder.StartObject(4)
+	builder.StartObject(3)
 }
 func FeeSummaryAddTotalFees(builder *flatbuffers.Builder, totalFees uint64) {
 	builder.PrependUint64Slot(0, totalFees, 0)
 }
-func FeeSummaryAddTotalAggregator(builder *flatbuffers.Builder, totalAggregator uint64) {
-	builder.PrependUint64Slot(1, totalAggregator, 0)
-}
 func FeeSummaryAddTotalBurned(builder *flatbuffers.Builder, totalBurned uint64) {
-	builder.PrependUint64Slot(2, totalBurned, 0)
+	builder.PrependUint64Slot(1, totalBurned, 0)
 }
 func FeeSummaryAddTotalEpoch(builder *flatbuffers.Builder, totalEpoch uint64) {
-	builder.PrependUint64Slot(3, totalEpoch, 0)
+	builder.PrependUint64Slot(2, totalEpoch, 0)
 }
 func FeeSummaryEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

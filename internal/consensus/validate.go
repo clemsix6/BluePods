@@ -229,7 +229,7 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 	}
 
 	// Recalculate from transaction headers
-	var totalFees, totalAgg, totalBurned, totalEpoch uint64
+	var totalFees, totalBurned, totalEpoch uint64
 	var atx types.AttestedTransaction
 
 	for i := 0; i < v.TransactionsLength(); i++ {
@@ -246,7 +246,6 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 		split := SplitFee(fee, *d.feeParams)
 
 		totalFees += split.Total
-		totalAgg += split.Aggregator
 		totalBurned += split.Burned
 		totalEpoch += split.Epoch
 	}
@@ -254,10 +253,6 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 	if declared.TotalFees() != totalFees {
 		return fmt.Errorf("fee_summary.total_fees mismatch: declared %d, computed %d",
 			declared.TotalFees(), totalFees)
-	}
-	if declared.TotalAggregator() != totalAgg {
-		return fmt.Errorf("fee_summary.total_aggregator mismatch: declared %d, computed %d",
-			declared.TotalAggregator(), totalAgg)
 	}
 	if declared.TotalBurned() != totalBurned {
 		return fmt.Errorf("fee_summary.total_burned mismatch: declared %d, computed %d",

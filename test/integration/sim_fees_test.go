@@ -3,7 +3,6 @@ package integration
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"net/http"
 	"testing"
 	"time"
 
@@ -245,7 +244,7 @@ func runFeeConsistencyTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 		// Coins are singletons (rep=0), so all nodes hold them
 		var balances []uint64
 		for i := 0; i < cluster.Size(); i++ {
-			nodeCli, err := client.NewClient(cluster.Node(i).HTTPAddr())
+			nodeCli, err := client.NewClient(cluster.Node(i).Addr(), cluster.SystemPodID())
 			if err != nil {
 				continue
 			}
@@ -297,7 +296,7 @@ func encodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 // during execution — the state change (transfer) does not take effect.
 func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
-	addr := cluster.Bootstrap().HTTPAddr()
+	addr := cluster.Bootstrap().Addr()
 
 	t.Run("ATP-6.1: gas coin not found rejects tx", func(t *testing.T) {
 		// Create a coin to attempt transfer
@@ -320,7 +319,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx with fake gas coin: %d (also valid)", code)
 			return
 		}
@@ -362,7 +361,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx: %d (also valid)", code)
 			return
 		}
@@ -383,14 +382,14 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 	})
 
 	t.Run("ATP-21.15: gas coin must be singleton", func(t *testing.T) {
-		// Create an NFT (replication=5, NOT a singleton)
+		// Create a replicated object (replication=5, NOT a singleton)
 		w := client.NewWallet()
-		nftID, err := w.CreateNFT(cli, 5, []byte("not-a-coin"))
+		objectID, err := w.CreateObject(cli, 5, []byte("not-a-coin"))
 		if err != nil {
-			t.Fatalf("create NFT: %v", err)
+			t.Fatalf("create object: %v", err)
 		}
 
-		WaitForObject(t, cli, nftID, 30*time.Second)
+		WaitForObject(t, cli, objectID, 30*time.Second)
 
 		// Create a real coin to attempt transfer
 		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
@@ -398,15 +397,15 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 			t.Fatalf("refresh: %v", err)
 		}
 
-		// Try to use the NFT as gas_coin (rep=5, not singleton)
+		// Try to use the object as gas_coin (rep=5, not singleton)
 		r := client.NewWallet()
 		txBytes := BuildSignedTxWithGasCoin(
 			cli.SystemPod(), "transfer", encodeTransferArgs(r.Pubkey()),
-			nftID, buildMutableRef(coinID, w.GetCoin(coinID).Version),
+			objectID, buildMutableRef(coinID, w.GetCoin(coinID).Version),
 		)
 
 		code, _ := SubmitRawBytes(addr, txBytes)
-		if code != http.StatusAccepted {
+		if code != statusAccepted {
 			t.Logf("API rejected tx: %d (also valid)", code)
 			return
 		}

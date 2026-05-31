@@ -84,7 +84,7 @@ func verifyAllSeeValidators(t *testing.T, cluster *Cluster, expected int) {
 	t.Helper()
 
 	for i := 0; i < cluster.Size(); i++ {
-		status := QueryStatus(t, cluster.Node(i).HTTPAddr())
+		status := QueryStatus(t, cluster.Node(i).Addr())
 		if status.Validators != expected {
 			t.Errorf("node %d: validators=%d, expected %d", i, status.Validators, expected)
 		}
@@ -101,7 +101,7 @@ func verifyRoundConvergence(t *testing.T, cluster *Cluster, maxDelta uint64) {
 	maxRound := uint64(0)
 
 	for i := 0; i < cluster.Size(); i++ {
-		status := QueryStatusSafe(cluster.Node(i).HTTPAddr())
+		status := QueryStatusSafe(cluster.Node(i).Addr())
 		if status == nil {
 			t.Errorf("node %d: no status response", i)
 			continue
