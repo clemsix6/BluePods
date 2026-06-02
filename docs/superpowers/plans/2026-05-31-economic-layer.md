@@ -49,9 +49,8 @@ This is one plan. Work is grouped into **batches**; each batch is a coherent, in
 - `internal/validation/validate.go` — keep `rebuildUnsignedTx` in lockstep with the body change (Batch 8).
 - `internal/consensus/dag.go` — `SeedGenesis` method; new fields/Options (stake, commission, voting cap, thermostat).
 - `internal/consensus/commit.go` — commit-time authenticity; `handleBond`/`handleUnbond`/`handleDelegate`/`handleUndelegate`; gas-coin owner==fee_payer; close fee-less hole; lock storage deposit.
-- `internal/consensus/coins.go` — extend `CoinStore` with supply methods (Batch 2).
-- `internal/consensus/state_supply.go` (new) — supply persistence on the state side lives in `internal/state`; consensus reaches it via `CoinStore`.
-- `internal/state/state.go` — own `total_supply` (with a `db` handle), decrement on deletion burn, lock storage deposits.
+- `internal/consensus/coins.go` — extend `CoinStore` with supply methods + the `DelegationEnumerator` accessor (Batch 2/4); the supply IMPL lives in `internal/state` (no separate consensus supply file).
+- `internal/state/state.go` — own `total_supply` (with a retained `db` handle), decrement on deletion burn, lock storage deposits, track the live validator count so its storage-deposit formula matches consensus.
 - `internal/consensus/fees.go` — `BurnBPS=0`; split consumed vs storage; thermostat math in `thermostat.go`.
 - `internal/consensus/stake.go` (new) — effective stake, capped voting weight, `total_bonded` (Batch 3/5).
 - `internal/validators/validators.go` — stake/jail/reward-coin fields + mutators + stake-aware `Add` (Batch 3/7).
@@ -76,11 +75,11 @@ This is one plan. Work is grouped into **batches**; each batch is a coherent, in
 
 ### Task 1.1: Verify transaction authenticity at commit
 
-**Files:** Create `internal/consensus/txauth.go`; modify `internal/consensus/commit.go` (call it at the top of `executeTx`); Test `internal/consensus/txauth_test.go`.
+**Files:** Create `internal/consensus/txauth.go`; modify `internal/consensus/commit.go` (call it in `executeTx`, after the `proofVerdict` block and before the commit-once guard — see Implement); Test `internal/consensus/txauth_test.go`.
 
 - [ ] **Test:** a tx whose `signature` does not verify against `sender` over the recomputed body hash is rejected (`executeTx` returns `FeeSplit{}` and emits `success=false`); a tx whose `hash` field does not equal the recomputed body hash is rejected; a correctly-signed tx passes. Build the txs with the existing `genesis` builders so the canonical body matches.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement** `verifyTxAuthenticity(tx *types.Transaction) error`: recompute the unsigned body via the same primitive client ingress uses (`genesis.BuildUnsignedTxBytesWithRefs` with the tx's fields, mirroring `internal/validation`'s `rebuildUnsignedTx`), `hash := blake3.Sum256(body)`, require `bytes.Equal(hash[:], tx.HashBytes())`, then `ed25519.Verify(sender, hash[:], tx.SignatureBytes())`. Call it at the very top of `executeTx` (after the `tx == nil` guard, before the commit-once guard); on error log and `d.emitTransaction(tx, false); return FeeSplit{}`. This runs deterministically on every node for every committed tx, gossiped or not.
+- [ ] **Implement** `verifyTxAuthenticity(tx *types.Transaction) error`: recompute the unsigned body by calling the SAME shared primitive client ingress uses — `genesis.BuildUnsignedTxBytesWithRefs` (the exact function `internal/validation`'s `rebuildUnsignedTx` delegates to) — NOT a hand-rolled reconstruction, so the three sites (builder, ingress, commit) cannot drift; `hash := blake3.Sum256(body)`, require `bytes.Equal(hash[:], tx.HashBytes())`, then `ed25519.Verify(sender, hash[:], tx.SignatureBytes())`. **Placement (critical):** call it in `executeTx` AFTER the `proofVerdict` block (so the index-aligned batch-proof cursor in `collectRoundProofs`/`proofVerdicts.next` is consumed in lockstep and never desyncs) and BEFORE the commit-once guard (so a forged tx cannot poison `d.tracker` with a chosen hash to censor a future legitimate tx). On error: log, `d.emitTransaction(tx, false); return FeeSplit{}`. This runs deterministically on every node for every committed tx, gossiped or not. `collectRoundProofs` is left untouched — auth runs after its verdict is consumed, so it never changes which ATXs the pre-pass batches.
 - [ ] **Run, expect PASS;** then `go test ./internal/consensus/ -count=1 -timeout 120s` and fix any test tx that was unsigned/forged.
 - [ ] **Commit:** `git add internal/consensus/txauth.go internal/consensus/commit.go internal/consensus/txauth_test.go && git commit -m "[!] Verify tx sender signature and hash at commit (close gossip-injection gap)"`
 
@@ -152,7 +151,11 @@ type InitialState struct {
 func BuildInitialState(cfg Config, owner [32]byte) InitialState {
 	coinID := GenesisCoinID(owner)
 
-	coinBalance := cfg.InitialMint - cfg.GenesisStake // GenesisStake <= InitialMint (validated by caller)
+	stake := cfg.GenesisStake
+	if stake > cfg.InitialMint {
+		stake = cfg.InitialMint // clamp: never underflow the coin balance
+	}
+	coinBalance := cfg.InitialMint - stake
 	content := make([]byte, 8)
 	binary.LittleEndian.PutUint64(content, coinBalance)
 
@@ -175,13 +178,13 @@ func BuildInitialState(cfg Config, owner [32]byte) InitialState {
 		Pubkey:    owner,
 		QUIC:      cfg.QUICAddress,
 		BLS:       cfg.BLSPubkey,
-		SelfStake: cfg.GenesisStake,
+		SelfStake: stake,
 		Supply:    cfg.InitialMint,
 	}
 }
 ```
 
-Add `GenesisStake uint64` to `Config` with a doc comment; default it (in `cmd/node/init.go`) to a sane fraction of `InitialMint` (e.g. `InitialMint/10`) so the bootstrap validator has reachable quorum weight in Batch 5.
+Add `GenesisStake uint64` to `Config` with a doc comment; default it (in `cmd/node/init.go`) to a sane fraction of `InitialMint` (e.g. `InitialMint/10`, and at least `minStake`) so the bootstrap validator has reachable quorum weight in Batch 5. **Guard against underflow:** `BuildInitialState` must clamp `GenesisStake` to `InitialMint` (or the caller validates `GenesisStake <= InitialMint`) — `InitialMint - GenesisStake` underflowing to a near-MaxUint64 coin balance is a silent supply-minting bug. Add a test for `GenesisStake > InitialMint` asserting the clamp.
 
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add internal/genesis/ && git commit -m "[+] BuildInitialState: coin + bonded founder as seeded data"`
@@ -234,8 +237,8 @@ The user `mint` creates balance from nothing and is not recorded in `total_suppl
 
 - [ ] **Test:** a tx calling `function_name == "mint"` on the system pod is rejected/no-ops at execution (the dispatcher has no such entry), creating no coin.
 - [ ] **Run, expect FAIL** (mint still works).
-- [ ] **Implement:** remove the `mint` entry from the `dispatcher!`/match in `pods/pod-system/src/lib.rs` and delete its function directory. Rebuild the system-pod WASM (the repo's pod build + gas-instrumentation step). If any non-faucet caller of `mint` remains, migrate it (none should after Task 1.8).
-- [ ] **Run** the system-pod build + `go test ./internal/consensus/ -run TestMint -count=1` (expect the mint path gone).
+- [ ] **Implement:** remove the `mint` entry from the `dispatcher!`/match in `pods/pod-system/src/lib.rs` and delete its function directory. Rebuild the system-pod WASM (the repo's pod build + gas-instrumentation step). Migrate any remaining `mint` callers: the genesis path is gone (Task 1.5) and the faucet is rewired (Task 1.8), but the integration sims call `mint` directly — delete/rewrite the ATP-16.1/16.2/16.3 "mint success/zero/large" cases and the direct `SubmitRawBytes(..., BuildValidTx(systemPod, "mint", ...))` in `test/integration/sim_bootstrap_test.go` (re-fund those accounts via the genesis reserve / `SubmitFaucet` instead). This sim cleanup is part of this task's commit.
+- [ ] **Run** the system-pod build + `go test ./internal/consensus/ -run TestMint -count=1` (expect the mint path gone). Confirm the surviving balance-moving system functions still conserve: `split`/`merge`/`transfer` neither create nor destroy balance (add a `merge` checked-add to avoid wraparound and a split+merge conservation assertion).
 - [ ] **Commit:** `git add pods/pod-system/ && git commit -m "[-] Remove the user-callable mint (only genesis + issuance create supply)"`
 
 ### Task 1.7: Close the fee-less hole in deductFees
@@ -267,7 +270,7 @@ The faucet must move balance from the genesis reserve coin to the requester. In 
 
 - [ ] **Test** `TestBuildSplitTx`: `BuildSplitTx(privKey, systemPod, reserveCoinID, toOwner, amount)` builds a `split` system-pod ATX referencing `reserveCoinID` as a mutable ref and gas coin, with `GasCoinBytes()` length 32 and `FunctionName()=="split"`.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement** `BuildSplitTx` (encode the system pod's `split` args for `(toOwner, amount)`, reserve coin as a mutable ref and as the `gasCoin`). Rewire `buildFaucetTx` to call it with `genesis.GenesisCoinID(bootstrapOwner)`; faucet requests fail naturally once the reserve is exhausted (insufficient balance).
+- [ ] **Implement** `BuildSplitTx` (encode the system pod's `split` args for `(toOwner, amount)`, reserve coin as a mutable ref and as the `gasCoin`). Rewire `buildFaucetTx` to call it with `genesis.GenesisCoinID(bootstrapOwner)`; faucet requests fail naturally once the reserve is exhausted (insufficient balance). Note (dev-only): every faucet tx mutates the single reserve coin, so concurrent faucet requests serialize on that one object's version (all but one lose the version race and retry) — acceptable for a testnet faucet; production has no reserve.
 - [ ] **Verify:** `go test ./internal/genesis/ -count=1` and `go test ./test/integration/ -run TestSimConsensus -count=1 -timeout 5m`.
 - [ ] **Commit:** `git add -A && git commit -m "[&] Faucet splits from the genesis reserve (no fee-less mint)"`
 
@@ -297,11 +300,15 @@ The faucet must move balance from the genesis reserve coin to the requester. In 
 
 **Files:** Modify `internal/consensus/fees.go` (split consumed vs storage); Modify `internal/consensus/commit.go` (`deductFees`, `calculateTxFee`); Test `internal/consensus/fees_test.go`, `internal/consensus/commit_test.go`.
 
-Today the full fee (compute+transit+storage+domain) is deducted and the whole amount is pooled (`SplitFee`→epoch), while `state` separately stamps `object.fees = computeStorageDeposit(...)` from nothing and the deletion refund is minted. Fix: deduct `consumed + storage` from the coin, pool ONLY `consumed`; the `storage` part stays as the object's locked `fees` (the two formulas already match: `effRep*storageFee/totalValidators`). The deletion refund (Batch 2.4) then returns locked money, and `total_supply` is unchanged at create.
+Today the full fee (compute+transit+storage+domain) is deducted and the whole amount is pooled (`SplitFee`→epoch), while `state` separately stamps `object.fees = computeStorageDeposit(...)` from nothing and the deletion refund is minted. Fix: deduct `consumed + storage` from the coin, pool ONLY `consumed`; the `storage` part stays as the object's locked `fees`. The two formulas (`fees.StorageDeposit` and `state.computeStorageDeposit`) are both `effRep*storageFee/totalValidators` — but they only agree if both use the SAME `totalValidators`. **They do not today:** consensus reads live `d.validators.Len()` while `state.totalValidators` is frozen at init by `SetStorageFees`. The fix MUST keep the two counts equal (below), or the debited storage will not equal the stamped deposit once the validator set grows, silently creating/destroying supply. With equal counts, the deletion refund (Batch 2.4) returns exactly the locked money, and `total_supply` is unchanged at create.
 
-- [ ] **Test:** for a create tx, `deductFees` debits `consumed+storage` from the coin but `epochFees` grows only by `consumed`; the created object's `fees` equals `storage`; after the commit, `sum(coins)+sum(object.fees)` is unchanged vs before (no supply created/destroyed at create).
+- [ ] **Test:** for a create tx, `deductFees` debits `consumed+storage` from the coin but `epochFees` grows only by `consumed`; the created object's `fees` equals `storage`; after the commit, `sum(coins)+sum(object.fees)` is unchanged vs before (no supply created/destroyed at create). **Critical count-match case:** register additional validators so `d.validators.Len()` exceeds the init-time count, create an object, and assert `debited storage == stamped object.fees` (this fails if state's count is stale). Also a producer→validator round-trip asserting `validateFeeSummary` accepts a vertex whose `buildFeeSummary` used consumed-only.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** add `func (d *DAG) calculateTxFeeSplit(tx, atx) (consumed, storage uint64)` — `storage` is the sum of `StorageDeposit(rep, totalValidators, storageFee)` over `createdReps`; `consumed` is the rest (`CalculateFee` minus the storage term — compute + transit + domain). In `deductFees`: deduct `consumed+storage` from the coin in one `deductCoinFee`; if covered, `SplitFee(consumed)` is what feeds the pool (the `FeeSplit` returned carries only the consumed split, so `d.epochFees += fees.Epoch` pools only consumed); the `storage` amount is neither burned nor pooled — it is the locked deposit. Update `validateFeeSummary`/`buildFeeSummary` to compute the summary over `consumed` only (so producers and validators agree), and document that storage is locked, not summarized.
+- [ ] **Implement:**
+  1. **Keep the two storage counts equal.** Wire `state`'s validator count to the live set: update `s.totalValidators` whenever the validator set changes (the same committed `register_validator`/removal events consensus applies), via the existing validator callback, so `state.computeStorageDeposit` and `d.validators.Len()` always read the same deterministic value at the same commit point. (Determinism holds because every node applies the same committed validator-set changes in the same order.)
+  2. Add `func (d *DAG) calculateTxFeeSplit(tx, atx) (consumed, storage uint64)` — `storage` is the sum of `StorageDeposit(rep, d.validators.Len(), storageFee)` over `createdReps`; `consumed` is the rest (`CalculateFee` minus the storage term: compute + transit + domain).
+  3. In `deductFees`: deduct `consumed+storage` from the coin in one `deductCoinFee`; if covered, `SplitFee(consumed)` is what feeds the pool (the returned `FeeSplit` carries only the consumed split, so `d.epochFees += fees.Epoch` pools only consumed); the `storage` amount is neither burned nor pooled — it is the locked deposit.
+  4. Update `validateFeeSummary` (runs at vertex INGRESS, `validateVertex` step 6) AND `buildFeeSummary` to compute the summary over `consumed` only, in lockstep, so producers and validators agree (a mismatch rejects honest vertices → halt). Document that storage is locked, not summarized.
 - [ ] **Run** `go test ./internal/consensus/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add internal/consensus/fees.go internal/consensus/commit.go internal/consensus/*_test.go && git commit -m "[&] Lock the storage deposit in the object (never pooled)"`
 
@@ -342,7 +349,7 @@ Today the full fee (compute+transit+storage+domain) is deducted and the whole am
 - [ ] **Schema:** add `total_supply:uint64;` to `Snapshot`. Bump `snapshotVersion` to 7. `bash types/generate.sh && go build ./...`.
 - [ ] **Test:** round-trip a snapshot with `total_supply=12345`; assert it survives and is checksum-covered (tampering the field fails `verifyChecksum`); the restore path sets `state.SetTotalSupply`.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** thread `totalSupply` into `CreateSnapshot`→`buildSnapshot` (the provider passes `state.TotalSupply()`), write its 8 BE bytes in `computeChecksumWithInfo` (used by BOTH `buildSnapshot` and `verifyChecksum` — update both call sites), `types.SnapshotAddTotalSupply`, read it in `verifyChecksum`, and restore it in `cmd/node/sync.go`'s apply path via `n.state.SetTotalSupply(snapshot.TotalSupply())`.
+- [ ] **Implement:** thread `totalSupply` into `CreateSnapshot`→`buildSnapshot` (the provider passes `state.TotalSupply()`), write its 8 BE bytes in `computeChecksumWithInfo` (used by BOTH `buildSnapshot` and `verifyChecksum` — update both call sites), `types.SnapshotAddTotalSupply`, read it in `verifyChecksum`, and restore it in `cmd/node/sync.go:requestAndApplySnapshot` (the function that already applies validators/vertices/tracker/domains after `ApplySnapshot`) via `n.state.SetTotalSupply(snapshot.TotalSupply())` — `ApplySnapshot(db)` has no `*state.State`, so the restore call must live here, not inside `ApplySnapshot`.
 - [ ] **Run** `go test ./internal/sync/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add -A && git commit -m "[&] Persist total_supply in snapshots, checksum-covered (version 7)"`
 
@@ -389,9 +396,9 @@ Today the full fee (compute+transit+storage+domain) is deducted and the whole am
 
 **Files:** Modify `internal/sync/snapshot.go` (`encodeValidators`/`decodeValidators`); bump `snapshotVersion` to 8; Test `internal/sync/snapshot_test.go`.
 
-- [ ] **Test:** encode/decode preserves `SelfStake`/`DelegatedTotal`/`Jailed`; round-trip + checksum cover them; a truncated record is handled by the existing break-on-short guards.
+- [ ] **Test:** encode/decode **two** validators with distinct `SelfStake`/`DelegatedTotal`/`Jailed` and assert the count is 2 with both sets of values preserved (a single-validator test would not catch a loop-guard misalignment); round-trip + checksum cover them.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** append `SelfStake`(8 BE), `DelegatedTotal`(8 BE), `Jailed`(1 byte) after the existing `pubkey|u16 quic_len|quic|bls(48)` record; extend `decodeValidators`' length guards. Bump `snapshotVersion` to 8. `computeChecksumWithInfo` hashes `encodeValidators(...)`, so it is covered automatically.
+- [ ] **Implement:** append `SelfStake`(8 BE), `DelegatedTotal`(8 BE), `Jailed`(1 byte) after the existing `pubkey|u16 quic_len|quic|bls(48)` record. **Extend the decode loop guard:** the loop is `for len(data) >= 32`; after the BLS read, add `if len(data) < 17 { break }` BEFORE reading the 17 stake bytes, else the trailing 17 bytes of validator N would be misread as the start of a phantom validator N+1's pubkey. Bump `snapshotVersion` to 8. `computeChecksumWithInfo` hashes `encodeValidators(...)`, so the new fields are covered automatically (no separate checksum change).
 - [ ] **Run** `go test ./internal/sync/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add internal/sync/snapshot.go internal/sync/snapshot_test.go && git commit -m "[&] Persist validator stake and jail flag in snapshots (version 8)"`
 
@@ -453,7 +460,7 @@ func (d *DAG) totalBonded() uint64 {
 
 - [ ] **Test:** a `bond` from a registered validator, with the staked coin as a mutable_ref it owns, debits the coin and raises `SelfStake`; an under-funded `bond` is rejected WITHOUT zeroing the coin (strict debit); `bond` keeping `SelfStake` under `minStake` is rejected; `unbond` lowers `SelfStake`; a jailed validator carries zero weight via `EffectiveStake`.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** `handleBond` mirrors `handleRegisterValidator` (guard on system pod + `"bond"`); the staked coin MUST be a `mutable_ref` (so existing ownership validation covers it); read the amount from args; **strict debit** — `readCoinBalance(coin) >= amount` check first (do NOT use `deductCoinFee`, which zeroes on shortfall), then write `balance-amount`; `d.validators.SetSelfStake(sender, existing+amount)`; enforce `minStake` at register/bond. `handleUnbond` reduces `SelfStake` and credits the coin back (leave `// TODO: enforce unbonding delay` per §10/slashing branch). Add `WithMinStake(uint64) Option`.
+- [ ] **Implement:** `handleBond` mirrors `handleRegisterValidator` (guard on system pod + `"bond"`); the staked coin MUST be a `mutable_ref` (so existing ownership validation covers it); read the amount from args; **strict debit** — `readCoinBalance(coin) >= amount` check first (do NOT use `deductCoinFee`, which zeroes on shortfall), then write `balance-amount`; `d.validators.SetSelfStake(sender, existing+amount)`; enforce `minStake` at register/bond. `handleUnbond` reduces `SelfStake` and credits the coin back (leave `// TODO: enforce unbonding delay` per §10/slashing branch). Add `WithMinStake(uint64) Option`. **Jailing scope:** this batch ships the jail MECHANISM (zeroed weight via `EffectiveStake`, carried in the snapshot by Task 3.4); it does NOT ship an automatic fault TRIGGER (that is the deferred dispute/fault-proof system, spec §10). At launch the live weight-removal path is deregistration; `Jail`/`Unjail` exist for that future trigger and for manual/governance use. Do not present jailing as an active automatic defense.
 - [ ] **Run** `go test ./internal/consensus/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add -A && git commit -m "[+] Go-side bond/unbond (strict debit), minimum stake, jailing weight"`
 
@@ -507,7 +514,7 @@ func (d *DAG) totalBonded() uint64 {
 
 **Files:** Modify `internal/consensus/delegation.go`; Test `internal/consensus/delegation_test.go`.
 
-- [ ] **Test** `TestSplitValidatorReward`: reward 1000, commission 1000 BPS, `SelfStake=600`, dels {100, 300} → validator keeps self-share + commission, delegators get pro-rata of the post-commission remainder; the sum of all returned amounts equals 1000 exactly (remainder to the validator).
+- [ ] **Test** `TestSplitValidatorReward`: reward 1000, commission 1000 BPS, `SelfStake=600`, dels {100, 300} → validator keeps self-share + commission, delegators get pro-rata of the post-commission remainder; the sum of all returned amounts equals 1000 exactly (remainder to the validator). **Self-delegation case:** a validator that also appears as one of its own `dels` is paid its self-stake share AND that self-owned delegator share, on distinct capital (self-stake coin vs delegation-position coin) — assert no double-credit of the same tokens and that conservation still holds.
 - [ ] **Run, expect FAIL.**
 - [ ] **Implement:**
 
@@ -530,13 +537,13 @@ func splitValidatorReward(reward, selfStake, commissionBPS uint64, dels []delega
 
 ### Task 4.6: Enumerate a validator's delegations (narrow state method)
 
-**Files:** Modify `internal/state/state.go` (a narrow enumerator) + `internal/consensus/delegation.go` (call it); Test `internal/consensus/delegation_test.go`.
+**Files:** Modify `internal/state/state.go` (the enumerator) + `internal/consensus/coins.go` (a narrow `DelegationEnumerator` interface) + `internal/consensus/dag.go` (a typed field set in `SetFeeSystem`) + `internal/consensus/delegation.go` (call it); update the consensus test stubs. Test `internal/consensus/delegation_test.go`.
 
-Do NOT widen the `CoinStore` interface with general iteration. `state.State` already owns `db.Iterate`.
+Do NOT widen `CoinStore` with general iteration. Note `d.coinStore` is the `CoinStore` INTERFACE (tests inject a mock, not `*state.State`), so a type-assertion to `*state.State` would panic in unit tests — a dedicated interface is required.
 
-- [ ] **Test:** after two `delegate` txs to V, the enumerator returns both `(delegator, amount)` for V.
+- [ ] **Test:** after two `delegate` txs to V, the enumerator returns both `(delegator, amount)` for V; the consensus mock implements the enumerator too (so consensus tests compile).
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** add `state.State.DelegationsFor(validator [32]byte) []DelegationEntry` (iterate objects, decode delegation positions whose `validator==V`); expose it to consensus through the existing state seam (the DAG already holds `*state.State` as `coinStore`; add a small typed accessor rather than bloating `CoinStore`). `// TODO: index per validator when delegation count grows.`
+- [ ] **Implement:** add `state.State.DelegationsFor(validator [32]byte) []DelegationEntry` — `db.Iterate`, filter `len(key)==32` and non-consensus keys (reuse the existing 32-byte object-key filter, factored into a small shared helper rather than duplicating `internal/sync`'s `isConsensusKey`), decode delegation-position objects whose `validator==V`. Declare `type DelegationEnumerator interface { DelegationsFor(validator [32]byte) []DelegationEntry }` in consensus; `SetFeeSystem` (which already receives the `*state.State` as `CoinStore`) also stores it as `d.delegations DelegationEnumerator`. Add the method to the consensus test stub. `// TODO: index per validator when delegation count grows.`
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add -A && git commit -m "[+] Enumerate delegation positions per validator (narrow state method)"`
 
@@ -674,15 +681,17 @@ func cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add internal/consensus/thermostat.go internal/consensus/thermostat_test.go && git commit -m "[+] Issuance from pre-mint supply"`
 
-### Task 6.4: Run the thermostat at the epoch boundary (no orphaned issuance)
+### Task 6.4: Run the thermostat at the epoch boundary (mint only when distributable)
 
-**Files:** Modify `internal/consensus/epoch.go` (`transitionEpoch`, `distributeEpochRewards`); add `d.carryoverPool uint64` field; Test `internal/consensus/epoch_test.go`.
+**Files:** Modify `internal/consensus/epoch.go` (`transitionEpoch`, `distributeEpochRewards`); Test `internal/consensus/epoch_test.go`.
 
-- [ ] **Test:** at a boundary with bonded below band, `issuanceRateMicro` rises (capped) and the pool grows by `issuanceFor(newRate, preMint)`, with `total_supply` raised by the minted amount; a zero-fee epoch still mints; if distribution cannot run (no produced rounds / zero weight), the minted issuance is NOT orphaned — it is added to `d.carryoverPool` for the next epoch (supply already counts it; carryover keeps it accounted until credited).
+No `carryoverPool` field (it would be unpersisted consensus state → a synced node would distribute a different pool → consensus split). Instead: only mint issuance when it can be fully distributed this epoch, and distribute the whole pool (the integer-division remainder goes to a deterministic validator, Task 7.3), so supply only ever grows by exactly what lands in coins/stake. No orphaned issuance, nothing to persist.
+
+- [ ] **Test:** at a boundary with bonded below band and at least one producer, `issuanceRateMicro` rises (capped) and `total_supply` rises by the minted issuance; a zero-FEE epoch with production still mints (bootstrap incentive); a zero-WEIGHT epoch (no rounds produced / `totalWeight==0`) mints NOTHING (`total_supply` unchanged) — there is no one to pay, and the rate still adjusts for next epoch.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement** `runThermostat() uint64`: `preMint := d.coinStore.TotalSupply(); bonded := d.totalBonded(); ratio := stakingRatioMille(bonded, preMint); d.issuanceRateMicro = adjustRate(d.issuanceRateMicro, ratio, d.thermostat); issuance := issuanceFor(d.issuanceRateMicro, preMint); d.coinStore.AddSupply(issuance); return issuance`. Call it in `transitionEpoch` before `distributeEpochRewards`. Pool = `epochFees + issuance + d.carryoverPool`. Remove the `epochFees==0` early-return; when `epochTotalRounds==0` or `totalWeight==0`, set `d.carryoverPool = pool` (don't drop it) and return.
+- [ ] **Implement** `runThermostat(distributable bool) uint64`: `preMint := d.coinStore.TotalSupply(); bonded := d.totalBonded(); ratio := stakingRatioMille(bonded, preMint); d.issuanceRateMicro = adjustRate(d.issuanceRateMicro, ratio, d.thermostat)` (the rate adjusts every epoch); then `if !distributable { return 0 }`, else `issuance := issuanceFor(d.issuanceRateMicro, preMint); d.coinStore.AddSupply(issuance); return issuance`. In `transitionEpoch`, compute `distributable := d.totalRewardWeight() > 0` and call `issuance := d.runThermostat(distributable)`, then `distributeEpochRewards(issuance)`. Define the helper here (Task 7.2 reuses it): `func (d *DAG) totalRewardWeight() uint64` sums `safeMul(EffectiveStake(v), epochRoundsProduced[v.Pubkey])` over the active set — this is the EXACT denominator distribution uses, so minting only when it is positive guarantees the pool is fully distributable (covers the edge where producers have zero stake while stakers produced zero rounds). Remove the `epochFees==0` early-return; the pool is `epochFees + issuance`, distributed in full by Task 7.3 (remainder to a deterministic validator), so supply == sum of credits.
 - [ ] **Run** `go test ./internal/consensus/ -count=1 -timeout 120s`.
-- [ ] **Commit:** `git add internal/consensus/epoch.go internal/consensus/epoch_test.go && git commit -m "[+] Run the thermostat at each boundary; carry forward undistributed issuance"`
+- [ ] **Commit:** `git add internal/consensus/epoch.go internal/consensus/epoch_test.go && git commit -m "[+] Run the thermostat at each boundary; mint only what is fully distributed"`
 
 ### Task 6.5: Persist/restore the issuance rate
 
@@ -690,7 +699,7 @@ func cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total
 
 - [ ] **Test:** `issuance_rate_micro` round-trips, is checksum-covered (tamper test, like `total_supply`), and is restored into the DAG on apply.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** thread `issuance_rate_micro` through `CreateSnapshot`/`computeChecksumWithInfo`/`verifyChecksum`/`ApplySnapshot`; restore into the DAG (a `SetIssuanceRate` setter called from `cmd/node/sync.go`).
+- [ ] **Implement:** thread `issuance_rate_micro` through `CreateSnapshot`/`computeChecksumWithInfo`/`verifyChecksum`; restore into the DAG via a `SetIssuanceRate` setter called from `cmd/node/sync.go:requestAndApplySnapshot` (same site as `SetTotalSupply` in Task 2.6) — otherwise a synced node boots with rate 0 and its thermostat mints nothing while the rest of the network issues, a consensus-affecting divergence.
 - [ ] **Run** `go test ./internal/sync/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add -A && git commit -m "[&] Persist and restore the thermostat issuance rate (checksum-covered)"`
 
@@ -703,7 +712,7 @@ func cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total
 
 # Batch 7 — Reward distribution (`effective_stake x liveness`)
 
-**Spec:** §6, §5.2. Finishes the `TODO: credit to validator's reward_coin`. Pool = `epochFees + issuance + carryover`. Weight = `effective_stake x liveness` (`epochRoundsProduced`), NOT attestation count. Credit via `creditCoin` to a `reward_coin` the validator designates; split with delegators; auto-restake a fraction; reconcile the remainder.
+**Spec:** §6, §5.2. Finishes the `TODO: credit to validator's reward_coin`. Pool = `epochFees + issuance`, distributed in full (remainder to a deterministic top-weight validator). Weight = `effective_stake x liveness` (`epochRoundsProduced`), NOT attestation count. Credit via `creditCoin` to a `reward_coin` the validator designates; split with delegators; auto-restake a fraction; reconcile the remainder.
 
 ### Task 7.1: reward_coin designation
 
@@ -721,25 +730,25 @@ func cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total
 
 - [ ] **Test** `TestRewardWeight`: equal stake, different `epochRoundsProduced` → reward ∝ rounds; equal rounds, different stake → reward ∝ stake; zero rounds → nothing; attestation count is not an input. A producer cannot be credited more than once per round (one vertex per round; equivocation does not double liveness) — add an assertion/guard that `epochRoundsProduced[p]` counts distinct rounds.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** `weight = safeMul(EffectiveStake(v), epochRoundsProduced[pubkey])` (the common `epochTotalRounds` denominator cancels); `totalWeight = safeAdd`-sum; `share = safeMul(pool, weight) / totalWeight` (divide last to limit overflow). Pool from Task 6.4.
+- [ ] **Implement:** `weight = safeMul(EffectiveStake(v), epochRoundsProduced[pubkey])` (the common `epochTotalRounds` denominator cancels); `totalWeight = d.totalRewardWeight()` (the helper defined in Task 6.4); `share = safeMul(pool, weight) / totalWeight` (divide last to limit overflow). `distributeEpochRewards` is only called when `totalRewardWeight() > 0` (Task 6.4 gates minting+distribution on it), so the division has no zero denominator. Pool from Task 6.4 (`epochFees + issuance`).
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add internal/consensus/epoch.go internal/consensus/epoch_test.go && git commit -m "[&] Reward weight = effective_stake x liveness (safeMul)"`
 
-### Task 7.3: Credit rewards; split; auto-restake; reconcile remainder
+### Task 7.3: Credit rewards; split; auto-restake; distribute the full pool
 
-**Files:** Modify `internal/consensus/epoch.go`; Test `internal/consensus/epoch_test.go`.
+**Files:** Modify `internal/consensus/epoch.go` (`distributeEpochRewards(issuance uint64)`); Test `internal/consensus/epoch_test.go`.
 
-- [ ] **Test** `TestRewardCrediting`: a validator's `share` is split via `splitValidatorReward`; the validator's portion minus the auto-restake part is `creditCoin`'d to its `RewardCoin`; the auto-restake part raises `SelfStake`; each delegator's portion is `creditCoin`'d to its coin; the total of all credited+restaked amounts plus any unreconciled remainder equals the pool; the remainder (floored shares + any `share==0` validators) is added to `d.carryoverPool` (so supply stays accounted — no orphaned issuance).
+- [ ] **Test** `TestRewardCrediting`: each validator's `share` is split via `splitValidatorReward`; the validator's portion minus the auto-restake part is `creditCoin`'d to its `RewardCoin`; the auto-restake part raises `SelfStake`; each delegator's portion is `creditCoin`'d to its coin; `sum(all credited + all restaked) == pool` EXACTLY — the integer-division remainder (floored shares + any `share==0` validators) is credited to the deterministic top-weight validator (largest `weight`, ties broken by lower pubkey bytes), so nothing is orphaned and no carry state is needed.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** for each validator, enumerate delegations (Task 4.6), `splitValidatorReward(share, v.SelfStake, d.commissionBPS, dels)`; credit delegator amounts to their coins; split the validator amount into `restake = amount*autoRestakeMille/1000` (→ `SetSelfStake(self+restake)`) and `liquid` (→ `creditCoin(v.RewardCoin, liquid)` if `RewardCoin` set). Track `distributed`; set `d.carryoverPool = pool - distributed`. Replace the `TODO: credit to validator's reward_coin` block.
+- [ ] **Implement:** `pool = epochFees + issuance`. Pick `topValidator` deterministically (max weight, tie-break by pubkey). For each validator: enumerate delegations (Task 4.6), `splitValidatorReward(share, v.SelfStake, d.commissionBPS, dels)`; credit delegator amounts to their coins; split the validator amount into `restake = amount*autoRestakeMille/1000` (→ `SetSelfStake(self+restake)`) and `liquid` (→ `creditCoin(v.RewardCoin, liquid)` when `RewardCoin` is set, else log+skip per Task 7.1). Track `distributed`; credit `pool - distributed` (the remainder) to `topValidator`'s `RewardCoin`. This conserves exactly (`sum credited == pool`), and since supply was raised only by `issuance` (Task 6.4) and the `epochFees` portion was in-flight supply, the §7 invariant holds at the boundary. Replace the `TODO: credit to validator's reward_coin` block. Self-delegation: `splitValidatorReward`'s `selfStake` (the validator's bonded coin) and the `dels` slice (delegation-position objects) are disjoint by construction, so a validator that self-delegates is paid its self-stake share AND its self-owned delegator share on distinct capital — no double-credit (asserted in Task 4.5).
 - [ ] **Run** `go test ./internal/consensus/ -count=1 -timeout 120s`.
-- [ ] **Commit:** `git add internal/consensus/epoch.go internal/consensus/epoch_test.go && git commit -m "[+] Credit rewards: split, auto-restake, remainder carried forward"`
+- [ ] **Commit:** `git add internal/consensus/epoch.go internal/consensus/epoch_test.go && git commit -m "[+] Credit rewards: split, auto-restake, full-pool with remainder to top validator"`
 
 ### Task 7.4: Reward conservation property test
 
 **Files:** Test `internal/consensus/epoch_test.go`.
 
-- [ ] **Test** `TestRewardConservation`: over an epoch, `sum(credited + restaked) + carryoverPool_delta == pool`; and the supply invariant (Task 2.7) still holds at the boundary (issuance was added to supply in 6.4; crediting/restaking MOVES it into coins/stake — no new supply; carryover is supply held for next epoch).
+- [ ] **Test** `TestRewardConservation`: over an epoch, `sum(credited + restaked) == pool` exactly (remainder to the top validator, Task 7.3); and the supply invariant (Task 2.7) holds at the boundary — issuance was added to supply in 6.4 only because it is fully distributed here; crediting/restaking MOVES the pool into coins/stake (no new supply); the `epochFees` portion was in-flight supply now landing in validator coins.
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add internal/consensus/epoch_test.go && git commit -m "[+] Property test: epoch reward conservation"`
 
@@ -791,7 +800,7 @@ The body hash is recomputed at THREE places that MUST agree byte-for-byte: the b
 
 - [ ] **Test:** when `len(FeePayerBytes())==32`, an invalid `sponsor_signature` is rejected AT COMMIT (so a gossiped forged sponsored tx cannot commit); a sponsored tx whose gas coin is owned by `fee_payer` passes `validateGasCoin`; a non-sponsored tx still requires `owner==sender`.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** in `verifyTxAuthenticity` (Task 1.1), when `fee_payer` is present, additionally `ed25519.Verify(fee_payer, hash[:], sponsor_signature)`. In `validateGasCoin`, require `owner == fee_payer` when present, else `owner == sender`.
+- [ ] **Implement:** define ONE predicate `isSponsored(tx) bool { return len(tx.FeePayerBytes()) == 32 }` and use it at all three sites (sponsor-sig verify, gas-coin owner, `valid_until` in Task 8.5) so a malformed 1-byte `fee_payer` cannot be "present" at one site and "absent" at another. In `verifyTxAuthenticity` (Task 1.1), when `isSponsored(tx)`, additionally `ed25519.Verify(fee_payer, hash[:], sponsor_signature)` (a malformed fee_payer fails the verify, closing safe). In `validateGasCoin`, require `owner == fee_payer` when `isSponsored`, else `owner == sender`.
 - [ ] **Run** `go test ./internal/consensus/ -count=1 -timeout 120s`.
 - [ ] **Commit:** `git add -A && git commit -m "[+] Verify sponsor signature at commit; gas coin owned by fee_payer"`
 
@@ -801,7 +810,7 @@ The body hash is recomputed at THREE places that MUST agree byte-for-byte: the b
 
 - [ ] **Test:** a sponsored tx with `valid_until < d.commitEpochForRound(commitRound)` is rejected; `>=` proceeds; a sponsored tx (`fee_payer` present) with `valid_until == 0` is rejected (a sponsored tx MUST carry a bound); the boundary round (which maps to epoch `k-1`) is tested explicitly.
 - [ ] **Run, expect FAIL.**
-- [ ] **Implement:** in `executeTx`, when `fee_payer` is present: reject if `valid_until == 0`, else reject if `valid_until < d.commitEpochForRound(commitRound)`. Document the boundary-round mapping.
+- [ ] **Implement:** in `executeTx`, when `isSponsored(tx)` (the shared predicate from Task 8.4): reject if `valid_until == 0`, else reject if `valid_until < d.commitEpochForRound(commitRound)`. A non-sponsored tx never reads `valid_until` (an absent field defaulting to 0 must not reject it). Document the boundary-round mapping (round `k*epochLength` maps to epoch `k-1`).
 - [ ] **Run, expect PASS.**
 - [ ] **Commit:** `git add internal/consensus/commit.go internal/consensus/commit_test.go && git commit -m "[+] Enforce sponsored-tx valid_until (reject 0; precise epoch boundary)"`
 
@@ -898,8 +907,10 @@ The body hash is recomputed at THREE places that MUST agree byte-for-byte: the b
 
 **Review-fix coverage (iteration 1 → 2).** Tx authenticity at commit (C1) → Task 1.1, extended 8.2/8.4. Unfunded storage deposit / impossible invariant (C2) → 2.2 (lock, never pool) + corrected §7 invariant (epoch-boundary, fees-in-flight). User mint printer (C3) → 1.6. `WithGenesisState` nil-panic ordering (C4) → 1.4/1.5 (`SeedGenesis` after `SetFeeSystem`). Faucet transfer→split (C5) → 1.8. Founder self-stake at genesis (H1) → 1.3. Snapshot drops stake (H2) → 3.4 + `quorumReached` guards total==0 (5.2). Reward under-credit vs pre-minted supply (H3) → carry-forward in 6.4/7.3. `deductCoinFee` zeroes coin on bond (H4) → strict debit in 3.7/4.3. Invariant "after every commit" (H5) → epoch-boundary assertion (2.7). Snapshot task missing verifyChecksum/provider/restore (M1) → 2.6 names all three. Production vs commit epoch mismatch (M2) → both use `commitEpochForRound` (5.3/5.4). valid_until off-by-one / ==0 (M3) → 8.5. Client hash check (M4) → 8.2 includes `internal/validation`. State has no db handle (M5) → 2.1. IterateObjects on CoinStore (M6) → narrow state method (4.6). RewardCoin default fails for registrants (M7) → 7.1. Overflow discipline → safeMul in all new math. Equivocation/liveness double-credit → 7.2 guard. Rust = full directory → noted (3.6/4.2). buildUnsignedVertex for timestamp → 9.2.
 
+**Review-fix coverage (iteration 2).** Storage-deposit `totalValidators` divergence (consensus live vs state init-frozen) → 2.2 keeps the two counts equal + a count-match test. `carryoverPool` un-persisted / consensus-split → eliminated: no carryover field; mint only when `totalRewardWeight()>0`, distribute the full pool with the remainder to a deterministic top-weight validator (6.4/7.3). Commit-time auth vs the proof-verdict cursor → 1.1 placed AFTER `proofVerdict`, BEFORE commit-once (cursor untouched). Three-site body hash drift → 1.1/8.2 mandate reusing the single `genesis.BuildUnsignedTxBytesWithRefs` primitive. `DelegationsFor` on a `*state.State` the DAG does not hold → 4.6 defines a `DelegationEnumerator` interface implemented by state and the mock. `mint` removal under-budgeted the ATP-16.x sims → 1.6. `isSponsored` predicate unified across the three sponsored-tx sites → 8.4. `GenesisStake>InitialMint` underflow → 1.3 clamp. Jailing trigger honesty (mechanism ships, auto-trigger deferred) → spec §2/§10 + 3.7 note. Refund follows the gas coin → spec §9. Restore site pinned to `requestAndApplySnapshot` → 2.6/6.5. `decodeValidators` loop guard → 3.3 explicit `<17` guard + two-validator test. `state_supply.go` dropped (methods in `coins.go`) → file map.
+
 **Deferred-by-design (not gaps).** F1 accumulator, liquid staking, per-validator commission, dynamic fee, clock pipeline, slashing, storage/serving challenges, unbonding-delay enforcement — all explicitly out of scope per the spec.
 
 **Forward references.** `SetSelfStake` (1.4) before the stake API (3.2); `CoinStore` supply methods (2.3) before the thermostat (6); `AddWithStake` (3.2) before the snapshot carry (3.4); `EffectiveStake` (3.5) before quorum (5) and reward (7); `cappedWeight`/`quorumReached` (5.1/5.2) before the quorum sites (5.3/5.4); `splitValidatorReward` + delegation enumeration (4.5/4.6) before crediting (7.3); the body-hash change (8.2) before sponsor verification (8.4). No symbol is referenced before its defining task.
 
-**Residual risks.** (1) Repeated snapshot version bumps (7→10) — each must update encode+decode+checksum (build AND verify sides). (2) Rust system-pod rebuild required before Go-side bond/delegate handlers are exercised (Batches 3/4). (3) FlatBuffers regen (`bash types/generate.sh`) + rebuild before tests on Batches 2/6/8/9. (4) Batch 1.1 (commit-time authenticity) changes a hot path for every tx — verify sim throughput does not regress.
+**Residual risks.** (1) Repeated snapshot version bumps (6→7→8→9→10) — each must update encode+decode+checksum on BOTH the build and verify sides. (2) Rust system-pod rebuild required before Go-side bond/delegate handlers are exercised (Batches 3/4). (3) FlatBuffers regen (`bash types/generate.sh`) + rebuild before tests on Batches 2/6/8/9. (4) Batch 1.1 (commit-time authenticity) changes a hot path for every tx — verify sim throughput does not regress. (5) The storage-deposit count-sync (2.2) is determinism-critical: consensus and state MUST read the same validator count at the same commit point, or nodes diverge on `object.fees` — the count-match test must run with a grown validator set, not a static one.
