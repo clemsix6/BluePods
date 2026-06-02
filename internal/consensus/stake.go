@@ -40,3 +40,40 @@ func cappedWeight(effective, total, capMille uint64, setSize int) uint64 {
 
 	return effective
 }
+
+// quorumReached reports whether a capped-stake sum meets the 2/3 BFT threshold,
+// using exact integer arithmetic. A zero total (no stake yet) is NOT quorum:
+// without this guard 3*0 >= 2*0 would read as "always quorum" for a zero-stake
+// set, defeating Sybil resistance.
+func quorumReached(cappedSum, total uint64) bool {
+	if total == 0 {
+		return false
+	}
+
+	return safeMul(3, cappedSum) >= safeMul(2, total)
+}
+
+// cappedStakeOf sums the capped voting weight of the given producers within a
+// holder set and returns the set's uncapped total stake. The cap and equal-share
+// floor are computed against the set's uncapped total and size, so the same
+// snapshot yields the same weights on every node. Jailed validators contribute
+// zero (via EffectiveStake).
+func (d *DAG) cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total uint64) {
+	all := set.All()
+	setSize := len(all)
+
+	for _, v := range all {
+		total = safeAdd(total, EffectiveStake(v))
+	}
+
+	for _, v := range all {
+		if !producers[v.Pubkey] {
+			continue
+		}
+
+		weight := cappedWeight(EffectiveStake(v), total, d.votingCapMille, setSize)
+		cappedSum = safeAdd(cappedSum, weight)
+	}
+
+	return cappedSum, total
+}

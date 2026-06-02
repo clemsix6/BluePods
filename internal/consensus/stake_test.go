@@ -57,6 +57,52 @@ func quorumReachedTestHelper(cappedSum, total uint64) bool {
 	return 3*cappedSum >= 2*total
 }
 
+// TestQuorumReached checks the exact-integer 2/3 threshold and its degenerate
+// guard, and that cappedStakeOf sums capped weight over present producers while
+// returning the uncapped set total.
+func TestQuorumReached(t *testing.T) {
+	// Exact threshold: 3*cappedSum >= 2*total.
+	if quorumReached(66, 100) {
+		t.Fatal("66/100: 3*66=198 < 2*100=200, expected NOT quorum")
+	}
+	if !quorumReached(67, 100) {
+		t.Fatal("67/100: 3*67=201 >= 200, expected quorum")
+	}
+
+	// Degenerate-safety: a zero total (no stake yet) is NOT quorum. Without this
+	// guard 3*0 >= 2*0 would read as "always quorum" for an empty/zero-stake set.
+	if quorumReached(0, 0) {
+		t.Fatal("total==0 must NOT be quorum")
+	}
+
+	// cappedStakeOf: two validators 90/10, 10% cap, equal-share floor = total/2.
+	// total=100, capMille=100 → fraction ceiling 10; equal share 50; floor wins.
+	// So each clamps to 50: v0(90)->50, v1(10)->10. cappedSum over both = 60,
+	// uncapped total = 100.
+	validators, vs := newTestValidatorSet(2)
+	vs.SetSelfStake(validators[0].pubKey, 90)
+	vs.SetSelfStake(validators[1].pubKey, 10)
+
+	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	bothPresent := map[Hash]bool{validators[0].pubKey: true, validators[1].pubKey: true}
+	cappedSum, total := dag.cappedStakeOf(vs, bothPresent)
+	if total != 100 {
+		t.Fatalf("uncapped total = %d, want 100", total)
+	}
+	if cappedSum != 60 {
+		t.Fatalf("cappedSum (both present) = %d, want 60 (50+10)", cappedSum)
+	}
+
+	// Only the small producer present: its capped weight is 10, total still 100.
+	onlySmall := map[Hash]bool{validators[1].pubKey: true}
+	cappedSum, total = dag.cappedStakeOf(vs, onlySmall)
+	if cappedSum != 10 || total != 100 {
+		t.Fatalf("cappedStakeOf(only small) = (%d, %d), want (10, 100)", cappedSum, total)
+	}
+}
+
 // TestEffectiveStake checks that effective stake is self plus delegated, and
 // that a jailed or nil validator contributes zero.
 func TestEffectiveStake(t *testing.T) {
