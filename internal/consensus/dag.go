@@ -69,8 +69,9 @@ type DAG struct {
 	// Mode flags
 	listenerMode  bool // listenerMode disables vertex production
 	isBootstrap   bool // isBootstrap allows producing even with few validators
-	minValidators int  // minValidators is the threshold before non-bootstrap nodes produce
-	gossipFanout  int  // gossipFanout is the number of peers to send each vertex to
+	minValidators int    // minValidators is the threshold before non-bootstrap nodes produce
+	minStake      uint64 // minStake is the minimum self-stake a bond must leave (0 = no minimum)
+	gossipFanout  int    // gossipFanout is the number of peers to send each vertex to
 	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
 	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
 
@@ -165,6 +166,14 @@ func WithBootstrap() Option {
 func WithMinValidators(n int) Option {
 	return func(d *DAG) {
 		d.minValidators = n
+	}
+}
+
+// WithMinStake sets the minimum self-stake a bond must leave a validator with.
+// A bond that would leave self-stake below this value is rejected. 0 disables it.
+func WithMinStake(stake uint64) Option {
+	return func(d *DAG) {
+		d.minStake = stake
 	}
 }
 

@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -352,6 +353,8 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
 	d.handleDeregisterValidator(tx, commitRound)
+	d.handleBond(tx)
+	d.handleUnbond(tx)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
@@ -831,6 +834,152 @@ func (d *DAG) handleDeregisterValidator(tx *types.Transaction, commitRound uint6
 		"pubkey_prefix", pubkey[:4],
 		"commitRound", commitRound,
 	)
+}
+
+// handleBond applies a bond transaction: it strictly debits the staked coin and
+// raises the sender's self-stake. The staked coin is the transaction's first
+// mutable_ref (its ownership is validated upstream by validateMutableRefOwnership).
+// Returns true when the bond was applied. The debit is strict: an under-funded
+// bond is rejected without touching the coin (it never uses deductCoinFee, which
+// zeroes a coin on shortfall).
+func (d *DAG) handleBond(tx *types.Transaction) bool {
+	sender, coinID, amount, ok := d.parseStakeTx(tx, d.isBondTx)
+	if !ok {
+		return false
+	}
+
+	current := d.validators.Get(sender)
+	if current == nil {
+		return false
+	}
+
+	newStake := safeAdd(current.SelfStake, amount)
+	if newStake < d.minStake {
+		logger.Warn("bond below minimum stake", "new_stake", newStake, "min_stake", d.minStake)
+		return false
+	}
+
+	if !d.strictDebit(coinID, amount) {
+		return false
+	}
+
+	d.validators.SetSelfStake(sender, newStake)
+	return true
+}
+
+// handleUnbond applies an unbond transaction: it lowers the sender's self-stake
+// and credits the amount back to the coin (the first mutable_ref). Returns true
+// when applied. TODO: enforce an unbonding delay (the withdrawn stake should stay
+// locked and slashable for a period, finalized with slashing in spec §10).
+func (d *DAG) handleUnbond(tx *types.Transaction) bool {
+	sender, coinID, amount, ok := d.parseStakeTx(tx, d.isUnbondTx)
+	if !ok {
+		return false
+	}
+
+	current := d.validators.Get(sender)
+	if current == nil || current.SelfStake < amount {
+		return false
+	}
+
+	if err := creditCoin(d.coinStore, coinID, amount); err != nil {
+		logger.Warn("unbond credit failed", "error", err)
+		return false
+	}
+
+	d.validators.SetSelfStake(sender, current.SelfStake-amount)
+	return true
+}
+
+// parseStakeTx validates a bond/unbond transaction and extracts the sender, the
+// staked coin ID (first mutable_ref), and the Borsh u64 amount. matches gates the
+// pod, function name, and coin store. ok is false on any malformed input.
+func (d *DAG) parseStakeTx(tx *types.Transaction, matches func(*types.Transaction) bool) (sender, coinID [32]byte, amount uint64, ok bool) {
+	if d.coinStore == nil || !matches(tx) {
+		return sender, coinID, 0, false
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return sender, coinID, 0, false
+	}
+	copy(sender[:], senderBytes)
+
+	coinID, ok = firstMutableRefID(tx)
+	if !ok {
+		return sender, coinID, 0, false
+	}
+
+	amount, ok = decodeStakeAmount(tx.ArgsBytes())
+	if !ok || amount == 0 {
+		return sender, coinID, 0, false
+	}
+
+	return sender, coinID, amount, true
+}
+
+// strictDebit subtracts amount from a coin only if it fully covers it, leaving
+// the coin untouched otherwise. Unlike deductCoinFee it never zeroes on shortfall.
+func (d *DAG) strictDebit(coinID [32]byte, amount uint64) bool {
+	data := d.coinStore.GetObject(coinID)
+	if data == nil {
+		return false
+	}
+
+	balance, err := readCoinBalance(data)
+	if err != nil || balance < amount {
+		return false
+	}
+
+	d.coinStore.SetObject(writeCoinBalance(data, balance-amount))
+	return true
+}
+
+// firstMutableRefID returns the 32-byte ID of the transaction's first mutable_ref.
+func firstMutableRefID(tx *types.Transaction) ([32]byte, bool) {
+	var id [32]byte
+	if tx.MutableRefsLength() == 0 {
+		return id, false
+	}
+
+	var ref types.ObjectRef
+	tx.MutableRefs(&ref, 0)
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		return id, false
+	}
+
+	copy(id[:], idBytes)
+	return id, true
+}
+
+// decodeStakeAmount reads a Borsh u64 (little-endian) amount from bond/unbond args.
+func decodeStakeAmount(args []byte) (uint64, bool) {
+	if len(args) < 8 {
+		return 0, false
+	}
+
+	return binary.LittleEndian.Uint64(args[:8]), true
+}
+
+// isBondTx checks if a transaction calls bond on the system pod.
+func (d *DAG) isBondTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, bondFunc)
+}
+
+// isUnbondTx checks if a transaction calls unbond on the system pod.
+func (d *DAG) isUnbondTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, unbondFunc)
+}
+
+// isSystemFunc reports whether tx targets the system pod with the given function.
+func (d *DAG) isSystemFunc(tx *types.Transaction, fn string) bool {
+	podBytes := tx.PodBytes()
+	if len(podBytes) != 32 || !bytes.Equal(podBytes, d.systemPod[:]) {
+		return false
+	}
+
+	return string(tx.FunctionName()) == fn
 }
 
 // isDeregisterValidatorTx checks if a transaction calls deregister_validator on system pod.
