@@ -43,6 +43,32 @@ func TestStakingRatioMille(t *testing.T) {
 	}
 }
 
+// TestComputeIssuance checks issuanceFor returns rate*supply/1_000_000 and is 0
+// when the rate is 0, computed against the pre-mint supply.
+func TestComputeIssuance(t *testing.T) {
+	cases := []struct {
+		name   string
+		rate   uint64
+		supply uint64
+		want   uint64
+	}{
+		{"zero rate mints nothing", 0, 1_000_000, 0},
+		{"ten percent annual approx", 18, 1_000_000, 18},
+		{"one millionth of a million", 1, 1_000_000, 1},
+		{"large supply", 40, 1_000_000_000, 40_000},
+		{"truncates down", 1, 1_500_000, 1},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := issuanceFor(c.rate, c.supply)
+			if got != c.want {
+				t.Errorf("issuanceFor(%d, %d) = %d, want %d", c.rate, c.supply, got, c.want)
+			}
+		})
+	}
+}
+
 // TestAdjustRate checks the dead-band hold, the step cap, and the floor/ceiling
 // clamps. Below the band the rate rises by at most stepCap (and is clamped to the
 // ceiling); above the band it lowers (clamped to the floor); inside it holds.

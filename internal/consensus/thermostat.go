@@ -80,6 +80,13 @@ func adjustRate(rate, ratioMille uint64, p thermostatParams) uint64 {
 	return clampRate(rate, p)
 }
 
+// issuanceFor returns the tokens to mint this epoch: rate*supply/1_000_000, where
+// supply is the PRE-mint total supply (so issuance never lowers its own
+// denominator) and rate is per-epoch millionths. Uses safeMul; 0 when rate is 0.
+func issuanceFor(rateMicro, supply uint64) uint64 {
+	return safeMul(rateMicro, supply) / 1_000_000
+}
+
 // clampRate confines a rate to the thermostat's [Floor, Ceiling] bounds.
 func clampRate(rate uint64, p thermostatParams) uint64 {
 	if rate < p.FloorRateMicro {
