@@ -3,13 +3,13 @@ package integration
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"testing"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/consensus"
 	"BluePods/internal/genesis"
 	"BluePods/internal/network"
 	"BluePods/pkg/client"
@@ -111,16 +111,14 @@ func runTxStatusFailedVersion(t *testing.T, _ *client.Client, privKey ed25519.Pr
 	t.Helper()
 
 	// Re-submit a transfer at the stale version (the first transfer already
-	// consumed it), triggering FailVersion at commit.
+	// consumed it), triggering FailVersion at commit. The recipient differs
+	// from the finalized tx, so the two hashes are provably distinct.
 	recipient := client.NewWallet()
 	txBytes, txHash := buildStatusTransferTx(privKey, systemPod, coinID, staleVersion, recipient.Pubkey())
 
 	_, err := transportFor(nodeAddr).SubmitTx(txBytes)
 	if err != nil {
-		// Ingress may reject it structurally (e.g. duplicate hash if the
-		// finalized tx happened to have the same hash); log and skip.
-		t.Logf("stale-version tx rejected at ingress (skip): %v", err)
-		return
+		t.Fatalf("stale-version tx rejected at ingress: %v", err)
 	}
 
 	t.Logf("stale-version tx submitted: %x", txHash[:4])
@@ -135,25 +133,20 @@ func runTxStatusFailedVersion(t *testing.T, _ *client.Client, privKey ed25519.Pr
 
 		switch resp.State {
 		case network.TxStateFailed:
-			// Reason 1 = FailVersion
-			if resp.Reason != 1 {
-				t.Logf("got TxStateFailed with unexpected reason %d (want 1=FailVersion)", resp.Reason)
+			if resp.Reason != uint8(consensus.FailVersion) {
+				t.Errorf("stale-version tx failed with reason %d, want %d (FailVersion)", resp.Reason, uint8(consensus.FailVersion))
 			} else {
 				t.Logf("stale-version tx correctly failed with FailVersion")
 			}
 			return
 		case network.TxStateFinalized:
-			// Both the first and the second tx had the same hash (they were
-			// identical). The commit-once guard would deduplicate them; this
-			// is not a test failure, just an unexpected but valid outcome.
-			t.Logf("stale-version tx deduplicated as finalized (same hash); version guard not needed")
-			return
+			t.Fatalf("stale-version tx reached TxStateFinalized; expected TxStateFailed with FailVersion")
 		case network.TxStateUnknown, network.TxStatePending:
 			time.Sleep(txStatusPollInterval)
 		}
 	}
 
-	t.Logf("stale-version tx did not reach failed/finalized within deadline (node-specific timing); non-fatal")
+	t.Fatalf("stale-version tx %x did not reach TxStateFailed within deadline", txHash[:4])
 }
 
 // runStatusTotalTxNonZero asserts that Status.TotalTx is non-zero after commits.
@@ -220,5 +213,3 @@ func buildStatusTransferTx(privKey ed25519.PrivateKey, systemPod [32]byte, coinI
 
 	return builder.FinishedBytes(), hash
 }
-
-var _ = hex.EncodeToString // keep import used

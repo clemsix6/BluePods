@@ -46,7 +46,8 @@ func (x *txStatusIndex) markPending(hash [32]byte, round uint64) {
 }
 
 // markCommitted records a transaction's final outcome from the committed stream.
-// The round stored is the committed round, which is used for pruning.
+// If a pending entry already exists its round is preserved, so pruning is
+// anchored to submission time rather than commit time.
 func (x *txStatusIndex) markCommitted(tx consensus.CommittedTx, round uint64) {
 	state := network.TxStateFinalized
 	if !tx.Success {
