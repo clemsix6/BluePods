@@ -377,6 +377,10 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 
 	coinID := firstCreatedObjectID(txHash)
 
+	var pendingHash [32]byte
+	copy(pendingHash[:], txHash)
+	n.txIndex.markPending(pendingHash, n.dag.Round())
+
 	n.dag.SubmitTx(txBytes)
 	n.GossipTx(txBytes)
 

@@ -31,7 +31,7 @@ const (
 )
 
 // QUICTransport is the SDK's QUIC client transport. It performs length-prefixed
-// request/response round-trips against a node using the Batch 4 client codecs.
+// request/response round-trips against a node using the node's length-prefixed QUIC client codecs.
 type QUICTransport struct {
 	// nodeAddr is the node's QUIC address.
 	nodeAddr string

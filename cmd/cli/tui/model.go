@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"BluePods/internal/consensus"
 	"BluePods/internal/network"
 	"BluePods/pkg/client"
 )
@@ -21,9 +22,10 @@ type statusMsg struct {
 
 // trackMsg carries a polled status for one tracked transaction.
 type trackMsg struct {
-	hash  [32]byte // hash is the tracked transaction
-	state uint8    // state is the polled tx state
-	label string   // label is a short hex of the hash for display
+	hash   [32]byte // hash is the tracked transaction
+	state  uint8    // state is the polled tx state
+	reason uint8    // reason is the failure reason; zero for non-failed states
+	label  string   // label is a short hex of the hash for display
 }
 
 // pollMsg drives periodic polling.
@@ -83,7 +85,13 @@ func (m consoleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case trackMsg:
 		if msg.state == network.TxStateFinalized || msg.state == network.TxStateFailed {
 			delete(m.tracked, msg.hash)
-			m.appendActivity(msg.label + " " + stateLabel(msg.state))
+			var activity string
+			if msg.state == network.TxStateFailed {
+				activity = msg.label + " FAILED (" + consensus.FailReason(msg.reason).String() + ")"
+			} else {
+				activity = msg.label + " FINALIZED"
+			}
+			m.appendActivity(activity)
 		}
 		return m, nil
 	}
@@ -173,11 +181,13 @@ func (m consoleModel) fetchTrack(hash [32]byte) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := m.client.GetTxStatus(hash)
 		state := network.TxStateUnknown
+		var reason uint8
 		if err == nil {
 			state = resp.State
+			reason = resp.Reason
 		}
 
-		return trackMsg{hash: hash, state: state, label: hex.EncodeToString(hash[:4])}
+		return trackMsg{hash: hash, state: state, reason: reason, label: hex.EncodeToString(hash[:4])}
 	}
 }
 
@@ -196,20 +206,6 @@ func (m consoleModel) View() tea.View {
 	v.AltScreen = true
 
 	return v
-}
-
-// stateLabel maps a tx state to a short label.
-func stateLabel(state uint8) string {
-	switch state {
-	case network.TxStateFinalized:
-		return "FINALIZED"
-	case network.TxStateFailed:
-		return "FAILED"
-	case network.TxStatePending:
-		return "PENDING"
-	default:
-		return "UNKNOWN"
-	}
 }
 
 // RunConsole runs the interactive console until the user quits.
