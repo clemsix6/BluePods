@@ -1116,7 +1116,11 @@ func TestDeductFees_Success(t *testing.T) {
 }
 
 // TestDeductFees_NoGasCoin_Proceeds verifies that a tx without gas_coin proceeds.
-func TestDeductFees_NoGasCoin_Proceeds(t *testing.T) {
+// TestDeductFees_RejectsMissingGasCoin verifies that a transaction whose
+// gas_coin is not a 32-byte object reference is rejected (proceed=false).
+// Genesis is seeded state and protocol actions are not transactions, so every
+// user transaction must reference a funded gas coin.
+func TestDeductFees_RejectsMissingGasCoin(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
 	mock := &mockBroadcaster{}
@@ -1128,15 +1132,19 @@ func TestDeductFees_NoGasCoin_Proceeds(t *testing.T) {
 	params := DefaultFeeParams()
 	dag.SetFeeSystem(coinStore, &params, nil)
 
-	// ATX without gas_coin (genesis-style)
+	// ATX without gas_coin.
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 
-	// No fees deducted, but tx should proceed (feeSplit.Total == 0 is fine)
+	if proceed {
+		t.Error("expected proceed=false for a tx without a gas coin")
+	}
+
 	if feeSplit.Total != 0 {
-		t.Errorf("expected zero fees for no gas_coin, got %d", feeSplit.Total)
+		t.Errorf("expected empty fee split, got total=%d", feeSplit.Total)
 	}
 }
 

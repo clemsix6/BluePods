@@ -404,17 +404,20 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 
 // deductFees performs protocol-level fee deduction from gas_coin.
 // Returns the fee split and whether the tx should proceed.
-// proceed=true means fees were successfully handled (or fees disabled/no gas_coin).
-// proceed=false means tx must be rejected (invalid gas_coin, min_gas, insufficient funds).
+// proceed=true means fees were successfully handled (or fees are disabled).
+// proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
+// insufficient funds).
 func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, bool) {
 	if d.feeParams == nil || d.coinStore == nil {
 		return FeeSplit{}, true
 	}
 
-	// No gas_coin → genesis/bootstrap tx, skip fees
+	// No gas coin: reject. Genesis is seeded state and protocol actions
+	// (issuance, reward crediting, slashing) are not transactions, so every user
+	// transaction must reference a funded gas coin.
 	gasCoinBytes := tx.GasCoinBytes()
 	if len(gasCoinBytes) != 32 {
-		return FeeSplit{}, true
+		return FeeSplit{}, false
 	}
 
 	var gasCoinID [32]byte
