@@ -14,7 +14,7 @@ import (
 
 	"github.com/zeebo/blake3"
 
-	"BluePods/client"
+	"BluePods/pkg/client"
 )
 
 // safeBuffer wraps bytes.Buffer with a mutex for concurrent read/write.
@@ -106,16 +106,16 @@ func (n *Node) KeyPath() string { return n.keyPath }
 
 // clusterOpts holds configuration for a Cluster.
 type clusterOpts struct {
-	httpBase      int    // httpBase is the starting HTTP port
-	quicBase      int    // quicBase is the starting QUIC port
-	minValidators int    // minValidators is the threshold for consensus
-	epochLength   uint64 // epochLength is rounds per epoch (0 = disabled)
-	maxChurn      int    // maxChurn is max validator changes per epoch
-	syncBuffer    int    // syncBuffer is the sync buffer in seconds
-	initialMint   uint64 // initialMint is the bootstrap mint amount
-	gossipFanout     int // gossipFanout is the number of peers per vertex gossip (0 = default 40)
-	transitionGrace  int // transitionGrace is the transition grace rounds (0 = default 20)
-	transitionBuffer int // transitionBuffer is the transition buffer rounds (0 = default 10)
+	httpBase         int    // httpBase is the starting HTTP port
+	quicBase         int    // quicBase is the starting QUIC port
+	minValidators    int    // minValidators is the threshold for consensus
+	epochLength      uint64 // epochLength is rounds per epoch (0 = disabled)
+	maxChurn         int    // maxChurn is max validator changes per epoch
+	syncBuffer       int    // syncBuffer is the sync buffer in seconds
+	initialMint      uint64 // initialMint is the bootstrap mint amount
+	gossipFanout     int    // gossipFanout is the number of peers per vertex gossip (0 = default 40)
+	transitionGrace  int    // transitionGrace is the transition grace rounds (0 = default 20)
+	transitionBuffer int    // transitionBuffer is the transition buffer rounds (0 = default 10)
 }
 
 // ClusterOption configures cluster behavior.

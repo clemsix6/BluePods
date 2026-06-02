@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"BluePods/client"
 	"BluePods/internal/network"
+	"BluePods/pkg/client"
 )
 
 // gasFaucetAmount is the default amount FundGasCoin requests so a wallet has a

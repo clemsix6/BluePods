@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"BluePods/client"
+	"BluePods/pkg/client"
 )
 
 // TestSimBootstrap runs a single-node bootstrap simulation.

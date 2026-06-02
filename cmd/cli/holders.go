@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"BluePods/client"
 	"BluePods/internal/attest"
 	"BluePods/internal/validators"
+	"BluePods/pkg/client"
 )
 
 // cmdObjectHolders prints which validators actually hold an object versus the

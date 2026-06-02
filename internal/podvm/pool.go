@@ -22,9 +22,9 @@ var (
 // Pool manages a pool of compiled WASM modules.
 // Modules are compiled once and kept hot-loaded for fast instantiation.
 type Pool struct {
-	runtime wazero.Runtime            // runtime is the wazero runtime instance
+	runtime wazero.Runtime                     // runtime is the wazero runtime instance
 	modules map[[32]byte]wazero.CompiledModule // modules maps blake3 hash to compiled module
-	mu      sync.RWMutex              // mu protects modules map
+	mu      sync.RWMutex                       // mu protects modules map
 }
 
 // New creates a new Pool with an initialized wazero runtime.

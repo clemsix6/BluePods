@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"BluePods/client"
+	"BluePods/pkg/client"
 )
 
 // defaultNodeAddr is the QUIC address used when --node is not given.

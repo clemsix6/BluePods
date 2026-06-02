@@ -55,7 +55,7 @@ type Node struct {
 
 	dedup *Dedup // dedup tracks seen messages to prevent duplicate processing
 
-	onConnect    func(*Peer)                          // onConnect is called when a peer connects
+	onConnect    func(*Peer)                         // onConnect is called when a peer connects
 	onMessage    func(*Peer, []byte)                 // onMessage is called when a message is received
 	onDisconnect func(*Peer)                         // onDisconnect is called when a peer disconnects
 	onRequest    func(*Peer, []byte) ([]byte, error) // onRequest handles bidirectional request/response

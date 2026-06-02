@@ -47,14 +47,14 @@ type DomainExporter interface {
 
 // SnapshotManager creates periodic snapshots of the committed state.
 type SnapshotManager struct {
-	db       *storage.Storage  // db is the underlying Pebble storage
-	provider SnapshotProvider  // provider provides consensus data
-	domains  DomainExporter    // domains exports domain entries (nil = no domains)
-	interval time.Duration     // interval between snapshot creation
+	db       *storage.Storage // db is the underlying Pebble storage
+	provider SnapshotProvider // provider provides consensus data
+	domains  DomainExporter   // domains exports domain entries (nil = no domains)
+	interval time.Duration    // interval between snapshot creation
 
-	mu       sync.RWMutex
-	current  []byte // compressed snapshot data
-	round    uint64 // lastCommittedRound of current snapshot
+	mu      sync.RWMutex
+	current []byte // compressed snapshot data
+	round   uint64 // lastCommittedRound of current snapshot
 
 	stop chan struct{}
 	wg   sync.WaitGroup

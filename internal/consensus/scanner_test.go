@@ -146,10 +146,10 @@ func TestScanMixedResults(t *testing.T) {
 	)
 	defer dag.Close()
 
-	objKeep := Hash{0x01}    // holder + has local = keep (no action)
-	objFetch := Hash{0x02}   // holder + no local = fetch
-	objDrop := Hash{0x03}    // not holder + has local = drop
-	objIgnore := Hash{0x04}  // not holder + no local = ignore
+	objKeep := Hash{0x01}   // holder + has local = keep (no action)
+	objFetch := Hash{0x02}  // holder + no local = fetch
+	objDrop := Hash{0x03}   // not holder + has local = drop
+	objIgnore := Hash{0x04} // not holder + no local = ignore
 
 	dag.tracker.trackObject(objKeep, 1, 3, 0)
 	dag.tracker.trackObject(objFetch, 1, 3, 0)

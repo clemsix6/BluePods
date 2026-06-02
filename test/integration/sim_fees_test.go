@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"BluePods/client"
 	"BluePods/internal/genesis"
+	"BluePods/pkg/client"
 )
 
 const (

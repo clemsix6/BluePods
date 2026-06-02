@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"BluePods/client"
+	"BluePods/pkg/client"
 )
 
 // watchInterval is how often the watch dashboard reprints.

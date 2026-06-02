@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"BluePods/client"
+	"BluePods/pkg/client"
 )
 
 // TestSimObjects runs a 12-node simulation for object sharding and routing.

@@ -10,9 +10,9 @@ import (
 
 // Key prefixes for storage.
 var (
-	prefixVertex = []byte("v:")  // v:<hash> -> vertex bytes
-	prefixRound  = []byte("r:")  // r:<round>:<hash> -> producer
-	prefixMeta   = []byte("m:")  // m:latestRound -> uint64
+	prefixVertex = []byte("v:") // v:<hash> -> vertex bytes
+	prefixRound  = []byte("r:") // r:<round>:<hash> -> producer
+	prefixMeta   = []byte("m:") // m:latestRound -> uint64
 )
 
 // store holds DAG vertices with persistent storage.

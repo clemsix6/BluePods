@@ -270,4 +270,3 @@ func (ot *objectTracker) encodeValue(version uint64, replication uint16, fees ui
 	binary.LittleEndian.PutUint64(value[10:18], fees)
 	return value
 }
-

@@ -7,9 +7,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"BluePods/daemon"
 	"BluePods/internal/network"
 	"BluePods/internal/types"
+	"BluePods/pkg/daemon"
 )
 
 // Client connects to a BluePods node over QUIC. It submits singleton-only
