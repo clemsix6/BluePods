@@ -558,6 +558,18 @@ func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Obj
 // applyDeletedObjects removes deleted objects with ownership verification.
 // Protocol-level ownership check: only the object owner can delete.
 // Computes refund (95% of fees) and credits the sender's gas_coin.
+//
+// Determinism limit: the deletion supply/refund accounting here (SubSupply for
+// the burn, creditGasCoin for the refund) runs on the SHARDED execution path
+// (only object holders execute), so it is deterministic ONLY for singleton
+// objects, which every node holds and therefore applies identically. The current
+// system pod deletes no objects and coins are singletons, so this is latent today.
+//
+// TODO: before any pod is allowed to delete REPLICATED objects carrying a storage
+// deposit, move this supply/refund accounting to a deterministic all-nodes path
+// driven by a committed/attested deletion set, applied identically on every node.
+// Otherwise total_supply and coin balances will diverge across nodes (a fork),
+// because holders would burn/refund while non-holders would not.
 func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Transaction) {
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
@@ -602,20 +614,42 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 			continue
 		}
 
-		// Compute refund and credit gas_coin. The full objFees was locked supply:
-		// the refund returns to a coin (still supply), and the burned remainder
-		// leaves supply, so total_supply drops by exactly the burned amount.
-		objFees := obj.Fees()
-		if objFees > 0 && hasGasCoin && s.storageRefundBPS > 0 {
-			refund := objFees * s.storageRefundBPS / 10000
-			s.creditGasCoin(gasCoinID, refund)
-
-			burned := objFees - refund
-			s.SubSupply(burned)
-		}
+		// The full objFees was locked supply, so on deletion it must be fully
+		// accounted: part refunded to a coin (stays in supply) and the remainder
+		// burned (leaves supply). It must never silently vanish, or total_supply
+		// would overstate the coins backing it.
+		s.settleDeletionDeposit(obj.Fees(), gasCoinID, hasGasCoin)
 
 		s.objects.delete(id)
 	}
+}
+
+// settleDeletionDeposit fully accounts a deleted object's locked storage deposit:
+// it refunds storageRefundBPS to the gas_coin and burns the remainder. The burn
+// is gated on the refund actually landing (creditGasCoin succeeding), so a failed
+// refund never reduces supply while the refund vanishes. When there is no gas
+// coin to receive the refund (or refunds are disabled), the WHOLE deposit is
+// burned rather than silently leaked, keeping total_supply conserved.
+func (s *State) settleDeletionDeposit(objFees uint64, gasCoinID Hash, hasGasCoin bool) {
+	if objFees == 0 {
+		return
+	}
+
+	if !hasGasCoin || s.storageRefundBPS == 0 {
+		s.SubSupply(objFees) // no recipient: burn the full locked deposit
+		return
+	}
+
+	refund := objFees * s.storageRefundBPS / 10000
+	burned := objFees - refund
+
+	// Only the refund leaves supply (into a coin); gate the burn on it landing.
+	if !s.creditGasCoin(gasCoinID, refund) {
+		s.SubSupply(objFees) // refund failed: burn the full deposit, none leaks
+		return
+	}
+
+	s.SubSupply(burned)
 }
 
 // computeStorageDeposit calculates the storage deposit for a new object.
@@ -639,22 +673,26 @@ func (s *State) computeStorageDeposit(replication uint16) uint64 {
 	return uint64(effRep) * s.storageFee / uint64(total)
 }
 
-// creditGasCoin adds a refund amount to a gas_coin balance.
-// Version is NOT incremented (implicit protocol modification).
-func (s *State) creditGasCoin(coinID Hash, amount uint64) {
+// creditGasCoin adds a refund amount to a gas_coin balance and reports whether
+// the credit landed. It returns false when the coin is missing, malformed, or
+// would overflow, so the caller can avoid burning supply against a refund that
+// never reached a coin. A zero amount is a no-op and reports success (there is
+// nothing to credit and nothing to leak). Version is NOT incremented (implicit
+// protocol modification).
+func (s *State) creditGasCoin(coinID Hash, amount uint64) bool {
 	if amount == 0 {
-		return
+		return true
 	}
 
 	data := s.objects.get(coinID)
 	if data == nil {
-		return
+		return false
 	}
 
 	obj := types.GetRootAsObject(data, 0)
 	content := obj.ContentBytes()
 	if len(content) < 8 {
-		return
+		return false
 	}
 
 	balance := binary.LittleEndian.Uint64(content[:8])
@@ -662,7 +700,7 @@ func (s *State) creditGasCoin(coinID Hash, amount uint64) {
 
 	// Overflow check
 	if newBalance < balance {
-		return
+		return false
 	}
 
 	// Rebuild with new balance
@@ -688,6 +726,7 @@ func (s *State) creditGasCoin(coinID Hash, amount uint64) {
 	builder.Finish(offset)
 
 	s.objects.set(coinID, builder.FinishedBytes())
+	return true
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects

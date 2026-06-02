@@ -1196,6 +1196,60 @@ func TestApplyDeletedObjects_BurnsSupply(t *testing.T) {
 	}
 }
 
+// TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit verifies the locked storage
+// deposit is fully accounted (burned) when there is no gas coin to receive the
+// refund, rather than silently leaking: total_supply must drop by the whole
+// objFees so it never overstates the coins backing it.
+func TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100)
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x76}
+
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	// tx has sender=owner but NO gas_coin: the deposit has no refund recipient.
+	tx := buildMinimalTx(owner)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// No gas coin → the full 1000 deposit is burned, none leaks.
+	if got := s.TotalSupply(); got != 9000 {
+		t.Errorf("total supply after no-gas-coin deletion: got %d, want 9000", got)
+	}
+}
+
+// TestApplyDeletedObjects_FailedRefundBurnsFullDeposit verifies that when the
+// refund credit cannot land (gas coin missing), the burn falls back to the full
+// deposit so supply is not reduced by only the burned remainder while the refund
+// vanishes.
+func TestApplyDeletedObjects_FailedRefundBurnsFullDeposit(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100)
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x77}
+	missingGasCoin := Hash{0xEE} // referenced but never stored
+
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	tx := buildMinimalTxWithGasCoin(owner, missingGasCoin)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// Refund cannot land → full 1000 burned (not just the 50 remainder).
+	if got := s.TotalSupply(); got != 9000 {
+		t.Errorf("total supply after failed refund: got %d, want 9000", got)
+	}
+}
+
 // --- computeStorageDeposit ---
 
 // TestComputeStorageDeposit verifies storage deposit calculation.
