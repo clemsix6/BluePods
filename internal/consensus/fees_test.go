@@ -259,8 +259,7 @@ func TestCalculateFee_LargeValues(t *testing.T) {
 
 func TestSplitFee_DefaultRatios(t *testing.T) {
 	params := FeeParams{
-		BurnBPS:  3000,
-		EpochBPS: 7000,
+		BurnBPS: 3000,
 	}
 
 	split := SplitFee(10000, params)
@@ -296,8 +295,7 @@ func TestSplitFee_NoScarcityBurn(t *testing.T) {
 
 func TestSplitFee_Rounding(t *testing.T) {
 	params := FeeParams{
-		BurnBPS:  3000,
-		EpochBPS: 7000,
+		BurnBPS: 3000,
 	}
 
 	// 999: burned=299, epoch=999-299=700
@@ -327,8 +325,7 @@ func TestSplitFee_Zero(t *testing.T) {
 
 func TestSplitFee_One(t *testing.T) {
 	params := FeeParams{
-		BurnBPS:  3000,
-		EpochBPS: 7000,
+		BurnBPS: 3000,
 	}
 
 	split := SplitFee(1, params)
@@ -539,9 +536,10 @@ func TestCalculateFee_AllComponentsOverflow(t *testing.T) {
 func TestDefaultFeeParams(t *testing.T) {
 	p := DefaultFeeParams()
 
-	// Ratios must sum to 100%
-	if p.BurnBPS+p.EpochBPS != bpsMax {
-		t.Errorf("ratios sum to %d, want %d", p.BurnBPS+p.EpochBPS, bpsMax)
+	// Burn share must be a valid fraction; the epoch share is the implicit
+	// remainder (bpsMax - BurnBPS), so the two always sum to 100%.
+	if p.BurnBPS > bpsMax {
+		t.Errorf("burn share %d exceeds %d", p.BurnBPS, bpsMax)
 	}
 
 	// Refund ratio must be < 100%

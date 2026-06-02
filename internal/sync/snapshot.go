@@ -528,6 +528,13 @@ func DecompressSnapshot(data []byte) ([]byte, error) {
 func ApplySnapshot(db *storage.Storage, data []byte) (*types.Snapshot, error) {
 	snapshot := types.GetRootAsSnapshot(data, 0)
 
+	// Reject any version other than the current one: a stale or future snapshot
+	// would otherwise be silently mis-decoded against the current layout, so it
+	// must fail loudly here instead.
+	if v := snapshot.Version(); v != snapshotVersion {
+		return nil, fmt.Errorf("unsupported snapshot version %d, expected %d", v, snapshotVersion)
+	}
+
 	// Verify checksum
 	if err := verifyChecksum(data, snapshot); err != nil {
 		return nil, fmt.Errorf("verify checksum:\n%w", err)

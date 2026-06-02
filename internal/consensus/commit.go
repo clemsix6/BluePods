@@ -1165,9 +1165,17 @@ func (d *DAG) parseStakeTx(tx *types.Transaction, matches func(*types.Transactio
 
 // strictDebit subtracts amount from a coin only if it fully covers it, leaving
 // the coin untouched otherwise. Unlike deductCoinFee it never zeroes on shortfall.
+// It debits only a singleton (replication==0) coin, mirroring validateGasCoin: a
+// staking/delegation debit against a replicated coin would diverge across nodes
+// (only holders execute), so a non-singleton is rejected to keep the debit uniform.
 func (d *DAG) strictDebit(coinID [32]byte, amount uint64) bool {
 	data := d.coinStore.GetObject(coinID)
 	if data == nil {
+		return false
+	}
+
+	if rep := readCoinReplication(data); rep != 0 {
+		logger.Warn("staked coin is not a singleton", "replication", rep)
 		return false
 	}
 

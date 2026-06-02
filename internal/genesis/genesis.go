@@ -24,4 +24,3 @@ type Config struct {
 	// BLSPubkey is the validator's BLS public key for attestation signing.
 	BLSPubkey []byte
 }
-

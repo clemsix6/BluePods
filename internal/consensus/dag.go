@@ -143,9 +143,9 @@ type DAG struct {
 
 	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
 	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
-	// 0 and issuanceFor returns 0: the node mints nothing. Reward crediting (the
-	// consumer of issuance) lands in a later batch, so the live node keeps the
-	// thermostat off until crediting is wired, to preserve the supply invariant.
+	// 0 and issuanceFor returns 0: the node mints nothing. The live node keeps the
+	// thermostat off pending parameter calibration/governance, to preserve the
+	// supply invariant.
 	thermostat        thermostatParams // thermostat holds the issuance control loop parameters (zero = off)
 	issuanceRateMicro uint64           // issuanceRateMicro is the current per-epoch issuance rate in millionths
 

@@ -8,14 +8,13 @@ import (
 // FeeParams holds protocol-level fee constants.
 // Initially hardcoded, later stored in a system singleton.
 type FeeParams struct {
-	GasPrice           uint64 // GasPrice is the price per unit of gas
-	MinGas             uint64 // MinGas is the minimum gas per transaction (anti-spam)
-	TransitFee         uint64 // TransitFee is the fixed fee per standard object in the ATX
-	StorageFee         uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
-	DomainFee          uint64 // DomainFee is the fixed fee per registered domain
-	BurnBPS            uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
-	EpochBPS           uint64 // EpochBPS is the epoch reward share in basis points (10000 = 100% of consumed fees)
-	StorageRefundBPS   uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
+	GasPrice         uint64 // GasPrice is the price per unit of gas
+	MinGas           uint64 // MinGas is the minimum gas per transaction (anti-spam)
+	TransitFee       uint64 // TransitFee is the fixed fee per standard object in the ATX
+	StorageFee       uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
+	DomainFee        uint64 // DomainFee is the fixed fee per registered domain
+	BurnBPS          uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
+	StorageRefundBPS uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
 }
 
 // FeeSplit holds the breakdown of a consumed fee into its two components.
@@ -35,7 +34,6 @@ func DefaultFeeParams() FeeParams {
 		StorageFee:       1000,
 		DomainFee:        10000,
 		BurnBPS:          0,
-		EpochBPS:         10000,
 		StorageRefundBPS: 9500,
 	}
 }
