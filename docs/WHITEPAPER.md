@@ -22,7 +22,7 @@ These are the assumptions that drive every design decision in BluePods. Some are
 
 **Protocol-level simplicity, pod-level flexibility.** Core operations like fee deduction, version tracking, and ownership checks are handled at the protocol level, outside the smart contract runtime. Smart contracts (called pods) focus on business logic. This separation keeps the protocol predictable and auditable while allowing arbitrary logic in the execution layer.
 
-**Honest majority per object, not globally.** Security in BluePods is scoped to individual objects. For an object with a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the entire network. In a network with thousands of validators, this distinction matters a lot.
+**Dual security: honest majority per object for attestation, honest two-thirds of stake for ordering.** Security in BluePods is scoped along two axes. Each object's attestation is safe under an honest majority of its holders, counted by head: for a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the network. The global DAG order is secured separately, by stake: it is safe under an honest two-thirds of the total stake, because voting weight in consensus is proportional to a validator's bonded stake (Section 10). The two compose: count-weighting secures per-object attestation, stake-weighting secures ordering. In a network with thousands of validators, scoping attestation to an object's holders matters a lot.
 
 ---
 
@@ -132,13 +132,15 @@ Unlike traditional blockchains where a single leader proposes a block, every val
 
 ### Rounds and Quorum
 
-The DAG progresses through sequential rounds. A vertex at round N must include parent links to vertices from round N-1 produced by at least **(2n/3 + 1)** distinct validators, where n is the total validator count. This BFT quorum requirement on parent links prevents the DAG from fragmenting: a validator cannot advance to the next round without acknowledging a supermajority of the previous round's output.
+The DAG progresses through sequential rounds. A vertex at round N must include parent links to vertices from round N-1, and the round advances only once its producers carry a BFT supermajority. Quorum is stake-weighted, not a head count: the protocol sums the capped effective stake of the round's producers, taken from the epoch holder snapshot, and applies the exact integer test `3 × capped_sum >= 2 × total`. The same stake snapshot is used at both production and commit, so they cannot diverge across an epoch boundary. This requirement prevents the DAG from fragmenting: a validator cannot advance without acknowledging a supermajority-by-stake of the previous round's output. (A receiving node still requires at least one known-validator parent during convergence; the authoritative stake quorum is enforced where every node agrees, at production and commit.)
+
+Voting weight is capped per validator at a fraction of the total stake, with an equal-share floor so a small set keeps a reachable two-thirds quorum; the cap keeps the order decentralized when delegation concentrates stake. Reward weight is uncapped. Stake-weighting is the only Sybil defense (Section 10), replacing the earlier equal-weight model where every validator counted as one.
 
 Each validator produces at most one vertex per round. A liveness timer (500ms) triggers vertex production when the network is idle, ensuring continuous progress even without incoming transactions.
 
 ### Commit Rule and Finality
 
-A vertex V at round N is committed when it is referenced (directly or transitively) by vertices at round N+2 produced by a quorum of validators. This two-round commit rule provides fast finality: once a vertex is committed, all transactions it contains are final and irreversible.
+A vertex V at round N is committed when it is referenced (directly or transitively) by vertices at round N+2 whose producers carry a two-thirds-of-stake quorum. This two-round commit rule provides fast finality: once a vertex is committed, all transactions it contains are final and irreversible.
 
 The commit check runs every 50ms. Rounds are committed sequentially: the protocol stops at the first uncommitted round and does not skip ahead. Skipping would break determinism: every validator must process commits in the same order.
 
@@ -152,10 +154,10 @@ The key insight is that **conflict detection requires no execution**. Every vali
 
 When the network starts or new validators join, a grace period relaxes the quorum requirements:
 
-- **Bootstrap mode**: the first validator produces vertices alone with a quorum of 1.
+- **Bootstrap mode**: the first validator produces vertices alone with a relaxed quorum of one producer. Its self-stake is seeded at genesis, so its weight is non-zero.
 - **Transition grace**: after reaching the minimum validator count, 20 rounds of relaxed quorum allow the network to converge.
 - **Transition buffer**: 10 additional rounds with relaxed quorum provide a safety margin.
-- **Full BFT quorum**: once the first vertex achieves a full 2n/3+1 quorum after the buffer period, the network switches to strict BFT mode permanently.
+- **Full BFT quorum**: once a round achieves a full two-thirds-of-stake quorum after the buffer period, the network switches to strict BFT mode permanently.
 
 ---
 
@@ -181,7 +183,7 @@ Once the quorum is reached (67% of holders signing the same hash), the daemon co
 
 ### Quorum validation and fail-fast
 
-The per-object attestation quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic. (This is distinct from the BFT consensus quorum of 2n/3+1 used to commit vertices.)
+The per-object attestation quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic, counted by head: one holder, one vote. (This is distinct from the consensus quorum used to commit vertices, which is two-thirds of stake, not of head count.)
 
 The daemon implements fail-fast: as soon as enough negative responses accumulate to make the quorum mathematically impossible, it abandons the collection immediately. For example, with 50 holders and a quorum of 34, receiving 17 negatives means only 33 positives are possible, so the collection is abandoned without waiting for the rest.
 
@@ -199,7 +201,7 @@ A complete transaction follows these stages from submission to finality:
 
 A transaction that touches only singletons is submitted raw to any validator over QUIC, which wraps it into a trivial attested transaction with no objects and no proofs. A transaction that touches replicated objects is collected off-chain by the client daemon and submitted as a full attested transaction. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB. Each transaction is uniquely identified by its hash, computed as `BLAKE3` over the canonical unsigned content.
 
-The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature.
+The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature. A sponsored transaction additionally carries a `fee_payer`, a `sponsor_signature`, and a `valid_until` epoch (see Section 9). These three fields are absent-when-empty: a non-sponsored transaction omits them and serializes byte-identically to one built before sponsorship existed, so its single-sender hash and signature verify unchanged.
 
 ### Object Collection
 
@@ -211,9 +213,11 @@ The receiving validator reverifies the ATX, adds it to its pending set, and forw
 
 ### Consensus and Commit
 
-The vertex enters the DAG. When referenced by vertices two rounds later from a quorum of validators, it is committed. All transactions in the vertex become final.
+The vertex enters the DAG. When referenced by vertices two rounds later by a two-thirds-of-stake quorum, it is committed. All transactions in the vertex become final.
 
-Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate.
+Before a committed transaction takes effect, each node re-verifies its authenticity in the commit path, deterministically and on every node: it recomputes the canonical body hash, checks it against the declared hash, and verifies the sender's Ed25519 signature (and, for a sponsored transaction, the sponsor's signature) against that hash. This matters because a transaction can reach commit through a gossiped vertex without ever passing the local ingress check of the node that commits it. Validating only at ingress would let a relaying node inject a forged transaction inside an otherwise valid (producer-signed) vertex; enforcing authenticity at commit, where every node agrees, closes that gap. The check runs after the attestation-proof verdict is consumed and before the duplicate guard, so it neither desyncs proof verification nor lets a forged hash censor a legitimate transaction.
+
+Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate. Replay of a sponsored transaction is prevented by the same duplicate guard, now keyed on a commit-verified hash, bounded further by `valid_until`.
 
 ### Attestation Epoch Validity
 
@@ -386,9 +390,15 @@ On deletion, 95% of the deposit is refunded and 5% is burned. The burn prevents 
 
 ### Gas Coin Mechanics
 
-The gas coin is a Coin singleton (replication=0) owned by the sender. It is referenced in a dedicated `gas_coin` field in the transaction header, separate from the business-logic inputs. This separation ensures that fee deduction does not interfere with the transaction's object references.
+The gas coin is a Coin singleton (replication=0) owned by whoever pays the fee. It is referenced in a dedicated `gas_coin` field in the transaction header, separate from the business-logic inputs. This separation ensures that fee deduction does not interfere with the transaction's object references. At commit the protocol checks that the gas coin's owner is the sender, or the `fee_payer` for a sponsored transaction.
 
 Gas coin modifications are **implicit protocol operations**: they change the balance but do not increment the version. This is critical: it allows a sender to have multiple transactions in flight simultaneously without version conflicts on their gas coin. Fee deductions are applied sequentially in DAG-committed order.
+
+### Sponsored Transactions
+
+A zero-balance new user cannot make a first transaction, because every value-bearing transaction needs a funded gas coin owned by the payer. The fix is native sponsored transactions, done the protocol-level way (a fee payer baked into the transaction) rather than layered on top in a separate account-abstraction contract.
+
+A sponsored transaction carries a `fee_payer` (the sponsor's public key), a `sponsor_signature`, and a `valid_until` epoch. The sender and the sponsor sign the same canonical body hash, which covers everything except the two signature fields, so neither field can be swapped after the other signs. At commit, the protocol verifies the sponsor signature against `fee_payer` and requires the gas coin to be owned by `fee_payer` instead of the sender. The sponsor's exposure is bounded: it signs only what it agrees to pay, the chain cannot overdraw its coin, and `valid_until` (checked against the commit epoch, denominated in epochs and so clock-free) kills a stale sponsorship. A sponsored transaction must carry a non-zero `valid_until`. The honest caveat is that a sponsored transaction that fails on a version conflict still charges the sponsor's gas, and a holder of the signed artifact can submit it at an inconvenient moment within the window; the sponsor prices this and bounds it with `valid_until`.
 
 ---
 
@@ -397,6 +407,8 @@ Gas coin modifications are **implicit protocol operations**: they change the bal
 ### Epochs
 
 The network operates in epochs of configurable length (measured in consensus rounds). At each epoch boundary, the active validator set is frozen into a snapshot called `epochHolders`, which determines storage distribution and Rendezvous Hashing for the entire epoch. Changes to the validator set (additions, removals) only take effect at the next epoch boundary.
+
+Genesis is initial state, not transactions. The initial coin allocation, the founding validator set, and the founder's bonded self-stake are the ledger's starting state, seeded directly at chain creation rather than injected as fee-less transactions. The founder's self-stake is locked out of its genesis coin so its bonded weight has real backing, which the stake-weighted quorum needs to reach quorum from the very first round.
 
 The genesis epoch is the exception: it holds no frozen snapshot. Its set is still forming as the founding validators register, so freezing it at process startup would capture a partial, per-node-divergent membership, and attestation verification would then recompute holders against a set the client daemon never collected from. The genesis epoch therefore tracks the live validator set, which converges to the same set the daemon syncs. The first frozen snapshot is taken at the first epoch boundary, where the set is already stable.
 
@@ -413,6 +425,8 @@ At each epoch boundary, the protocol executes the following steps in order:
 ### Registration and Deregistration
 
 Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, and BLS public key (48 bytes). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
+
+`register_validator` and `deregister_validator` are the one narrow exception to the rule that every value-bearing transaction needs a funded gas coin. They move no value and carry zero quorum weight until the validator bonds, and a node joining at genesis holds no coin yet, so requiring gas would be a chicken-and-egg. They are still authenticated (signed by the sender, verified at commit). The exemption is revisited once bonding lands: a registrant that must bond already needs a funded coin.
 
 Deregistration is a two-phase process: a `deregister_validator` transaction places the validator in a pending removal list, but the validator remains active until the next epoch boundary. This ensures no disruption mid-epoch.
 
@@ -547,6 +561,10 @@ Double-spending is prevented by version tracking. If a user submits two transact
 The client daemon that collects attestations has no trust requirements at all: the validator reverifies every attested transaction on receipt and trusts nothing the daemon sends. The daemon cannot forge holder signatures (it lacks their private keys), cannot exclude valid attestations (any validator recomputes the quorum independently), and cannot alter transaction content (the user's Ed25519 signature covers the transaction hash). Because the attestation binds only the object hash, a daemon could in principle staple valid attestations to a different transaction touching the same objects at the same versions; the lifecycle layer (the owner and version checks) is what rejects that, which is why it runs in full on every attested transaction and is not optional.
 
 A misbehaving daemon can only cause a liveness failure for its own submission, which the client resolves by recollecting and resubmitting. The system remains safe regardless of what the daemon does.
+
+### Transaction Authenticity at Commit
+
+A transaction's authenticity, its sender signature, its sponsor signature when sponsored, and its hash, is verified in the commit path on every node, not only at the ingress of the node that first received it. A transaction can reach commit inside a gossiped, producer-signed vertex without ever passing the local ingress check of the node that commits it. If authenticity were checked only at ingress, a relaying node could embed a forged transaction in an otherwise valid vertex and have it commit. The commit-path check recomputes the canonical body hash from the same shared primitive the builder and ingress use (so the three sites cannot drift), checks it against the declared hash, and verifies the sender's signature; for a sponsored transaction it also verifies the sponsor's signature against `fee_payer`. Because the sponsor signs the same body hash, a forged sponsor signature naming a victim as fee payer cannot drain that victim's coin, and neither signature can be swapped after the other is made.
 
 ### Ownership Enforcement
 
