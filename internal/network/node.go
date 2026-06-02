@@ -160,6 +160,14 @@ func (n *Node) Addr() string {
 	return n.transport.Conn.LocalAddr().String()
 }
 
+// ConnectedPeers returns the number of currently connected mesh peers.
+func (n *Node) ConnectedPeers() int {
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+
+	return len(n.peers)
+}
+
 // Start starts the node and begins accepting connections.
 func (n *Node) Start() error {
 	listener, err := n.transport.Listen(n.tlsConfig, n.quicConfig)
