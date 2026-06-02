@@ -596,11 +596,16 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 			continue
 		}
 
-		// Compute refund and credit gas_coin
+		// Compute refund and credit gas_coin. The full objFees was locked supply:
+		// the refund returns to a coin (still supply), and the burned remainder
+		// leaves supply, so total_supply drops by exactly the burned amount.
 		objFees := obj.Fees()
 		if objFees > 0 && hasGasCoin && s.storageRefundBPS > 0 {
 			refund := objFees * s.storageRefundBPS / 10000
 			s.creditGasCoin(gasCoinID, refund)
+
+			burned := objFees - refund
+			s.SubSupply(burned)
 		}
 
 		s.objects.delete(id)

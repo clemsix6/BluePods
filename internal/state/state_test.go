@@ -1169,6 +1169,33 @@ func TestApplyDeletedObjects_RefundCredits(t *testing.T) {
 	}
 }
 
+// TestApplyDeletedObjects_BurnsSupply verifies the 5% deletion burn decrements
+// total_supply: the locked deposit's refunded portion moves back to a coin
+// (supply unchanged for it), while the burned portion leaves supply entirely.
+func TestApplyDeletedObjects_BurnsSupply(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100) // 95% refund, 5% burn
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x75}
+	gasCoinID := Hash{0xEF}
+
+	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// fees 1000, refund = 1000*9500/10000 = 950, burned = 50.
+	if got := s.TotalSupply(); got != 9950 {
+		t.Errorf("total supply after burn: got %d, want 9950", got)
+	}
+}
+
 // --- computeStorageDeposit ---
 
 // TestComputeStorageDeposit verifies storage deposit calculation.
