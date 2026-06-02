@@ -60,4 +60,15 @@ func TestSeedGenesis_SeedsCoinAndValidator(t *testing.T) {
 	if obj.Replication() != 0 {
 		t.Errorf("seeded coin replication: got %d, want 0", obj.Replication())
 	}
+
+	// Total supply is seeded to the initial mint.
+	if got := store.TotalSupply(); got != is.Supply {
+		t.Errorf("seeded total supply: got %d, want %d", got, is.Supply)
+	}
+
+	// At genesis the invariant holds: coin + self-stake + deposits(0) == supply.
+	if balance+is.SelfStake != store.TotalSupply() {
+		t.Errorf("genesis invariant: coin %d + stake %d != supply %d",
+			balance, is.SelfStake, store.TotalSupply())
+	}
 }

@@ -444,6 +444,7 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 // AFTER SetFeeSystem (so coinStore is wired) and before the node produces.
 func (d *DAG) SeedGenesis(is genesis.InitialState) {
 	d.coinStore.SetObject(is.Coin)
+	d.coinStore.SetTotalSupply(is.Supply)
 
 	var bls [48]byte
 	copy(bls[:], is.BLS)

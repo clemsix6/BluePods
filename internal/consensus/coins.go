@@ -9,13 +9,21 @@ import (
 	"BluePods/internal/types"
 )
 
-// CoinStore provides protocol-level access to coin objects.
+// CoinStore provides protocol-level access to coin objects and the supply counter.
 // Used for implicit fee deduction and aggregator credits without going through pod execution.
 type CoinStore interface {
 	// GetObject retrieves a serialized object by ID, or nil if not found.
 	GetObject(id [32]byte) []byte
 	// SetObject stores a serialized object.
 	SetObject(data []byte)
+	// TotalSupply returns the protocol-maintained total token supply.
+	TotalSupply() uint64
+	// SetTotalSupply overwrites the total supply (genesis seeding, snapshot restore).
+	SetTotalSupply(supply uint64)
+	// AddSupply increases the total supply (protocol issuance).
+	AddSupply(amount uint64)
+	// SubSupply decreases the total supply (deletion burn, future slashing).
+	SubSupply(amount uint64)
 }
 
 // readCoinBalance reads the balance from a serialized Coin object.

@@ -13,10 +13,25 @@ import (
 // mockCoinStore is an in-memory CoinStore for tests.
 type mockCoinStore struct {
 	objects map[[32]byte][]byte
+	supply  uint64
 }
 
 func newMockCoinStore() *mockCoinStore {
 	return &mockCoinStore{objects: make(map[[32]byte][]byte)}
+}
+
+func (m *mockCoinStore) TotalSupply() uint64 { return m.supply }
+
+func (m *mockCoinStore) SetTotalSupply(supply uint64) { m.supply = supply }
+
+func (m *mockCoinStore) AddSupply(amount uint64) { m.supply += amount }
+
+func (m *mockCoinStore) SubSupply(amount uint64) {
+	if amount > m.supply {
+		m.supply = 0
+		return
+	}
+	m.supply -= amount
 }
 
 func (m *mockCoinStore) GetObject(id [32]byte) []byte {
