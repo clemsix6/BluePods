@@ -9,10 +9,52 @@ import (
 	"BluePods/internal/types"
 )
 
-// BuildMintTx creates a signed mint transaction wrapped in AttestedTransaction.
-func BuildMintTx(privKey ed25519.PrivateKey, systemPod [32]byte, amount uint64, owner [32]byte) []byte {
-	args := EncodeMintArgs(amount, owner)
-	return BuildAttestedTx(privKey, systemPod, "mint", args, []uint16{0}, 0, 0, nil)
+// faucetSplitMaxGas is the gas budget for a faucet split. It must exceed the
+// fee system's minimum gas; the small surplus covers the compute fee for a
+// single-output split from the reserve coin.
+const faucetSplitMaxGas uint64 = 1000
+
+// BuildSplitTx creates a signed split transaction as an ATX that moves `amount`
+// from the reserve coin to `toOwner`. The reserve coin is referenced both as a
+// mutable ref (at its current version) and as the gas coin, so the faucet pays
+// its own gas from the reserve. The new coin lands at created-object index 0.
+func BuildSplitTx(privKey ed25519.PrivateKey, systemPod [32]byte, reserveCoinID [32]byte, reserveVersion uint64, toOwner [32]byte, amount uint64) []byte {
+	args := EncodeSplitArgs(amount, toOwner)
+	mutableRefs := []ObjectRefData{{ID: reserveCoinID, Version: reserveVersion}}
+
+	pubKey := privKey.Public().(ed25519.PublicKey)
+	unsignedBytes := BuildUnsignedTxBytesWithRefs(
+		pubKey, systemPod, "split", args, []uint16{0}, 0, faucetSplitMaxGas, reserveCoinID[:], mutableRefs, nil,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(privKey, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := BuildTxTableWithRefs(
+		builder, pubKey, systemPod, "split", args, []uint16{0}, 0, faucetSplitMaxGas, reserveCoinID[:], hash, sig, mutableRefs, nil,
+	)
+
+	return finishAttestedTx(builder, txOffset)
+}
+
+// finishAttestedTx wraps a built Transaction table in an AttestedTransaction with
+// empty objects and proofs vectors and returns the finished bytes.
+func finishAttestedTx(builder *flatbuffers.Builder, txOffset flatbuffers.UOffsetT) []byte {
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objectsVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	proofsVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOffset)
+	types.AttestedTransactionAddObjects(builder, objectsVec)
+	types.AttestedTransactionAddProofs(builder, proofsVec)
+	atxOffset := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOffset)
+
+	return builder.FinishedBytes()
 }
 
 // BuildRegisterValidatorTx creates a signed register_validator transaction as ATX.

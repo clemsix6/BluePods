@@ -412,11 +412,18 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		return FeeSplit{}, true
 	}
 
-	// No gas coin: reject. Genesis is seeded state and protocol actions
-	// (issuance, reward crediting, slashing) are not transactions, so every user
-	// transaction must reference a funded gas coin.
+	// No gas coin: reject, unless this is a validator-set-management action.
+	// Genesis is seeded state and protocol actions (issuance, reward crediting,
+	// slashing) are not transactions, so every user transaction must reference a
+	// funded gas coin. Validator (de)registration is a network-formation action,
+	// not a value transaction: a joining validator has no coin yet, and its
+	// authenticity is already enforced at commit, so it is exempt here.
 	gasCoinBytes := tx.GasCoinBytes()
 	if len(gasCoinBytes) != 32 {
+		if d.isRegisterValidatorTx(tx) || d.isDeregisterValidatorTx(tx) {
+			return FeeSplit{}, true
+		}
+
 		return FeeSplit{}, false
 	}
 

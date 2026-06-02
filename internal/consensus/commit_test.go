@@ -1148,6 +1148,33 @@ func TestDeductFees_RejectsMissingGasCoin(t *testing.T) {
 	}
 }
 
+// TestDeductFees_RegisterValidatorExempt verifies that a register_validator
+// transaction without a gas coin is exempt from the gas-coin requirement: it is
+// a network-formation action, and a joining validator has no coin yet.
+func TestDeductFees_RegisterValidatorExempt(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	newVal := newTestValidator()
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", [48]byte{0xAA})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
+
+	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+
+	if !proceed {
+		t.Error("expected proceed=true for register_validator without a gas coin")
+	}
+}
+
 // TestDeductFees_FeesDisabled verifies that executeTx works when fee system is not configured.
 func TestDeductFees_FeesDisabled(t *testing.T) {
 	db := newTestStorage(t)
