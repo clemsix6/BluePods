@@ -61,6 +61,12 @@ const (
 	// misparsed as a vertex and dropped.
 	MsgTagGossipTx = 0x12
 
+	// MsgTagGetTxStatus requests the status of a transaction by hash.
+	MsgTagGetTxStatus = 0x13
+
+	// MsgTagGetTxStatusResp carries a transaction's status.
+	MsgTagGetTxStatusResp = 0x14
+
 	// minClientTag is the lowest tag value reserved for client messages.
 	minClientTag = MsgTagSubmitTx
 )
@@ -98,6 +104,7 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagHealth:        {},
 	MsgTagFaucet:        {},
 	MsgTagDomainResolve: {},
+	MsgTagGetTxStatus:   {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
@@ -590,4 +597,59 @@ func DecodeDomainResolveResp(data []byte) (*DomainResolveResponse, error) {
 	copy(resp.ObjectID[:], data[2:34])
 
 	return resp, nil
+}
+
+// Transaction status states reported by GetTxStatus.
+const (
+	TxStateUnknown   uint8 = 0 // TxStateUnknown means the node has no record of the hash
+	TxStatePending   uint8 = 1 // TxStatePending means the node ingested it but it is not committed
+	TxStateFinalized uint8 = 2 // TxStateFinalized means it committed and applied
+	TxStateFailed    uint8 = 3 // TxStateFailed means it committed but did not apply
+)
+
+// GetTxStatusRequest requests a transaction's status by hash.
+type GetTxStatusRequest struct {
+	Hash [32]byte // Hash is the transaction hash
+}
+
+// EncodeGetTxStatus encodes a tx-status request. Format: [1B tag] [32B hash].
+func EncodeGetTxStatus(req *GetTxStatusRequest) []byte {
+	buf := make([]byte, 33)
+	buf[0] = MsgTagGetTxStatus
+	copy(buf[1:33], req.Hash[:])
+
+	return buf
+}
+
+// DecodeGetTxStatus decodes a tx-status request.
+func DecodeGetTxStatus(data []byte) (*GetTxStatusRequest, error) {
+	if len(data) < 33 || data[0] != MsgTagGetTxStatus {
+		return nil, fmt.Errorf("not a get-tx-status message")
+	}
+
+	req := &GetTxStatusRequest{}
+	copy(req.Hash[:], data[1:33])
+
+	return req, nil
+}
+
+// GetTxStatusResponse carries a transaction's state and, on failure, its reason.
+type GetTxStatusResponse struct {
+	State  uint8 // State is one of the TxState constants
+	Reason uint8 // Reason is the consensus.FailReason code when State is TxStateFailed
+}
+
+// EncodeGetTxStatusResp encodes a tx-status response.
+// Format: [1B tag] [1B state] [1B reason].
+func EncodeGetTxStatusResp(resp *GetTxStatusResponse) []byte {
+	return []byte{MsgTagGetTxStatusResp, resp.State, resp.Reason}
+}
+
+// DecodeGetTxStatusResp decodes a tx-status response.
+func DecodeGetTxStatusResp(data []byte) (*GetTxStatusResponse, error) {
+	if len(data) < 3 || data[0] != MsgTagGetTxStatusResp {
+		return nil, fmt.Errorf("not a get-tx-status response")
+	}
+
+	return &GetTxStatusResponse{State: data[1], Reason: data[2]}, nil
 }

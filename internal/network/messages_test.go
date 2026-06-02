@@ -218,6 +218,21 @@ func TestDomainResolveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGetTxStatusRoundTrip(t *testing.T) {
+	var hash [32]byte
+	hash[0], hash[31] = 0x11, 0x22
+
+	req, err := DecodeGetTxStatus(EncodeGetTxStatus(&GetTxStatusRequest{Hash: hash}))
+	if err != nil || req.Hash != hash {
+		t.Fatalf("request round-trip failed: %v %x", err, req.Hash)
+	}
+
+	resp, err := DecodeGetTxStatusResp(EncodeGetTxStatusResp(&GetTxStatusResponse{State: TxStateFailed, Reason: 1}))
+	if err != nil || resp.State != TxStateFailed || resp.Reason != 1 {
+		t.Fatalf("response round-trip failed: %v %+v", err, resp)
+	}
+}
+
 func TestStatusRespRoundTripWithOperationalFields(t *testing.T) {
 	in := &StatusResponse{
 		Round: 1428, EpochLength: 1000, Epoch: 3, LastCommitted: 1426,
