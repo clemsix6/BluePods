@@ -24,6 +24,11 @@ const (
 	// defaultCommissionBPS is the fixed delegation commission when unset (10%).
 	defaultCommissionBPS = 1000
 
+	// defaultVotingCapMille is the per-validator voting cap when unset, in
+	// per-mille of total stake (100 = 10%). The equal-share floor keeps a small
+	// set's 2/3 quorum reachable even at this cap.
+	defaultVotingCapMille = 100
+
 	// transitionGraceRounds is how many rounds after minValidators is reached
 	// before full quorum is required. During this period, vertices with at least
 	// 1 valid parent are accepted to let the network converge.
@@ -70,14 +75,15 @@ type DAG struct {
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
 
 	// Mode flags
-	listenerMode  bool // listenerMode disables vertex production
-	isBootstrap   bool // isBootstrap allows producing even with few validators
-	minValidators int    // minValidators is the threshold before non-bootstrap nodes produce
-	minStake      uint64 // minStake is the minimum self-stake a bond must leave (0 = no minimum)
-	commissionBPS uint64 // commissionBPS is the fixed, governed delegation commission in basis points (1000 = 10%)
-	gossipFanout  int    // gossipFanout is the number of peers to send each vertex to
-	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
-	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
+	listenerMode   bool   // listenerMode disables vertex production
+	isBootstrap    bool   // isBootstrap allows producing even with few validators
+	minValidators  int    // minValidators is the threshold before non-bootstrap nodes produce
+	minStake       uint64 // minStake is the minimum self-stake a bond must leave (0 = no minimum)
+	commissionBPS  uint64 // commissionBPS is the fixed, governed delegation commission in basis points (1000 = 10%)
+	votingCapMille uint64 // votingCapMille is the per-validator voting cap in per-mille of total stake (100 = 10%)
+	gossipFanout   int    // gossipFanout is the number of peers to send each vertex to
+	graceRounds    int    // graceRounds is the transition grace period (0 = use default 20)
+	bufferRounds   int    // bufferRounds is the transition buffer period (0 = use default 10)
 
 	// Sync mode: after sync, only reference trusted producers (from snapshot) until
 	// we've produced our first vertex. This prevents referencing vertices from other
@@ -192,6 +198,17 @@ func WithCommissionBPS(bps uint64) Option {
 	}
 }
 
+// WithVotingCapMille sets the per-validator voting cap in per-mille of total
+// stake (100 = 10%). Capping voting power keeps the global order decentralized
+// even when delegation concentrates stake; reward weight is uncapped. The cap is
+// loose while the set is small (the equal-share floor keeps a 2/3 quorum
+// reachable) and tightened toward ~10% as the set grows. Default is 100.
+func WithVotingCapMille(capMille uint64) Option {
+	return func(d *DAG) {
+		d.votingCapMille = capMille
+	}
+}
+
 // WithGossipFanout sets the number of peers to send each vertex to.
 // Higher values increase reliability at the cost of more bandwidth.
 // Default is 40 (defaultGossipFanout).
@@ -274,6 +291,7 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		pendingRemovals:     make(map[Hash]bool),
 		epochRoundsProduced: make(map[Hash]uint64),
 		commissionBPS:       defaultCommissionBPS,
+		votingCapMille:      defaultVotingCapMille,
 		stop:                make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition

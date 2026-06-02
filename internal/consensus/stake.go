@@ -19,3 +19,24 @@ func (d *DAG) totalBonded() uint64 {
 
 	return total
 }
+
+// cappedWeight returns a validator's voting weight: effective stake capped at the
+// per-validator ceiling. The ceiling is the larger of the configured fraction of
+// total stake (per-mille) and an equal share, so a small set keeps a reachable
+// 2/3 quorum. Uses safeMul to avoid overflow on total*capMille.
+func cappedWeight(effective, total, capMille uint64, setSize int) uint64 {
+	if setSize <= 0 || total == 0 {
+		return effective
+	}
+
+	ceiling := safeMul(total, capMille) / 1000
+	if equal := total / uint64(setSize); ceiling < equal {
+		ceiling = equal
+	}
+
+	if effective > ceiling {
+		return ceiling
+	}
+
+	return effective
+}
