@@ -524,22 +524,29 @@ func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
 		return fmt.Errorf("gas coin is not a singleton: replication=%d", rep)
 	}
 
-	// Owner must match sender
+	// The gas coin must belong to whoever pays: the fee_payer for a sponsored
+	// transaction, the sender for a self-paid one. The fee_payer is already bound
+	// into the body hash and its signature verified at commit, so this cannot be
+	// pointed at a victim's coin without that victim having signed.
 	owner, err := readCoinOwner(data)
 	if err != nil {
 		return err
 	}
 
-	senderBytes := tx.SenderBytes()
-	if len(senderBytes) != 32 {
-		return fmt.Errorf("invalid sender length: %d", len(senderBytes))
+	payerBytes := tx.SenderBytes()
+	if isSponsored(tx) {
+		payerBytes = tx.FeePayerBytes()
 	}
 
-	var sender [32]byte
-	copy(sender[:], senderBytes)
+	if len(payerBytes) != 32 {
+		return fmt.Errorf("invalid gas payer length: %d", len(payerBytes))
+	}
 
-	if owner != sender {
-		return fmt.Errorf("gas coin owner mismatch: owner=%x sender=%x", owner[:8], sender[:8])
+	var payer [32]byte
+	copy(payer[:], payerBytes)
+
+	if owner != payer {
+		return fmt.Errorf("gas coin owner mismatch: owner=%x payer=%x", owner[:8], payer[:8])
 	}
 
 	return nil

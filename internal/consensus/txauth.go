@@ -11,10 +11,23 @@ import (
 	"BluePods/internal/types"
 )
 
+// isSponsored reports whether a transaction carries a fee-payer binding. It is
+// the single predicate gating every sponsorship-sensitive site (sponsor-signature
+// verification, the gas-coin owner check, and the valid_until check), so a
+// malformed (non-32-byte) fee_payer can never be "present" at one site and
+// "absent" at another. A malformed fee_payer is treated as absent, which makes
+// the sponsor-signature path fail closed (the sender's own signature still gates).
+func isSponsored(tx *types.Transaction) bool {
+	return len(tx.FeePayerBytes()) == ed25519.PublicKeySize
+}
+
 // verifyTxAuthenticity re-derives a transaction's canonical body hash and checks
-// it against the declared hash and the sender's Ed25519 signature. It runs in the
-// commit path on every node so a transaction that reaches commit via a gossiped
-// vertex (bypassing local ingress validation) cannot commit unverified.
+// it against the declared hash and the sender's Ed25519 signature. For a sponsored
+// transaction it additionally verifies the sponsor's signature over the same body
+// hash, gated on the fee_payer. It runs in the commit path on every node so a
+// transaction that reaches commit via a gossiped vertex (bypassing local ingress
+// validation) cannot commit unverified, and so a forged sponsor signature naming
+// any victim as fee_payer cannot drain that victim's coin.
 func verifyTxAuthenticity(tx *types.Transaction) error {
 	body := rebuildUnsignedTxBody(tx)
 	hash := blake3.Sum256(body)
@@ -30,6 +43,12 @@ func verifyTxAuthenticity(tx *types.Transaction) error {
 
 	if !ed25519.Verify(sender, hash[:], tx.SignatureBytes()) {
 		return fmt.Errorf("tx signature does not verify against sender")
+	}
+
+	if isSponsored(tx) {
+		if !ed25519.Verify(tx.FeePayerBytes(), hash[:], tx.SponsorSignatureBytes()) {
+			return fmt.Errorf("sponsor signature does not verify against fee_payer")
+		}
 	}
 
 	return nil
