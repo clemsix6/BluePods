@@ -123,9 +123,11 @@ type DAG struct {
 	verifyATXProofsBatch func(atxs []*types.AttestedTransaction, commitRound uint64) []error
 
 	// verifyTxAuth re-verifies an inner transaction's sender signature and hash in
-	// the commit path, deterministically on every node. It is nil in unit tests
-	// that drive executeTx with deliberately forged transactions; production wires
-	// it to verifyTxAuthenticity so gossiped transactions cannot commit unverified.
+	// the commit path, deterministically on every node. New defaults it to the real
+	// verifyTxAuthenticity, so on a live node it is fail-closed by construction and
+	// can never be nil: a forged transaction reaching commit via gossip cannot
+	// commit unverified. Only unit tests that drive executeTx with deliberately
+	// synthetic (unsigned) transactions override it, to isolate downstream logic.
 	verifyTxAuth func(tx *types.Transaction) error
 
 	// Fee system: protocol-level fee deduction and credits.
@@ -323,6 +325,7 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		epochRoundsProduced: make(map[Hash]uint64),
 		commissionBPS:       defaultCommissionBPS,
 		votingCapMille:      defaultVotingCapMille,
+		verifyTxAuth:        verifyTxAuthenticity,
 		stop:                make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition
@@ -510,14 +513,6 @@ func (d *DAG) SetATXProofVerifier(fn func(atx *types.AttestedTransaction, commit
 // before transactions are committed.
 func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction, commitRound uint64) []error) {
 	d.verifyATXProofsBatch = fn
-}
-
-// SetTxAuthVerifier sets the commit-time transaction-authenticity verifier. It
-// re-checks each committed transaction's sender signature and hash so a forged
-// transaction injected via gossip cannot commit. Production wires it to
-// verifyTxAuthenticity; it must be set after DAG creation, before commits.
-func (d *DAG) SetTxAuthVerifier(fn func(tx *types.Transaction) error) {
-	d.verifyTxAuth = fn
 }
 
 // SetFeeSystem configures protocol-level fee deduction.

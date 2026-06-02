@@ -75,8 +75,9 @@ func TestVerifyTxAuthenticity_TamperedHash(t *testing.T) {
 	}
 }
 
-// TestExecuteTx_RejectsForged confirms executeTx, with the auth verifier wired,
-// rejects a forged tx (success=false, no fees) without poisoning the tracker.
+// TestExecuteTx_RejectsForged confirms executeTx rejects a forged tx
+// (success=false, no fees) without poisoning the tracker. Commit-time
+// authenticity is always on, so no verifier needs to be wired.
 func TestExecuteTx_RejectsForged(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
@@ -84,7 +85,6 @@ func TestExecuteTx_RejectsForged(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
-	dag.SetTxAuthVerifier(verifyTxAuthenticity)
 
 	_, priv, _ := ed25519.GenerateKey(nil)
 	tx := signedTestTx(t, priv)

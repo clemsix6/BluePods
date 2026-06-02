@@ -319,13 +319,13 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// commit-once guard (so a forged tx cannot poison the tracker with a chosen
 	// hash to censor a legitimate one). A gossiped transaction can reach commit
 	// without passing local ingress validation, so authenticity must be enforced
-	// here, where every node agrees.
-	if d.verifyTxAuth != nil {
-		if err := d.verifyTxAuth(tx); err != nil {
-			logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
-			d.emitTransaction(tx, false)
-			return FeeSplit{}
-		}
+	// here, where every node agrees. New always defaults verifyTxAuth to the real
+	// verifyTxAuthenticity, so on a live node this is fail-closed by construction
+	// and cannot be skipped; only unit tests with synthetic txs override it.
+	if err := d.verifyTxAuth(tx); err != nil {
+		logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
+		d.emitTransaction(tx, false)
+		return FeeSplit{}
 	}
 
 	// Sponsored-transaction expiry: a sponsor bounds its exposure to a stale signed

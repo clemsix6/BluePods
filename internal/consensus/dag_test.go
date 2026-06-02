@@ -175,6 +175,17 @@ func (m *mockBroadcaster) Gossip(data []byte, fanout int) error {
 	return nil
 }
 
+// disableTxAuth turns off commit-time authenticity on a DAG for tests that drive
+// executeTx/commitRound with synthetic (unsigned, zero-hash) transactions to
+// isolate downstream logic (version tracking, fees, ownership, validator-set
+// changes). Production always runs the real verifyTxAuthenticity; these fixtures
+// were never signed, so they would be rejected at the commit-time gate before the
+// logic under test runs. Tests that assert authenticity itself (forged-tx
+// rejection) leave it on and must not call this.
+func disableTxAuth(dag *DAG) {
+	dag.verifyTxAuth = func(*types.Transaction) error { return nil }
+}
+
 func TestProduceVertex(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)

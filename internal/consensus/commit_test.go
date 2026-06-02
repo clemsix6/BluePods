@@ -204,6 +204,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	objID := Hash{0x10}
 
@@ -230,6 +231,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	objID := Hash{0x10}
 
@@ -252,6 +254,7 @@ func TestShouldExecuteHolder(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	holderObj := Hash{0x10}
 
@@ -280,6 +283,7 @@ func TestShouldExecuteNotHolder(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	otherObj := Hash{0x20}
 
@@ -307,6 +311,7 @@ func TestShouldExecuteSingleton(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	singletonObj := Hash{0x30}
 
@@ -332,6 +337,7 @@ func TestShouldExecuteNoSharding(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// isHolder not set (nil)
 	objID := Hash{0x10}
@@ -355,6 +361,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Not a holder of anything
 	dag.isHolder = func(objectID [32]byte, replication uint16) bool {
@@ -397,6 +404,7 @@ func TestCommitRoundProcessing(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries the whole capped stake and commits.
@@ -425,6 +433,7 @@ func TestIsRoundCommitted_StakeWeighted(t *testing.T) {
 	// below the 2/3 threshold; this isolates the stake-weighting behavior.
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithVotingCapMille(900))
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
 	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
@@ -509,6 +518,7 @@ func TestCommittedTxOutput(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries full stake quorum and self-commits.
@@ -535,6 +545,7 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Not a holder of anything
 	dag.isHolder = func(objectID [32]byte, replication uint16) bool {
@@ -649,6 +660,7 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Create a new validator to register
 	newVal := newTestValidator()
@@ -687,6 +699,7 @@ func TestHandleRegisterValidator_RewardCoinFromArgs(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	rewardCoin := Hash{0x11, 0x22, 0x33}
@@ -715,6 +728,7 @@ func TestHandleRegisterValidator_NoRewardCoinLeavesZero(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2", [48]byte{0xAA})
@@ -738,6 +752,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
@@ -760,6 +775,7 @@ func TestHandleRegisterValidator_WrongFunction(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 
@@ -782,6 +798,7 @@ func TestHandleRegisterValidator_InvalidSender(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build ATX with short sender (16 bytes instead of 32)
 	atxBytes := buildRegisterATXWithShortSender(t, testSystemPod)
@@ -804,6 +821,7 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xCC}
@@ -834,6 +852,7 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xDD}
@@ -863,6 +882,7 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 		WithMinValidators(3),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Verify transition has not fired yet
 	if dag.transitionRound.Load() >= 0 {
@@ -899,6 +919,7 @@ func TestHandleDeregisterValidator_ViaExecuteTx(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build a deregister_validator ATX from validator[2]
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, testSystemPod)
@@ -931,6 +952,7 @@ func TestHandleDeregisterValidator_WrongPod(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, wrongPod)
@@ -952,6 +974,7 @@ func TestHandleDeregisterValidator_WrongFunction(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build ATX with right pod but wrong function
 	atxBytes := buildSystemPodATX(t, validators[2].pubKey, testSystemPod, "wrong_function")
@@ -975,6 +998,7 @@ func TestDeregisterThenEpoch_FullPath(t *testing.T) {
 		WithEpochLength(10),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Step 1: Submit deregister tx
 	atxBytes := buildDeregisterATX(t, validators[3].pubKey, testSystemPod)
@@ -1026,6 +1050,7 @@ func TestDeductFees_WrongOwner(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Setup fee system
 	coinStore := newMockCoinStore()
@@ -1064,6 +1089,7 @@ func TestDeductFees_NotSingleton(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1093,6 +1119,7 @@ func TestDeductFees_CoinNotFound(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1120,6 +1147,7 @@ func TestDeductFees_MinGasViolation(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1154,6 +1182,7 @@ func TestDeductFees_InsufficientFunds(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1191,6 +1220,7 @@ func TestDeductFees_Success(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1236,6 +1266,7 @@ func TestDeductFees_RejectsMissingGasCoin(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1267,6 +1298,7 @@ func TestDeductFees_RegisterValidatorExempt(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1292,6 +1324,7 @@ func TestDeductFees_FeesDisabled(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 	// Fee system NOT configured (coinStore=nil, feeParams=nil)
 
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
@@ -1316,6 +1349,7 @@ func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1349,6 +1383,7 @@ func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1383,6 +1418,7 @@ func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1415,6 +1451,7 @@ func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1442,6 +1479,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1487,6 +1525,7 @@ func TestDeductFees_MinGasExact(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1520,6 +1559,7 @@ func TestDeductFees_MinGasAbove(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1557,6 +1597,7 @@ func TestExecuteTx_ZeroProofs_SkipsVerifier(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Set verifier that would fatal if called
 	dag.SetATXProofVerifier(func(atx *types.AttestedTransaction, commitRound uint64) error {
@@ -1580,6 +1621,7 @@ func TestExecuteTx_NilVerifier(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 	// verifyATXProofs is nil by default
 
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
