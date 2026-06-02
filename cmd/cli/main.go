@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 
+	"golang.org/x/term"
+
+	"BluePods/cmd/cli/tui"
 	"BluePods/pkg/client"
 )
 
@@ -59,14 +62,33 @@ func run(args []string) error {
 	}
 
 	rest := fs.Args()
+
+	env := &env{nodeAddr: *nodeAddr, keyPath: *keyPath}
+
 	if len(rest) == 0 {
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			return runConsole(env)
+		}
 		usage()
 		return errors.New("no command given")
 	}
 
-	env := &env{nodeAddr: *nodeAddr, keyPath: *keyPath}
-
 	return dispatch(env, rest[0], rest[1:])
+}
+
+// runConsole connects, loads or creates the wallet, and opens the interactive console.
+func runConsole(e *env) error {
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	return tui.RunConsole(cli, w, e.nodeAddr)
 }
 
 // env holds the resolved global flags shared across subcommands.
