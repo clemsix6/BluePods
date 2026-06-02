@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
@@ -21,6 +22,7 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
+	db              *storage.Storage                                                      // db is the underlying storage, retained for protocol-counter persistence
 	objects         *objectStore                                                          // objects is the object storage
 	domains         *domainStore                                                          // domains stores domain name → ObjectID mappings
 	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
@@ -29,18 +31,29 @@ type State struct {
 	signObject      func(id [32]byte, content []byte, version uint64, replication uint16) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
-	storageFee       uint64 // storageFee is the per-object storage fee (0 = disabled)
-	storageRefundBPS uint64 // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
-	totalValidators  int    // totalValidators is the current validator count for fee calculation
+	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
+	storageRefundBPS uint64     // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
+	totalValidators  int        // totalValidators is the fallback validator count when validatorCount is unset
+	validatorCount   func() int // validatorCount returns the live validator count; set to the consensus set so the storage-deposit formula matches consensus
+
+	// Supply accounting.
+	supplyMu    sync.Mutex // supplyMu guards totalSupply and its persistence
+	totalSupply uint64     // totalSupply is the protocol-maintained total token supply
 }
 
 // New creates a new State with the given storage and podvm pool.
+// The total-supply counter is loaded from storage so it survives a reopen.
 func New(db *storage.Storage, pods *podvm.Pool) *State {
-	return &State{
+	s := &State{
+		db:      db,
 		objects: newObjectStore(db),
 		domains: newDomainStore(db),
 		pods:    pods,
 	}
+
+	s.loadSupply()
+
+	return s
 }
 
 // ResolveDomain resolves a domain name to its ObjectID.
