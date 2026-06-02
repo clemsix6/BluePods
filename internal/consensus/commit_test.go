@@ -204,6 +204,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	objID := Hash{0x10}
 
@@ -230,6 +231,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	objID := Hash{0x10}
 
@@ -252,6 +254,7 @@ func TestShouldExecuteHolder(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	holderObj := Hash{0x10}
 
@@ -280,6 +283,7 @@ func TestShouldExecuteNotHolder(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	otherObj := Hash{0x20}
 
@@ -307,6 +311,7 @@ func TestShouldExecuteSingleton(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	singletonObj := Hash{0x30}
 
@@ -332,6 +337,7 @@ func TestShouldExecuteNoSharding(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// isHolder not set (nil)
 	objID := Hash{0x10}
@@ -355,6 +361,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Not a holder of anything
 	dag.isHolder = func(objectID [32]byte, replication uint16) bool {
@@ -395,17 +402,117 @@ func TestCommitRoundProcessing(t *testing.T) {
 
 	atxBytes := buildTestATX(t, "some_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 
-	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
-		WithGenesisTxs([][]byte{atxBytes}))
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
-	// With 1 validator, quorum=1 so our own vertices are enough.
+	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
+	// does so the single validator carries the whole capped stake and commits.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
+	dag.SubmitTx(atxBytes)
+
+	// With 1 staked validator, its vertices carry full stake quorum.
 	// Wait for vertex production and commit.
 	time.Sleep(2 * time.Second)
 
 	if v := dag.tracker.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1 after commit, got %d", v)
 	}
+}
+
+// TestCommitRound_EquivocationCreditedOnce verifies a producer that places two
+// distinct vertices in the same round is credited liveness ONCE. The store dedups
+// only by vertex hash, so two distinct vertices both reach commitRound; without
+// per-round dedup this would double-credit the producer's effective_stake x
+// liveness reward share.
+func TestCommitRound_EquivocationCreditedOnce(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Two distinct vertices from the SAME producer in the SAME round: distinct
+	// parents give them distinct hashes, so the store keeps both.
+	const round = 7
+	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x01}})
+	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x02}})
+
+	if got := len(dag.store.getByRound(round)); got != 2 {
+		t.Fatalf("setup: expected 2 distinct vertices in round, got %d", got)
+	}
+
+	dag.commitRound(round)
+
+	if got := dag.epochRoundsProduced[validators[0].pubKey]; got != 1 {
+		t.Fatalf("equivocating producer credited %d rounds, want 1", got)
+	}
+}
+
+// storeRoundVertexWithParents builds a signed vertex for the validator at the
+// round with the given parents (so the hash varies) and inserts it directly into
+// the DAG store, bypassing parent validation.
+func storeRoundVertexWithParents(t *testing.T, dag *DAG, v testValidator, round uint64, parents []Hash) {
+	t.Helper()
+
+	data := buildTestVertex(t, v, round, parents, 1)
+	vertex := types.GetRootAsVertex(data, 0)
+
+	var hash Hash
+	copy(hash[:], vertex.HashBytes())
+
+	dag.store.add(data, hash, round, v.pubKey)
+}
+
+// TestIsRoundCommitted_StakeWeighted verifies the commit quorum is stake-weighted:
+// a round whose only producer carries a minority of capped stake does NOT commit,
+// while the supermajority-stake producer does. Uses two validators at 90%/10%
+// with a loose voting cap so the 90% producer's weight is not floored away.
+func TestIsRoundCommitted_StakeWeighted(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	// votingCap 90% so the equal-share floor (50%) does not clamp the big stake
+	// below the 2/3 threshold; this isolates the stake-weighting behavior.
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithVotingCapMille(900))
+	defer dag.Close()
+	disableTxAuth(dag)
+
+	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
+	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
+
+	// Case 1: only the SMALL (10%) producer at round+2 → no stake quorum, even
+	// though by COUNT one producer could look like progress. This also fails under
+	// count quorum (QuorumSize=2), so it is the stake-side check below that matters.
+	const r1 = 5
+	storeRoundVertex(t, dag, validators[1], r1+2)
+	if dag.isRoundCommitted(r1) {
+		t.Fatal("round committed on minority-stake producer (10%), expected NOT committed")
+	}
+
+	// Case 2: only the BIG (90%) producer at round+2 → stake quorum reached with a
+	// SINGLE producer. Under the old count rule (QuorumSize=2) one producer would
+	// NOT commit, so this case only passes once the quorum is stake-weighted.
+	const r2 = 8
+	storeRoundVertex(t, dag, validators[0], r2+2)
+	if !dag.isRoundCommitted(r2) {
+		t.Fatal("round NOT committed with single supermajority-stake producer (90%), expected committed")
+	}
+}
+
+// storeRoundVertex builds a signed vertex for the validator at the round and
+// inserts it directly into the DAG store, bypassing parent validation.
+func storeRoundVertex(t *testing.T, dag *DAG, v testValidator, round uint64) {
+	t.Helper()
+
+	data := buildTestVertex(t, v, round, nil, 1)
+	vertex := types.GetRootAsVertex(data, 0)
+
+	var hash Hash
+	copy(hash[:], vertex.HashBytes())
+
+	dag.store.add(data, hash, round, v.pubKey)
 }
 
 // TestBuildReplicationMap tests replication map extraction from ATX objects.
@@ -450,14 +557,20 @@ func TestCommittedTxOutput(t *testing.T) {
 	validators, vs := newTestValidatorSet(1)
 	mock := &mockBroadcaster{}
 
-	// Include tx in genesis so validator[0] produces it in round 0
+	// Submit a tx so validator[0] produces it in an early round.
 	atxBytes := buildTestATX(t, "some_func", nil, nil, 0)
 
-	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
-		WithGenesisTxs([][]byte{atxBytes}))
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
-	// With 1 validator, quorum=1 so the DAG self-commits
+	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
+	// does so the single validator carries full stake quorum and self-commits.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
+	dag.SubmitTx(atxBytes)
+
+	// With 1 staked validator carrying full stake, the DAG self-commits.
 	select {
 	case committed := <-dag.Committed():
 		if committed.Function != "some_func" {
@@ -476,6 +589,7 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Not a holder of anything
 	dag.isHolder = func(objectID [32]byte, replication uint16) bool {
@@ -590,6 +704,7 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Create a new validator to register
 	newVal := newTestValidator()
@@ -620,6 +735,60 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 	}
 }
 
+// TestHandleRegisterValidator_RewardCoinFromArgs checks a register_validator tx
+// that carries an explicit reward-coin arg stores it on the validator.
+func TestHandleRegisterValidator_RewardCoinFromArgs(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+	disableTxAuth(dag)
+
+	newVal := newTestValidator()
+	rewardCoin := Hash{0x11, 0x22, 0x33}
+
+	atxBytes := buildRegisterATXWithReward(t, newVal.pubKey, testSystemPod, "quic://r:1", [48]byte{0xAA}, rewardCoin)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5, Hash{}, nil)
+
+	info := dag.validators.Get(newVal.pubKey)
+	if info == nil {
+		t.Fatal("validator should be registered")
+	}
+	if info.RewardCoin != rewardCoin {
+		t.Fatalf("reward coin = %x, want %x", info.RewardCoin, rewardCoin)
+	}
+}
+
+// TestHandleRegisterValidator_NoRewardCoinLeavesZero checks that registering
+// without a reward-coin arg and without an owned gas coin leaves RewardCoin zero
+// (it is filled later by a gas-paying tx or never, in which case the liquid
+// reward is skipped with a warning rather than failing the epoch).
+func TestHandleRegisterValidator_NoRewardCoinLeavesZero(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+	disableTxAuth(dag)
+
+	newVal := newTestValidator()
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2", [48]byte{0xAA})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5, Hash{}, nil)
+
+	info := dag.validators.Get(newVal.pubKey)
+	if info == nil {
+		t.Fatal("validator should be registered")
+	}
+	if info.RewardCoin != (Hash{}) {
+		t.Fatalf("reward coin should be zero (unset), got %x", info.RewardCoin)
+	}
+}
+
 // TestHandleRegisterValidator_WrongPod tests that register on wrong pod is ignored.
 func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	db := newTestStorage(t)
@@ -627,6 +796,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
@@ -649,6 +819,7 @@ func TestHandleRegisterValidator_WrongFunction(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 
@@ -671,6 +842,7 @@ func TestHandleRegisterValidator_InvalidSender(t *testing.T) {
 
 	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build ATX with short sender (16 bytes instead of 32)
 	atxBytes := buildRegisterATXWithShortSender(t, testSystemPod)
@@ -693,6 +865,7 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xCC}
@@ -723,6 +896,7 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	newVal := newTestValidator()
 	blsKey := [48]byte{0xDD}
@@ -752,6 +926,7 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 		WithMinValidators(3),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Verify transition has not fired yet
 	if dag.transitionRound.Load() >= 0 {
@@ -788,6 +963,7 @@ func TestHandleDeregisterValidator_ViaExecuteTx(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build a deregister_validator ATX from validator[2]
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, testSystemPod)
@@ -820,6 +996,7 @@ func TestHandleDeregisterValidator_WrongPod(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, wrongPod)
@@ -841,6 +1018,7 @@ func TestHandleDeregisterValidator_WrongFunction(t *testing.T) {
 		WithEpochLength(100),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Build ATX with right pod but wrong function
 	atxBytes := buildSystemPodATX(t, validators[2].pubKey, testSystemPod, "wrong_function")
@@ -864,6 +1042,7 @@ func TestDeregisterThenEpoch_FullPath(t *testing.T) {
 		WithEpochLength(10),
 	)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Step 1: Submit deregister tx
 	atxBytes := buildDeregisterATX(t, validators[3].pubKey, testSystemPod)
@@ -915,6 +1094,7 @@ func TestDeductFees_WrongOwner(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Setup fee system
 	coinStore := newMockCoinStore()
@@ -953,6 +1133,7 @@ func TestDeductFees_NotSingleton(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -982,6 +1163,7 @@ func TestDeductFees_CoinNotFound(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1009,6 +1191,7 @@ func TestDeductFees_MinGasViolation(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1043,6 +1226,7 @@ func TestDeductFees_InsufficientFunds(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1080,6 +1264,7 @@ func TestDeductFees_Success(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
@@ -1114,27 +1299,64 @@ func TestDeductFees_Success(t *testing.T) {
 }
 
 // TestDeductFees_NoGasCoin_Proceeds verifies that a tx without gas_coin proceeds.
-func TestDeductFees_NoGasCoin_Proceeds(t *testing.T) {
+// TestDeductFees_RejectsMissingGasCoin verifies that a transaction whose
+// gas_coin is not a 32-byte object reference is rejected (proceed=false).
+// Genesis is seeded state and protocol actions are not transactions, so every
+// user transaction must reference a funded gas coin.
+func TestDeductFees_RejectsMissingGasCoin(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
 	mock := &mockBroadcaster{}
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams()
 	dag.SetFeeSystem(coinStore, &params, nil)
 
-	// ATX without gas_coin (genesis-style)
+	// ATX without gas_coin.
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 
-	// No fees deducted, but tx should proceed (feeSplit.Total == 0 is fine)
+	if proceed {
+		t.Error("expected proceed=false for a tx without a gas coin")
+	}
+
 	if feeSplit.Total != 0 {
-		t.Errorf("expected zero fees for no gas_coin, got %d", feeSplit.Total)
+		t.Errorf("expected empty fee split, got total=%d", feeSplit.Total)
+	}
+}
+
+// TestDeductFees_RegisterValidatorExempt verifies that a register_validator
+// transaction without a gas coin is exempt from the gas-coin requirement: it is
+// a network-formation action, and a joining validator has no coin yet.
+func TestDeductFees_RegisterValidatorExempt(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+	mock := &mockBroadcaster{}
+
+	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+	disableTxAuth(dag)
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	newVal := newTestValidator()
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", [48]byte{0xAA})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
+
+	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+
+	if !proceed {
+		t.Error("expected proceed=true for register_validator without a gas coin")
 	}
 }
 
@@ -1146,6 +1368,7 @@ func TestDeductFees_FeesDisabled(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 	// Fee system NOT configured (coinStore=nil, feeParams=nil)
 
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
@@ -1170,6 +1393,7 @@ func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1203,6 +1427,7 @@ func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1237,6 +1462,7 @@ func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1269,6 +1495,7 @@ func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1296,6 +1523,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	dag.SetFeeSystem(coinStore, nil, nil)
@@ -1341,6 +1569,7 @@ func TestDeductFees_MinGasExact(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1374,6 +1603,7 @@ func TestDeductFees_MinGasAbove(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
 	params := DefaultFeeParams() // MinGas=100
@@ -1411,6 +1641,7 @@ func TestExecuteTx_ZeroProofs_SkipsVerifier(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 
 	// Set verifier that would fatal if called
 	dag.SetATXProofVerifier(func(atx *types.AttestedTransaction, commitRound uint64) error {
@@ -1434,6 +1665,7 @@ func TestExecuteTx_NilVerifier(t *testing.T) {
 
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+	disableTxAuth(dag)
 	// verifyATXProofs is nil by default
 
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
@@ -2018,6 +2250,49 @@ func encodeRegisterValidatorArgsBorsh(quicAddr, blsPubkey []byte) []byte {
 	buf = append(buf, blsPubkey...)
 
 	return buf
+}
+
+// buildRegisterATXWithReward creates a register_validator ATX that also carries
+// an explicit reward-coin arg (a trailing Borsh Vec<u8> after the BLS key).
+func buildRegisterATXWithReward(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey [48]byte, rewardCoin Hash) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey[:])
+	lenBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(rewardCoin)))
+	args = append(args, lenBuf...)
+	args = append(args, rewardCoin[:]...)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString("register_validator")
+	argsVec := builder.CreateByteVector(args)
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	txOff := types.TransactionEnd(builder)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
 }
 
 // buildRegisterATXWithShortSender creates a register_validator ATX with a 16-byte sender.

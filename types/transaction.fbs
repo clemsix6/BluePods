@@ -59,6 +59,20 @@ table Transaction {
 
     // gas_coin is the 32-byte ObjectID of the sender's gas coin singleton.
     gas_coin:[ubyte];
+
+    // fee_payer is the 32-byte Ed25519 public key of the sponsor that pays the
+    // gas for this transaction. Absent (empty) for a self-paid transaction; when
+    // present, the gas coin must be owned by this key, not the sender.
+    fee_payer:[ubyte];
+
+    // sponsor_signature is the 64-byte Ed25519 signature of the sponsor over the
+    // SAME canonical body hash the sender signs. Absent for a self-paid transaction.
+    sponsor_signature:[ubyte];
+
+    // valid_until is the last epoch (inclusive) in which a sponsored transaction
+    // may commit. Bounds a sponsor's exposure to a stale signed artifact. Only
+    // meaningful when fee_payer is present; absent (0) for a self-paid transaction.
+    valid_until:uint64;
 }
 
 root_type Transaction;

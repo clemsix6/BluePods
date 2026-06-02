@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 6
+	snapshotVersion = 10
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -43,7 +43,9 @@ var (
 
 // CreateSnapshot creates a snapshot of the current committed state.
 // It iterates over all objects in storage, excluding consensus data.
-func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry) ([]byte, error) {
+// totalSupply is the protocol supply counter and issuanceRateMicro the
+// thermostat's per-epoch rate; both are persisted and checksum-covered.
+func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64) ([]byte, error) {
 	objects, err := collectObjects(db)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
@@ -54,7 +56,7 @@ func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators [
 		return nil, fmt.Errorf("collect signatures:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures)
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro)
 
 	return data, nil
 }
@@ -154,7 +156,7 @@ func isConsensusKey(key []byte) bool {
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
@@ -165,7 +167,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	sortSignatures(signatures)
 
 	// Compute checksum over canonical data (includes tracker entries and domain entries)
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -280,6 +282,8 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	types.SnapshotAddObjectVersions(builder, versionsVector)
 	types.SnapshotAddDomains(builder, domainsVector)
 	types.SnapshotAddSignatures(builder, signaturesVector)
+	types.SnapshotAddTotalSupply(builder, totalSupply)
+	types.SnapshotAddIssuanceRateMicro(builder, issuanceRateMicro)
 	offset := types.SnapshotEnd(builder)
 	builder.Finish(offset)
 
@@ -293,8 +297,20 @@ func sortValidatorInfos(validators []*consensus.ValidatorInfo) {
 	})
 }
 
-// encodeValidators encodes validators with their QUIC address and BLS pubkey.
-// Format: for each validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte bls_pubkey
+// validatorStakeBytes is the size of the stake suffix appended to each validator
+// record: 8-byte self-stake + 8-byte delegated total + 1-byte jail flag.
+const validatorStakeBytes = 17
+
+// validatorRewardCoinBytes is the size of the reward-coin suffix appended after
+// the stake suffix: a fixed 32-byte coin ID (zero when the validator designates
+// none).
+const validatorRewardCoinBytes = 32
+
+// encodeValidators encodes validators with their QUIC address, BLS pubkey, stake,
+// and reward coin.
+// Format per validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte
+// bls_pubkey + 8-byte self_stake (BE) + 8-byte delegated_total (BE) + 1-byte
+// jailed + 32-byte reward_coin.
 func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 	var buf bytes.Buffer
 
@@ -311,6 +327,18 @@ func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 
 		// BLS pubkey (48 bytes fixed)
 		buf.Write(v.BLSPubkey[:])
+
+		// Stake suffix: self-stake, delegated total (8 BE each), jailed (1 byte)
+		stakeBuf := make([]byte, validatorStakeBytes)
+		binary.BigEndian.PutUint64(stakeBuf[0:8], v.SelfStake)
+		binary.BigEndian.PutUint64(stakeBuf[8:16], v.DelegatedTotal)
+		if v.Jailed {
+			stakeBuf[16] = 1
+		}
+		buf.Write(stakeBuf)
+
+		// Reward coin (32 bytes fixed; zero when unset)
+		buf.Write(v.RewardCoin[:])
 	}
 
 	return buf.Bytes()
@@ -346,6 +374,26 @@ func decodeValidators(data []byte) []*consensus.ValidatorInfo {
 		copy(v.BLSPubkey[:], data[:48])
 		data = data[48:]
 
+		// Stake suffix (17 bytes). Guard before reading so the trailing stake
+		// bytes of the last validator are never misread as the next record's
+		// pubkey, which would yield a phantom validator.
+		if len(data) < validatorStakeBytes {
+			break
+		}
+		v.SelfStake = binary.BigEndian.Uint64(data[0:8])
+		v.DelegatedTotal = binary.BigEndian.Uint64(data[8:16])
+		v.Jailed = data[16] != 0
+		data = data[validatorStakeBytes:]
+
+		// Reward coin (32 bytes). Guard before reading so the trailing reward-coin
+		// bytes of the last validator are never misread as the next record's
+		// pubkey, which would yield a phantom validator.
+		if len(data) < validatorRewardCoinBytes {
+			break
+		}
+		copy(v.RewardCoin[:], data[:validatorRewardCoinBytes])
+		data = data[validatorRewardCoinBytes:]
+
 		validators = append(validators, v)
 	}
 
@@ -360,8 +408,8 @@ func sortObjects(objects []objectEntry) {
 }
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
-// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry) [32]byte {
+// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures + total_supply (8 bytes) + issuance_rate_micro (8 bytes)
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -426,6 +474,14 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(s.sig)
 	}
 
+	// Write total supply
+	binary.BigEndian.PutUint64(buf[:], totalSupply)
+	hasher.Write(buf[:])
+
+	// Write issuance rate (per-epoch, millionths)
+	binary.BigEndian.PutUint64(buf[:], issuanceRateMicro)
+	hasher.Write(buf[:])
+
 	var checksum [32]byte
 	hasher.Sum(checksum[:0])
 
@@ -471,6 +527,13 @@ func DecompressSnapshot(data []byte) ([]byte, error) {
 // ApplySnapshot applies a snapshot to storage, replacing all objects.
 func ApplySnapshot(db *storage.Storage, data []byte) (*types.Snapshot, error) {
 	snapshot := types.GetRootAsSnapshot(data, 0)
+
+	// Reject any version other than the current one: a stale or future snapshot
+	// would otherwise be silently mis-decoded against the current layout, so it
+	// must fail loudly here instead.
+	if v := snapshot.Version(); v != snapshotVersion {
+		return nil, fmt.Errorf("unsupported snapshot version %d, expected %d", v, snapshotVersion)
+	}
 
 	// Verify checksum
 	if err := verifyChecksum(data, snapshot); err != nil {
@@ -609,7 +672,7 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures)
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures, snapshot.TotalSupply(), snapshot.IssuanceRateMicro())
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {

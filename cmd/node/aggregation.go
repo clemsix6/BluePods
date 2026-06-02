@@ -104,6 +104,11 @@ func (n *Node) initFeeSystem(validators *consensus.ValidatorSet) {
 		feeParams.StorageRefundBPS,
 		validators.Len(),
 	)
+
+	// Bind the storage-deposit formula to the SAME live validator set consensus
+	// reads, so the deposit stamped on a created object always equals the storage
+	// fee debited at commit, across both validator-set growth and shrinkage.
+	n.state.SetValidatorCount(validators.Len)
 }
 
 // buildIsHolder creates a closure that checks if this node is a holder for an object.

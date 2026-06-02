@@ -22,7 +22,7 @@ These are the assumptions that drive every design decision in BluePods. Some are
 
 **Protocol-level simplicity, pod-level flexibility.** Core operations like fee deduction, version tracking, and ownership checks are handled at the protocol level, outside the smart contract runtime. Smart contracts (called pods) focus on business logic. This separation keeps the protocol predictable and auditable while allowing arbitrary logic in the execution layer.
 
-**Honest majority per object, not globally.** Security in BluePods is scoped to individual objects. For an object with a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the entire network. In a network with thousands of validators, this distinction matters a lot.
+**Dual security: honest majority per object for attestation, honest two-thirds of stake for ordering.** Security in BluePods is scoped along two axes. Each object's attestation is safe under an honest majority of its holders, counted by head: for a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the network. The global DAG order is secured separately, by stake: it is safe under an honest two-thirds of the total stake, because voting weight in consensus is proportional to a validator's bonded stake (Section 10). The two compose: count-weighting secures per-object attestation, stake-weighting secures ordering. In a network with thousands of validators, scoping attestation to an object's holders matters a lot.
 
 ---
 
@@ -132,13 +132,15 @@ Unlike traditional blockchains where a single leader proposes a block, every val
 
 ### Rounds and Quorum
 
-The DAG progresses through sequential rounds. A vertex at round N must include parent links to vertices from round N-1 produced by at least **(2n/3 + 1)** distinct validators, where n is the total validator count. This BFT quorum requirement on parent links prevents the DAG from fragmenting: a validator cannot advance to the next round without acknowledging a supermajority of the previous round's output.
+The DAG progresses through sequential rounds. A vertex at round N must include parent links to vertices from round N-1, and the round advances only once its producers carry a BFT supermajority. Quorum is stake-weighted, not a head count: the protocol sums the capped effective stake of the round's producers, taken from the epoch holder snapshot, and applies the exact integer test `3 × capped_sum >= 2 × total`. The same stake snapshot is used at both production and commit, so they cannot diverge across an epoch boundary. This requirement prevents the DAG from fragmenting: a validator cannot advance without acknowledging a supermajority-by-stake of the previous round's output. (A receiving node still requires at least one known-validator parent during convergence; the authoritative stake quorum is enforced where every node agrees, at production and commit.)
+
+Voting weight is capped per validator at a fraction of the total stake, with an equal-share floor so a small set keeps a reachable two-thirds quorum; the cap keeps the order decentralized when delegation concentrates stake. Reward weight is uncapped. Stake-weighting is the only Sybil defense (Section 10), replacing the earlier equal-weight model where every validator counted as one.
 
 Each validator produces at most one vertex per round. A liveness timer (500ms) triggers vertex production when the network is idle, ensuring continuous progress even without incoming transactions.
 
 ### Commit Rule and Finality
 
-A vertex V at round N is committed when it is referenced (directly or transitively) by vertices at round N+2 produced by a quorum of validators. This two-round commit rule provides fast finality: once a vertex is committed, all transactions it contains are final and irreversible.
+A vertex V at round N is committed when it is referenced (directly or transitively) by vertices at round N+2 whose producers carry a two-thirds-of-stake quorum. This two-round commit rule provides fast finality: once a vertex is committed, all transactions it contains are final and irreversible.
 
 The commit check runs every 50ms. Rounds are committed sequentially: the protocol stops at the first uncommitted round and does not skip ahead. Skipping would break determinism: every validator must process commits in the same order.
 
@@ -152,10 +154,10 @@ The key insight is that **conflict detection requires no execution**. Every vali
 
 When the network starts or new validators join, a grace period relaxes the quorum requirements:
 
-- **Bootstrap mode**: the first validator produces vertices alone with a quorum of 1.
+- **Bootstrap mode**: the first validator produces vertices alone with a relaxed quorum of one producer. Its self-stake is seeded at genesis, so its weight is non-zero.
 - **Transition grace**: after reaching the minimum validator count, 20 rounds of relaxed quorum allow the network to converge.
 - **Transition buffer**: 10 additional rounds with relaxed quorum provide a safety margin.
-- **Full BFT quorum**: once the first vertex achieves a full 2n/3+1 quorum after the buffer period, the network switches to strict BFT mode permanently.
+- **Full BFT quorum**: once a round achieves a full two-thirds-of-stake quorum after the buffer period, the network switches to strict BFT mode permanently.
 
 ---
 
@@ -181,7 +183,7 @@ Once the quorum is reached (67% of holders signing the same hash), the daemon co
 
 ### Quorum validation and fail-fast
 
-The per-object attestation quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic. (This is distinct from the BFT consensus quorum of 2n/3+1 used to commit vertices.)
+The per-object attestation quorum threshold is **(replication × 67 + 99) / 100**, implementing a 67% requirement with integer arithmetic, counted by head: one holder, one vote. (This is distinct from the consensus quorum used to commit vertices, which is two-thirds of stake, not of head count.)
 
 The daemon implements fail-fast: as soon as enough negative responses accumulate to make the quorum mathematically impossible, it abandons the collection immediately. For example, with 50 holders and a quorum of 34, receiving 17 negatives means only 33 positives are possible, so the collection is abandoned without waiting for the rest.
 
@@ -199,7 +201,7 @@ A complete transaction follows these stages from submission to finality:
 
 A transaction that touches only singletons is submitted raw to any validator over QUIC, which wraps it into a trivial attested transaction with no objects and no proofs. A transaction that touches replicated objects is collected off-chain by the client daemon and submitted as a full attested transaction. The transaction is serialized in FlatBuffers for compact binary encoding with zero-copy field access. Maximum transaction size is 1 MB. Each transaction is uniquely identified by its hash, computed as `BLAKE3` over the canonical unsigned content.
 
-The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature.
+The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, and an Ed25519 signature. A sponsored transaction additionally carries a `fee_payer`, a `sponsor_signature`, and a `valid_until` epoch (see Section 9). These three fields are absent-when-empty: a non-sponsored transaction omits them and serializes byte-identically to one built before sponsorship existed, so its single-sender hash and signature verify unchanged.
 
 ### Object Collection
 
@@ -211,9 +213,11 @@ The receiving validator reverifies the ATX, adds it to its pending set, and forw
 
 ### Consensus and Commit
 
-The vertex enters the DAG. When referenced by vertices two rounds later from a quorum of validators, it is committed. All transactions in the vertex become final.
+The vertex enters the DAG. When referenced by vertices two rounds later by a two-thirds-of-stake quorum, it is committed. All transactions in the vertex become final.
 
-Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate.
+Before a committed transaction takes effect, each node re-verifies its authenticity in the commit path, deterministically and on every node: it recomputes the canonical body hash, checks it against the declared hash, and verifies the sender's Ed25519 signature (and, for a sponsored transaction, the sponsor's signature) against that hash. This matters because a transaction can reach commit through a gossiped vertex without ever passing the local ingress check of the node that commits it. Validating only at ingress would let a relaying node inject a forged transaction inside an otherwise valid (producer-signed) vertex; enforcing authenticity at commit, where every node agrees, closes that gap. The check runs after the attestation-proof verdict is consumed and before the duplicate guard, so it neither desyncs proof verification nor lets a forged hash censor a legitimate transaction.
+
+Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate. Replay of a sponsored transaction is prevented by the same duplicate guard, now keyed on a commit-verified hash, bounded further by `valid_until`.
 
 ### Attestation Epoch Validity
 
@@ -293,18 +297,24 @@ The default gas budget is 10,000,000 units per transaction. If execution exceeds
 
 ### System Pod
 
-The system pod is the foundational smart contract of the network. It exposes eight functions covering basic financial operations and validator management:
+The system pod is the foundational smart contract of the network. It exposes functions covering basic financial operations, object management, staking, and validator management:
 
 | Function | Description |
 |---|---|
-| `mint` | Creates a new Coin with an initial balance |
 | `split` | Divides a Coin into two (original balance reduced, new Coin created) |
 | `merge` | Combines two Coins into one |
 | `transfer` | Changes the owner of a Coin |
 | `create_object` | Creates a replicated, owned object holding arbitrary content |
+| `set_object` | Overwrites the content of an owned object |
 | `transfer_object` | Changes the owner of an object |
 | `register_validator` | Registers a new validator on the network |
 | `deregister_validator` | Schedules a validator for removal |
+| `bond` | Locks a validator's coin as self-stake |
+| `unbond` | Releases self-stake back to a coin |
+| `delegate` | Stakes a delegator's coin behind a validator (creates a stake position) |
+| `undelegate` | Releases a delegation, returning principal plus compounded reward |
+
+There is no `mint`. Creating balance from nothing would be an unbacked supply printer; the only token creation is genesis seeding and protocol issuance (Section 10). The faucet on a test network is a `split` from a genesis-allocated reserve coin, not a mint.
 
 Coins follow a minimal structure: a single `balance` field of type uint64, serialized in Borsh (8 bytes). There is no reason to put complex financial logic in the system pod. That is what application-level pods are for.
 
@@ -354,30 +364,41 @@ These numbers are placeholders. The real values will come from mainnet observati
 
 ### Distribution
 
-Collected fees are split into two components:
+A fee has two parts that are accounted differently. The consumed part (compute, transit, and domain) goes entirely to the epoch reward pool. The storage part is not a fee at all but a refundable deposit: it is locked in the created object's `fees` field and never pooled (see Storage Deposits and Refunds below).
 
-| Destination | Share | Timing |
+| Destination | Share of consumed fee | Timing |
 |---|---|---|
-| Epoch rewards | 70% | Accumulated and distributed at epoch boundary |
-| Burn | 30% | Tokens permanently destroyed |
+| Epoch rewards | 100% | Accumulated and distributed at epoch boundary |
 
-Aggregation moved off-chain to the client, so there is no aggregator role and no aggregator share; the work that used to earn it is no longer done by a validator. The share it would have received now goes to the epoch reward pool, so the operational fees attach to a single incentive, securing the network, distributed to validators by consensus participation. The 30% burn creates deflationary pressure and makes it harder for validators to game fees for profit. Integer rounding remainders go to the epoch pool.
+One hundred percent of consumed fees go to validators. There is no scarcity burn. The native token is utility-first and stability-oriented (Section 10), and a burn creates appreciation pressure that works against that goal; the token is left mildly inflationary instead. The earlier 70/30 split (and the off-chain aggregation design's 70/30) is superseded.
+
+The burn once carried a second, anti-gaming role: making it harder for validators to profit from manufacturing fee traffic. That role is now covered structurally rather than by a burn. Reward weight is `effective_stake x liveness` (Section 10), and neither term scales with manufacturable activity: stake requires bonded capital, and liveness is capped at one vertex per round. Self-dealing fee traffic earns nothing extra, so the burn is no longer needed to deter it.
+
+Aggregation moved off-chain to the client, so there is no aggregator role and no aggregator share; the work that used to earn it is no longer done by a validator. Integer rounding remainders go to the epoch pool.
 
 ### Fee Summary Verification
 
-Each vertex contains a pre-computed `FeeSummary` with fields `total_fees`, `total_burned`, and `total_epoch`. Every receiving validator recalculates this summary from the transaction headers and rejects the vertex if it does not match. This summary serves as a cache for epoch reward distribution: instead of re-scanning all transactions at epoch boundary, validators sum the `total_epoch` fields across committed vertices.
+Each vertex contains a pre-computed `FeeSummary` with fields `total_fees`, `total_burned`, and `total_epoch`. Every receiving validator recalculates this summary from the transaction headers and rejects the vertex if it does not match. The summary is computed over the consumed portion only; the storage deposit is locked in the object, not summarized. This summary serves as a cache for epoch reward distribution: instead of re-scanning all transactions at epoch boundary, validators sum the `total_epoch` fields across committed vertices.
+
+Since the scarcity burn was removed, `total_burned` is always zero. The field is vestigial and soft-deprecated: it is kept in the schema so non-sponsored transactions and existing vertices serialize byte-identically, but it carries no value.
 
 ### Storage Deposits and Refunds
 
-Every created object locks a storage deposit in its `fees` field, computed as `storage_fee × effective_rep(replication) / total_validators`. This deposit is fixed at creation time, independent of future changes to fee constants or validator count.
+Every created object locks a storage deposit in its `fees` field, computed as `storage_fee × effective_rep(replication) / total_validators`. The deposit is debited from the gas coin at creation but is never pooled: it stays locked in the object as a deposit, not a fee. The two formulas that compute it (the debit at creation and the amount stamped on the object) read the same live validator count, so the debited storage equals the stamped deposit and total supply is unchanged at creation.
 
-On deletion, 95% of the deposit is refunded to the owner's gas coin and 5% is burned. The burn prevents spam through rapid creation/deletion cycles.
+On deletion, 95% of the deposit is refunded and 5% is burned. The burn prevents spam through rapid creation/deletion cycles, and the burned remainder leaves total supply (Section 10). The refund follows the gas coin of the delete transaction: a self-paid delete refunds the owner, and a sponsored delete refunds that delete's sponsor. The 5% deletion burn is the only burn in the protocol.
 
 ### Gas Coin Mechanics
 
-The gas coin is a Coin singleton (replication=0) owned by the sender. It is referenced in a dedicated `gas_coin` field in the transaction header, separate from the business-logic inputs. This separation ensures that fee deduction does not interfere with the transaction's object references.
+The gas coin is a Coin singleton (replication=0) owned by whoever pays the fee. It is referenced in a dedicated `gas_coin` field in the transaction header, separate from the business-logic inputs. This separation ensures that fee deduction does not interfere with the transaction's object references. At commit the protocol checks that the gas coin's owner is the sender, or the `fee_payer` for a sponsored transaction.
 
 Gas coin modifications are **implicit protocol operations**: they change the balance but do not increment the version. This is critical: it allows a sender to have multiple transactions in flight simultaneously without version conflicts on their gas coin. Fee deductions are applied sequentially in DAG-committed order.
+
+### Sponsored Transactions
+
+A zero-balance new user cannot make a first transaction, because every value-bearing transaction needs a funded gas coin owned by the payer. The fix is native sponsored transactions, done the protocol-level way (a fee payer baked into the transaction) rather than layered on top in a separate account-abstraction contract.
+
+A sponsored transaction carries a `fee_payer` (the sponsor's public key), a `sponsor_signature`, and a `valid_until` epoch. The sender and the sponsor sign the same canonical body hash, which covers everything except the two signature fields, so neither field can be swapped after the other signs. At commit, the protocol verifies the sponsor signature against `fee_payer` and requires the gas coin to be owned by `fee_payer` instead of the sender. The sponsor's exposure is bounded: it signs only what it agrees to pay, the chain cannot overdraw its coin, and `valid_until` (checked against the commit epoch, denominated in epochs and so clock-free) kills a stale sponsorship. A sponsored transaction must carry a non-zero `valid_until`. The honest caveat is that a sponsored transaction that fails on a version conflict still charges the sponsor's gas, and a holder of the signed artifact can submit it at an inconvenient moment within the window; the sponsor prices this and bounds it with `valid_until`.
 
 ---
 
@@ -387,13 +408,15 @@ Gas coin modifications are **implicit protocol operations**: they change the bal
 
 The network operates in epochs of configurable length (measured in consensus rounds). At each epoch boundary, the active validator set is frozen into a snapshot called `epochHolders`, which determines storage distribution and Rendezvous Hashing for the entire epoch. Changes to the validator set (additions, removals) only take effect at the next epoch boundary.
 
+Genesis is initial state, not transactions. The initial coin allocation, the founding validator set, and the founder's bonded self-stake are the ledger's starting state, seeded directly at chain creation rather than injected as fee-less transactions. The founder's self-stake is locked out of its genesis coin so its bonded weight has real backing, which the stake-weighted quorum needs to reach quorum from the very first round.
+
 The genesis epoch is the exception: it holds no frozen snapshot. Its set is still forming as the founding validators register, so freezing it at process startup would capture a partial, per-node-divergent membership, and attestation verification would then recompute holders against a set the client daemon never collected from. The genesis epoch therefore tracks the live validator set, which converges to the same set the daemon syncs. The first frozen snapshot is taken at the first epoch boundary, where the set is already stable.
 
 ### Epoch Transitions
 
 At each epoch boundary, the protocol executes the following steps in order:
 
-1. **Reward distribution**: accumulated epoch fees (plus future issuance) are distributed to validators proportionally to their stake and participation (rounds produced / total rounds in epoch).
+1. **Issuance and reward distribution**: the thermostat (when enabled) adjusts the per-epoch issuance rate and mints into the reward pool, then the pool (accumulated consumed fees plus issuance) is distributed to validators by `effective_stake x liveness`. Distribution runs before removals so an outgoing validator still receives its share.
 2. **Removal application**: pending validator removals are applied, subject to churn limiting.
 3. **Validator set snapshot**: the current set is frozen as `epochHolders` for the new epoch.
 4. **Counter reset**: epoch fees, round production counters, and pending additions are cleared.
@@ -403,24 +426,75 @@ At each epoch boundary, the protocol executes the following steps in order:
 
 Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, and BLS public key (48 bytes). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
 
+`register_validator` and `deregister_validator` are the one narrow exception to the rule that every value-bearing transaction needs a funded gas coin. They move no value and carry zero quorum weight until the validator bonds, and a node joining at genesis holds no coin yet, so requiring gas would be a chicken-and-egg. They are still authenticated (signed by the sender, verified at commit). The exemption is revisited once bonding lands: a registrant that must bond already needs a funded coin.
+
 Deregistration is a two-phase process: a `deregister_validator` transaction places the validator in a pending removal list, but the validator remains active until the next epoch boundary. This ensures no disruption mid-epoch.
 
 ### Churn Limiting
 
 To maintain network stability, the number of validators added or removed per epoch is capped. When pending removals exceed the limit, they are sorted by public key (for deterministic ordering across all validators) and only the first N are processed. Excess removals are deferred to the following epoch. The same logic applies to additions.
 
+### Staking and Bonding
+
+Stake is the network's only Sybil defense: it gives a validator its voting weight in consensus and its weight in the reward, and (once slashing lands) it is the slashable collateral. Stake is a field on the validator's record, not a flag on coins. Bonding debits a coin the validator owns and credits its self-stake; unbonding reverses it. A validator's `effective_stake` is its self-stake plus the stake delegated to it.
+
+A minimum self-stake is required to register and remain a validator. It is a governed parameter, calibrated against the validator-set size (which in turn sets per-object holder-set sizes), and it serves as both anti-spam and skin in the game. An unbonding period, during which withdrawn stake stays locked, is tied to fraud-detection latency and is finalized together with slashing; for now unbonding returns the stake without delay.
+
+### Delegation
+
+Most of the supply on an adopted cloud is user working capital, not validator stake. Without a way for that broad base to stake idle balances, the staking ratio is structurally capped and the monetary policy below saturates. Delegation lets any holder stake behind a validator they trust.
+
+- **Positions.** Each delegation is a stake-position object owned by the delegator, recording the chosen validator and the amount. A validator maintains a `delegated_total` aggregate (used for `effective_stake`, the voting cap, and `total_bonded`).
+- **Fixed commission.** The validator's cut of delegated rewards is a single governed parameter (10% to start), not a per-validator rate. This avoids commission-change mechanics and the rug-pull risk of a validator raising commission to 100%. Delegators choose validators on reliability. A per-validator commission market is a later refinement.
+- **Epoch-boundary proportional split.** A delegation takes effect at the next epoch boundary, mirroring validator-set churn deferral. At the boundary, where the validator's reward is already computed, the validator keeps its self-stake share plus the fixed commission on the delegated portion, and the rest is split among its delegations pro-rata to their amounts. There is no reward-per-share accumulator; the simple per-epoch iteration suffices at launch scale and the accumulator is deferred until delegator count makes it costly.
+- **Rewards compound into the position.** A delegator's reward is added back into its stake position (and into the validator's `delegated_total`), not credited to a separate liquid coin. It therefore compounds and is returned together with the principal when the delegator undelegates. This is because the protocol tracks a delegator only by its position, not by a payout coin.
+- **Unbonding.** Undelegating destroys the position and returns principal plus accrued reward (subject to the future unbonding delay, as for self-stake).
+- **Jailing.** A jailed validator's effective stake stops counting toward the quorum and its delegators stop accruing reward, without anyone needing to act; delegators can redelegate. The jail mechanism (zeroing weight, stopping accrual) ships now. The automatic fault trigger that decides when to jail (liveness faults, equivocation) is part of the dispute and fault-proof system that is deferred together with slashing, so at launch the live weight-removal path is deregistration. Jailing is not presented as an active automatic defense yet.
+
 ### Reward Distribution
 
-At each epoch boundary, the accumulated epoch fees are distributed to validators based on a weighted formula:
+At each epoch boundary, the reward pool (accumulated consumed fees plus any issuance) is distributed to validators by a weighted formula:
 
 ```
-weight_i = stake_i × (rounds_produced_i / total_rounds_in_epoch)
-share_i  = (weight_i / Σ weights) × reward_total
+weight_i = effective_stake_i × liveness_i
+share_i  = (weight_i / Σ weights) × pool
 ```
 
-A validator that produces nothing during an epoch gets nothing. This acts as a soft penalty for inactivity without needing explicit slashing, which is convenient because slashing is hard to get right and not implemented yet.
+Liveness is the validator's rounds produced this epoch (`rounds_produced_i / total_rounds_in_epoch`; the common denominator cancels in the share). Neither term is a farmable multiplier: stake requires bonded capital, and liveness is capped at one vertex per round (a second is equivocation, not extra liveness). Reward is deliberately not proportional to attestation count, which would be farmable by self-dealing against one's own held objects. A validator that produces nothing during an epoch earns nothing, a soft inactivity penalty that needs no explicit slashing.
 
-For now, stake is equal across all validators (1 per validator). Proper stake-weighted participation comes with the staking system.
+The whole pool is distributed: each validator's share is split with its delegators as described above, the validator's liquid portion is credited to a reward coin it designated at registration, a configured fraction is auto-restaked into self-stake by default, and the integer-division remainder is credited to the highest-weight validator (ties broken by public key) so nothing is left undistributed.
+
+**Serving and storage enforcement is deferred, honestly.** Reward is `effective_stake x liveness` and nothing more. An earlier design gated reward on a holder appearing in committed attestation bitmaps, but that signal is unsound: the bitmap is assembled by the submitting daemon, which can omit an honest holder or include a relay that stores nothing. A sound serving check needs a protocol-issued, relay-resistant storage challenge, which is the deferred enforcement branch (Section 14). So at launch the network does not economically reward serving or punish under-serving. What protects the sharded layer in the interim is the attestation quorum tolerating a minority of non-serving holders, replication so one holder dropping does not lose an object, and bonded capital at stake once slashing lands. A cold object's holder earns the same as a hot object's holder at equal stake and uptime, so cold objects are not under-rewarded; their durability rests on replication alone until storage challenges exist.
+
+### Stake-weighted consensus
+
+Voting weight in the DAG is proportional to a validator's effective stake, replacing the earlier equal-weight (one-vote-per-validator) model. This is the Sybil defense: splitting stake across many keys yields the same total weight. The commit and production quorums both sum capped effective stake over the round's producers, read from the epoch holder snapshot selected by the deterministic commit epoch, and apply the exact integer test `3 × capped_sum >= 2 × total` (never floating point). The founding validator's self-stake is seeded at genesis so the very first quorum is reachable.
+
+Voting power (not reward) is capped per validator at a fraction of the total, so the global order stays decentralized even when delegation concentrates stake on the most reliable validators. The cap is calibrated to set size: loose while the set is small (with an equal-share floor so a small set keeps a reachable two-thirds quorum) and tightened toward ~10% as the set grows. Reward weight is uncapped: bigger stake earns proportionally more, as in standard proof of stake. The cap bounds a single advertised identity; a determined entity can split across keys to reconstitute weight, at the cost of running that many independent nodes.
+
+Per-object attestation stays equal-weight: one holder, one vote, with holders assigned by Rendezvous Hashing (Section 6). This deliberately insulates the storage layer from stake concentration. The two combine into a dual security model: the global order is safe under a two-thirds-of-stake honest majority, and each object's attestation is safe under a two-thirds-of-its-holders (by count) honest majority. Stake-weighting secures ordering; count-weighting secures per-object attestation.
+
+Stake-weighting is kept even though slashing is deferred, because equal weight is Sybil-able and strictly worse. An attacker buying two-thirds of the stake pays an enormous capital cost and destroys its own holdings by attacking; the cap bounds concentration; reward-withholding and removal handle misbehavior. This is the same posture as Sui, Aptos, and Solana. Economic punishment (slashing) is added later (Section 14).
+
+### Monetary Policy: Adaptive Issuance
+
+Issuance is governed by an adaptive control loop, a thermostat, evaluated at each epoch boundary and denominated in epoch events rather than time, so it depends on no clock. Money never reads a clock: tying issuance to wall-clock time would invite a collective bias to over-state elapsed time that a median of timestamps cannot stop from a majority.
+
+The thermostat targets a band around the staking ratio (`total_bonded / total_supply`), roughly 25% to 35% of total supply, with a dead-band inside which the rate holds so it does not oscillate. The band errs low on purpose: targeting too low merely rests at low inflation and is easily raised, while targeting too high saturates at the ceiling and dilutes forever. Each epoch the loop reads the ratio on pre-mint supply (so issuance cannot lower its own denominator), steps the per-epoch rate toward the band bounded by a floor and ceiling and a per-epoch step cap, and mints `rate × supply` into the reward pool. A configured fraction of each reward is auto-restaked by default to relieve the treadmill where spent rewards lower the ratio. The starting parameters approximate a ~1% floor, ~20% ceiling, and ~8% to 10% genesis rate annually against an assumed epoch pace; all are governed and recalibrated once a data oracle supplies true time.
+
+The thermostat is the implemented mechanism but it is opt-in: a node leaves it off unless it is enabled by configuration, so issuance is not active by default. It is meant to be turned on together with reward crediting, so that every minted token is always backed by a credit and the supply invariant holds. Issuance is the bootstrap incentive that pays and attracts validators from genesis, which is why the mechanism ships now while the congestion-sensitive dynamic fee, which only matters under traffic a pre-launch network cannot exhibit, does not.
+
+### Supply Accounting
+
+`total_supply` is a maintained protocol counter, not a derived sum. It is set at genesis, increased only by protocol issuance, and decreased only by the 5% deletion burn (and future slashing). There is no user-callable mint; the only ways tokens come into existence are genesis seeding and issuance. The counter is maintained in the commit path, persisted, and carried in state snapshots under the snapshot checksum. It feeds the thermostat's denominator.
+
+The supply invariant the protocol holds is:
+
+```
+sum(coin balances) + total_bonded + sum(locked storage deposits) + fees_in_flight == total_supply
+```
+
+`total_bonded` is the sum of effective stake over the active set. Locked storage deposits are the `fees` fields of live objects. `fees_in_flight` is the epoch's accumulated consumed fees not yet credited to validators; it is zero immediately after an epoch boundary, so the invariant is asserted as exact equality at the boundary. Because the storage component of a fee is locked in the object rather than pooled, it stays accounted as a deposit until 95% is refunded and 5% is burned on deletion, and the counter only ever moves by issuance (up) and the deletion burn (down).
 
 ---
 
@@ -487,6 +561,10 @@ Double-spending is prevented by version tracking. If a user submits two transact
 The client daemon that collects attestations has no trust requirements at all: the validator reverifies every attested transaction on receipt and trusts nothing the daemon sends. The daemon cannot forge holder signatures (it lacks their private keys), cannot exclude valid attestations (any validator recomputes the quorum independently), and cannot alter transaction content (the user's Ed25519 signature covers the transaction hash). Because the attestation binds only the object hash, a daemon could in principle staple valid attestations to a different transaction touching the same objects at the same versions; the lifecycle layer (the owner and version checks) is what rejects that, which is why it runs in full on every attested transaction and is not optional.
 
 A misbehaving daemon can only cause a liveness failure for its own submission, which the client resolves by recollecting and resubmitting. The system remains safe regardless of what the daemon does.
+
+### Transaction Authenticity at Commit
+
+A transaction's authenticity, its sender signature, its sponsor signature when sponsored, and its hash, is verified in the commit path on every node, not only at the ingress of the node that first received it. A transaction can reach commit inside a gossiped, producer-signed vertex without ever passing the local ingress check of the node that commits it. If authenticity were checked only at ingress, a relaying node could embed a forged transaction in an otherwise valid vertex and have it commit. The commit-path check recomputes the canonical body hash from the same shared primitive the builder and ingress use (so the three sites cannot drift), checks it against the declared hash, and verifies the sender's signature; for a sponsored transaction it also verifies the sponsor's signature against `fee_payer`. Because the sponsor signs the same body hash, a forged sponsor signature naming a victim as fee payer cannot drain that victim's coin, and neither signature can be swapped after the other is made.
 
 ### Ownership Enforcement
 

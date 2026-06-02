@@ -22,17 +22,18 @@ func TestSimObjects(t *testing.T) {
 
 	w := client.NewWallet()
 
+	// Coin (singleton, replicated to all nodes). Fauceted first so it can pay gas
+	// for every object creation below (mandatory gas-coin model).
+	coinID := FaucetAndWait(t, cli, w, 1_000_000, 60*time.Second)
+
 	// Object with replication=5 (sharded across 5 of 12 nodes)
-	objectID, err := w.CreateObject(cli, 5, []byte("sharding-test"))
+	objectID, err := w.CreateObject(cli, 5, []byte("sharding-test"), coinID)
 	if err != nil {
 		t.Fatalf("create sharded object: %v", err)
 	}
 
-	// Coin (singleton, replicated to all nodes)
-	coinID := FaucetAndWait(t, cli, w, 1_000_000, 60*time.Second)
-
 	// Object with replication=100 (should use all validators)
-	highRepObjectID, err := w.CreateObject(cli, 100, []byte("high-rep"))
+	highRepObjectID, err := w.CreateObject(cli, 100, []byte("high-rep"), coinID)
 	if err != nil {
 		t.Fatalf("create high-rep object: %v", err)
 	}
@@ -40,7 +41,7 @@ func TestSimObjects(t *testing.T) {
 	// 5 objects for diversity test
 	var diversityIDs [5][32]byte
 	for i := 0; i < 5; i++ {
-		id, err := w.CreateObject(cli, 5, []byte("div-"+string(rune('0'+i))))
+		id, err := w.CreateObject(cli, 5, []byte("div-"+string(rune('0'+i))), coinID)
 		if err != nil {
 			t.Fatalf("create diversity object %d: %v", i, err)
 		}
@@ -158,8 +159,9 @@ func TestSimObjects(t *testing.T) {
 		// collection: a quorum of the 5 holders signs and the attested
 		// transaction commits, moving the object to a new owner.
 		w := client.NewWallet()
+		gasCoin := FundGasCoin(t, cli, w)
 
-		transferObjectID, err := w.CreateObject(cli, 5, []byte("transfer-object"))
+		transferObjectID, err := w.CreateObject(cli, 5, []byte("transfer-object"), gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -168,7 +170,7 @@ func TestSimObjects(t *testing.T) {
 		WaitForHolders(t, cluster.Nodes(), transferObjectID, 3, 30*time.Second)
 
 		recipient := client.NewWallet()
-		if err := w.TransferObject(cli, transferObjectID, recipient.Pubkey()); err != nil {
+		if err := w.TransferObject(cli, transferObjectID, recipient.Pubkey(), gasCoin); err != nil {
 			t.Fatalf("transfer object: %v", err)
 		}
 

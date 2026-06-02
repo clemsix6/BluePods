@@ -171,11 +171,11 @@ func TestValidateFeeSummary_Correct(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoin, maxGas, []uint16{0})
 
 	// Calculate the expected fee/split
-	fee := dag.calculateTxFee(
+	consumed, _ := dag.calculateTxFeeSplit(
 		types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil),
 		types.GetRootAsAttestedTransaction(atxBytes, 0),
 	)
-	split := SplitFee(fee, params)
+	split := SplitFee(consumed, params)
 
 	// Build vertex with correct fee summary
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
@@ -205,11 +205,11 @@ func TestValidateFeeSummary_WrongTotalFees(t *testing.T) {
 	gasCoin := Hash{0xCC}
 	atxBytes := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
 
-	fee := dag.calculateTxFee(
+	consumed, _ := dag.calculateTxFeeSplit(
 		types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil),
 		types.GetRootAsAttestedTransaction(atxBytes, 0),
 	)
-	split := SplitFee(fee, params)
+	split := SplitFee(consumed, params)
 
 	// total_fees off by 1
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
@@ -243,11 +243,11 @@ func TestValidateFeeSummary_WrongBurned(t *testing.T) {
 	gasCoin := Hash{0xCC}
 	atxBytes := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
 
-	fee := dag.calculateTxFee(
+	consumed, _ := dag.calculateTxFeeSplit(
 		types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil),
 		types.GetRootAsAttestedTransaction(atxBytes, 0),
 	)
-	split := SplitFee(fee, params)
+	split := SplitFee(consumed, params)
 
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
 		&feeSummaryValues{split.Total, split.Burned + 1, split.Epoch},
@@ -280,11 +280,11 @@ func TestValidateFeeSummary_WrongEpoch(t *testing.T) {
 	gasCoin := Hash{0xCC}
 	atxBytes := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
 
-	fee := dag.calculateTxFee(
+	consumed, _ := dag.calculateTxFeeSplit(
 		types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil),
 		types.GetRootAsAttestedTransaction(atxBytes, 0),
 	)
-	split := SplitFee(fee, params)
+	split := SplitFee(consumed, params)
 
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
 		&feeSummaryValues{split.Total, split.Burned, split.Epoch + 1},
@@ -387,12 +387,12 @@ func TestValidateFeeSummary_TxWithoutGasCoinSkipped(t *testing.T) {
 	atxWithGas := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
 	atxWithoutGas := buildTestATX(t, "no_gas_func", nil, nil, 0)
 
-	// Calculate fee only for the ATX with gas_coin
-	fee := dag.calculateTxFee(
+	// Calculate the consumed-only fee for the ATX with gas_coin
+	consumed, _ := dag.calculateTxFeeSplit(
 		types.GetRootAsAttestedTransaction(atxWithGas, 0).Transaction(nil),
 		types.GetRootAsAttestedTransaction(atxWithGas, 0),
 	)
-	split := SplitFee(fee, params)
+	split := SplitFee(consumed, params)
 
 	// Build vertex with correct summary (only counting ATX with gas_coin)
 	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,

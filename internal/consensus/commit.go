@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -63,43 +64,68 @@ func (d *DAG) checkCommits() {
 }
 
 // isRoundCommitted checks if a round has reached commit (referenced by N+2 quorum).
-// Only vertices from known validators are counted toward quorum.
-// When a round commits with full BFT quorum (not relaxed), marks fullQuorumAchieved.
+// The authoritative quorum is stake-weighted: the round+2 producers must carry a
+// 2/3 majority of capped effective stake in the holder snapshot for this round's
+// commit epoch (HoldersForEpoch(commitEpochForRound), the SAME snapshot production
+// reads, so they never weigh against different stake sets across a boundary).
+// During bootstrap and the transition/convergence window the check is relaxed to a
+// single producer (genesis seeds stake, but early convergence still needs a single
+// producer to make progress). Marks fullQuorumAchieved when a round commits with
+// strict stake quorum after the relaxed window.
 func (d *DAG) isRoundCommitted(round uint64) bool {
 	round2Hashes := d.store.getByRound(round + 2)
 
-	// Determine required quorum for commit
-	fullQuorum := d.validators.QuorumSize()
-	requiredQuorum := fullQuorum
-
-	// During init (before minValidators), use quorum=1 to observe bootstrap's chain.
-	// This allows all nodes to see registrations and reach minValidators together.
-	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
-		requiredQuorum = 1
-	}
-
-	// During transition + convergence, use quorum=1 for commit.
-	// Matches the isRoundInTransitionOrBuffer logic.
-	relaxed := d.isRoundInTransitionOrBuffer(round + 2)
-	if relaxed {
-		requiredQuorum = 1
-	}
-
-	if len(round2Hashes) < requiredQuorum {
+	producers := d.knownProducersAt(round2Hashes)
+	if len(producers) == 0 {
 		return false
 	}
 
-	// Count unique producers that are valid validators
+	// Relaxed bootstrap/transition: a single known producer commits the round so
+	// the network can converge before stake weighting becomes authoritative.
+	if d.isCommitQuorumRelaxed(round) {
+		return true
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
+	if !ok {
+		set = d.validators
+	}
+
+	cappedSum, total := d.cappedStakeOf(set, producers)
+	committed := quorumReached(cappedSum, total)
+
+	// Commit-side signal that the network has truly converged on strict quorum.
+	if committed {
+		d.markFullQuorumAchieved()
+	}
+
+	return committed
+}
+
+// isCommitQuorumRelaxed reports whether the commit quorum for a round should be
+// relaxed to a single producer: during init (before minValidators) so all nodes
+// observe the bootstrap chain, and during the transition/convergence window so
+// late-propagating vertices do not stall progress.
+func (d *DAG) isCommitQuorumRelaxed(round uint64) bool {
+	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
+		return true
+	}
+
+	return d.isRoundInTransitionOrBuffer(round + 2)
+}
+
+// knownProducersAt returns the set of distinct known-validator producers among the
+// given vertex hashes. Vertices from unknown producers are ignored (security).
+func (d *DAG) knownProducersAt(hashes []Hash) map[Hash]bool {
 	producers := make(map[Hash]bool)
-	for _, h := range round2Hashes {
+
+	for _, h := range hashes {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
 		producer := extractProducer(v)
-
-		// Security: only count vertices from known validators
 		if !d.validators.Contains(producer) {
 			continue
 		}
@@ -107,15 +133,7 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 		producers[producer] = true
 	}
 
-	committed := len(producers) >= requiredQuorum
-
-	// Mark full quorum achieved when a round commits with strict BFT quorum.
-	// This is the commit-side signal that the network has truly converged.
-	if committed && !relaxed && len(producers) >= fullQuorum {
-		d.markFullQuorumAchieved()
-	}
-
-	return committed
+	return producers
 }
 
 // commitRound processes all transactions from a committed round.
@@ -133,15 +151,24 @@ func (d *DAG) commitRound(round uint64) {
 
 	verdicts := d.verifyRoundProofs(round, hashes)
 
+	// Track which producers were already credited liveness for THIS round so an
+	// equivocating producer (two distinct vertices in the same round) is credited
+	// once. Liveness is per distinct round, not per vertex; double-credit would
+	// inflate that producer's effective_stake x liveness reward share.
+	creditedThisRound := make(map[Hash]bool)
+
 	for _, h := range hashes {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
-		// Track round production per validator
+		// Credit round production per validator at most once per round.
 		producer := extractProducer(v)
-		d.epochRoundsProduced[producer]++
+		if !creditedThisRound[producer] {
+			creditedThisRound[producer] = true
+			d.epochRoundsProduced[producer]++
+		}
 
 		fees := d.processTransactions(v, round, verdicts)
 
@@ -295,6 +322,31 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return FeeSplit{}
 	}
 
+	// Commit-time authenticity: re-verify the inner transaction's sender signature
+	// and hash. This runs deterministically on every node, after the proof verdict
+	// is consumed (so the batch-proof cursor stays aligned) and before the
+	// commit-once guard (so a forged tx cannot poison the tracker with a chosen
+	// hash to censor a legitimate one). A gossiped transaction can reach commit
+	// without passing local ingress validation, so authenticity must be enforced
+	// here, where every node agrees. New always defaults verifyTxAuth to the real
+	// verifyTxAuthenticity, so on a live node this is fail-closed by construction
+	// and cannot be skipped; only unit tests with synthetic txs override it.
+	if err := d.verifyTxAuth(tx); err != nil {
+		logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
+		d.emitTransaction(tx, false)
+		return FeeSplit{}
+	}
+
+	// Sponsored-transaction expiry: a sponsor bounds its exposure to a stale signed
+	// artifact with valid_until (in epochs). This runs before fee deduction so an
+	// expired sponsorship never charges the sponsor's coin. A non-sponsored tx is
+	// not subject to it (its absent valid_until defaults to 0).
+	if !d.sponsoredTxStillValid(tx, commitRound) {
+		logger.Warn("sponsored tx expired or unbounded", "func", funcName)
+		d.emitTransaction(tx, false)
+		return FeeSplit{}
+	}
+
 	// Commit-once guard: a transaction can reach the commit path more than once
 	// when several producers include the same gossiped transaction in their
 	// vertices. The first occurrence proceeds; later occurrences are skipped so
@@ -337,6 +389,10 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
 	d.handleDeregisterValidator(tx, commitRound)
+	d.handleBond(tx)
+	d.handleUnbond(tx)
+	d.handleDelegate(tx)
+	d.handleUndelegate(tx)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
@@ -389,17 +445,27 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 
 // deductFees performs protocol-level fee deduction from gas_coin.
 // Returns the fee split and whether the tx should proceed.
-// proceed=true means fees were successfully handled (or fees disabled/no gas_coin).
-// proceed=false means tx must be rejected (invalid gas_coin, min_gas, insufficient funds).
+// proceed=true means fees were successfully handled (or fees are disabled).
+// proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
+// insufficient funds).
 func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, bool) {
 	if d.feeParams == nil || d.coinStore == nil {
 		return FeeSplit{}, true
 	}
 
-	// No gas_coin → genesis/bootstrap tx, skip fees
+	// No gas coin: reject, unless this is a validator-set-management action.
+	// Genesis is seeded state and protocol actions (issuance, reward crediting,
+	// slashing) are not transactions, so every user transaction must reference a
+	// funded gas coin. Validator (de)registration is a network-formation action,
+	// not a value transaction: a joining validator has no coin yet, and its
+	// authenticity is already enforced at commit, so it is exempt here.
 	gasCoinBytes := tx.GasCoinBytes()
 	if len(gasCoinBytes) != 32 {
-		return FeeSplit{}, true
+		if d.isRegisterValidatorTx(tx) || d.isDeregisterValidatorTx(tx) {
+			return FeeSplit{}, true
+		}
+
+		return FeeSplit{}, false
 	}
 
 	var gasCoinID [32]byte
@@ -417,29 +483,72 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		return FeeSplit{}, false
 	}
 
-	// Calculate fee from tx header
-	fee := d.calculateTxFee(tx, atx)
+	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
+	// the object's locked deposit, debited from the coin but never pooled.
+	consumed, storage := d.calculateTxFeeSplit(tx, atx)
+	fee := consumed + storage
 	if fee == 0 {
 		return FeeSplit{}, true
 	}
 
-	// Deduct fee from gas_coin
-	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
+	// Deduct consumed+storage from gas_coin in one debit.
+	_, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
 	if err != nil {
 		logger.Warn("fee deduction failed", "error", err)
 		return FeeSplit{}, false
 	}
 
-	// Split the actually deducted amount
-	split := SplitFee(deducted, *d.feeParams)
-
-	// If insufficient funds: fees partially deducted, tx rejected
+	// If insufficient funds: fees partially deducted, tx rejected.
 	if !fullyCovered {
-		split.Total = fee
-		return split, false
+		return FeeSplit{Total: fee}, false
 	}
 
-	return split, true
+	// Pool only the consumed portion; the storage deposit stays locked in the object.
+	return SplitFee(consumed, *d.feeParams), true
+}
+
+// calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
+// to the epoch reward pool) and the storage portion (locked in the created
+// objects as a refundable deposit, never pooled). The storage term sums
+// StorageDeposit over the created objects using the SAME live validator count
+// state.computeStorageDeposit reads, so the debited storage equals the stamped
+// deposit and total_supply is unchanged at create time.
+func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTransaction) (consumed, storage uint64) {
+	if d.feeParams == nil {
+		return 0, 0
+	}
+
+	totalValidators := d.validators.Len()
+	for _, rep := range extractCreatedObjectsReplication(tx) {
+		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee))
+	}
+
+	full := d.calculateTxFee(tx, atx)
+	if full < storage {
+		return 0, full // defensive: never let storage exceed the full fee
+	}
+
+	return full - storage, storage
+}
+
+// sponsoredTxStillValid reports whether a sponsored transaction may commit at the
+// given round, enforcing its valid_until bound. A sponsored tx (fee_payer present)
+// MUST carry a nonzero valid_until and may commit only while valid_until is at
+// least the round's commit epoch. The boundary round k*epochLength is committed
+// before transitionEpoch increments currentEpoch, so commitEpochForRound maps it
+// to epoch k-1 (handled there), keeping this check exact across all validators. A
+// non-sponsored transaction never reads valid_until and is always valid here.
+func (d *DAG) sponsoredTxStillValid(tx *types.Transaction, commitRound uint64) bool {
+	if !isSponsored(tx) {
+		return true
+	}
+
+	validUntil := tx.ValidUntil()
+	if validUntil == 0 {
+		return false
+	}
+
+	return validUntil >= d.commitEpochForRound(commitRound)
 }
 
 // validateGasCoin checks that the gas_coin exists, is a singleton, and belongs to sender.
@@ -454,22 +563,29 @@ func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
 		return fmt.Errorf("gas coin is not a singleton: replication=%d", rep)
 	}
 
-	// Owner must match sender
+	// The gas coin must belong to whoever pays: the fee_payer for a sponsored
+	// transaction, the sender for a self-paid one. The fee_payer is already bound
+	// into the body hash and its signature verified at commit, so this cannot be
+	// pointed at a victim's coin without that victim having signed.
 	owner, err := readCoinOwner(data)
 	if err != nil {
 		return err
 	}
 
-	senderBytes := tx.SenderBytes()
-	if len(senderBytes) != 32 {
-		return fmt.Errorf("invalid sender length: %d", len(senderBytes))
+	payerBytes := tx.SenderBytes()
+	if isSponsored(tx) {
+		payerBytes = tx.FeePayerBytes()
 	}
 
-	var sender [32]byte
-	copy(sender[:], senderBytes)
+	if len(payerBytes) != 32 {
+		return fmt.Errorf("invalid gas payer length: %d", len(payerBytes))
+	}
 
-	if owner != sender {
-		return fmt.Errorf("gas coin owner mismatch: owner=%x sender=%x", owner[:8], sender[:8])
+	var payer [32]byte
+	copy(payer[:], payerBytes)
+
+	if owner != payer {
+		return fmt.Errorf("gas coin owner mismatch: owner=%x payer=%x", owner[:8], payer[:8])
 	}
 
 	return nil
@@ -743,6 +859,8 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
 
+	d.setRewardCoinFromArgs(tx, pubkey)
+
 	// Track mid-epoch additions for churn limiting
 	if isNew && d.epochLength > 0 {
 		d.epochAdditions = append(d.epochAdditions, pubkey)
@@ -760,6 +878,47 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
 		d.enterTransition(commitRound)
 	}
+}
+
+// setRewardCoinFromArgs designates the validator's reward coin: an explicit
+// reward-coin arg takes priority, else the transaction's gas coin when the
+// validator owns it. If neither is determinable the reward coin is left zero, and
+// the epoch reward split skips that validator's liquid portion with a warning
+// rather than failing the epoch (per spec §6).
+func (d *DAG) setRewardCoinFromArgs(tx *types.Transaction, pubkey Hash) {
+	if coin, ok := genesis.DecodeRegisterValidatorRewardCoin(tx.ArgsBytes()); ok {
+		d.validators.SetRewardCoin(pubkey, coin)
+		return
+	}
+
+	if coin, ok := d.ownedGasCoin(tx, pubkey); ok {
+		d.validators.SetRewardCoin(pubkey, coin)
+	}
+}
+
+// ownedGasCoin returns the transaction's gas coin when it is a 32-byte ID owned
+// by owner. It returns ok=false when there is no gas coin, the coin store is
+// unwired, or the coin is not owned by owner.
+func (d *DAG) ownedGasCoin(tx *types.Transaction, owner Hash) (Hash, bool) {
+	gasCoinBytes := tx.GasCoinBytes()
+	if len(gasCoinBytes) != 32 || d.coinStore == nil {
+		return Hash{}, false
+	}
+
+	var coinID Hash
+	copy(coinID[:], gasCoinBytes)
+
+	data := d.coinStore.GetObject(coinID)
+	if data == nil {
+		return Hash{}, false
+	}
+
+	coinOwner, err := readCoinOwner(data)
+	if err != nil || coinOwner != owner {
+		return Hash{}, false
+	}
+
+	return coinID, true
 }
 
 // handleDeregisterValidator checks if TX is deregister_validator and marks for removal.
@@ -783,6 +942,297 @@ func (d *DAG) handleDeregisterValidator(tx *types.Transaction, commitRound uint6
 		"pubkey_prefix", pubkey[:4],
 		"commitRound", commitRound,
 	)
+}
+
+// handleBond applies a bond transaction: it strictly debits the staked coin and
+// raises the sender's self-stake. The staked coin is the transaction's first
+// mutable_ref (its ownership is validated upstream by validateMutableRefOwnership).
+// Returns true when the bond was applied. The debit is strict: an under-funded
+// bond is rejected without touching the coin (it never uses deductCoinFee, which
+// zeroes a coin on shortfall).
+func (d *DAG) handleBond(tx *types.Transaction) bool {
+	sender, coinID, amount, ok := d.parseStakeTx(tx, d.isBondTx)
+	if !ok {
+		return false
+	}
+
+	current := d.validators.Get(sender)
+	if current == nil {
+		return false
+	}
+
+	newStake := safeAdd(current.SelfStake, amount)
+	if newStake < d.minStake {
+		logger.Warn("bond below minimum stake", "new_stake", newStake, "min_stake", d.minStake)
+		return false
+	}
+
+	if !d.strictDebit(coinID, amount) {
+		return false
+	}
+
+	d.validators.SetSelfStake(sender, newStake)
+	return true
+}
+
+// handleUnbond applies an unbond transaction: it lowers the sender's self-stake
+// and credits the amount back to the coin (the first mutable_ref). Returns true
+// when applied. TODO: enforce an unbonding delay (the withdrawn stake should stay
+// locked and slashable for a period, finalized with slashing in spec §10).
+func (d *DAG) handleUnbond(tx *types.Transaction) bool {
+	sender, coinID, amount, ok := d.parseStakeTx(tx, d.isUnbondTx)
+	if !ok {
+		return false
+	}
+
+	current := d.validators.Get(sender)
+	if current == nil || current.SelfStake < amount {
+		return false
+	}
+
+	// Minimum-stake floor: a full exit (down to exactly 0) is allowed, but an
+	// unbond that would leave a POSITIVE self-stake below minStake is rejected, so
+	// a registered validator can never sit beneath the floor handleBond enforces.
+	remaining := current.SelfStake - amount
+	if d.minStake > 0 && remaining > 0 && remaining < d.minStake {
+		logger.Warn("unbond would leave sub-minimum stake",
+			"remaining", remaining, "min_stake", d.minStake)
+		return false
+	}
+
+	if err := creditCoin(d.coinStore, coinID, amount); err != nil {
+		logger.Warn("unbond credit failed", "error", err)
+		return false
+	}
+
+	d.validators.SetSelfStake(sender, current.SelfStake-amount)
+	return true
+}
+
+// handleDelegate applies a delegate transaction atomically: it validates the
+// target validator is known and not jailed, strictly debits the delegator's coin
+// (the first mutable_ref) by amount, creates the stake-position object owned by
+// the delegator, and raises the validator's delegated total — all or nothing.
+// The delegated total is never raised without a funded position. Returns true
+// when the delegation was applied.
+func (d *DAG) handleDelegate(tx *types.Transaction) bool {
+	delegator, coinID, validator, amount, ok := d.parseDelegateTx(tx, d.isDelegateTx, true)
+	if !ok {
+		return false
+	}
+
+	target := d.validators.Get(validator)
+	if target == nil || target.Jailed {
+		return false
+	}
+
+	if !d.strictDebit(coinID, amount) {
+		return false
+	}
+
+	d.coinStore.SetObject(buildDelegationObject(delegator, validator, amount))
+	d.validators.AddDelegated(validator, amount)
+	return true
+}
+
+// handleUndelegate applies an undelegate transaction: it reads the delegator's
+// stake position, destroys it, credits the principal back to the coin (the first
+// mutable_ref), and lowers the validator's delegated total. Returns true when
+// applied. TODO: enforce an unbonding delay (the withdrawn delegation should stay
+// locked and slashable for a period, finalized with slashing in spec §10).
+func (d *DAG) handleUndelegate(tx *types.Transaction) bool {
+	delegator, coinID, validator, _, ok := d.parseDelegateTx(tx, d.isUndelegateTx, false)
+	if !ok {
+		return false
+	}
+
+	posID := DelegationID(delegator, validator)
+	amount, ok := d.readDelegationAmount(posID, validator)
+	if !ok {
+		return false
+	}
+
+	if err := creditCoin(d.coinStore, coinID, amount); err != nil {
+		logger.Warn("undelegate credit failed", "error", err)
+		return false
+	}
+
+	d.coinStore.DeleteObject(posID)
+	d.validators.SubDelegated(validator, amount)
+	return true
+}
+
+// readDelegationAmount loads a delegation position and returns its amount. ok is
+// false when the position is missing or its content does not target validator.
+func (d *DAG) readDelegationAmount(posID, validator [32]byte) (uint64, bool) {
+	data := d.coinStore.GetObject(posID)
+	if data == nil {
+		return 0, false
+	}
+
+	obj := types.GetRootAsObject(data, 0)
+	gotValidator, amount, ok := decodeDelegationContent(obj.ContentBytes())
+	if !ok || gotValidator != validator {
+		return 0, false
+	}
+
+	return amount, true
+}
+
+// parseDelegateTx validates a delegate/undelegate transaction and extracts the
+// delegator (sender), the coin ID (first mutable_ref), the target validator, and
+// (for delegate) the Borsh u64 amount. matches gates the pod and function name.
+// ok is false on any malformed input.
+func (d *DAG) parseDelegateTx(tx *types.Transaction, matches func(*types.Transaction) bool, withAmount bool) (delegator, coinID, validator [32]byte, amount uint64, ok bool) {
+	if d.coinStore == nil || !matches(tx) {
+		return delegator, coinID, validator, 0, false
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return delegator, coinID, validator, 0, false
+	}
+	copy(delegator[:], senderBytes)
+
+	coinID, ok = firstMutableRefID(tx)
+	if !ok {
+		return delegator, coinID, validator, 0, false
+	}
+
+	validator, amount, ok = decodeDelegateArgs(tx.ArgsBytes(), withAmount)
+	if !ok || (withAmount && amount == 0) {
+		return delegator, coinID, validator, 0, false
+	}
+
+	return delegator, coinID, validator, amount, true
+}
+
+// decodeDelegateArgs reads the validator(32) and optional amount(8 LE) from
+// delegate/undelegate args. ok is false when the args are too short.
+func decodeDelegateArgs(args []byte, withAmount bool) (validator [32]byte, amount uint64, ok bool) {
+	need := 32
+	if withAmount {
+		need += 8
+	}
+	if len(args) < need {
+		return validator, 0, false
+	}
+
+	copy(validator[:], args[:32])
+	if withAmount {
+		amount = binary.LittleEndian.Uint64(args[32:40])
+	}
+
+	return validator, amount, true
+}
+
+// isDelegateTx checks if a transaction calls delegate on the system pod.
+func (d *DAG) isDelegateTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, delegateFunc)
+}
+
+// isUndelegateTx checks if a transaction calls undelegate on the system pod.
+func (d *DAG) isUndelegateTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, undelegateFunc)
+}
+
+// parseStakeTx validates a bond/unbond transaction and extracts the sender, the
+// staked coin ID (first mutable_ref), and the Borsh u64 amount. matches gates the
+// pod, function name, and coin store. ok is false on any malformed input.
+func (d *DAG) parseStakeTx(tx *types.Transaction, matches func(*types.Transaction) bool) (sender, coinID [32]byte, amount uint64, ok bool) {
+	if d.coinStore == nil || !matches(tx) {
+		return sender, coinID, 0, false
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return sender, coinID, 0, false
+	}
+	copy(sender[:], senderBytes)
+
+	coinID, ok = firstMutableRefID(tx)
+	if !ok {
+		return sender, coinID, 0, false
+	}
+
+	amount, ok = decodeStakeAmount(tx.ArgsBytes())
+	if !ok || amount == 0 {
+		return sender, coinID, 0, false
+	}
+
+	return sender, coinID, amount, true
+}
+
+// strictDebit subtracts amount from a coin only if it fully covers it, leaving
+// the coin untouched otherwise. Unlike deductCoinFee it never zeroes on shortfall.
+// It debits only a singleton (replication==0) coin, mirroring validateGasCoin: a
+// staking/delegation debit against a replicated coin would diverge across nodes
+// (only holders execute), so a non-singleton is rejected to keep the debit uniform.
+func (d *DAG) strictDebit(coinID [32]byte, amount uint64) bool {
+	data := d.coinStore.GetObject(coinID)
+	if data == nil {
+		return false
+	}
+
+	if rep := readCoinReplication(data); rep != 0 {
+		logger.Warn("staked coin is not a singleton", "replication", rep)
+		return false
+	}
+
+	balance, err := readCoinBalance(data)
+	if err != nil || balance < amount {
+		return false
+	}
+
+	d.coinStore.SetObject(writeCoinBalance(data, balance-amount))
+	return true
+}
+
+// firstMutableRefID returns the 32-byte ID of the transaction's first mutable_ref.
+func firstMutableRefID(tx *types.Transaction) ([32]byte, bool) {
+	var id [32]byte
+	if tx.MutableRefsLength() == 0 {
+		return id, false
+	}
+
+	var ref types.ObjectRef
+	tx.MutableRefs(&ref, 0)
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		return id, false
+	}
+
+	copy(id[:], idBytes)
+	return id, true
+}
+
+// decodeStakeAmount reads a Borsh u64 (little-endian) amount from bond/unbond args.
+func decodeStakeAmount(args []byte) (uint64, bool) {
+	if len(args) < 8 {
+		return 0, false
+	}
+
+	return binary.LittleEndian.Uint64(args[:8]), true
+}
+
+// isBondTx checks if a transaction calls bond on the system pod.
+func (d *DAG) isBondTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, bondFunc)
+}
+
+// isUnbondTx checks if a transaction calls unbond on the system pod.
+func (d *DAG) isUnbondTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, unbondFunc)
+}
+
+// isSystemFunc reports whether tx targets the system pod with the given function.
+func (d *DAG) isSystemFunc(tx *types.Transaction, fn string) bool {
+	podBytes := tx.PodBytes()
+	if len(podBytes) != 32 || !bytes.Equal(podBytes, d.systemPod[:]) {
+		return false
+	}
+
+	return string(tx.FunctionName()) == fn
 }
 
 // isDeregisterValidatorTx checks if a transaction calls deregister_validator on system pod.

@@ -7,9 +7,13 @@ type Hash [32]byte
 
 // ValidatorInfo holds information about a validator.
 type ValidatorInfo struct {
-	Pubkey    Hash     // Pubkey is the validator's Ed25519 public key
-	QUICAddr  string   // QUICAddr is the QUIC P2P endpoint (may be empty)
-	BLSPubkey [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
+	Pubkey         Hash     // Pubkey is the validator's Ed25519 public key
+	QUICAddr       string   // QUICAddr is the QUIC P2P endpoint (may be empty)
+	BLSPubkey      [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
+	SelfStake      uint64   // SelfStake is the validator's bonded self-stake
+	DelegatedTotal uint64   // DelegatedTotal is the aggregate stake delegated to this validator
+	Jailed         bool     // Jailed, when true, zeroes the validator's effective stake (no quorum weight, no reward)
+	RewardCoin     Hash     // RewardCoin is the coin the validator's liquid epoch reward is credited to (zero = unset)
 }
 
 // ValidatorSet holds the active validators with their network addresses.
@@ -165,13 +169,130 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 		info := vs.validators[idx]
 		// Return a copy to avoid races
 		return &ValidatorInfo{
-			Pubkey:    info.Pubkey,
-			QUICAddr:  info.QUICAddr,
-			BLSPubkey: info.BLSPubkey,
+			Pubkey:         info.Pubkey,
+			QUICAddr:       info.QUICAddr,
+			BLSPubkey:      info.BLSPubkey,
+			SelfStake:      info.SelfStake,
+			DelegatedTotal: info.DelegatedTotal,
+			Jailed:         info.Jailed,
+			RewardCoin:     info.RewardCoin,
 		}
 	}
 
 	return nil
+}
+
+// SetSelfStake sets a validator's bonded self-stake.
+// It is a no-op if the validator is not in the set.
+func (vs *ValidatorSet) SetSelfStake(pubkey Hash, stake uint64) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		vs.validators[idx].SelfStake = stake
+	}
+}
+
+// SetRewardCoin sets the coin a validator's liquid epoch reward is credited to.
+// It is a no-op if the validator is not in the set.
+func (vs *ValidatorSet) SetRewardCoin(pubkey Hash, coin Hash) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		vs.validators[idx].RewardCoin = coin
+	}
+}
+
+// AddDelegated increases a validator's aggregate delegated stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) AddDelegated(pubkey Hash, amount uint64) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].DelegatedTotal += amount
+	return true
+}
+
+// SubDelegated decreases a validator's aggregate delegated stake, flooring at 0.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) SubDelegated(pubkey Hash, amount uint64) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	if amount > vs.validators[idx].DelegatedTotal {
+		vs.validators[idx].DelegatedTotal = 0
+	} else {
+		vs.validators[idx].DelegatedTotal -= amount
+	}
+
+	return true
+}
+
+// Jail marks a validator as jailed, zeroing its effective stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) Jail(pubkey Hash) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].Jailed = true
+	return true
+}
+
+// Unjail clears a validator's jailed flag, restoring its effective stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) Unjail(pubkey Hash) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].Jailed = false
+	return true
+}
+
+// AddWithStake adds a validator carrying its self-stake, delegated total, and
+// jail flag. It is used by the epoch holder snapshot rebuild so stake survives
+// the snapshot. If the validator already exists, its stake fields are updated.
+func (vs *ValidatorSet) AddWithStake(pubkey Hash, quicAddr string, blsPubkey [48]byte, selfStake, delegated uint64, jailed bool) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		existing := vs.validators[idx]
+		existing.SelfStake = selfStake
+		existing.DelegatedTotal = delegated
+		existing.Jailed = jailed
+		return
+	}
+
+	vs.index[pubkey] = len(vs.validators)
+	vs.validators = append(vs.validators, &ValidatorInfo{
+		Pubkey:         pubkey,
+		QUICAddr:       quicAddr,
+		BLSPubkey:      blsPubkey,
+		SelfStake:      selfStake,
+		DelegatedTotal: delegated,
+		Jailed:         jailed,
+	})
 }
 
 // All returns a copy of all validator infos.
@@ -182,9 +303,13 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	result := make([]*ValidatorInfo, len(vs.validators))
 	for i, v := range vs.validators {
 		result[i] = &ValidatorInfo{
-			Pubkey:    v.Pubkey,
-			QUICAddr:  v.QUICAddr,
-			BLSPubkey: v.BLSPubkey,
+			Pubkey:         v.Pubkey,
+			QUICAddr:       v.QUICAddr,
+			BLSPubkey:      v.BLSPubkey,
+			SelfStake:      v.SelfStake,
+			DelegatedTotal: v.DelegatedTotal,
+			Jailed:         v.Jailed,
+			RewardCoin:     v.RewardCoin,
 		}
 	}
 

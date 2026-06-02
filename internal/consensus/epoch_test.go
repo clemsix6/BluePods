@@ -29,15 +29,15 @@ func TestCommitEpochForRound(t *testing.T) {
 		round uint64
 		want  uint64
 	}{
-		{0, 0},     // before the first boundary
-		{1, 0},     // epoch 0
-		{99, 0},    // last round of epoch 0
-		{100, 0},   // boundary round: committed before the increment, still epoch 0
-		{101, 1},   // first round served by epoch 1's holders
-		{199, 1},   // epoch 1
-		{200, 1},   // boundary round: still epoch 1
-		{201, 2},   // epoch 2
-		{1000, 9},  // boundary round: still epoch 9
+		{0, 0},    // before the first boundary
+		{1, 0},    // epoch 0
+		{99, 0},   // last round of epoch 0
+		{100, 0},  // boundary round: committed before the increment, still epoch 0
+		{101, 1},  // first round served by epoch 1's holders
+		{199, 1},  // epoch 1
+		{200, 1},  // boundary round: still epoch 1
+		{201, 2},  // epoch 2
+		{1000, 9}, // boundary round: still epoch 9
 	}
 
 	for _, tt := range tests {
@@ -101,15 +101,15 @@ func TestIsEpochBoundary(t *testing.T) {
 		round    uint64
 		expected bool
 	}{
-		{0, false},     // round 0 is never an epoch boundary
-		{1, false},     // not a multiple
-		{50, false},    // not a multiple
-		{99, false},    // not a multiple
-		{100, true},    // first epoch boundary
-		{200, true},    // second epoch boundary
-		{300, true},    // third epoch boundary
-		{101, false},   // not a multiple
-		{1000, true},   // large multiple
+		{0, false},   // round 0 is never an epoch boundary
+		{1, false},   // not a multiple
+		{50, false},  // not a multiple
+		{99, false},  // not a multiple
+		{100, true},  // first epoch boundary
+		{200, true},  // second epoch boundary
+		{300, true},  // third epoch boundary
+		{101, false}, // not a multiple
+		{1000, true}, // large multiple
 	}
 
 	for _, tt := range tests {
@@ -185,6 +185,54 @@ func TestTransitionEpoch_FreezesValidatorSet(t *testing.T) {
 		if !holders.Contains(v.pubKey) {
 			t.Errorf("epoch holders missing validator %x", v.pubKey[:4])
 		}
+	}
+}
+
+// TestTransitionEpoch_CarriesStake checks that the epoch holder snapshot (and the
+// grace-window prevEpochHolders built by snapshotOf at the first boundary) carry
+// each validator's self-stake, delegated total, and jail flag. Batch 5 reads this
+// snapshot for the stake-weighted quorum, so dropping stake here would regress it.
+func TestTransitionEpoch_CarriesStake(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	)
+	defer dag.Close()
+
+	// Seed distinct stake on the live set; jail the third validator.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	dag.validators.AddDelegated(validators[0].pubKey, 50)
+	dag.validators.SetSelfStake(validators[1].pubKey, 200)
+	dag.validators.SetSelfStake(validators[2].pubKey, 300)
+	dag.validators.Jail(validators[2].pubKey)
+
+	dag.transitionEpoch(10)
+
+	// The frozen epoch holders must carry the stake fields.
+	holders := dag.EpochHolders()
+	v0 := holders.Get(validators[0].pubKey)
+	if v0 == nil || v0.SelfStake != 100 || v0.DelegatedTotal != 50 {
+		t.Fatalf("epochHolders dropped stake for v0: %+v", v0)
+	}
+	v2 := holders.Get(validators[2].pubKey)
+	if v2 == nil || v2.SelfStake != 300 || !v2.Jailed {
+		t.Fatalf("epochHolders dropped jail/stake for v2: %+v", v2)
+	}
+
+	// The grace-window snapshot (built by snapshotOf) must also carry stake.
+	prev := dag.prevEpochHolders
+	if prev == nil {
+		t.Fatal("prevEpochHolders not set at first boundary")
+	}
+	p0 := prev.Get(validators[0].pubKey)
+	if p0 == nil || p0.SelfStake != 100 || p0.DelegatedTotal != 50 {
+		t.Fatalf("prevEpochHolders dropped stake for v0: %+v", p0)
+	}
+	p2 := prev.Get(validators[2].pubKey)
+	if p2 == nil || p2.SelfStake != 300 || !p2.Jailed {
+		t.Fatalf("prevEpochHolders dropped jail/stake for v2: %+v", p2)
 	}
 }
 
@@ -1641,8 +1689,14 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 
 	dag.InitEpochHolders()
 
-	// With 1 validator (quorum=1), round R is committed when there's
-	// a validator vertex at round R+2.
+	// Stake is now the commit-quorum weight (a zero-stake set cannot commit by
+	// the degenerate-safety guard), so seed the founder's self-stake the way
+	// genesis does. With a single staked validator it carries the whole capped
+	// stake and reaches quorum on its own.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
+	// With 1 staked validator, round R is committed when its stake is a 2/3
+	// majority of the holder snapshot and there is a vertex at round R+2.
 	// Epoch boundary at round 5 → needs commit of round 5 → needs vertex at round 7.
 	for round := uint64(0); round <= 7; round++ {
 		data := buildVertexWithProperParents(t, dag, validators[0], round, 0)
@@ -1665,4 +1719,399 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 
 	t.Logf("epoch transition fired via commit path at epoch %d (last committed: %d)",
 		lastEpoch, dag.LastCommittedRound())
+}
+
+// thermostatTestDAG builds a single-validator DAG with the thermostat enabled,
+// an epoch length, and a coin store seeded to the given supply. The thermostat is
+// explicitly enabled here (it is opt-in and off by default) so the test can
+// observe minting; the live node keeps it off until reward crediting is wired.
+// TestRewardWeight checks the reward weight is effective_stake × liveness: with
+// equal stake the weight is proportional to rounds produced, with equal rounds it
+// is proportional to stake, zero rounds yields zero, and attestation count is
+// never an input (there is no attestation field in the computation).
+func TestRewardWeight(t *testing.T) {
+	dag, _, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	// Equal stake (100), different rounds (2 vs 5) → weight ∝ rounds.
+	dag.validators.SetSelfStake(pk, 100)
+	dag.epochRoundsProduced[pk] = 2
+
+	v := dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 200 {
+		t.Fatalf("weight (stake 100 × rounds 2) = %d, want 200", got)
+	}
+
+	dag.epochRoundsProduced[pk] = 5
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 500 {
+		t.Fatalf("weight (stake 100 × rounds 5) = %d, want 500", got)
+	}
+
+	// Equal rounds (5), more stake (300) → weight ∝ stake.
+	dag.validators.SetSelfStake(pk, 300)
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 1500 {
+		t.Fatalf("weight (stake 300 × rounds 5) = %d, want 1500", got)
+	}
+
+	// Zero rounds → zero weight (no liveness, no reward).
+	dag.epochRoundsProduced = make(map[Hash]uint64)
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 0 {
+		t.Fatalf("weight with zero rounds = %d, want 0", got)
+	}
+}
+
+// TestRewardWeight_LivenessCountsDistinctRounds guards against equivocation
+// double-counting: a producer is credited at most one round per round number, so
+// even if epochRoundsProduced were inflated by duplicate vertices the counter
+// itself is the source of truth and weight scales linearly with it (no per-round
+// double weight). The committer increments the counter once per produced vertex;
+// since the DAG admits one vertex per (producer, round), the counter equals the
+// distinct rounds produced.
+func TestRewardWeight_LivenessCountsDistinctRounds(t *testing.T) {
+	dag, _, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10)
+	dag.epochRoundsProduced[pk] = 3 // three distinct rounds
+
+	v := dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 30 {
+		t.Fatalf("weight = %d, want 30 (one weight unit per distinct round)", got)
+	}
+}
+
+// TestRewardCrediting drives the full crediting path for one producing validator
+// with a self-stake, a reward coin, and one delegator. It asserts the validator's
+// liquid portion lands in its reward coin, the auto-restake fraction raises its
+// self-stake, the delegator's portion lands in its coin, and the credits conserve
+// the pool exactly (sum credited + restaked == pool).
+func TestRewardCrediting(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+
+	rewardCoin := [32]byte{0xAA}
+	delegator := [32]byte{0xD2}
+	store.SetObject(buildTestCoinObject(rewardCoin, 0, pk, 0))
+	// A delegation position owned by the delegator targeting pk, amount 100. The
+	// delegator's reward compounds into this position (spec §2: returned with the
+	// principal on undelegate), not into a separate liquid coin.
+	store.SetObject(buildDelegationObject(delegator, pk, 100))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()), // AutoRestakeMille 200 (20%)
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 100)
+	dag.validators.AddDelegated(pk, 100)
+	dag.validators.SetRewardCoin(pk, rewardCoin)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+	dag.epochFees = 1000
+
+	dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
+
+	// Expected split: share = 1000 (single producer). splitValidatorReward(1000,
+	// self 100, commission 10%, dels [{d2,100}]) → validator 550, delegator 450.
+	// Auto-restake 20% of 550 = 110 → self 100+110 = 210; liquid 440 → reward coin.
+	if got := coinBalance(t, store, rewardCoin); got != 440 {
+		t.Errorf("reward coin balance = %d, want 440 (liquid validator portion)", got)
+	}
+	if got := dag.validators.Get(pk).SelfStake; got != 210 {
+		t.Errorf("self-stake after restake = %d, want 210 (100 + 110)", got)
+	}
+
+	// The delegator's 450 reward compounds into its position: amount 100 -> 550,
+	// and the validator's delegated total rises by 450 (effective next epoch).
+	posAmount, ok := dag.readDelegationAmount(DelegationID(delegator, pk), pk)
+	if !ok || posAmount != 550 {
+		t.Errorf("delegation position amount = %d (ok=%v), want 550", posAmount, ok)
+	}
+	if got := dag.validators.Get(pk).DelegatedTotal; got != 100+450 {
+		t.Errorf("delegated total after reward = %d, want 550", got)
+	}
+
+	credited := uint64(440 + 110 + 450)
+	if credited != 1000 {
+		t.Fatalf("credits do not conserve the pool: %d != 1000", credited)
+	}
+}
+
+// TestRewardCrediting_RemainderToTopValidator checks the integer-division
+// remainder (and any zero-share validators) is credited to the deterministic
+// top-weight validator so the full pool is distributed (sum credited == pool).
+func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	top := validators[0].pubKey
+	low := validators[1].pubKey
+	// Deterministic top is max weight; ensure top is the larger-weight one.
+	if bytes.Compare(top[:], low[:]) > 0 {
+		top, low = low, top
+	}
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+	topCoin := [32]byte{0x01}
+	lowCoin := [32]byte{0x02}
+	store.SetObject(buildTestCoinObject(topCoin, 0, top, 0))
+	store.SetObject(buildTestCoinObject(lowCoin, 0, low, 0))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	) // thermostat off → AutoRestakeMille 0, all liquid
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	// top weight 7, low weight 3, totalWeight 10. pool 100 → top 70, low 30, no
+	// remainder; use pool 101 to force a remainder of 1 (70+30=100, 1 left).
+	dag.validators.SetSelfStake(top, 7)
+	dag.validators.SetSelfStake(low, 3)
+	dag.validators.SetRewardCoin(top, topCoin)
+	dag.validators.SetRewardCoin(low, lowCoin)
+	dag.epochRoundsProduced[top] = 1
+	dag.epochRoundsProduced[low] = 1
+	dag.epochTotalRounds = 1
+	dag.epochFees = 101
+
+	dag.distributeEpochRewards(0)
+
+	topBal := coinBalance(t, store, topCoin)
+	lowBal := coinBalance(t, store, lowCoin)
+	if lowBal != 30 {
+		t.Errorf("low validator balance = %d, want 30", lowBal)
+	}
+	// top gets its 70 share PLUS the remainder of 1.
+	if topBal != 71 {
+		t.Errorf("top validator balance = %d, want 71 (70 share + 1 remainder)", topBal)
+	}
+	if topBal+lowBal != 101 {
+		t.Fatalf("pool not fully distributed: %d != 101", topBal+lowBal)
+	}
+}
+
+// TestRewardConservation is the property test for Task 7.4: over a real epoch
+// boundary the full pool (epochFees + issuance) lands in coins/stake exactly
+// (sum of credited + restaked == pool), and the supply grows by exactly the
+// minted issuance (crediting/restaking only MOVES value; the fee portion was
+// already in-flight supply). It drives transitionEpoch with the thermostat on.
+func TestRewardConservation(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	const supply = 1_000_000
+	store := newMockCoinStore()
+	store.SetTotalSupply(supply)
+
+	rewardCoin := [32]byte{0xAA}
+	delegator := [32]byte{0xD2}
+	store.SetObject(buildTestCoinObject(rewardCoin, 0, pk, 0))
+	store.SetObject(buildDelegationObject(delegator, pk, 100))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()),
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio → rate rises, issuance > 0
+	dag.validators.AddDelegated(pk, 100)
+	dag.validators.SetRewardCoin(pk, rewardCoin)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+	dag.epochFees = 1234
+
+	// Pre-boundary value held in coins + stake + delegation positions.
+	beforeValue := rewardSideValue(t, store, dag, pk)
+	epochFees := dag.epochFees
+
+	// Compute the issuance the thermostat will mint (rate adjusts first).
+	wantRate := dag.issuanceRateMicro + testThermostatParams().StepCapMicro
+	issuance := issuanceFor(wantRate, supply)
+	if issuance == 0 {
+		t.Fatal("test misconfigured: expected nonzero issuance")
+	}
+	pool := epochFees + issuance
+
+	dag.transitionEpoch(10)
+
+	afterValue := rewardSideValue(t, store, dag, pk)
+
+	// Conservation: every token of the pool moved into coins/stake, nothing lost.
+	if afterValue-beforeValue != pool {
+		t.Errorf("pool not conserved: value grew by %d, want pool %d (fees %d + issuance %d)",
+			afterValue-beforeValue, pool, epochFees, issuance)
+	}
+
+	// Supply invariant at the boundary: supply grew by exactly the minted issuance
+	// (the fee portion was already counted in supply, only moved into the coin).
+	if got := store.TotalSupply() - supply; got != issuance {
+		t.Errorf("supply grew by %d, want issuance %d (no new supply beyond issuance)", got, issuance)
+	}
+}
+
+// rewardSideValue sums the value held on the reward side of the ledger: the
+// validator's reward-coin balance plus its effective stake (self + delegated). The
+// delegator's reward compounds into the validator's delegated total (same capital
+// as the position object), so EffectiveStake counts it once. It is the quantity
+// the epoch reward pool flows into.
+func rewardSideValue(t *testing.T, store *mockCoinStore, dag *DAG, pk [32]byte) uint64 {
+	t.Helper()
+
+	coin := coinBalance(t, store, [32]byte{0xAA})
+	stake := EffectiveStake(dag.validators.Get(pk))
+
+	return coin + stake
+}
+
+func thermostatTestDAG(t *testing.T, supply uint64) (*DAG, *mockCoinStore, [32]byte) {
+	t.Helper()
+
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(supply)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()),
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+
+	return dag, store, pk
+}
+
+// TestRunThermostat_MintsWhenDistributable checks that at a boundary with bonded
+// stake below the band and at least one producing validator, the issuance rate
+// rises (step-capped) and total_supply grows by exactly the minted issuance.
+func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	// Bonded far below the 25% band → the rate should rise.
+	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+
+	rateBefore := dag.issuanceRateMicro // 18 (genesis)
+	supplyBefore := store.TotalSupply()
+
+	dag.transitionEpoch(10)
+
+	wantRate := rateBefore + testThermostatParams().StepCapMicro
+	if dag.issuanceRateMicro != wantRate {
+		t.Errorf("rate should rise by the step cap: got %d, want %d",
+			dag.issuanceRateMicro, wantRate)
+	}
+
+	// The rate is adjusted FIRST, then minting uses the adjusted rate against the
+	// pre-mint supply (spec §3: mint r * total_supply with the adjusted r).
+	wantIssuance := issuanceFor(wantRate, supplyBefore)
+	if got := store.TotalSupply() - supplyBefore; got != wantIssuance {
+		t.Errorf("supply grew by %d, want %d (minted issuance)", got, wantIssuance)
+	}
+	if wantIssuance == 0 {
+		t.Fatal("test misconfigured: expected nonzero issuance")
+	}
+}
+
+// TestRunThermostat_ZeroFeeStillMints checks the bootstrap incentive: a zero-FEE
+// epoch with production still mints issuance (the pool is issuance even with no
+// fees), so total_supply grows.
+func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	dag.epochRoundsProduced[pk] = 3
+	dag.epochTotalRounds = 3
+	dag.epochFees = 0 // no fees this epoch
+
+	supplyBefore := store.TotalSupply()
+	dag.transitionEpoch(10)
+
+	if store.TotalSupply() <= supplyBefore {
+		t.Errorf("zero-fee epoch with production must still mint: supply %d -> %d",
+			supplyBefore, store.TotalSupply())
+	}
+}
+
+// TestRunThermostat_ZeroWeightMintsNothing checks that an epoch with no reward
+// weight (no rounds produced) mints NOTHING (there is no one to pay), while the
+// rate still adjusts for the next epoch.
+func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	// No rounds produced this epoch → totalRewardWeight == 0.
+	dag.epochRoundsProduced = make(map[Hash]uint64)
+	dag.epochTotalRounds = 0
+
+	rateBefore := dag.issuanceRateMicro
+	supplyBefore := store.TotalSupply()
+
+	dag.transitionEpoch(10)
+
+	if store.TotalSupply() != supplyBefore {
+		t.Errorf("zero-weight epoch must mint nothing: supply %d -> %d",
+			supplyBefore, store.TotalSupply())
+	}
+
+	// The rate still adjusts (bonded is below the band, so it rises).
+	if dag.issuanceRateMicro == rateBefore {
+		t.Errorf("rate should still adjust in a zero-weight epoch: stayed %d", rateBefore)
+	}
+}
+
+// TestRunThermostat_OffByDefaultMintsNothing checks the critical correctness
+// guard: a DAG WITHOUT WithThermostat (the live-node default) has zero params and
+// a zero rate, so it mints nothing at a boundary even with production. Reward
+// crediting lands in a later batch; until then the node must not inflate supply.
+func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		// No WithThermostat: the thermostat is off.
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+
+	supplyBefore := store.TotalSupply()
+	dag.transitionEpoch(10)
+
+	if dag.issuanceRateMicro != 0 {
+		t.Errorf("rate must stay 0 with the thermostat off, got %d", dag.issuanceRateMicro)
+	}
+	if store.TotalSupply() != supplyBefore {
+		t.Errorf("thermostat off must mint nothing: supply %d -> %d", supplyBefore, store.TotalSupply())
+	}
 }

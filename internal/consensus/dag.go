@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
@@ -19,6 +20,14 @@ const (
 
 	// defaultGossipFanout is the number of peers to gossip vertices to.
 	defaultGossipFanout = 40
+
+	// defaultCommissionBPS is the fixed delegation commission when unset (10%).
+	defaultCommissionBPS = 1000
+
+	// defaultVotingCapMille is the per-validator voting cap when unset, in
+	// per-mille of total stake (100 = 10%). The equal-share floor keeps a small
+	// set's 2/3 quorum reachable even at this cap.
+	defaultVotingCapMille = 100
 
 	// transitionGraceRounds is how many rounds after minValidators is reached
 	// before full quorum is required. During this period, vertices with at least
@@ -66,12 +75,15 @@ type DAG struct {
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
 
 	// Mode flags
-	listenerMode  bool // listenerMode disables vertex production
-	isBootstrap   bool // isBootstrap allows producing even with few validators
-	minValidators int  // minValidators is the threshold before non-bootstrap nodes produce
-	gossipFanout  int  // gossipFanout is the number of peers to send each vertex to
-	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
-	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
+	listenerMode   bool   // listenerMode disables vertex production
+	isBootstrap    bool   // isBootstrap allows producing even with few validators
+	minValidators  int    // minValidators is the threshold before non-bootstrap nodes produce
+	minStake       uint64 // minStake is the minimum self-stake a bond must leave (0 = no minimum)
+	commissionBPS  uint64 // commissionBPS is the fixed, governed delegation commission in basis points (1000 = 10%)
+	votingCapMille uint64 // votingCapMille is the per-validator voting cap in per-mille of total stake (100 = 10%)
+	gossipFanout   int    // gossipFanout is the number of peers to send each vertex to
+	graceRounds    int    // graceRounds is the transition grace period (0 = use default 20)
+	bufferRounds   int    // bufferRounds is the transition buffer period (0 = use default 10)
 
 	// Sync mode: after sync, only reference trusted producers (from snapshot) until
 	// we've produced our first vertex. This prevents referencing vertices from other
@@ -110,15 +122,32 @@ type DAG struct {
 	// checks run across cores before the sequential apply.
 	verifyATXProofsBatch func(atxs []*types.AttestedTransaction, commitRound uint64) []error
 
+	// verifyTxAuth re-verifies an inner transaction's sender signature and hash in
+	// the commit path, deterministically on every node. New defaults it to the real
+	// verifyTxAuthenticity, so on a live node it is fail-closed by construction and
+	// can never be nil: a forged transaction reaching commit via gossip cannot
+	// commit unverified. Only unit tests that drive executeTx with deliberately
+	// synthetic (unsigned) transactions override it, to isolate downstream logic.
+	verifyTxAuth func(tx *types.Transaction) error
+
 	// Fee system: protocol-level fee deduction and credits.
-	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
-	feeParams      *FeeParams // feeParams holds fee constants (nil = fees disabled)
-	computeHolders HolderFunc // computeHolders computes holders for replication ratio
+	coinStore      CoinStore            // coinStore provides access to coin objects for fee operations
+	feeParams      *FeeParams           // feeParams holds fee constants (nil = fees disabled)
+	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
+	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
 	// Epoch rewards: accumulated fees and round tracking per validator.
 	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
 	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
 	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
+
+	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
+	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
+	// 0 and issuanceFor returns 0: the node mints nothing. The live node keeps the
+	// thermostat off pending parameter calibration/governance, to preserve the
+	// supply invariant.
+	thermostat        thermostatParams // thermostat holds the issuance control loop parameters (zero = off)
+	issuanceRateMicro uint64           // issuanceRateMicro is the current per-epoch issuance rate in millionths
 
 	// Lifecycle
 	stop chan struct{}
@@ -127,14 +156,6 @@ type DAG struct {
 
 // Option configures the DAG during creation.
 type Option func(*DAG)
-
-// WithGenesisTxs sets transactions to include in the first vertex.
-// These are injected into pendingTxs before the consensus loops start.
-func WithGenesisTxs(txs [][]byte) Option {
-	return func(d *DAG) {
-		d.pendingTxs = append(d.pendingTxs, txs...)
-	}
-}
 
 // WithLastCommittedRound sets the initial lastCommittedRound.
 // Used when initializing from a snapshot. Sets lastCommitted to round+1
@@ -166,6 +187,58 @@ func WithBootstrap() Option {
 func WithMinValidators(n int) Option {
 	return func(d *DAG) {
 		d.minValidators = n
+	}
+}
+
+// WithMinStake sets the minimum self-stake a bond must leave a validator with.
+// A bond that would leave self-stake below this value is rejected. 0 disables it.
+func WithMinStake(stake uint64) Option {
+	return func(d *DAG) {
+		d.minStake = stake
+	}
+}
+
+// WithCommissionBPS sets the fixed delegation commission in basis points. This
+// is a single governed parameter for the whole network (not per-validator), so
+// it avoids a commission field, rate-limited change mechanics, and rug-pull risk.
+// Default is 1000 (10%).
+func WithCommissionBPS(bps uint64) Option {
+	return func(d *DAG) {
+		d.commissionBPS = bps
+	}
+}
+
+// WithVotingCapMille sets the per-validator voting cap in per-mille of total
+// stake (100 = 10%). Capping voting power keeps the global order decentralized
+// even when delegation concentrates stake; reward weight is uncapped. The cap is
+// loose while the set is small (the equal-share floor keeps a 2/3 quorum
+// reachable) and tightened toward ~10% as the set grows. Default is 100.
+func WithVotingCapMille(capMille uint64) Option {
+	return func(d *DAG) {
+		d.votingCapMille = capMille
+	}
+}
+
+// WithThermostat enables the adaptive issuance thermostat with the default
+// parameters and seeds the per-epoch rate to the genesis rate. It is opt-in: a
+// DAG built without it leaves thermostat zero-valued, so the rate holds at 0 and
+// the node mints no issuance. Enable it only together with reward crediting, so
+// minted supply is always backed by a credit and the supply invariant holds.
+func WithThermostat(p thermostatParams) Option {
+	return func(d *DAG) {
+		d.thermostat = p
+		d.issuanceRateMicro = p.GenesisRateMicro
+	}
+}
+
+// WithIssuanceRate seeds the per-epoch issuance rate (in millionths), overriding
+// the genesis default. Used on the sync path to restore the persisted rate at DAG
+// construction: the rate lives only on the DAG (not in DB-backed state), and the
+// DAG does not exist when the snapshot is applied, so it must ride a construction
+// Option rather than a post-sync setter (which would nil-panic).
+func WithIssuanceRate(rateMicro uint64) Option {
+	return func(d *DAG) {
+		d.issuanceRateMicro = rateMicro
 	}
 }
 
@@ -250,6 +323,9 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
 		epochRoundsProduced: make(map[Hash]uint64),
+		commissionBPS:       defaultCommissionBPS,
+		votingCapMille:      defaultVotingCapMille,
+		verifyTxAuth:        verifyTxAuthenticity,
 		stop:                make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition
@@ -341,9 +417,25 @@ func (d *DAG) LastCommittedRound() uint64 {
 	return d.lastCommitted
 }
 
+// TotalSupply returns the protocol-maintained total supply from the coin store.
+// Returns 0 when no coin store is wired (the fee system is disabled).
+func (d *DAG) TotalSupply() uint64 {
+	if d.coinStore == nil {
+		return 0
+	}
+	return d.coinStore.TotalSupply()
+}
+
 // FullQuorumAchieved returns true if BFT quorum has been observed.
 func (d *DAG) FullQuorumAchieved() bool {
 	return d.fullQuorumAchieved.Load()
+}
+
+// IssuanceRateMicro returns the thermostat's current per-epoch issuance rate in
+// millionths. It is 0 when the thermostat is off. Persisted in snapshots because
+// the control loop steps from the previous value and cannot be re-derived.
+func (d *DAG) IssuanceRateMicro() uint64 {
+	return d.issuanceRateMicro
 }
 
 // ValidatorCount returns the number of active validators.
@@ -429,6 +521,28 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 	d.coinStore = store
 	d.feeParams = params
 	d.computeHolders = holders
+
+	// The same store (*state.State in production) also enumerates delegation
+	// positions for the reward split. Stored via assertion so the call site
+	// signature is unchanged; nil when the store does not implement it.
+	if de, ok := store.(DelegationEnumerator); ok {
+		d.delegations = de
+	}
+}
+
+// SeedGenesis seeds the initial ledger state directly: the genesis coin object
+// into the coin store and the founding validator (with its bonded self-stake)
+// into the validator set. Genesis is state, not transactions. Must be called
+// AFTER SetFeeSystem (so coinStore is wired) and before the node produces.
+func (d *DAG) SeedGenesis(is genesis.InitialState) {
+	d.coinStore.SetObject(is.Coin)
+	d.coinStore.SetTotalSupply(is.Supply)
+
+	var bls [48]byte
+	copy(bls[:], is.BLS)
+
+	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
+	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
 }
 
 // ValidatorSet returns the underlying validator set.
@@ -811,26 +925,40 @@ func (d *DAG) canProduceVertex(round uint64) bool {
 	return d.hasQuorumFromRound(round - 1)
 }
 
-// hasQuorumFromRound checks if we have enough vertices from known validators.
-// Uses the same transition logic as validateParentsQuorum to stay consistent.
+// hasQuorumFromRound checks whether the given round's known-validator producers
+// carry a 2/3 capped-stake majority. The stake is read from the SAME holder
+// snapshot the committer uses (HoldersForEpoch(commitEpochForRound(round))), so
+// production and commit never weigh against different stake sets across an epoch
+// boundary. During the transition/convergence window the check is relaxed to a
+// single producer so the network can converge before stake weighting is
+// authoritative. ValidatorSet.QuorumSize is no longer the commit/production
+// authority; it remains only for relaxed-count logging.
 func (d *DAG) hasQuorumFromRound(round uint64) bool {
-	count := d.countValidatorVertices(round)
-	required := d.validators.QuorumSize()
-
-	// BFT quorum met: production can proceed
-	if count >= required {
-		return true
-	}
-
 	// Transition + convergence period: relax quorum to let the network converge.
 	if d.isInTransitionOrBuffer() || d.isRoundInTransitionOrBuffer(round) {
-		return count >= 1
+		return d.countValidatorVertices(round) >= 1
+	}
+
+	producers := d.knownProducersAt(d.store.getByRound(round))
+	if len(producers) == 0 {
+		return false
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
+	if !ok {
+		set = d.validators
+	}
+
+	cappedSum, total := d.cappedStakeOf(set, producers)
+	if quorumReached(cappedSum, total) {
+		return true
 	}
 
 	logger.Debug("quorum check failed",
 		"round", round,
-		"validatorVertices", count,
-		"requiredQuorum", required,
+		"validatorProducers", len(producers),
+		"cappedSum", cappedSum,
+		"total", total,
 	)
 
 	return false

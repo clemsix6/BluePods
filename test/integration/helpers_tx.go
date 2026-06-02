@@ -397,6 +397,36 @@ func BuildNonOwnerTransferTx(systemPod [32]byte, coinID [32]byte, version uint64
 	return builder.FinishedBytes()
 }
 
+// BuildForgedSenderTx builds a transfer transaction that NAMES the victim as
+// sender and references the victim's coin as both gas_coin and mutable_ref, but
+// is signed with the attacker's key (the signature does not verify against the
+// victim). This is the theft attempt FIX 1 must reject at commit: the body hash
+// is computed over the victim's sender so it is internally consistent, only the
+// Ed25519 signature is forged. The committing node must reject it via
+// verifyTxAuthenticity so the victim's coin is never reassigned.
+func BuildForgedSenderTx(systemPod [32]byte, victim [32]byte, attacker ed25519.PrivateKey, coinID [32]byte, version uint64, newOwner [32]byte) []byte {
+	args := make([]byte, 32)
+	copy(args, newOwner[:])
+
+	mutableRefs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
+		victim[:], systemPod, "transfer", args, nil, 0, 1000, coinID[:], mutableRefs, nil,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+
+	// Forge: sign the victim's body hash with the attacker's key.
+	sig := ed25519.Sign(attacker, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOff := genesis.BuildTxTableWithRefs(
+		builder, victim[:], systemPod, "transfer", args, nil, 0, 1000, coinID[:], hash, sig, mutableRefs, nil,
+	)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes()
+}
+
 // buildRawTxBytes builds a Transaction FlatBuffer with custom-sized fields.
 // Unlike genesis.BuildTxTableWithRefs, this accepts []byte for all fields,
 // allowing construction of deliberately malformed transactions.

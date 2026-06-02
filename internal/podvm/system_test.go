@@ -14,6 +14,7 @@ import (
 
 // Error codes from pod-system
 const (
+	errUnknownFunction     = 2
 	errInvalidArgs         = 3
 	errMissingObject       = 4
 	errInsufficientBalance = 100
@@ -24,54 +25,15 @@ const (
 // Mint Function Tests
 // =============================================================================
 
-// TestMint_Success tests minting tokens and verifies a new coin is created.
-func TestMint_Success(t *testing.T) {
-	pool, wasmID := loadSystemPod(t)
-	defer pool.Close()
-
-	mintAmount := uint64(1000)
-	owner := [32]byte{1, 2, 3, 4, 5, 6, 7, 8}
-	input := buildMintInput(mintAmount, owner)
-
-	output, _, err := pool.Execute(wasmID, input, 100000)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != 0 {
-		t.Fatalf("expected success (error=0), got error=%d", result.Error())
-	}
-
-	// Verify created object
-	if result.CreatedObjectsLength() != 1 {
-		t.Fatalf("expected 1 created object, got %d", result.CreatedObjectsLength())
-	}
-
-	var createdObj types.Object
-	if !result.CreatedObjects(&createdObj, 0) {
-		t.Fatal("failed to get created object")
-	}
-
-	balance := decodeCoinBalance(createdObj.ContentBytes())
-	if balance != mintAmount {
-		t.Errorf("expected balance %d, got %d", mintAmount, balance)
-	}
-
-	if !bytes.Equal(createdObj.OwnerBytes(), owner[:]) {
-		t.Errorf("expected owner %x, got %x", owner[:], createdObj.OwnerBytes())
-	}
-
-	t.Logf("mint success: created coin with balance %d", balance)
-}
-
-// TestMint_ZeroAmount tests minting zero tokens.
-func TestMint_ZeroAmount(t *testing.T) {
+// TestMint_Rejected verifies the user-callable mint is gone: the dispatcher has
+// no "mint" entry, so the call is rejected as an unknown function and creates no
+// coin. Only genesis seeding and protocol issuance create supply.
+func TestMint_Rejected(t *testing.T) {
 	pool, wasmID := loadSystemPod(t)
 	defer pool.Close()
 
 	owner := [32]byte{1, 2, 3, 4, 5, 6, 7, 8}
-	input := buildMintInput(0, owner)
+	input := buildMintInput(1000, owner)
 
 	output, _, err := pool.Execute(wasmID, input, 100000)
 	if err != nil {
@@ -79,62 +41,12 @@ func TestMint_ZeroAmount(t *testing.T) {
 	}
 
 	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != 0 {
-		t.Fatalf("expected success, got error=%d", result.Error())
+	if result.Error() != errUnknownFunction {
+		t.Fatalf("expected ERR_UNKNOWN_FUNCTION (%d), got error=%d", errUnknownFunction, result.Error())
 	}
 
-	var createdObj types.Object
-	result.CreatedObjects(&createdObj, 0)
-	balance := decodeCoinBalance(createdObj.ContentBytes())
-
-	if balance != 0 {
-		t.Errorf("expected balance 0, got %d", balance)
-	}
-}
-
-// TestMint_LargeAmount tests minting a large amount of tokens.
-func TestMint_LargeAmount(t *testing.T) {
-	pool, wasmID := loadSystemPod(t)
-	defer pool.Close()
-
-	largeAmount := uint64(1_000_000_000_000)
-	owner := [32]byte{1, 2, 3, 4, 5, 6, 7, 8}
-	input := buildMintInput(largeAmount, owner)
-
-	output, _, err := pool.Execute(wasmID, input, 100000)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != 0 {
-		t.Fatalf("expected success, got error=%d", result.Error())
-	}
-
-	var createdObj types.Object
-	result.CreatedObjects(&createdObj, 0)
-	balance := decodeCoinBalance(createdObj.ContentBytes())
-
-	if balance != largeAmount {
-		t.Errorf("expected balance %d, got %d", largeAmount, balance)
-	}
-}
-
-// TestMint_InvalidArgs tests mint with malformed arguments.
-func TestMint_InvalidArgs(t *testing.T) {
-	pool, wasmID := loadSystemPod(t)
-	defer pool.Close()
-
-	input := buildMintInputInvalidArgs()
-
-	output, _, err := pool.Execute(wasmID, input, 100000)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != errInvalidArgs {
-		t.Errorf("expected ERR_INVALID_ARGS (%d), got error=%d", errInvalidArgs, result.Error())
+	if result.CreatedObjectsLength() != 0 {
+		t.Fatalf("expected no created coin, got %d", result.CreatedObjectsLength())
 	}
 }
 
@@ -418,22 +330,22 @@ func TestMerge_Success(t *testing.T) {
 		t.Fatalf("expected success (error=0), got error=%d", result.Error())
 	}
 
-	// Only destination coin should be updated
-	if result.UpdatedObjectsLength() != 1 {
-		t.Fatalf("expected 1 updated object, got %d", result.UpdatedObjectsLength())
+	// Destination plus every emptied source coin are updated (sources are zeroed,
+	// not duplicated, so total balance is conserved).
+	if result.UpdatedObjectsLength() != len(balances) {
+		t.Fatalf("expected %d updated objects, got %d", len(balances), result.UpdatedObjectsLength())
 	}
-
-	var mergedObj types.Object
-	result.UpdatedObjects(&mergedObj, 0)
 
 	totalBalance := uint64(0)
 	for _, b := range balances {
 		totalBalance += b
 	}
 
+	var mergedObj types.Object
+	result.UpdatedObjects(&mergedObj, 0)
 	mergedBalance := decodeCoinBalance(mergedObj.ContentBytes())
 	if mergedBalance != totalBalance {
-		t.Errorf("expected balance %d, got %d", totalBalance, mergedBalance)
+		t.Errorf("expected destination balance %d, got %d", totalBalance, mergedBalance)
 	}
 
 	t.Logf("merge success: %v -> %d", balances, mergedBalance)
@@ -464,6 +376,59 @@ func TestMerge_TwoCoins(t *testing.T) {
 
 	if decodeCoinBalance(mergedObj.ContentBytes()) != 1000 {
 		t.Errorf("expected total balance 1000")
+	}
+}
+
+// TestMerge_Conserves verifies merge conserves total balance: the destination
+// receives the sum and every source coin is emptied (no duplication). The sum of
+// all output balances must equal the sum of all input balances.
+func TestMerge_Conserves(t *testing.T) {
+	pool, wasmID := loadSystemPod(t)
+	defer pool.Close()
+
+	balances := []uint64{1000, 500, 300}
+	owner := [32]byte{1, 2, 3, 4, 5, 6, 7, 8}
+
+	input := buildMergeInput(balances, owner)
+
+	output, _, err := pool.Execute(wasmID, input, 100000)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	result := types.GetRootAsPodExecuteOutput(output, 0)
+	if result.Error() != 0 {
+		t.Fatalf("expected success, got error=%d", result.Error())
+	}
+
+	var inputSum uint64
+	for _, b := range balances {
+		inputSum += b
+	}
+
+	// Every input coin must be accounted for in the output, or the unreturned
+	// sources keep their balances in state (the inflation bug). Sum all returned
+	// balances and require them to equal the inputs over the full set of coins.
+	if result.UpdatedObjectsLength()+result.CreatedObjectsLength() != len(balances) {
+		t.Fatalf("merge must return all %d coins, returned %d updated + %d created",
+			len(balances), result.UpdatedObjectsLength(), result.CreatedObjectsLength())
+	}
+
+	var outputSum uint64
+	var obj types.Object
+	for i := 0; i < result.UpdatedObjectsLength(); i++ {
+		if result.UpdatedObjects(&obj, i) {
+			outputSum += decodeCoinBalance(obj.ContentBytes())
+		}
+	}
+	for i := 0; i < result.CreatedObjectsLength(); i++ {
+		if result.CreatedObjects(&obj, i) {
+			outputSum += decodeCoinBalance(obj.ContentBytes())
+		}
+	}
+
+	if outputSum != inputSum {
+		t.Fatalf("merge not conservative: inputs sum %d, outputs sum %d", inputSum, outputSum)
 	}
 }
 
@@ -614,9 +579,8 @@ func TestUnknownFunction(t *testing.T) {
 	}
 
 	result := types.GetRootAsPodExecuteOutput(output, 0)
-	// ERR_UNKNOWN_FUNCTION = 2
-	if result.Error() != 2 {
-		t.Errorf("expected ERR_UNKNOWN_FUNCTION (2), got error=%d", result.Error())
+	if result.Error() != errUnknownFunction {
+		t.Errorf("expected ERR_UNKNOWN_FUNCTION (%d), got error=%d", errUnknownFunction, result.Error())
 	}
 }
 
@@ -752,36 +716,6 @@ func buildMintInput(amount uint64, owner [32]byte) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	txArgs := builder.CreateByteVector(encodeMintArgs(amount, owner))
-	txHash := builder.CreateByteVector(make([]byte, 32))
-	txSender := builder.CreateByteVector(make([]byte, 32))
-	txPod := builder.CreateByteVector(make([]byte, 32))
-	txFuncName := builder.CreateString("mint")
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, txHash)
-	types.TransactionAddSender(builder, txSender)
-	types.TransactionAddPod(builder, txPod)
-	types.TransactionAddFunctionName(builder, txFuncName)
-	types.TransactionAddArgs(builder, txArgs)
-	tx := types.TransactionEnd(builder)
-
-	sender := builder.CreateByteVector(make([]byte, 32))
-
-	types.PodExecuteInputStart(builder)
-	types.PodExecuteInputAddTransaction(builder, tx)
-	types.PodExecuteInputAddSender(builder, sender)
-	input := types.PodExecuteInputEnd(builder)
-
-	types.FinishPodExecuteInputBuffer(builder, input)
-
-	return builder.FinishedBytes()
-}
-
-// buildMintInputInvalidArgs creates a mint input with malformed arguments.
-func buildMintInputInvalidArgs() []byte {
-	builder := flatbuffers.NewBuilder(512)
-
-	txArgs := builder.CreateByteVector([]byte{1, 2, 3, 4})
 	txHash := builder.CreateByteVector(make([]byte, 32))
 	txSender := builder.CreateByteVector(make([]byte, 32))
 	txPod := builder.CreateByteVector(make([]byte, 32))

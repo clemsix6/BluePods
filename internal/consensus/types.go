@@ -14,6 +14,18 @@ const (
 
 	// deregisterValidatorFunc is the function name for voluntary validator departure.
 	deregisterValidatorFunc = "deregister_validator"
+
+	// bondFunc is the function name for bonding self-stake.
+	bondFunc = "bond"
+
+	// unbondFunc is the function name for withdrawing self-stake.
+	unbondFunc = "unbond"
+
+	// delegateFunc is the function name for delegating stake to a validator.
+	delegateFunc = "delegate"
+
+	// undelegateFunc is the function name for withdrawing a delegation.
+	undelegateFunc = "undelegate"
 )
 
 // Hash is a 32-byte identifier for vertices and validators.

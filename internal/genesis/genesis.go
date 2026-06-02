@@ -1,9 +1,6 @@
 package genesis
 
-import (
-	"crypto/ed25519"
-	"fmt"
-)
+import "crypto/ed25519"
 
 // Config holds the genesis configuration for bootstrapping the network.
 type Config struct {
@@ -13,6 +10,11 @@ type Config struct {
 	// InitialMint is the amount of tokens to mint for the bootstrap account.
 	InitialMint uint64
 
+	// GenesisStake is the founder's bonded self-stake, locked from InitialMint so
+	// the bootstrap validator has real backing for its stake-weighted quorum
+	// weight. Clamped to InitialMint to keep the coin balance from underflowing.
+	GenesisStake uint64
+
 	// QUICAddress is the validator's QUIC P2P endpoint (e.g., "192.168.1.1:9000").
 	QUICAddress string
 
@@ -21,33 +23,4 @@ type Config struct {
 
 	// BLSPubkey is the validator's BLS public key for attestation signing.
 	BLSPubkey []byte
-}
-
-// BuildTransactions creates the genesis transactions for network bootstrap.
-// Returns two AttestedTransaction bytes: mint (creates initial tokens) and register_validator.
-func BuildTransactions(cfg Config) ([][]byte, error) {
-	if cfg.PrivateKey == nil {
-		return nil, fmt.Errorf("private key is required")
-	}
-
-	if len(cfg.PrivateKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("invalid private key size: %d", len(cfg.PrivateKey))
-	}
-
-	pubKey := cfg.PrivateKey.Public().(ed25519.PublicKey)
-	var owner [32]byte
-	copy(owner[:], pubKey)
-
-	// Build mint transaction
-	mintTx := BuildMintTx(cfg.PrivateKey, cfg.SystemPodID, cfg.InitialMint, owner)
-
-	// Build register_validator transaction
-	registerTx := BuildRegisterValidatorTx(
-		cfg.PrivateKey,
-		cfg.SystemPodID,
-		cfg.QUICAddress,
-		cfg.BLSPubkey,
-	)
-
-	return [][]byte{mintTx, registerTx}, nil
 }

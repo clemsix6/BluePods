@@ -187,10 +187,13 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 	})
 
 	t.Run("ATP-15.4: create object", func(t *testing.T) {
+		// An object operation creates no coin, so the wallet is fauceted first and
+		// the fauceted coin pays the transaction's gas (mandatory gas-coin model).
 		w := client.NewWallet()
+		gasCoin := FaucetAndWait(t, cli, w, consensusFaucetAmount, 30*time.Second)
 		metadata := []byte("consensus test object")
 
-		objectID, err := w.CreateObject(cli, 5, metadata)
+		objectID, err := w.CreateObject(cli, 5, metadata, gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -215,10 +218,13 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 	t.Run("ATP-15.5: transfer object", func(t *testing.T) {
 		// Replicated (rep>0) object transfer through the daemon's off-chain
 		// attestation-collection path: the daemon gathers a quorum of holder
-		// signatures, assembles an attested transaction, and submits it.
+		// signatures, assembles an attested transaction, and submits it. The
+		// wallet is fauceted first so a coin is available to pay gas for both the
+		// create and the transfer (mandatory gas-coin model).
 		w := client.NewWallet()
+		gasCoin := FaucetAndWait(t, cli, w, consensusFaucetAmount, 30*time.Second)
 
-		objectID, err := w.CreateObject(cli, 3, []byte("transfer object"))
+		objectID, err := w.CreateObject(cli, 3, []byte("transfer object"), gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -227,7 +233,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		WaitForHolders(t, cluster.Nodes(), objectID, 3, 30*time.Second)
 
 		recipient := client.NewWallet()
-		if err := w.TransferObject(cli, objectID, recipient.Pubkey()); err != nil {
+		if err := w.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
 			t.Fatalf("transfer object: %v", err)
 		}
 

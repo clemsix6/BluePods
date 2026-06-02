@@ -22,6 +22,7 @@ type snapshotResult struct {
 	vertices           []consensus.VertexEntry        // vertices is the set of vertices from the snapshot
 	trackerEntries     []consensus.ObjectTrackerEntry // trackerEntries is the set of object tracker entries
 	domainEntries      []state.DomainEntry            // domainEntries is the set of domain mappings from the snapshot
+	issuanceRateMicro  uint64                         // issuanceRateMicro is the restored thermostat rate, applied via a DAG construction Option
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -214,12 +215,17 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		vertices:           sync.ExtractVertices(snapshot),
 		trackerEntries:     sync.ExtractTrackerEntries(snapshot),
 		domainEntries:      sync.ExtractDomains(snapshot),
+		issuanceRateMicro:  snapshot.IssuanceRateMicro(),
 	}
 
 	// Import domain entries into state
 	if len(result.domainEntries) > 0 {
 		n.state.ImportDomains(result.domainEntries)
 	}
+
+	// Restore the protocol supply counter. ApplySnapshot(db) has no *state.State,
+	// so the restore lives here where the state handle is available.
+	n.state.SetTotalSupply(snapshot.TotalSupply())
 
 	logger.Info("snapshot applied",
 		"round", result.lastCommittedRound,
@@ -241,6 +247,7 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		consensus.WithLastCommittedRound(result.lastCommittedRound),
 		consensus.WithListenerMode(),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
+		consensus.WithIssuanceRate(result.issuanceRateMicro),
 	}
 
 	if n.cfg.EpochLength > 0 {
@@ -273,6 +280,7 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		consensus.WithLastCommittedRound(result.lastCommittedRound),
 		consensus.WithMinValidators(n.cfg.MinValidators),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
+		consensus.WithIssuanceRate(result.issuanceRateMicro),
 	}
 
 	if n.cfg.GossipFanout > 0 {

@@ -76,6 +76,36 @@ func TestNewState(t *testing.T) {
 	}
 }
 
+// TestComputeStorageDeposit_FollowsLiveValidatorCount confirms the storage
+// deposit is computed against the live validator count when one is wired, and
+// that it tracks the count both as it grows and as it shrinks. This is the
+// linchpin that keeps the debited storage fee equal to the stamped deposit.
+func TestComputeStorageDeposit_FollowsLiveValidatorCount(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	count := 4
+	s.SetValidatorCount(func() int { return count })
+	s.SetStorageFees(1000, 9500, 0) // totalValidators fallback unused once live count is wired
+
+	// Singleton (replication 0) -> effRep == count -> deposit == storageFee.
+	if got := s.computeStorageDeposit(0); got != 1000 {
+		t.Errorf("deposit at 4 validators: got %d, want 1000", got)
+	}
+
+	// Grow the set: a replication-2 object pays 2/8 of the storage fee.
+	count = 8
+	if got := s.computeStorageDeposit(2); got != 250 {
+		t.Errorf("deposit at 8 validators, rep 2: got %d, want 250", got)
+	}
+
+	// Shrink the set: a replication-2 object now pays 2/2 of the storage fee.
+	count = 2
+	if got := s.computeStorageDeposit(2); got != 1000 {
+		t.Errorf("deposit at 2 validators, rep 2: got %d, want 1000", got)
+	}
+}
+
 func TestStateSetGetObject(t *testing.T) {
 	db := newTestStorage(t)
 	state := New(db, nil)
@@ -1136,6 +1166,87 @@ func TestApplyDeletedObjects_RefundCredits(t *testing.T) {
 	// Original 5000 + refund 9500 = 14500
 	if balance != 14500 {
 		t.Errorf("expected balance 14500, got %d", balance)
+	}
+}
+
+// TestApplyDeletedObjects_BurnsSupply verifies the 5% deletion burn decrements
+// total_supply: the locked deposit's refunded portion moves back to a coin
+// (supply unchanged for it), while the burned portion leaves supply entirely.
+func TestApplyDeletedObjects_BurnsSupply(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100) // 95% refund, 5% burn
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x75}
+	gasCoinID := Hash{0xEF}
+
+	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// fees 1000, refund = 1000*9500/10000 = 950, burned = 50.
+	if got := s.TotalSupply(); got != 9950 {
+		t.Errorf("total supply after burn: got %d, want 9950", got)
+	}
+}
+
+// TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit verifies the locked storage
+// deposit is fully accounted (burned) when there is no gas coin to receive the
+// refund, rather than silently leaking: total_supply must drop by the whole
+// objFees so it never overstates the coins backing it.
+func TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100)
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x76}
+
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	// tx has sender=owner but NO gas_coin: the deposit has no refund recipient.
+	tx := buildMinimalTx(owner)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// No gas coin → the full 1000 deposit is burned, none leaks.
+	if got := s.TotalSupply(); got != 9000 {
+		t.Errorf("total supply after no-gas-coin deletion: got %d, want 9000", got)
+	}
+}
+
+// TestApplyDeletedObjects_FailedRefundBurnsFullDeposit verifies that when the
+// refund credit cannot land (gas coin missing), the burn falls back to the full
+// deposit so supply is not reduced by only the burned remainder while the refund
+// vanishes.
+func TestApplyDeletedObjects_FailedRefundBurnsFullDeposit(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 9500, 100)
+	s.SetTotalSupply(10000)
+
+	owner := Hash{0xAA}
+	objID := Hash{0x77}
+	missingGasCoin := Hash{0xEE} // referenced but never stored
+
+	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
+
+	tx := buildMinimalTxWithGasCoin(owner, missingGasCoin)
+	output := buildPodOutputWithDeleted(objID)
+
+	s.applyDeletedObjects(output, tx)
+
+	// Refund cannot land → full 1000 burned (not just the 50 remainder).
+	if got := s.TotalSupply(); got != 9000 {
+		t.Errorf("total supply after failed refund: got %d, want 9000", got)
 	}
 }
 

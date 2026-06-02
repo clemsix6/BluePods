@@ -330,7 +330,10 @@ func (n *Node) handleStatus() ([]byte, error) {
 	}), nil
 }
 
-// handleFaucet mints tokens to a public key, mirroring the HTTP faucet handler.
+// handleFaucet grants tokens to a public key by splitting from the genesis
+// reserve coin. Handling is serialized so rapid sequential requests each
+// reference a distinct reserve-coin version and none lose the version race at
+// commit.
 func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 	req, err := network.DecodeFaucet(data)
 	if err != nil {
@@ -341,11 +344,14 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 		return network.EncodeFaucetResp(&network.FaucetResponse{Err: "amount must be > 0"}), nil
 	}
 
+	n.faucetMu.Lock()
+	defer n.faucetMu.Unlock()
+
 	txBytes := n.buildFaucetTx(req)
 
 	txHash, err := faucetTxHash(txBytes)
 	if err != nil {
-		return network.EncodeFaucetResp(&network.FaucetResponse{Err: "failed to build mint tx"}), nil
+		return network.EncodeFaucetResp(&network.FaucetResponse{Err: "failed to build faucet tx"}), nil
 	}
 
 	coinID := firstCreatedObjectID(txHash)
@@ -353,7 +359,7 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 	n.dag.SubmitTx(txBytes)
 	n.GossipTx(txBytes)
 
-	logger.Info("faucet mint", "amount", req.Amount)
+	logger.Info("faucet split", "amount", req.Amount)
 
 	return network.EncodeFaucetResp(&network.FaucetResponse{
 		Hash:   txHash,
@@ -361,9 +367,44 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 	}), nil
 }
 
-// buildFaucetTx builds a signed mint ATX granting tokens to the requester.
+// buildFaucetTx builds a signed split ATX moving tokens from the genesis reserve
+// coin to the requester. There is no user-callable mint; the faucet splits the
+// bootstrap node's reserve, paying its own gas from that same coin. Requests
+// fail naturally once the reserve is exhausted (insufficient balance). The caller
+// holds faucetMu, so the version it reserves is unique to this in-flight split.
 func (n *Node) buildFaucetTx(req *network.FaucetRequest) []byte {
-	return genesis.BuildMintTx(n.cfg.PrivateKey, n.systemPod, req.Amount, req.Pubkey)
+	owner := deriveOwner(n.cfg.PrivateKey)
+	reserveCoinID := genesis.GenesisCoinID(owner)
+	version := n.pickReserveVersion(n.reserveCoinVersion(reserveCoinID))
+
+	return genesis.BuildSplitTx(n.cfg.PrivateKey, n.systemPod, reserveCoinID, version, req.Pubkey, req.Amount)
+}
+
+// pickReserveVersion returns the reserve-coin version the next faucet split must
+// reference and advances the in-memory counter past it. It takes the larger of
+// the committed version (committedVersion) and the in-memory counter, so the
+// counter stays ahead of in-flight splits yet self-heals to committed state once
+// splits actually commit (or after a restart). The caller must hold faucetMu.
+func (n *Node) pickReserveVersion(committedVersion uint64) uint64 {
+	chosen := committedVersion
+	if n.faucetNextVersion > chosen {
+		chosen = n.faucetNextVersion
+	}
+
+	n.faucetNextVersion = chosen + 1
+
+	return chosen
+}
+
+// reserveCoinVersion reads the current version of the genesis reserve coin from
+// local state. Returns 0 when the coin is not yet stored locally.
+func (n *Node) reserveCoinVersion(reserveCoinID [32]byte) uint64 {
+	data := n.state.GetObject(reserveCoinID)
+	if data == nil {
+		return 0
+	}
+
+	return types.GetRootAsObject(data, 0).Version()
 }
 
 // handleDomainResolve resolves a domain name to an object ID via state.
@@ -385,7 +426,7 @@ func (n *Node) handleDomainResolve(data []byte) ([]byte, error) {
 	}), nil
 }
 
-// faucetTxHash extracts the embedded transaction hash from a mint ATX.
+// faucetTxHash extracts the embedded transaction hash from a faucet split ATX.
 func faucetTxHash(atxData []byte) ([]byte, error) {
 	atx := types.GetRootAsAttestedTransaction(atxData, 0)
 
@@ -403,7 +444,7 @@ func faucetTxHash(atxData []byte) ([]byte, error) {
 }
 
 // firstCreatedObjectID computes blake3(txHash || 0_u32_LE), the ID assigned to
-// the first object a transaction creates (the minted coin for the faucet).
+// the first object a transaction creates (the split-out coin for the faucet).
 func firstCreatedObjectID(txHash []byte) [32]byte {
 	var buf [36]byte
 	copy(buf[:32], txHash)

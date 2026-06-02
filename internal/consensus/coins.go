@@ -6,16 +6,39 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/state"
 	"BluePods/internal/types"
 )
 
-// CoinStore provides protocol-level access to coin objects.
+// CoinStore provides protocol-level access to coin objects and the supply counter.
 // Used for implicit fee deduction and aggregator credits without going through pod execution.
 type CoinStore interface {
 	// GetObject retrieves a serialized object by ID, or nil if not found.
 	GetObject(id [32]byte) []byte
 	// SetObject stores a serialized object.
 	SetObject(data []byte)
+	// DeleteObject removes an object by ID (used to destroy a delegation position
+	// on undelegate, a protocol mutation outside pod execution).
+	DeleteObject(id [32]byte)
+	// TotalSupply returns the protocol-maintained total token supply.
+	TotalSupply() uint64
+	// SetTotalSupply overwrites the total supply (genesis seeding, snapshot restore).
+	SetTotalSupply(supply uint64)
+	// AddSupply increases the total supply (protocol issuance).
+	AddSupply(amount uint64)
+	// SubSupply decreases the total supply (deletion burn, future slashing).
+	SubSupply(amount uint64)
+}
+
+// DelegationEnumerator returns the delegation positions targeting a validator.
+// It is a narrow read-only contract so consensus never needs general object
+// iteration on CoinStore; *state.State implements it (the consensus test stub
+// implements it too, so unit tests inject a mock rather than a *state.State).
+// The entry type lives in state, the package that owns object storage, so
+// consensus can name the result without state importing consensus (a cycle).
+type DelegationEnumerator interface {
+	// DelegationsFor returns every delegation position targeting validator.
+	DelegationsFor(validator [32]byte) []state.DelegationEntry
 }
 
 // readCoinBalance reads the balance from a serialized Coin object.

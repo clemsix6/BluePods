@@ -114,14 +114,19 @@ func createEpochObjects(t *testing.T, cli *client.Client, cluster *Cluster) [][3
 		wallets[i] = client.NewWallet()
 	}
 
-	// Faucet wallets
+	// Faucet wallets. Each wallet's fauceted coin is a singleton it owns, so it
+	// doubles as the gas coin for that wallet's object creations (mandatory
+	// gas-coin model).
+	gasCoins := make([][32]byte, len(wallets))
 	for i, w := range wallets {
 		pk := w.Pubkey()
 
-		_, err := cli.Faucet(pk, epochFaucetAmount)
+		coinID, err := cli.Faucet(pk, epochFaucetAmount)
 		if err != nil {
 			t.Fatalf("faucet wallet %d: %v", i, err)
 		}
+
+		gasCoins[i] = coinID
 	}
 
 	time.Sleep(epochTxWait)
@@ -132,7 +137,7 @@ func createEpochObjects(t *testing.T, cli *client.Client, cluster *Cluster) [][3
 		walletIdx := i % len(wallets)
 		metadata := []byte("epoch-object-" + string(rune('0'+i)))
 
-		objectID, err := wallets[walletIdx].CreateObject(cli, epochObjectReplication, metadata)
+		objectID, err := wallets[walletIdx].CreateObject(cli, epochObjectReplication, metadata, gasCoins[walletIdx])
 		if err != nil {
 			t.Fatalf("create object %d: %v", i, err)
 		}

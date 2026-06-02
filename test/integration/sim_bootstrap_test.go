@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"BluePods/client"
-	"BluePods/internal/genesis"
 )
 
 // TestSimBootstrap runs a single-node bootstrap simulation.
@@ -119,9 +118,10 @@ func runTxContentTests(t *testing.T, addr string, systemPod [32]byte) {
 	t.Run("ATP-1.22: valid tx returns 202", func(t *testing.T) {
 		w := client.NewWallet()
 		pk := w.Pubkey()
-		args := genesis.EncodeMintArgs(100, pk)
 
-		code, _ := SubmitRawBytes(addr, BuildValidTx(systemPod, "mint", args))
+		// The faucet is the canonical valid-tx path: it splits balance from the
+		// genesis reserve coin (there is no longer a user-callable mint).
+		code, _ := SubmitFaucet(addr, hex.EncodeToString(pk[:]), 100)
 		if code != statusAccepted {
 			t.Errorf("expected 202, got %d", code)
 		}
@@ -389,9 +389,15 @@ func runPodVMTests(t *testing.T, addr string, cli *client.Client) {
 		}
 	})
 
-	t.Run("ATP-16.3: mint large amount", func(t *testing.T) {
+	t.Run("ATP-16.3: faucet large amount", func(t *testing.T) {
+		// A large faucet split must stay within the genesis reserve
+		// (InitialMint - GenesisStake = 900,000,000 at the default mint). The old
+		// 1e12 amount exceeded the reserve and could never commit; cap it to a
+		// large amount the reserve can fund.
+		const largeAmount uint64 = 500_000_000
+
 		w := client.NewWallet()
-		coinID := FaucetAndWait(t, cli, w, 1_000_000_000_000, 15*time.Second)
+		coinID := FaucetAndWait(t, cli, w, largeAmount, 15*time.Second)
 
 		obj, err := cli.GetObject(coinID)
 		if err != nil {
@@ -399,8 +405,8 @@ func runPodVMTests(t *testing.T, addr string, cli *client.Client) {
 		}
 
 		balance := ReadBalance(obj.Content)
-		if balance != 1_000_000_000_000 {
-			t.Errorf("balance: got %d, want 1000000000000", balance)
+		if balance != largeAmount {
+			t.Errorf("balance: got %d, want %d", balance, largeAmount)
 		}
 	})
 }

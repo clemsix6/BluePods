@@ -7,16 +7,32 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/state"
 	"BluePods/internal/types"
 )
 
 // mockCoinStore is an in-memory CoinStore for tests.
 type mockCoinStore struct {
 	objects map[[32]byte][]byte
+	supply  uint64
 }
 
 func newMockCoinStore() *mockCoinStore {
 	return &mockCoinStore{objects: make(map[[32]byte][]byte)}
+}
+
+func (m *mockCoinStore) TotalSupply() uint64 { return m.supply }
+
+func (m *mockCoinStore) SetTotalSupply(supply uint64) { m.supply = supply }
+
+func (m *mockCoinStore) AddSupply(amount uint64) { m.supply += amount }
+
+func (m *mockCoinStore) SubSupply(amount uint64) {
+	if amount > m.supply {
+		m.supply = 0
+		return
+	}
+	m.supply -= amount
 }
 
 func (m *mockCoinStore) GetObject(id [32]byte) []byte {
@@ -33,6 +49,29 @@ func (m *mockCoinStore) SetObject(data []byte) {
 	var id [32]byte
 	copy(id[:], idBytes)
 	m.objects[id] = append([]byte(nil), data...)
+}
+
+func (m *mockCoinStore) DeleteObject(id [32]byte) {
+	delete(m.objects, id)
+}
+
+// DelegationsFor implements DelegationEnumerator over the in-memory objects so
+// consensus unit tests can exercise the enumeration path without a *state.State.
+func (m *mockCoinStore) DelegationsFor(validator [32]byte) []state.DelegationEntry {
+	var entries []state.DelegationEntry
+	for _, data := range m.objects {
+		obj := types.GetRootAsObject(data, 0)
+		gotValidator, amount, ok := decodeDelegationContent(obj.ContentBytes())
+		if !ok || gotValidator != validator {
+			continue
+		}
+
+		var delegator [32]byte
+		copy(delegator[:], obj.OwnerBytes())
+		entries = append(entries, state.DelegationEntry{Delegator: delegator, Amount: amount})
+	}
+
+	return entries
 }
 
 // buildTestCoinObject creates a serialized Coin object with given properties.

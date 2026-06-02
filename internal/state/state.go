@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
@@ -21,6 +22,7 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
+	db              *storage.Storage                                                      // db is the underlying storage, retained for protocol-counter persistence
 	objects         *objectStore                                                          // objects is the object storage
 	domains         *domainStore                                                          // domains stores domain name → ObjectID mappings
 	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
@@ -29,18 +31,29 @@ type State struct {
 	signObject      func(id [32]byte, content []byte, version uint64, replication uint16) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
-	storageFee       uint64 // storageFee is the per-object storage fee (0 = disabled)
-	storageRefundBPS uint64 // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
-	totalValidators  int    // totalValidators is the current validator count for fee calculation
+	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
+	storageRefundBPS uint64     // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
+	totalValidators  int        // totalValidators is the fallback validator count when validatorCount is unset
+	validatorCount   func() int // validatorCount returns the live validator count; set to the consensus set so the storage-deposit formula matches consensus
+
+	// Supply accounting.
+	supplyMu    sync.Mutex // supplyMu guards totalSupply and its persistence
+	totalSupply uint64     // totalSupply is the protocol-maintained total token supply
 }
 
 // New creates a new State with the given storage and podvm pool.
+// The total-supply counter is loaded from storage so it survives a reopen.
 func New(db *storage.Storage, pods *podvm.Pool) *State {
-	return &State{
+	s := &State{
+		db:      db,
 		objects: newObjectStore(db),
 		domains: newDomainStore(db),
 		pods:    pods,
 	}
+
+	s.loadSupply()
+
+	return s
 }
 
 // ResolveDomain resolves a domain name to its ObjectID.
@@ -81,10 +94,19 @@ func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uin
 
 // SetStorageFees configures protocol-level storage deposits and refunds.
 // When storageFee > 0, created objects get a storage deposit in their fees field.
+// totalValidators is only a fallback; SetValidatorCount supplies the live count.
 func (s *State) SetStorageFees(storageFee uint64, storageRefundBPS uint64, totalValidators int) {
 	s.storageFee = storageFee
 	s.storageRefundBPS = storageRefundBPS
 	s.totalValidators = totalValidators
+}
+
+// SetValidatorCount wires a live validator-count source for the storage-deposit
+// formula. It must be bound to the SAME validator set consensus reads (its Len),
+// so the deposit stamped here always equals the storage fee debited at commit,
+// across both validator-set growth and shrinkage.
+func (s *State) SetValidatorCount(fn func() int) {
+	s.validatorCount = fn
 }
 
 // Execute runs an attested transaction and updates the state.
@@ -202,6 +224,12 @@ func (s *State) GetObject(id [32]byte) []byte {
 func (s *State) SetObject(data []byte) {
 	id := extractObjectID(data)
 	s.objects.set(id, data)
+}
+
+// DeleteObject removes an object by ID. Used by consensus to destroy a
+// delegation position on undelegate (a protocol mutation, not pod execution).
+func (s *State) DeleteObject(id [32]byte) {
+	s.objects.delete(id)
 }
 
 // serializeInput builds the FlatBuffers PodExecuteInput.
@@ -530,6 +558,18 @@ func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Obj
 // applyDeletedObjects removes deleted objects with ownership verification.
 // Protocol-level ownership check: only the object owner can delete.
 // Computes refund (95% of fees) and credits the sender's gas_coin.
+//
+// Determinism limit: the deletion supply/refund accounting here (SubSupply for
+// the burn, creditGasCoin for the refund) runs on the SHARDED execution path
+// (only object holders execute), so it is deterministic ONLY for singleton
+// objects, which every node holds and therefore applies identically. The current
+// system pod deletes no objects and coins are singletons, so this is latent today.
+//
+// TODO: before any pod is allowed to delete REPLICATED objects carrying a storage
+// deposit, move this supply/refund accounting to a deterministic all-nodes path
+// driven by a committed/attested deletion set, applied identically on every node.
+// Otherwise total_supply and coin balances will diverge across nodes (a fork),
+// because holders would burn/refund while non-holders would not.
 func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Transaction) {
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
@@ -574,47 +614,85 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 			continue
 		}
 
-		// Compute refund and credit gas_coin
-		objFees := obj.Fees()
-		if objFees > 0 && hasGasCoin && s.storageRefundBPS > 0 {
-			refund := objFees * s.storageRefundBPS / 10000
-			s.creditGasCoin(gasCoinID, refund)
-		}
+		// The full objFees was locked supply, so on deletion it must be fully
+		// accounted: part refunded to a coin (stays in supply) and the remainder
+		// burned (leaves supply). It must never silently vanish, or total_supply
+		// would overstate the coins backing it.
+		s.settleDeletionDeposit(obj.Fees(), gasCoinID, hasGasCoin)
 
 		s.objects.delete(id)
 	}
 }
 
+// settleDeletionDeposit fully accounts a deleted object's locked storage deposit:
+// it refunds storageRefundBPS to the gas_coin and burns the remainder. The burn
+// is gated on the refund actually landing (creditGasCoin succeeding), so a failed
+// refund never reduces supply while the refund vanishes. When there is no gas
+// coin to receive the refund (or refunds are disabled), the WHOLE deposit is
+// burned rather than silently leaked, keeping total_supply conserved.
+func (s *State) settleDeletionDeposit(objFees uint64, gasCoinID Hash, hasGasCoin bool) {
+	if objFees == 0 {
+		return
+	}
+
+	if !hasGasCoin || s.storageRefundBPS == 0 {
+		s.SubSupply(objFees) // no recipient: burn the full locked deposit
+		return
+	}
+
+	refund := objFees * s.storageRefundBPS / 10000
+	burned := objFees - refund
+
+	// Only the refund leaves supply (into a coin); gate the burn on it landing.
+	if !s.creditGasCoin(gasCoinID, refund) {
+		s.SubSupply(objFees) // refund failed: burn the full deposit, none leaks
+		return
+	}
+
+	s.SubSupply(burned)
+}
+
 // computeStorageDeposit calculates the storage deposit for a new object.
+// It reads the live validator count (so the deposit matches the storage fee
+// debited at commit), falling back to the init-time count if none is wired.
 func (s *State) computeStorageDeposit(replication uint16) uint64 {
-	if s.storageFee == 0 || s.totalValidators == 0 {
+	total := s.totalValidators
+	if s.validatorCount != nil {
+		total = s.validatorCount()
+	}
+
+	if s.storageFee == 0 || total == 0 {
 		return 0
 	}
 
 	effRep := int(replication)
 	if replication == 0 {
-		effRep = s.totalValidators
+		effRep = total
 	}
 
-	return uint64(effRep) * s.storageFee / uint64(s.totalValidators)
+	return uint64(effRep) * s.storageFee / uint64(total)
 }
 
-// creditGasCoin adds a refund amount to a gas_coin balance.
-// Version is NOT incremented (implicit protocol modification).
-func (s *State) creditGasCoin(coinID Hash, amount uint64) {
+// creditGasCoin adds a refund amount to a gas_coin balance and reports whether
+// the credit landed. It returns false when the coin is missing, malformed, or
+// would overflow, so the caller can avoid burning supply against a refund that
+// never reached a coin. A zero amount is a no-op and reports success (there is
+// nothing to credit and nothing to leak). Version is NOT incremented (implicit
+// protocol modification).
+func (s *State) creditGasCoin(coinID Hash, amount uint64) bool {
 	if amount == 0 {
-		return
+		return true
 	}
 
 	data := s.objects.get(coinID)
 	if data == nil {
-		return
+		return false
 	}
 
 	obj := types.GetRootAsObject(data, 0)
 	content := obj.ContentBytes()
 	if len(content) < 8 {
-		return
+		return false
 	}
 
 	balance := binary.LittleEndian.Uint64(content[:8])
@@ -622,7 +700,7 @@ func (s *State) creditGasCoin(coinID Hash, amount uint64) {
 
 	// Overflow check
 	if newBalance < balance {
-		return
+		return false
 	}
 
 	// Rebuild with new balance
@@ -648,6 +726,7 @@ func (s *State) creditGasCoin(coinID Hash, amount uint64) {
 	builder.Finish(offset)
 
 	s.objects.set(coinID, builder.FinishedBytes())
+	return true
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects

@@ -33,6 +33,7 @@ func cmdObjectCreate(e *env, args []string) error {
 	fs := flag.NewFlagSet("object create", flag.ContinueOnError)
 	replication := fs.Uint("replication", 0, "replication factor (number of holders)")
 	content := fs.String("content", "", "initial content string")
+	gasCoinHex := fs.String("gas-coin", "", "hex ID of an owned coin to pay gas")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -40,6 +41,11 @@ func cmdObjectCreate(e *env, args []string) error {
 
 	if *replication == 0 {
 		return fmt.Errorf("--replication must be > 0 for a replicated object")
+	}
+
+	gasCoin, err := parseHash(*gasCoinHex)
+	if err != nil {
+		return fmt.Errorf("parse --gas-coin:\n%w", err)
 	}
 
 	cli, err := connect(e)
@@ -52,7 +58,7 @@ func cmdObjectCreate(e *env, args []string) error {
 		return err
 	}
 
-	objectID, err := w.CreateObject(cli, uint16(*replication), []byte(*content))
+	objectID, err := w.CreateObject(cli, uint16(*replication), []byte(*content), gasCoin)
 	if err != nil {
 		return fmt.Errorf("create object:\n%w", err)
 	}
@@ -93,14 +99,21 @@ func cmdObjectShow(e *env, args []string) error {
 }
 
 // cmdObjectSet overwrites an object's content through the daemon aggregation path.
+// The first two positional args are the object ID and the new content; a trailing
+// gas-coin ID (an owned coin) pays the transaction's gas.
 func cmdObjectSet(e *env, args []string) error {
-	if len(args) != 2 {
-		return fmt.Errorf("usage: object set <id-hex> <STRING>")
+	if len(args) != 3 {
+		return fmt.Errorf("usage: object set <id-hex> <STRING> <gas-coin-hex>")
 	}
 
 	id, err := parseHash(args[0])
 	if err != nil {
 		return fmt.Errorf("parse object id:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
 	}
 
 	cli, err := connect(e)
@@ -113,7 +126,7 @@ func cmdObjectSet(e *env, args []string) error {
 		return err
 	}
 
-	if err := w.SetObject(cli, id, []byte(args[1])); err != nil {
+	if err := w.SetObject(cli, id, []byte(args[1]), gasCoin); err != nil {
 		return fmt.Errorf("set object:\n%w", err)
 	}
 
@@ -123,9 +136,10 @@ func cmdObjectSet(e *env, args []string) error {
 }
 
 // cmdObjectTransfer transfers object ownership through the daemon aggregation path.
+// The trailing gas-coin ID (an owned coin) pays the transaction's gas.
 func cmdObjectTransfer(e *env, args []string) error {
-	if len(args) != 2 {
-		return fmt.Errorf("usage: object transfer <id-hex> <to-pubkey-hex>")
+	if len(args) != 3 {
+		return fmt.Errorf("usage: object transfer <id-hex> <to-pubkey-hex> <gas-coin-hex>")
 	}
 
 	id, err := parseHash(args[0])
@@ -138,6 +152,11 @@ func cmdObjectTransfer(e *env, args []string) error {
 		return fmt.Errorf("parse recipient:\n%w", err)
 	}
 
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
 	cli, err := connect(e)
 	if err != nil {
 		return err
@@ -148,7 +167,7 @@ func cmdObjectTransfer(e *env, args []string) error {
 		return err
 	}
 
-	if err := w.TransferObject(cli, id, recipient); err != nil {
+	if err := w.TransferObject(cli, id, recipient, gasCoin); err != nil {
 		return fmt.Errorf("transfer object:\n%w", err)
 	}
 

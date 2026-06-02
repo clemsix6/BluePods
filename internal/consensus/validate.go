@@ -170,11 +170,13 @@ func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 }
 
 // validateParentsQuorum ensures parents reference at least 1 known validator.
-// This is a minimal sanity check for received vertices. The producing validator
-// already enforced BFT quorum from its own perspective. Different validators may
-// have different validator set sizes during convergence, so we cannot enforce the
-// receiving node's quorum threshold on vertices produced by others.
-// Local production quorum is enforced separately in hasQuorumFromRound.
+// This is intentionally a presence check, not the authoritative quorum. The
+// authoritative quorum is stake-weighted (3*cappedSum >= 2*total over the epoch
+// holder snapshot) and is enforced at production in hasQuorumFromRound and at
+// commit in isRoundCommitted. A receiving node cannot recompute another node's
+// stake-weighted quorum during convergence (validator sets and stakes may differ
+// transiently), so here it only confirms the vertex links at least one producer
+// it recognizes; the producing validator already enforced the real quorum.
 func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	round := v.Round()
 
@@ -212,7 +214,9 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	return nil
 }
 
-// validateFeeSummary verifies the vertex fee_summary by recalculating from tx headers.
+// validateFeeSummary verifies the vertex fee_summary by recalculating from tx
+// headers, over the consumed portion only (in lockstep with buildFeeSummary).
+// The storage deposit is locked in the object, not pooled, so it is not summarized.
 // Skipped if fee system is not active (feeParams nil).
 func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 	if d.feeParams == nil {
@@ -242,8 +246,10 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 			continue
 		}
 
-		fee := d.calculateTxFee(tx, &atx)
-		split := SplitFee(fee, *d.feeParams)
+		// Summarize the consumed portion only, in lockstep with buildFeeSummary;
+		// the storage deposit is locked in the object and is not pooled.
+		consumed, _ := d.calculateTxFeeSplit(tx, &atx)
+		split := SplitFee(consumed, *d.feeParams)
 
 		totalFees += split.Total
 		totalBurned += split.Burned

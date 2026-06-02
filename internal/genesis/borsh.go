@@ -2,12 +2,12 @@ package genesis
 
 import "encoding/binary"
 
-// EncodeMintArgs encodes mint arguments in Borsh format.
-// Format: u64 amount (little-endian) + [u8; 32] owner
-func EncodeMintArgs(amount uint64, owner [32]byte) []byte {
+// EncodeSplitArgs encodes split arguments in Borsh format.
+// Format: u64 amount (little-endian) + [u8; 32] new_owner
+func EncodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 	buf := make([]byte, 8+32)
 	binary.LittleEndian.PutUint64(buf[0:8], amount)
-	copy(buf[8:], owner[:])
+	copy(buf[8:], newOwner[:])
 
 	return buf
 }
@@ -37,31 +37,63 @@ func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
 // Returns empty/nil values if data is malformed.
 // The blsPubkey is optional for backward compatibility (returns nil if absent).
 func DecodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey []byte) {
-	if len(data) < 4 {
-		return "", nil
+	quicAddr, blsPubkey, _ = decodeRegisterValidatorArgs(data)
+	return quicAddr, blsPubkey
+}
+
+// DecodeRegisterValidatorRewardCoin decodes the optional reward-coin designation
+// that trails a register_validator's args (a Borsh Vec<u8> after the BLS key). It
+// returns ok=false when no 32-byte reward coin is present, so an absent
+// designation is distinguishable from a zero one.
+func DecodeRegisterValidatorRewardCoin(data []byte) (rewardCoin [32]byte, ok bool) {
+	_, _, raw := decodeRegisterValidatorArgs(data)
+	if len(raw) != 32 {
+		return rewardCoin, false
 	}
 
-	// Read quic_address length
+	copy(rewardCoin[:], raw)
+	return rewardCoin, true
+}
+
+// decodeRegisterValidatorArgs parses the quic address, the optional BLS key, and
+// the optional reward-coin bytes from register_validator args. Each trailing
+// field is an independent Borsh Vec<u8> (u32 length prefix + bytes); a missing
+// field yields a nil slice so older two-field args decode unchanged.
+func decodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey, rewardCoin []byte) {
+	if len(data) < 4 {
+		return "", nil, nil
+	}
+
 	quicLen := binary.LittleEndian.Uint32(data[0:4])
 	if len(data) < int(4+quicLen) {
-		return "", nil
+		return "", nil, nil
 	}
-
 	quicAddr = string(data[4 : 4+quicLen])
 
-	// Read bls_pubkey (optional)
 	offset := 4 + quicLen
+	blsPubkey, offset, ok := readBorshVec(data, offset)
+	if !ok {
+		return quicAddr, nil, nil
+	}
+
+	rewardCoin, _, _ = readBorshVec(data, offset)
+	return quicAddr, blsPubkey, rewardCoin
+}
+
+// readBorshVec reads a Borsh Vec<u8> (u32 little-endian length + bytes) at offset.
+// It returns the bytes, the offset past the field, and ok=false when the field is
+// absent or truncated.
+func readBorshVec(data []byte, offset uint32) (value []byte, next uint32, ok bool) {
 	if uint32(len(data)) < offset+4 {
-		return quicAddr, nil
+		return nil, offset, false
 	}
 
-	blsLen := binary.LittleEndian.Uint32(data[offset : offset+4])
-	if uint32(len(data)) < offset+4+blsLen {
-		return quicAddr, nil
+	length := binary.LittleEndian.Uint32(data[offset : offset+4])
+	if uint32(len(data)) < offset+4+length {
+		return nil, offset, false
 	}
 
-	blsPubkey = make([]byte, blsLen)
-	copy(blsPubkey, data[offset+4:offset+4+blsLen])
-
-	return quicAddr, blsPubkey
+	value = make([]byte, length)
+	copy(value, data[offset+4:offset+4+length])
+	return value, offset + 4 + length, true
 }

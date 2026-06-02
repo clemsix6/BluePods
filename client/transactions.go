@@ -11,7 +11,19 @@ import (
 	"BluePods/internal/genesis"
 )
 
-// Split splits a coin, sending `amount` to `recipient`.
+const (
+	// minClientGas mirrors the fee system's minimum gas (consensus FeeParams.MinGas).
+	// A transaction below it is rejected at commit, so the client never goes lower.
+	minClientGas uint64 = 100
+
+	// clientMaxGas is the default gas budget the SDK attaches to every value-bearing
+	// transaction. It sits above minClientGas and comfortably covers the compute,
+	// transit, and storage components of a single coin or object operation.
+	clientMaxGas uint64 = 1000
+)
+
+// Split splits a coin, sending `amount` to `recipient`. The operated coin is a
+// singleton owned by the sender, so it doubles as the transaction's gas coin.
 // Returns the new coinID created for the recipient.
 func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]byte) ([32]byte, error) {
 	coin := w.coins[coinID]
@@ -20,9 +32,7 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 	}
 
 	args := encodeSplitArgs(amount, recipient)
-	mutableRefs := buildMutableRef(coinID, coin.Version)
-
-	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "split", args, []uint16{0}, mutableRefs, nil)
+	txBytes, txHash := w.buildCoinTx(c.systemPod, "split", args, []uint16{0}, coinID, coin.Version)
 	newCoinID := computeNewObjectID(txHash)
 
 	if err := c.submit(txBytes); err != nil {
@@ -32,7 +42,7 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 	return newCoinID, nil
 }
 
-// Transfer transfers a coin to a new owner.
+// Transfer transfers a coin to a new owner. The operated coin pays its own gas.
 func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error {
 	coin := w.coins[coinID]
 	if coin == nil {
@@ -40,9 +50,7 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 	}
 
 	args := encodeTransferArgs(recipient)
-	mutableRefs := buildMutableRef(coinID, coin.Version)
-
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer", args, nil, mutableRefs, nil)
+	txBytes, _ := w.buildCoinTx(c.systemPod, "transfer", args, nil, coinID, coin.Version)
 
 	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit transfer tx:\n%w", err)
@@ -52,11 +60,13 @@ func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error 
 }
 
 // CreateObject creates a new replicated object with configurable replication.
+// An object operation creates no spendable coin, so the caller supplies an owned
+// singleton coin (gasCoinID) to pay the transaction's gas.
 // Returns the predicted object ID.
-func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte) ([32]byte, error) {
+func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte, gasCoinID [32]byte) ([32]byte, error) {
 	args := encodeCreateObjectArgs(w.Pubkey(), replication, metadata)
 
-	txBytes, txHash := buildSignedTx(w.privKey, c.systemPod, "create_object", args, []uint16{replication}, nil, nil)
+	txBytes, txHash := w.buildObjectTx(c.systemPod, "create_object", args, []uint16{replication}, nil, gasCoinID)
 	objectID := computeNewObjectID(txHash)
 
 	if err := c.submit(txBytes); err != nil {
@@ -66,8 +76,9 @@ func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte) ([
 	return objectID, nil
 }
 
-// TransferObject transfers an object to a new owner.
-func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte) error {
+// TransferObject transfers an object to a new owner. The caller supplies an owned
+// singleton coin (gasCoinID) to pay gas, since the object itself is not a coin.
+func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte, gasCoinID [32]byte) error {
 	obj, err := c.GetObject(objectID)
 	if err != nil {
 		return fmt.Errorf("get object:\n%w", err)
@@ -76,7 +87,7 @@ func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte
 	args := encodeTransferArgs(recipient)
 	mutableRefs := buildMutableRef(objectID, obj.Version)
 
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "transfer_object", args, nil, mutableRefs, nil)
+	txBytes, _ := w.buildObjectTx(c.systemPod, "transfer_object", args, nil, mutableRefs, gasCoinID)
 
 	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit transfer_object tx:\n%w", err)
@@ -88,8 +99,9 @@ func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte
 // SetObject overwrites the content of a replicated object. The object is placed
 // in the transaction's mutable refs at its current version, so submission goes
 // through the daemon's off-chain aggregation path (holder attestation collection).
-// Ownership is enforced by the protocol's mutable-ref owner check.
-func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte) error {
+// Ownership is enforced by the protocol's mutable-ref owner check. The caller
+// supplies an owned singleton coin (gasCoinID) to pay gas.
+func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte, gasCoinID [32]byte) error {
 	obj, err := c.GetObject(objectID)
 	if err != nil {
 		return fmt.Errorf("get object:\n%w", err)
@@ -98,13 +110,29 @@ func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte) error {
 	args := encodeSetObjectArgs(objectID, content)
 	mutableRefs := buildMutableRef(objectID, obj.Version)
 
-	txBytes, _ := buildSignedTx(w.privKey, c.systemPod, "set_object", args, nil, mutableRefs, nil)
+	txBytes, _ := w.buildObjectTx(c.systemPod, "set_object", args, nil, mutableRefs, gasCoinID)
 
 	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit set_object tx:\n%w", err)
 	}
 
 	return nil
+}
+
+// buildCoinTx builds a signed coin operation that pays its own gas from the
+// operated coin. The coin is referenced as a mutable ref (at coinVersion) and as
+// the gas coin, so the same singleton funds the fee. Returns the tx bytes and hash.
+func (w *Wallet) buildCoinTx(pod [32]byte, funcName string, args []byte, createdReps []uint16, coinID [32]byte, coinVersion uint64) ([]byte, [32]byte) {
+	mutableRefs := buildMutableRef(coinID, coinVersion)
+
+	return buildSignedGasTx(w.privKey, pod, funcName, args, createdReps, mutableRefs, nil, coinID)
+}
+
+// buildObjectTx builds a signed object operation that pays gas from a separately
+// owned singleton coin supplied by the caller. The object refs (if any) are
+// passed through unchanged. Returns the tx bytes and hash.
+func (w *Wallet) buildObjectTx(pod [32]byte, funcName string, args []byte, createdReps []uint16, mutableRefs []genesis.ObjectRefData, gasCoinID [32]byte) ([]byte, [32]byte) {
+	return buildSignedGasTx(w.privKey, pod, funcName, args, createdReps, mutableRefs, nil, gasCoinID)
 }
 
 // DeregisterValidator sends a deregister_validator transaction.
@@ -191,6 +219,38 @@ func buildSignedTx(
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableWithRefs(
 		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, 0, nil, hash, sig, mutableRefs, readRefs,
+	)
+	builder.Finish(txOffset)
+
+	return builder.FinishedBytes(), hash
+}
+
+// buildSignedGasTx builds a signed raw Transaction that pays gas from gasCoin.
+// It mirrors buildSignedTx but threads the client's default gas budget and the
+// gas-coin ID into the canonical body, so the transaction is no longer rejected
+// at commit for lacking a funded gas coin.
+// Returns the serialized Transaction bytes and the transaction hash.
+func buildSignedGasTx(
+	privKey ed25519.PrivateKey,
+	pod [32]byte,
+	funcName string,
+	args []byte,
+	createdObjectsReplication []uint16,
+	mutableRefs []genesis.ObjectRefData,
+	readRefs []genesis.ObjectRefData,
+	gasCoin [32]byte,
+) ([]byte, [32]byte) {
+	pubKey := privKey.Public().(ed25519.PublicKey)
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
+		pubKey, pod, funcName, args, createdObjectsReplication, 0, clientMaxGas, gasCoin[:], mutableRefs, readRefs,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(privKey, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableWithRefs(
+		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, clientMaxGas, gasCoin[:], hash, sig, mutableRefs, readRefs,
 	)
 	builder.Finish(txOffset)
 

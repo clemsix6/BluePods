@@ -66,7 +66,7 @@ func TestCreateSnapshot_EmptyStorage(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestCreateSnapshot_WithObjects(t *testing.T) {
 		t.Fatalf("store obj2: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestCreateSnapshot_IgnoresConsensusData(t *testing.T) {
 		t.Fatalf("store meta: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestApplySnapshot_EmptySnapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create empty snapshot
-	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestApplySnapshot_WithObjects(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestChecksumVerification_Valid(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -294,6 +294,178 @@ func TestChecksumVerification_Valid(t *testing.T) {
 	}
 }
 
+// TestSnapshot_TotalSupplyRoundtrip confirms total_supply survives a snapshot
+// round-trip and is covered by the checksum (tampering it fails verification).
+func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	data, err := CreateSnapshot(db, 7, nil, nil, nil, nil, 12345, 0)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot: %v", err)
+	}
+
+	if got := snapshot.TotalSupply(); got != 12345 {
+		t.Errorf("restored total_supply: got %d, want 12345", got)
+	}
+
+	// Tamper the total_supply field in place; the checksum must catch it.
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+	tamperedSnap := types.GetRootAsSnapshot(tampered, 0)
+	if !tamperedSnap.MutateTotalSupply(99999) {
+		t.Fatal("MutateTotalSupply failed")
+	}
+
+	if _, err := ApplySnapshot(db2, tampered); err == nil {
+		t.Fatal("ApplySnapshot must fail when total_supply is tampered (not checksum-covered)")
+	}
+}
+
+// TestSnapshot_IssuanceRateRoundtrip confirms the thermostat issuance rate
+// survives a snapshot round-trip and is covered by the checksum (tampering it
+// fails verification). The rate is stateful (the loop steps from it), so it must
+// persist rather than be re-derived.
+func TestSnapshot_IssuanceRateRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	data, err := CreateSnapshot(db, 9, nil, nil, nil, nil, 0, 18)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot: %v", err)
+	}
+
+	if got := snapshot.IssuanceRateMicro(); got != 18 {
+		t.Errorf("restored issuance_rate_micro: got %d, want 18", got)
+	}
+
+	// Tamper the issuance_rate_micro field in place; the checksum must catch it.
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+	tamperedSnap := types.GetRootAsSnapshot(tampered, 0)
+	if !tamperedSnap.MutateIssuanceRateMicro(99999) {
+		t.Fatal("MutateIssuanceRateMicro failed")
+	}
+
+	if _, err := ApplySnapshot(db2, tampered); err == nil {
+		t.Fatal("ApplySnapshot must fail when issuance_rate_micro is tampered (not checksum-covered)")
+	}
+}
+
+// TestSnapshot_ValidatorStakeRoundtrip confirms that two validators with
+// distinct self-stake, delegated total, and jail flag survive an encode/decode
+// round-trip with both records intact (a single-validator test would not catch
+// a loop-guard misalignment), and that the stake fields are checksum-covered.
+func TestSnapshot_ValidatorStakeRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	v1 := &consensus.ValidatorInfo{
+		QUICAddr:       "127.0.0.1:9001",
+		SelfStake:      111,
+		DelegatedTotal: 222,
+		Jailed:         false,
+	}
+	v1.Pubkey[0] = 1
+	v2 := &consensus.ValidatorInfo{
+		QUICAddr:       "127.0.0.1:9002",
+		SelfStake:      333,
+		DelegatedTotal: 444,
+		Jailed:         true,
+	}
+	v2.Pubkey[0] = 2
+
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot (checksum must cover stake): %v", err)
+	}
+
+	extracted := ExtractValidators(snapshot)
+	if len(extracted) != 2 {
+		t.Fatalf("extracted validators count = %d, want 2 (loop guard misalignment?)", len(extracted))
+	}
+
+	// Sorted by pubkey: v1 (pubkey[0]=1) first, v2 (pubkey[0]=2) second.
+	if extracted[0].SelfStake != 111 || extracted[0].DelegatedTotal != 222 || extracted[0].Jailed {
+		t.Errorf("v1 stake not preserved: self=%d delegated=%d jailed=%v",
+			extracted[0].SelfStake, extracted[0].DelegatedTotal, extracted[0].Jailed)
+	}
+	if extracted[1].SelfStake != 333 || extracted[1].DelegatedTotal != 444 || !extracted[1].Jailed {
+		t.Errorf("v2 stake not preserved: self=%d delegated=%d jailed=%v",
+			extracted[1].SelfStake, extracted[1].DelegatedTotal, extracted[1].Jailed)
+	}
+}
+
+// TestSnapshot_RewardCoinRoundtrip checks the validator RewardCoin designation
+// survives an encode/decode round-trip and is covered by the snapshot checksum
+// (it rides encodeValidators, which the checksum hashes).
+func TestSnapshot_RewardCoinRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	v1 := &consensus.ValidatorInfo{
+		QUICAddr:  "127.0.0.1:9001",
+		SelfStake: 111,
+	}
+	v1.Pubkey[0] = 1
+	v1.RewardCoin = [32]byte{0xAA, 0xBB, 0xCC}
+	v2 := &consensus.ValidatorInfo{
+		QUICAddr:  "127.0.0.1:9002",
+		SelfStake: 333,
+	}
+	v2.Pubkey[0] = 2
+	// v2 leaves RewardCoin unset (zero) to cover the absent-designation case.
+
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot (checksum must cover reward coin): %v", err)
+	}
+
+	extracted := ExtractValidators(snapshot)
+	if len(extracted) != 2 {
+		t.Fatalf("extracted validators count = %d, want 2", len(extracted))
+	}
+
+	if extracted[0].RewardCoin != ([32]byte{0xAA, 0xBB, 0xCC}) {
+		t.Errorf("v1 reward coin not preserved: %x", extracted[0].RewardCoin)
+	}
+	if extracted[1].RewardCoin != ([32]byte{}) {
+		t.Errorf("v2 reward coin should be zero (unset): %x", extracted[1].RewardCoin)
+	}
+}
+
 func TestChecksumVerification_Corrupted(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
@@ -304,7 +476,7 @@ func TestChecksumVerification_Corrupted(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -339,7 +511,7 @@ func TestFullRoundtrip_CreateCompressDecompressApply(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -407,8 +579,8 @@ func TestDeterministicChecksum(t *testing.T) {
 	db2.Set(id2[:], obj2)
 	db2.Set(id1[:], obj1)
 
-	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil)
-	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil)
+	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil, 0, 0)
+	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil, 0, 0)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)
@@ -432,7 +604,7 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	v2.Pubkey[0] = 2
 	validators := []*consensus.ValidatorInfo{v1, v2}
 
-	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil)
+	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -466,12 +638,12 @@ func TestSnapshotReplicationAffectsChecksum(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -498,7 +670,7 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil)
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -538,7 +710,7 @@ func TestSnapshot_WithDomains(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains)
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -576,12 +748,12 @@ func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -611,7 +783,7 @@ func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
 		t.Fatalf("store domain: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -633,8 +805,8 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	v2 := &consensus.ValidatorInfo{}
 	v2.Pubkey[0] = 2
 
-	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil)
-	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil)
+	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil, 0, 0)
+	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil, 0, 0)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)

@@ -26,6 +26,20 @@ func rebuildTx(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.
 		gasCoinVec = builder.CreateByteVector(gc)
 	}
 
+	// Carry the sponsorship fields (absent for a self-paid tx) so a sponsored
+	// transaction whose ATX is assembled here keeps its fee_payer binding and
+	// sponsor signature; otherwise the recomputed body hash would no longer match
+	// the declared hash and the tx would be rejected at commit.
+	var feePayerVec flatbuffers.UOffsetT
+	if fp := tx.FeePayerBytes(); len(fp) > 0 {
+		feePayerVec = builder.CreateByteVector(fp)
+	}
+
+	var sponsorSigVec flatbuffers.UOffsetT
+	if ss := tx.SponsorSignatureBytes(); len(ss) > 0 {
+		sponsorSigVec = builder.CreateByteVector(ss)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
@@ -41,6 +55,15 @@ func rebuildTx(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.
 	}
 	if gasCoinVec != 0 {
 		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
+	if feePayerVec != 0 {
+		types.TransactionAddFeePayer(builder, feePayerVec)
+	}
+	if sponsorSigVec != 0 {
+		types.TransactionAddSponsorSignature(builder, sponsorSigVec)
+	}
+	if vu := tx.ValidUntil(); vu != 0 {
+		types.TransactionAddValidUntil(builder, vu)
 	}
 	if mutRefsVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutRefsVec)

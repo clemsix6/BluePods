@@ -66,8 +66,9 @@ func runSetObjectContent(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
 
 	owner := client.NewWallet()
+	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("v1"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("v1"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -84,7 +85,7 @@ func runSetObjectContent(t *testing.T, cli *client.Client, cluster *Cluster) {
 		t.Fatalf("initial content: got %q, want %q", got, "v1")
 	}
 
-	if err := owner.SetObject(cli, objectID, []byte("v2")); err != nil {
+	if err := owner.SetObject(cli, objectID, []byte("v2"), gasCoin); err != nil {
 		t.Fatalf("set object through aggregation path: %v", err)
 	}
 
@@ -140,8 +141,9 @@ func runEndToEndAggregation(t *testing.T, cli *client.Client, cluster *Cluster) 
 	t.Helper()
 
 	owner := client.NewWallet()
+	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("e2e-aggregation"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("e2e-aggregation"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -155,7 +157,7 @@ func runEndToEndAggregation(t *testing.T, cli *client.Client, cluster *Cluster) 
 	}
 
 	recipient := client.NewWallet()
-	if err := owner.TransferObject(cli, objectID, recipient.Pubkey()); err != nil {
+	if err := owner.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
 		t.Fatalf("transfer object through aggregation path: %v", err)
 	}
 
@@ -251,8 +253,9 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	t.Helper()
 
 	owner := client.NewWallet()
+	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("version-race"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("version-race"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -272,11 +275,11 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err1 = owner.TransferObject(cli, objectID, r1.Pubkey())
+		err1 = owner.TransferObject(cli, objectID, r1.Pubkey(), gasCoin)
 	}()
 	go func() {
 		defer wg.Done()
-		err2 = owner.TransferObject(cli, objectID, r2.Pubkey())
+		err2 = owner.TransferObject(cli, objectID, r2.Pubkey(), gasCoin)
 	}()
 	wg.Wait()
 
@@ -312,8 +315,9 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	t.Helper()
 
 	owner := client.NewWallet()
+	ownerGas := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("cold-holder"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("cold-holder"), ownerGas)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -325,7 +329,8 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	// successful commit proves a quorum of holders served a signature for the
 	// current version with no cold-window gap.
 	mid := client.NewWallet()
-	if err := owner.TransferObject(cli, objectID, mid.Pubkey()); err != nil {
+	midGas := FundGasCoin(t, cli, mid)
+	if err := owner.TransferObject(cli, objectID, mid.Pubkey(), ownerGas); err != nil {
 		t.Fatalf("first transfer (cold version): %v", err)
 	}
 
@@ -336,7 +341,7 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	// a current-version signature without delay, confirming the new version is
 	// signable the moment it is the current one.
 	final := client.NewWallet()
-	if err := mid.TransferObject(cli, objectID, final.Pubkey()); err != nil {
+	if err := mid.TransferObject(cli, objectID, final.Pubkey(), midGas); err != nil {
 		t.Fatalf("second transfer (newly current version): %v", err)
 	}
 
@@ -372,8 +377,9 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 	cli := cluster.Client(0)
 
 	owner := client.NewWallet()
+	currentGas := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("epoch-boundary"))
+	objectID, err := owner.CreateObject(cli, aggReplication, []byte("epoch-boundary"), currentGas)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -392,12 +398,13 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 		// the previous hop, so the chain crosses a boundary between every hop.
 		waitForMidEpoch(t, cluster, startEpoch+uint64(i))
 
-		next := transferInSafeWindow(t, cli, objectID, current)
+		next, nextGas := transferInSafeWindow(t, cli, objectID, current, currentGas)
 		if next == nil {
 			t.Fatalf("hop %d never committed within the recollect budget", i)
 		}
 
 		current = next
+		currentGas = nextGas
 		committed++
 	}
 
@@ -442,24 +449,26 @@ func waitForMidEpoch(t *testing.T, cluster *Cluster, minEpoch uint64) {
 	t.Fatalf("timed out waiting for a mid-epoch window at epoch >= %d", minEpoch)
 }
 
-// transferInSafeWindow transfers objectID from `from` to one fixed fresh recipient,
-// retrying on the recollect-after-grace contract. A submission rejected with the
-// typed ErrQuorumImpossible (a stale holder set) or one whose attested transaction
-// is silently dropped (the owner does not change) is recollected against the
-// resynced epoch and resubmitted to the same recipient, so a late commit and a
-// retry converge. The object is asserted readable on every attempt. It returns the
-// recipient on commit, or nil when the budget is exhausted; a non-typed submission
-// error fails the test.
-func transferInSafeWindow(t *testing.T, cli *client.Client, objectID [32]byte, from *client.Wallet) *client.Wallet {
+// transferInSafeWindow transfers objectID from `from` (paying gas from fromGas)
+// to one fixed fresh recipient, retrying on the recollect-after-grace contract. A
+// submission rejected with the typed ErrQuorumImpossible (a stale holder set) or
+// one whose attested transaction is silently dropped (the owner does not change)
+// is recollected against the resynced epoch and resubmitted to the same recipient,
+// so a late commit and a retry converge. The object is asserted readable on every
+// attempt. The recipient is funded with its own gas coin so it can transfer on the
+// next hop. It returns the recipient and that gas coin on commit, or nil when the
+// budget is exhausted; a non-typed submission error fails the test.
+func transferInSafeWindow(t *testing.T, cli *client.Client, objectID [32]byte, from *client.Wallet, fromGas [32]byte) (*client.Wallet, [32]byte) {
 	t.Helper()
 
 	const attempts = 4
 
 	next := client.NewWallet()
+	nextGas := FundGasCoin(t, cli, next)
 	nextpk := next.Pubkey()
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		err := from.TransferObject(cli, objectID, nextpk)
+		err := from.TransferObject(cli, objectID, nextpk, fromGas)
 		if err != nil && !errors.Is(err, daemon.ErrQuorumImpossible) {
 			t.Fatalf("transfer failed with non-typed error: %v", err)
 		}
@@ -467,16 +476,16 @@ func transferInSafeWindow(t *testing.T, cli *client.Client, objectID [32]byte, f
 		if obj, getErr := cli.GetObject(objectID); getErr != nil {
 			t.Fatalf("object unreadable during boundary transfer: %v", getErr)
 		} else if obj.Owner == nextpk {
-			return next // committed
+			return next, nextGas // committed
 		}
 
 		t.Logf("recollect after grace: attempt %d did not commit (err=%v), retrying", attempt+1, err)
 		time.Sleep(aggTxWait)
 
 		if obj, _ := cli.GetObject(objectID); obj != nil && obj.Owner == nextpk {
-			return next // committed during the wait
+			return next, nextGas // committed during the wait
 		}
 	}
 
-	return nil
+	return nil, [32]byte{}
 }
