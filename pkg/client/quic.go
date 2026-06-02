@@ -157,26 +157,29 @@ func (t *QUICTransport) DomainResolve(name string) ([32]byte, bool, error) {
 	return parsed.ObjectID, parsed.Found, nil
 }
 
-// Faucet requests a faucet mint and returns the minted coin ID.
-func (t *QUICTransport) Faucet(pubkey [32]byte, amount uint64) ([32]byte, error) {
+// Faucet requests a faucet mint and returns the minted coin ID and transaction hash.
+func (t *QUICTransport) Faucet(pubkey [32]byte, amount uint64) ([32]byte, [32]byte, error) {
 	resp, err := t.roundTrip(network.EncodeFaucet(&network.FaucetRequest{Pubkey: pubkey, Amount: amount}))
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("faucet:\n%w", err)
+		return [32]byte{}, [32]byte{}, fmt.Errorf("faucet:\n%w", err)
 	}
 
 	parsed, err := network.DecodeFaucetResp(resp)
 	if err != nil {
-		return [32]byte{}, err
+		return [32]byte{}, [32]byte{}, err
 	}
 
 	if parsed.Err != "" {
-		return [32]byte{}, fmt.Errorf("faucet rejected: %s", parsed.Err)
+		return [32]byte{}, [32]byte{}, fmt.Errorf("faucet rejected: %s", parsed.Err)
 	}
 
 	var coinID [32]byte
 	copy(coinID[:], parsed.CoinID)
 
-	return coinID, nil
+	var txHash [32]byte
+	copy(txHash[:], parsed.Hash)
+
+	return coinID, txHash, nil
 }
 
 // GetTxStatus fetches a transaction's status by hash over QUIC.

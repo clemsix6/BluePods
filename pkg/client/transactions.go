@@ -24,11 +24,11 @@ const (
 
 // Split splits a coin, sending `amount` to `recipient`. The operated coin is a
 // singleton owned by the sender, so it doubles as the transaction's gas coin.
-// Returns the new coinID created for the recipient.
-func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]byte) ([32]byte, error) {
+// Returns the new coinID created for the recipient and the transaction hash.
+func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]byte) ([32]byte, [32]byte, error) {
 	coin := w.coins[coinID]
 	if coin == nil {
-		return [32]byte{}, fmt.Errorf("coin not tracked: %x", coinID[:8])
+		return [32]byte{}, [32]byte{}, fmt.Errorf("coin not tracked: %x", coinID[:8])
 	}
 
 	args := encodeSplitArgs(amount, recipient)
@@ -36,64 +36,66 @@ func (w *Wallet) Split(c *Client, coinID [32]byte, amount uint64, recipient [32]
 	newCoinID := computeNewObjectID(txHash)
 
 	if err := c.submit(txBytes); err != nil {
-		return [32]byte{}, fmt.Errorf("submit split tx:\n%w", err)
+		return [32]byte{}, [32]byte{}, fmt.Errorf("submit split tx:\n%w", err)
 	}
 
-	return newCoinID, nil
+	return newCoinID, txHash, nil
 }
 
 // Transfer transfers a coin to a new owner. The operated coin pays its own gas.
-func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) error {
+// Returns the transaction hash.
+func (w *Wallet) Transfer(c *Client, coinID [32]byte, recipient [32]byte) ([32]byte, error) {
 	coin := w.coins[coinID]
 	if coin == nil {
-		return fmt.Errorf("coin not tracked: %x", coinID[:8])
+		return [32]byte{}, fmt.Errorf("coin not tracked: %x", coinID[:8])
 	}
 
 	args := encodeTransferArgs(recipient)
-	txBytes, _ := w.buildCoinTx(c.systemPod, "transfer", args, nil, coinID, coin.Version)
+	txBytes, txHash := w.buildCoinTx(c.systemPod, "transfer", args, nil, coinID, coin.Version)
 
 	if err := c.submit(txBytes); err != nil {
-		return fmt.Errorf("submit transfer tx:\n%w", err)
+		return [32]byte{}, fmt.Errorf("submit transfer tx:\n%w", err)
 	}
 
-	return nil
+	return txHash, nil
 }
 
 // CreateObject creates a new replicated object with configurable replication.
 // An object operation creates no spendable coin, so the caller supplies an owned
 // singleton coin (gasCoinID) to pay the transaction's gas.
-// Returns the predicted object ID.
-func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte, gasCoinID [32]byte) ([32]byte, error) {
+// Returns the predicted object ID and the transaction hash.
+func (w *Wallet) CreateObject(c *Client, replication uint16, metadata []byte, gasCoinID [32]byte) ([32]byte, [32]byte, error) {
 	args := encodeCreateObjectArgs(w.Pubkey(), replication, metadata)
 
 	txBytes, txHash := w.buildObjectTx(c.systemPod, "create_object", args, []uint16{replication}, nil, gasCoinID)
 	objectID := computeNewObjectID(txHash)
 
 	if err := c.submit(txBytes); err != nil {
-		return [32]byte{}, fmt.Errorf("submit create_object tx:\n%w", err)
+		return [32]byte{}, [32]byte{}, fmt.Errorf("submit create_object tx:\n%w", err)
 	}
 
-	return objectID, nil
+	return objectID, txHash, nil
 }
 
 // TransferObject transfers an object to a new owner. The caller supplies an owned
 // singleton coin (gasCoinID) to pay gas, since the object itself is not a coin.
-func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte, gasCoinID [32]byte) error {
+// Returns the transaction hash.
+func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte, gasCoinID [32]byte) ([32]byte, error) {
 	obj, err := c.GetObject(objectID)
 	if err != nil {
-		return fmt.Errorf("get object:\n%w", err)
+		return [32]byte{}, fmt.Errorf("get object:\n%w", err)
 	}
 
 	args := encodeTransferArgs(recipient)
 	mutableRefs := buildMutableRef(objectID, obj.Version)
 
-	txBytes, _ := w.buildObjectTx(c.systemPod, "transfer_object", args, nil, mutableRefs, gasCoinID)
+	txBytes, txHash := w.buildObjectTx(c.systemPod, "transfer_object", args, nil, mutableRefs, gasCoinID)
 
 	if err := c.submit(txBytes); err != nil {
-		return fmt.Errorf("submit transfer_object tx:\n%w", err)
+		return [32]byte{}, fmt.Errorf("submit transfer_object tx:\n%w", err)
 	}
 
-	return nil
+	return txHash, nil
 }
 
 // SetObject overwrites the content of a replicated object. The object is placed
@@ -101,22 +103,23 @@ func (w *Wallet) TransferObject(c *Client, objectID [32]byte, recipient [32]byte
 // through the daemon's off-chain aggregation path (holder attestation collection).
 // Ownership is enforced by the protocol's mutable-ref owner check. The caller
 // supplies an owned singleton coin (gasCoinID) to pay gas.
-func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte, gasCoinID [32]byte) error {
+// Returns the transaction hash.
+func (w *Wallet) SetObject(c *Client, objectID [32]byte, content []byte, gasCoinID [32]byte) ([32]byte, error) {
 	obj, err := c.GetObject(objectID)
 	if err != nil {
-		return fmt.Errorf("get object:\n%w", err)
+		return [32]byte{}, fmt.Errorf("get object:\n%w", err)
 	}
 
 	args := encodeSetObjectArgs(objectID, content)
 	mutableRefs := buildMutableRef(objectID, obj.Version)
 
-	txBytes, _ := w.buildObjectTx(c.systemPod, "set_object", args, nil, mutableRefs, gasCoinID)
+	txBytes, txHash := w.buildObjectTx(c.systemPod, "set_object", args, nil, mutableRefs, gasCoinID)
 
 	if err := c.submit(txBytes); err != nil {
-		return fmt.Errorf("submit set_object tx:\n%w", err)
+		return [32]byte{}, fmt.Errorf("submit set_object tx:\n%w", err)
 	}
 
-	return nil
+	return txHash, nil
 }
 
 // buildCoinTx builds a signed coin operation that pays its own gas from the

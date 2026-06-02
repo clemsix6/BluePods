@@ -52,7 +52,7 @@ func SubmitFaucet(addr string, pubkeyHex string, amount uint64) (int, string) {
 	var pubkey [32]byte
 	copy(pubkey[:], raw)
 
-	coinID, err := transportFor(addr).Faucet(pubkey, amount)
+	coinID, _, err := transportFor(addr).Faucet(pubkey, amount)
 	if err != nil {
 		return statusBadRequest, err.Error()
 	}

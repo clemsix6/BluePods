@@ -83,7 +83,7 @@ func cmdCoinFaucet(e *env, args []string) error {
 		return err
 	}
 
-	coinID, err := cli.Faucet(pubkey, amount)
+	coinID, _, err := cli.Faucet(pubkey, amount)
 	if err != nil {
 		return fmt.Errorf("faucet:\n%w", err)
 	}
@@ -123,7 +123,7 @@ func cmdCoinTransfer(e *env, args []string) error {
 		return fmt.Errorf("refresh coin:\n%w", err)
 	}
 
-	if err := w.Transfer(cli, coinID, recipient); err != nil {
+	if _, err := w.Transfer(cli, coinID, recipient); err != nil {
 		return fmt.Errorf("transfer coin:\n%w", err)
 	}
 

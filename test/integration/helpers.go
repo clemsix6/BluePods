@@ -550,7 +550,7 @@ func (c *Cluster) warmupNetwork() {
 	w := client.NewWallet()
 	pk := w.Pubkey()
 
-	coinID, err := cli.Faucet(pk, 1)
+	coinID, _, err := cli.Faucet(pk, 1)
 	if err != nil {
 		c.t.Logf("warmup faucet failed: %v (continuing)", err)
 		return

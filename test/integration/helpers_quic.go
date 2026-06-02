@@ -289,7 +289,7 @@ func FaucetAndWait(t *testing.T, cli *client.Client, w *client.Wallet, amount ui
 
 	pk := w.Pubkey()
 
-	coinID, err := cli.Faucet(pk, amount)
+	coinID, _, err := cli.Faucet(pk, amount)
 	if err != nil {
 		t.Fatalf("faucet: %v", err)
 	}

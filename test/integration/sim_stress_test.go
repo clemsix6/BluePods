@@ -68,11 +68,11 @@ func runConcurrentModTests(t *testing.T, cli *client.Client) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			err1 = w.Transfer(cli, coinID, r1.Pubkey())
+			_, err1 = w.Transfer(cli, coinID, r1.Pubkey())
 		}()
 		go func() {
 			defer wg.Done()
-			err2 = w.Transfer(cli, coinID, r2.Pubkey())
+			_, err2 = w.Transfer(cli, coinID, r2.Pubkey())
 		}()
 		wg.Wait()
 
@@ -121,7 +121,7 @@ func runConcurrentModTests(t *testing.T, cli *client.Client) {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				err := w.Transfer(cli, coinID, recipients[idx].Pubkey())
+				_, err := w.Transfer(cli, coinID, recipients[idx].Pubkey())
 				if err == nil {
 					mu.Lock()
 					successes++
@@ -154,7 +154,7 @@ func runConcurrentModTests(t *testing.T, cli *client.Client) {
 
 		// Transfer once
 		r1 := client.NewWallet()
-		if err := w.Transfer(cli, coinID, r1.Pubkey()); err != nil {
+		if _, err := w.Transfer(cli, coinID, r1.Pubkey()); err != nil {
 			t.Fatalf("initial transfer: %v", err)
 		}
 
@@ -163,7 +163,7 @@ func runConcurrentModTests(t *testing.T, cli *client.Client) {
 		// Submit 5 more transfers with stale version (replay attempts)
 		for i := 0; i < 5; i++ {
 			r := client.NewWallet()
-			_ = w.Transfer(cli, coinID, r.Pubkey())
+			_, _ = w.Transfer(cli, coinID, r.Pubkey())
 		}
 
 		time.Sleep(stressTxWait)
@@ -200,7 +200,7 @@ func runThroughputTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 			go func(idx int) {
 				defer wg.Done()
 				pk := wallets[idx].Pubkey()
-				coinID, err := cli.Faucet(pk, 10_000)
+				coinID, _, err := cli.Faucet(pk, 10_000)
 				if err != nil {
 					return
 				}
@@ -246,7 +246,7 @@ func runThroughputTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 			}
 
 			r := client.NewWallet()
-			if err := w.Transfer(cli, coinID, r.Pubkey()); err != nil {
+			if _, err := w.Transfer(cli, coinID, r.Pubkey()); err != nil {
 				t.Logf("transfer %d: %v (stopping)", i, err)
 				break
 			}
@@ -277,7 +277,7 @@ func runEpochUnderLoadTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 
 		// Submit a split while epoch transitions may be happening
 		r := client.NewWallet()
-		_, err := w.Split(cli, coinID, 100_000, r.Pubkey())
+		_, _, err := w.Split(cli, coinID, 100_000, r.Pubkey())
 		if err != nil {
 			t.Logf("split during epoch: %v (may be expected)", err)
 		}

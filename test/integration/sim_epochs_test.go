@@ -121,7 +121,7 @@ func createEpochObjects(t *testing.T, cli *client.Client, cluster *Cluster) [][3
 	for i, w := range wallets {
 		pk := w.Pubkey()
 
-		coinID, err := cli.Faucet(pk, epochFaucetAmount)
+		coinID, _, err := cli.Faucet(pk, epochFaucetAmount)
 		if err != nil {
 			t.Fatalf("faucet wallet %d: %v", i, err)
 		}
@@ -137,7 +137,7 @@ func createEpochObjects(t *testing.T, cli *client.Client, cluster *Cluster) [][3
 		walletIdx := i % len(wallets)
 		metadata := []byte("epoch-object-" + string(rune('0'+i)))
 
-		objectID, err := wallets[walletIdx].CreateObject(cli, epochObjectReplication, metadata, gasCoins[walletIdx])
+		objectID, _, err := wallets[walletIdx].CreateObject(cli, epochObjectReplication, metadata, gasCoins[walletIdx])
 		if err != nil {
 			t.Fatalf("create object %d: %v", i, err)
 		}

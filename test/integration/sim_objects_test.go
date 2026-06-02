@@ -27,13 +27,13 @@ func TestSimObjects(t *testing.T) {
 	coinID := FaucetAndWait(t, cli, w, 1_000_000, 60*time.Second)
 
 	// Object with replication=5 (sharded across 5 of 12 nodes)
-	objectID, err := w.CreateObject(cli, 5, []byte("sharding-test"), coinID)
+	objectID, _, err := w.CreateObject(cli, 5, []byte("sharding-test"), coinID)
 	if err != nil {
 		t.Fatalf("create sharded object: %v", err)
 	}
 
 	// Object with replication=100 (should use all validators)
-	highRepObjectID, err := w.CreateObject(cli, 100, []byte("high-rep"), coinID)
+	highRepObjectID, _, err := w.CreateObject(cli, 100, []byte("high-rep"), coinID)
 	if err != nil {
 		t.Fatalf("create high-rep object: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestSimObjects(t *testing.T) {
 	// 5 objects for diversity test
 	var diversityIDs [5][32]byte
 	for i := 0; i < 5; i++ {
-		id, err := w.CreateObject(cli, 5, []byte("div-"+string(rune('0'+i))), coinID)
+		id, _, err := w.CreateObject(cli, 5, []byte("div-"+string(rune('0'+i))), coinID)
 		if err != nil {
 			t.Fatalf("create diversity object %d: %v", i, err)
 		}
@@ -161,7 +161,7 @@ func TestSimObjects(t *testing.T) {
 		w := client.NewWallet()
 		gasCoin := FundGasCoin(t, cli, w)
 
-		transferObjectID, err := w.CreateObject(cli, 5, []byte("transfer-object"), gasCoin)
+		transferObjectID, _, err := w.CreateObject(cli, 5, []byte("transfer-object"), gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -170,7 +170,7 @@ func TestSimObjects(t *testing.T) {
 		WaitForHolders(t, cluster.Nodes(), transferObjectID, 3, 30*time.Second)
 
 		recipient := client.NewWallet()
-		if err := w.TransferObject(cli, transferObjectID, recipient.Pubkey(), gasCoin); err != nil {
+		if _, err := w.TransferObject(cli, transferObjectID, recipient.Pubkey(), gasCoin); err != nil {
 			t.Fatalf("transfer object: %v", err)
 		}
 
@@ -191,7 +191,7 @@ func TestSimObjects(t *testing.T) {
 
 		// Transfer the singleton coin
 		receiver := client.NewWallet()
-		if err := sender.Transfer(cli, singletonCoin, receiver.Pubkey()); err != nil {
+		if _, err := sender.Transfer(cli, singletonCoin, receiver.Pubkey()); err != nil {
 			t.Fatalf("transfer: %v", err)
 		}
 

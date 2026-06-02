@@ -60,7 +60,7 @@ func runFeeDeductionTests(t *testing.T, cli *client.Client) {
 		r := client.NewWallet()
 		splitAmount := uint64(100_000)
 
-		_, err := w.Split(cli, coinID, splitAmount, r.Pubkey())
+		_, _, err := w.Split(cli, coinID, splitAmount, r.Pubkey())
 		if err != nil {
 			t.Fatalf("split: %v", err)
 		}
@@ -117,7 +117,7 @@ func runFeeDeductionTests(t *testing.T, cli *client.Client) {
 		r := client.NewWallet()
 		splitAmount := uint64(300_000)
 
-		newCoinID, err := w.Split(cli, coinID, splitAmount, r.Pubkey())
+		newCoinID, _, err := w.Split(cli, coinID, splitAmount, r.Pubkey())
 		if err != nil {
 			t.Fatalf("split: %v", err)
 		}
@@ -164,7 +164,7 @@ func runFeeDeductionTests(t *testing.T, cli *client.Client) {
 
 		// Try transfer — may succeed or fail depending on fee calculation
 		r := client.NewWallet()
-		err := w.Transfer(cli, coinID, r.Pubkey())
+		_, err := w.Transfer(cli, coinID, r.Pubkey())
 		// Either succeeds (fees <= 100) or fails (insufficient balance)
 		// Both outcomes are valid
 		t.Logf("Transfer with balance=100: err=%v", err)
@@ -185,7 +185,7 @@ func runGasCoinTests(t *testing.T, cli *client.Client) {
 		}
 
 		r := client.NewWallet()
-		_, err := w.Split(cli, coinID, 100_000, r.Pubkey())
+		_, _, err := w.Split(cli, coinID, 100_000, r.Pubkey())
 		if err != nil {
 			t.Errorf("split with valid gas coin failed: %v", err)
 		}
@@ -202,7 +202,7 @@ func runGasCoinTests(t *testing.T, cli *client.Client) {
 		v0 := w.GetCoin(coinID).Version
 
 		r := client.NewWallet()
-		_, err := w.Split(cli, coinID, 100_000, r.Pubkey())
+		_, _, err := w.Split(cli, coinID, 100_000, r.Pubkey())
 		if err != nil {
 			t.Fatalf("split: %v", err)
 		}
@@ -233,7 +233,7 @@ func runFeeConsistencyTests(t *testing.T, cli *client.Client, cluster *Cluster) 
 		}
 
 		r := client.NewWallet()
-		_, err := w.Split(cli, coinID, 200_000, r.Pubkey())
+		_, _, err := w.Split(cli, coinID, 200_000, r.Pubkey())
 		if err != nil {
 			t.Fatalf("split: %v", err)
 		}
@@ -391,7 +391,7 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 			t.Fatalf("refresh: %v", err)
 		}
 
-		objectID, err := w.CreateObject(cli, 5, []byte("not-a-coin"), coinID)
+		objectID, _, err := w.CreateObject(cli, 5, []byte("not-a-coin"), coinID)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}

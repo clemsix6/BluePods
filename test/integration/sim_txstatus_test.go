@@ -53,7 +53,7 @@ func TestSimTxStatus(t *testing.T) {
 	cli := cluster.Client(0)
 
 	// Faucet a coin to the wallet.
-	coinID, err := cli.Faucet(pubKey32, txStatusFaucetAmount)
+	coinID, _, err := cli.Faucet(pubKey32, txStatusFaucetAmount)
 	if err != nil {
 		t.Fatalf("faucet: %v", err)
 	}

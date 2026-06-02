@@ -58,7 +58,7 @@ func cmdObjectCreate(e *env, args []string) error {
 		return err
 	}
 
-	objectID, err := w.CreateObject(cli, uint16(*replication), []byte(*content), gasCoin)
+	objectID, _, err := w.CreateObject(cli, uint16(*replication), []byte(*content), gasCoin)
 	if err != nil {
 		return fmt.Errorf("create object:\n%w", err)
 	}
@@ -126,7 +126,7 @@ func cmdObjectSet(e *env, args []string) error {
 		return err
 	}
 
-	if err := w.SetObject(cli, id, []byte(args[1]), gasCoin); err != nil {
+	if _, err := w.SetObject(cli, id, []byte(args[1]), gasCoin); err != nil {
 		return fmt.Errorf("set object:\n%w", err)
 	}
 
@@ -167,7 +167,7 @@ func cmdObjectTransfer(e *env, args []string) error {
 		return err
 	}
 
-	if err := w.TransferObject(cli, id, recipient, gasCoin); err != nil {
+	if _, err := w.TransferObject(cli, id, recipient, gasCoin); err != nil {
 		return fmt.Errorf("transfer object:\n%w", err)
 	}
 

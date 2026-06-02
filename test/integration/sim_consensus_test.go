@@ -123,7 +123,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		recipient := client.NewWallet()
 		splitAmount := uint64(400_000)
 
-		newCoinID, err := w.Split(cli, coinID, splitAmount, recipient.Pubkey())
+		newCoinID, _, err := w.Split(cli, coinID, splitAmount, recipient.Pubkey())
 		if err != nil {
 			t.Fatalf("split: %v", err)
 		}
@@ -168,7 +168,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		}
 
 		recipient := client.NewWallet()
-		if err := w.Transfer(cli, coinID, recipient.Pubkey()); err != nil {
+		if _, err := w.Transfer(cli, coinID, recipient.Pubkey()); err != nil {
 			t.Fatalf("transfer: %v", err)
 		}
 
@@ -193,7 +193,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		gasCoin := FaucetAndWait(t, cli, w, consensusFaucetAmount, 30*time.Second)
 		metadata := []byte("consensus test object")
 
-		objectID, err := w.CreateObject(cli, 5, metadata, gasCoin)
+		objectID, _, err := w.CreateObject(cli, 5, metadata, gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -224,7 +224,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		w := client.NewWallet()
 		gasCoin := FaucetAndWait(t, cli, w, consensusFaucetAmount, 30*time.Second)
 
-		objectID, err := w.CreateObject(cli, 3, []byte("transfer object"), gasCoin)
+		objectID, _, err := w.CreateObject(cli, 3, []byte("transfer object"), gasCoin)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
@@ -233,7 +233,7 @@ func runClientOperationTests(t *testing.T, cli *client.Client, cluster *Cluster)
 		WaitForHolders(t, cluster.Nodes(), objectID, 3, 30*time.Second)
 
 		recipient := client.NewWallet()
-		if err := w.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
+		if _, err := w.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
 			t.Fatalf("transfer object: %v", err)
 		}
 
@@ -258,7 +258,7 @@ func runVersionTrackingTests(t *testing.T, cli *client.Client) {
 
 		// First split
 		r1 := client.NewWallet()
-		_, err := w.Split(cli, coinID, 100_000, r1.Pubkey())
+		_, _, err := w.Split(cli, coinID, 100_000, r1.Pubkey())
 		if err != nil {
 			t.Fatalf("split 1: %v", err)
 		}
@@ -276,7 +276,7 @@ func runVersionTrackingTests(t *testing.T, cli *client.Client) {
 
 		// Second split
 		r2 := client.NewWallet()
-		_, err = w.Split(cli, coinID, 100_000, r2.Pubkey())
+		_, _, err = w.Split(cli, coinID, 100_000, r2.Pubkey())
 		if err != nil {
 			t.Fatalf("split 2: %v", err)
 		}
@@ -362,7 +362,7 @@ func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 
 		// Transfer once
 		r := client.NewWallet()
-		if err := w.Transfer(cli, coinID, r.Pubkey()); err != nil {
+		if _, err := w.Transfer(cli, coinID, r.Pubkey()); err != nil {
 			t.Fatalf("first transfer: %v", err)
 		}
 
@@ -371,7 +371,7 @@ func runSecurityTests(t *testing.T, cli *client.Client, cluster *Cluster) {
 		// Try another transfer of the same coin with stale version → should conflict
 		// The wallet still has old version, so the tx references a stale version
 		r2 := client.NewWallet()
-		err := w.Transfer(cli, coinID, r2.Pubkey())
+		_, err := w.Transfer(cli, coinID, r2.Pubkey())
 		// May succeed at API level (202) but fail at execution (version conflict)
 		// This is OK — the important thing is the second transfer doesn't change the owner
 		_ = err

@@ -68,7 +68,7 @@ func runSetObjectContent(t *testing.T, cli *client.Client, cluster *Cluster) {
 	owner := client.NewWallet()
 	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("v1"), gasCoin)
+	objectID, _, err := owner.CreateObject(cli, aggReplication, []byte("v1"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -85,7 +85,7 @@ func runSetObjectContent(t *testing.T, cli *client.Client, cluster *Cluster) {
 		t.Fatalf("initial content: got %q, want %q", got, "v1")
 	}
 
-	if err := owner.SetObject(cli, objectID, []byte("v2"), gasCoin); err != nil {
+	if _, err := owner.SetObject(cli, objectID, []byte("v2"), gasCoin); err != nil {
 		t.Fatalf("set object through aggregation path: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func runEndToEndAggregation(t *testing.T, cli *client.Client, cluster *Cluster) 
 	owner := client.NewWallet()
 	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("e2e-aggregation"), gasCoin)
+	objectID, _, err := owner.CreateObject(cli, aggReplication, []byte("e2e-aggregation"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -157,7 +157,7 @@ func runEndToEndAggregation(t *testing.T, cli *client.Client, cluster *Cluster) 
 	}
 
 	recipient := client.NewWallet()
-	if err := owner.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
+	if _, err := owner.TransferObject(cli, objectID, recipient.Pubkey(), gasCoin); err != nil {
 		t.Fatalf("transfer object through aggregation path: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func runSingletonFastPath(t *testing.T, cli *client.Client, cluster *Cluster) {
 	}
 
 	recipient := client.NewWallet()
-	if err := sender.Transfer(cli, coinID, recipient.Pubkey()); err != nil {
+	if _, err := sender.Transfer(cli, coinID, recipient.Pubkey()); err != nil {
 		t.Fatalf("singleton transfer: %v", err)
 	}
 
@@ -255,7 +255,7 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	owner := client.NewWallet()
 	gasCoin := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("version-race"), gasCoin)
+	objectID, _, err := owner.CreateObject(cli, aggReplication, []byte("version-race"), gasCoin)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -275,11 +275,11 @@ func runVersionRaceDuringCollection(t *testing.T, cli *client.Client, cluster *C
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err1 = owner.TransferObject(cli, objectID, r1.Pubkey(), gasCoin)
+		_, err1 = owner.TransferObject(cli, objectID, r1.Pubkey(), gasCoin)
 	}()
 	go func() {
 		defer wg.Done()
-		err2 = owner.TransferObject(cli, objectID, r2.Pubkey(), gasCoin)
+		_, err2 = owner.TransferObject(cli, objectID, r2.Pubkey(), gasCoin)
 	}()
 	wg.Wait()
 
@@ -317,7 +317,7 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	owner := client.NewWallet()
 	ownerGas := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("cold-holder"), ownerGas)
+	objectID, _, err := owner.CreateObject(cli, aggReplication, []byte("cold-holder"), ownerGas)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -330,7 +330,7 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	// current version with no cold-window gap.
 	mid := client.NewWallet()
 	midGas := FundGasCoin(t, cli, mid)
-	if err := owner.TransferObject(cli, objectID, mid.Pubkey(), ownerGas); err != nil {
+	if _, err := owner.TransferObject(cli, objectID, mid.Pubkey(), ownerGas); err != nil {
 		t.Fatalf("first transfer (cold version): %v", err)
 	}
 
@@ -341,7 +341,7 @@ func runColdHolder(t *testing.T, cli *client.Client, cluster *Cluster) {
 	// a current-version signature without delay, confirming the new version is
 	// signable the moment it is the current one.
 	final := client.NewWallet()
-	if err := mid.TransferObject(cli, objectID, final.Pubkey(), midGas); err != nil {
+	if _, err := mid.TransferObject(cli, objectID, final.Pubkey(), midGas); err != nil {
 		t.Fatalf("second transfer (newly current version): %v", err)
 	}
 
@@ -379,7 +379,7 @@ func TestSimAggregationEpochBoundary(t *testing.T) {
 	owner := client.NewWallet()
 	currentGas := FundGasCoin(t, cli, owner)
 
-	objectID, err := owner.CreateObject(cli, aggReplication, []byte("epoch-boundary"), currentGas)
+	objectID, _, err := owner.CreateObject(cli, aggReplication, []byte("epoch-boundary"), currentGas)
 	if err != nil {
 		t.Fatalf("create object: %v", err)
 	}
@@ -468,7 +468,7 @@ func transferInSafeWindow(t *testing.T, cli *client.Client, objectID [32]byte, f
 	nextpk := next.Pubkey()
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		err := from.TransferObject(cli, objectID, nextpk, fromGas)
+		_, err := from.TransferObject(cli, objectID, nextpk, fromGas)
 		if err != nil && !errors.Is(err, daemon.ErrQuorumImpossible) {
 			t.Fatalf("transfer failed with non-typed error: %v", err)
 		}

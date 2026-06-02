@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"BluePods/internal/network"
 	"BluePods/pkg/client"
@@ -139,13 +139,15 @@ func (m consoleModel) fetchStatus() tea.Cmd {
 			st.TPS = float64(status.TPSMilli) / 1000
 		}
 
-		for _, id := range m.wallet.CoinIDs() {
+		coinIDs := m.wallet.CoinIDs()
+		st.CoinCount = len(coinIDs)
+
+		for _, id := range coinIDs {
 			if err := m.wallet.RefreshCoin(m.client, id); err == nil {
 				if ci := m.wallet.GetCoin(id); ci != nil {
 					st.Balance += ci.Balance
 				}
 			}
-			st.CoinCount++
 		}
 
 		return statusMsg{state: st}

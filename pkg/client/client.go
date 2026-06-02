@@ -115,14 +115,14 @@ func (w *Wallet) GetCoin(id [32]byte) *CoinInfo {
 }
 
 // Faucet requests tokens from the node's faucet over QUIC.
-// Returns the predicted coinID of the minted coin.
-func (c *Client) Faucet(pubkey [32]byte, amount uint64) ([32]byte, error) {
-	coinID, err := c.transport.Faucet(pubkey, amount)
+// Returns the minted coinID and the transaction hash.
+func (c *Client) Faucet(pubkey [32]byte, amount uint64) ([32]byte, [32]byte, error) {
+	coinID, txHash, err := c.transport.Faucet(pubkey, amount)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("faucet:\n%w", err)
+		return [32]byte{}, [32]byte{}, fmt.Errorf("faucet:\n%w", err)
 	}
 
-	return coinID, nil
+	return coinID, txHash, nil
 }
 
 // Validators returns the list of active validators from the daemon's synced set.
