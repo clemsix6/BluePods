@@ -248,3 +248,119 @@ func TestHandleUndelegate_RemovesPositionAndLowersTotal(t *testing.T) {
 		t.Fatal("position must be removed after undelegate")
 	}
 }
+
+// TestSplitValidatorReward checks the proportional split: self-stake share plus
+// commission to the validator, post-commission remainder pro-rata to delegators,
+// conserving the reward exactly with the rounding remainder going to the validator.
+func TestSplitValidatorReward(t *testing.T) {
+	d1 := [32]byte{0xD1}
+	d2 := [32]byte{0xD2}
+
+	validatorAmt, dels := splitValidatorReward(1000, 600, 1000, []delegatorShare{
+		{Delegator: d1, Amount: 100},
+		{Delegator: d2, Amount: 300},
+	})
+
+	// self share 600 + commission 40 = 640; delegators 90 and 270.
+	if validatorAmt != 640 {
+		t.Fatalf("validator amount = %d, want 640", validatorAmt)
+	}
+	if len(dels) != 2 || dels[0].Amount != 90 || dels[1].Amount != 270 {
+		t.Fatalf("delegator amounts = %+v, want [90 270]", dels)
+	}
+
+	total := validatorAmt
+	for _, d := range dels {
+		total += d.Amount
+	}
+	if total != 1000 {
+		t.Fatalf("split does not conserve: sum = %d, want 1000", total)
+	}
+}
+
+// TestSplitValidatorReward_RemainderToValidator checks integer-division loss is
+// awarded to the validator so the split conserves exactly.
+func TestSplitValidatorReward_RemainderToValidator(t *testing.T) {
+	d1 := [32]byte{0xD1}
+	d2 := [32]byte{0xD2}
+	d3 := [32]byte{0xD3}
+
+	// reward 100, no self-stake, no commission, three equal delegators: 100/3
+	// each truncates to 33, leaving a remainder of 1 for the validator.
+	validatorAmt, dels := splitValidatorReward(100, 0, 0, []delegatorShare{
+		{Delegator: d1, Amount: 1},
+		{Delegator: d2, Amount: 1},
+		{Delegator: d3, Amount: 1},
+	})
+
+	total := validatorAmt
+	for _, d := range dels {
+		total += d.Amount
+	}
+	if total != 100 {
+		t.Fatalf("split does not conserve: sum = %d, want 100", total)
+	}
+	if validatorAmt != 1 {
+		t.Fatalf("validator remainder = %d, want 1", validatorAmt)
+	}
+}
+
+// TestSplitValidatorReward_NoDelegators checks the validator keeps the whole
+// reward when there are no delegators.
+func TestSplitValidatorReward_NoDelegators(t *testing.T) {
+	validatorAmt, dels := splitValidatorReward(500, 600, 1000, nil)
+	if validatorAmt != 500 {
+		t.Fatalf("validator amount = %d, want 500", validatorAmt)
+	}
+	if len(dels) != 0 {
+		t.Fatalf("delegator amounts = %+v, want none", dels)
+	}
+}
+
+// TestSplitValidatorReward_SelfDelegation checks a validator that also appears as
+// one of its own delegators is paid its self-stake share AND its self-owned
+// delegation share, on distinct capital, with no double-credit and exact
+// conservation.
+func TestSplitValidatorReward_SelfDelegation(t *testing.T) {
+	self := [32]byte{0x5E, 0x1F}
+	other := [32]byte{0x07}
+
+	// selfStake 600; the validator also self-delegated 200; another delegator 200.
+	// Total stake 1000, reward 1000, commission 10%.
+	// self-stake share = 600; delegated portion = 400; commission = 40 → validator
+	// keeps 640. Remaining 360 split pro-rata of {200, 200}: 180 each.
+	validatorAmt, dels := splitValidatorReward(1000, 600, 1000, []delegatorShare{
+		{Delegator: self, Amount: 200},
+		{Delegator: other, Amount: 200},
+	})
+
+	if validatorAmt != 640 {
+		t.Fatalf("validator self-stake+commission amount = %d, want 640", validatorAmt)
+	}
+
+	// The self-delegation entry is paid as a normal delegator (180), on the
+	// delegation-position coin — NOT folded into the 640 self-stake reward.
+	var selfDelShare, otherShare uint64
+	for _, d := range dels {
+		switch d.Delegator {
+		case self:
+			selfDelShare = d.Amount
+		case other:
+			otherShare = d.Amount
+		}
+	}
+	if selfDelShare != 180 || otherShare != 180 {
+		t.Fatalf("delegator shares: self=%d other=%d, want 180/180", selfDelShare, otherShare)
+	}
+
+	// Conservation: the validator's 640 (self-stake reward) and the 180
+	// self-delegation share are distinct credits to distinct objects; together
+	// with the other delegator the whole 1000 is accounted for exactly once.
+	total := validatorAmt
+	for _, d := range dels {
+		total += d.Amount
+	}
+	if total != 1000 {
+		t.Fatalf("self-delegation split does not conserve: sum = %d, want 1000", total)
+	}
+}

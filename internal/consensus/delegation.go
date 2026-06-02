@@ -52,6 +52,59 @@ func decodeDelegationContent(content []byte) (validator [32]byte, amount uint64,
 	return validator, amount, true
 }
 
+// delegatorShare is one delegator's slice of an epoch reward.
+type delegatorShare struct {
+	Delegator [32]byte // Delegator is the position owner credited.
+	Amount    uint64   // Amount is the delegation amount (input) / credited tokens (output).
+}
+
+// splitValidatorReward divides a validator's epoch reward between the validator
+// (its self-stake share plus a fixed commission on the delegated portion) and its
+// delegators (pro-rata to amount). It uses safeMul; the integer-division rounding
+// remainder goes to the validator so the split conserves the reward exactly.
+func splitValidatorReward(reward, selfStake, commissionBPS uint64, dels []delegatorShare) (validatorAmount uint64, delegatorAmounts []delegatorShare) {
+	delegatedTotal := sumDelegations(dels)
+	total := safeAdd(selfStake, delegatedTotal)
+	if total == 0 || len(dels) == 0 {
+		return reward, nil
+	}
+
+	selfShare := safeMul(reward, selfStake) / total
+	delegatedPortion := reward - selfShare
+	commission := safeMul(delegatedPortion, commissionBPS) / bpsMax
+	toDelegators := delegatedPortion - commission
+
+	delegatorAmounts = splitProRata(toDelegators, delegatedTotal, dels)
+
+	validatorAmount = reward - sumDelegations(delegatorAmounts)
+	return validatorAmount, delegatorAmounts
+}
+
+// splitProRata distributes pool across dels in proportion to each delegation's
+// amount, truncating per delegator (the remainder is reclaimed by the caller for
+// the validator). delegatedTotal is the sum of input amounts and must be > 0.
+func splitProRata(pool, delegatedTotal uint64, dels []delegatorShare) []delegatorShare {
+	out := make([]delegatorShare, len(dels))
+	for i, d := range dels {
+		out[i] = delegatorShare{
+			Delegator: d.Delegator,
+			Amount:    safeMul(pool, d.Amount) / delegatedTotal,
+		}
+	}
+
+	return out
+}
+
+// sumDelegations sums the amounts over a set of delegation shares.
+func sumDelegations(dels []delegatorShare) uint64 {
+	var total uint64
+	for _, d := range dels {
+		total = safeAdd(total, d.Amount)
+	}
+
+	return total
+}
+
 // buildDelegationObject constructs the serialized stake-position Object owned by
 // the delegator. Its ID is deterministic in the (delegator, validator) pair and
 // its content carries the target validator and the delegated amount. Version is
