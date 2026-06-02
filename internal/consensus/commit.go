@@ -813,6 +813,8 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
 
+	d.setRewardCoinFromArgs(tx, pubkey)
+
 	// Track mid-epoch additions for churn limiting
 	if isNew && d.epochLength > 0 {
 		d.epochAdditions = append(d.epochAdditions, pubkey)
@@ -830,6 +832,47 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
 		d.enterTransition(commitRound)
 	}
+}
+
+// setRewardCoinFromArgs designates the validator's reward coin: an explicit
+// reward-coin arg takes priority, else the transaction's gas coin when the
+// validator owns it. If neither is determinable the reward coin is left zero, and
+// the epoch reward split skips that validator's liquid portion with a warning
+// rather than failing the epoch (per spec §6).
+func (d *DAG) setRewardCoinFromArgs(tx *types.Transaction, pubkey Hash) {
+	if coin, ok := genesis.DecodeRegisterValidatorRewardCoin(tx.ArgsBytes()); ok {
+		d.validators.SetRewardCoin(pubkey, coin)
+		return
+	}
+
+	if coin, ok := d.ownedGasCoin(tx, pubkey); ok {
+		d.validators.SetRewardCoin(pubkey, coin)
+	}
+}
+
+// ownedGasCoin returns the transaction's gas coin when it is a 32-byte ID owned
+// by owner. It returns ok=false when there is no gas coin, the coin store is
+// unwired, or the coin is not owned by owner.
+func (d *DAG) ownedGasCoin(tx *types.Transaction, owner Hash) (Hash, bool) {
+	gasCoinBytes := tx.GasCoinBytes()
+	if len(gasCoinBytes) != 32 || d.coinStore == nil {
+		return Hash{}, false
+	}
+
+	var coinID Hash
+	copy(coinID[:], gasCoinBytes)
+
+	data := d.coinStore.GetObject(coinID)
+	if data == nil {
+		return Hash{}, false
+	}
+
+	coinOwner, err := readCoinOwner(data)
+	if err != nil || coinOwner != owner {
+		return Hash{}, false
+	}
+
+	return coinID, true
 }
 
 // handleDeregisterValidator checks if TX is deregister_validator and marks for removal.

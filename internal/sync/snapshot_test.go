@@ -420,6 +420,52 @@ func TestSnapshot_ValidatorStakeRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSnapshot_RewardCoinRoundtrip checks the validator RewardCoin designation
+// survives an encode/decode round-trip and is covered by the snapshot checksum
+// (it rides encodeValidators, which the checksum hashes).
+func TestSnapshot_RewardCoinRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	v1 := &consensus.ValidatorInfo{
+		QUICAddr:  "127.0.0.1:9001",
+		SelfStake: 111,
+	}
+	v1.Pubkey[0] = 1
+	v1.RewardCoin = [32]byte{0xAA, 0xBB, 0xCC}
+	v2 := &consensus.ValidatorInfo{
+		QUICAddr:  "127.0.0.1:9002",
+		SelfStake: 333,
+	}
+	v2.Pubkey[0] = 2
+	// v2 leaves RewardCoin unset (zero) to cover the absent-designation case.
+
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot (checksum must cover reward coin): %v", err)
+	}
+
+	extracted := ExtractValidators(snapshot)
+	if len(extracted) != 2 {
+		t.Fatalf("extracted validators count = %d, want 2", len(extracted))
+	}
+
+	if extracted[0].RewardCoin != ([32]byte{0xAA, 0xBB, 0xCC}) {
+		t.Errorf("v1 reward coin not preserved: %x", extracted[0].RewardCoin)
+	}
+	if extracted[1].RewardCoin != ([32]byte{}) {
+		t.Errorf("v2 reward coin should be zero (unset): %x", extracted[1].RewardCoin)
+	}
+}
+
 func TestChecksumVerification_Corrupted(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()

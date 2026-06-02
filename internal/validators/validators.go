@@ -13,6 +13,7 @@ type ValidatorInfo struct {
 	SelfStake      uint64   // SelfStake is the validator's bonded self-stake
 	DelegatedTotal uint64   // DelegatedTotal is the aggregate stake delegated to this validator
 	Jailed         bool     // Jailed, when true, zeroes the validator's effective stake (no quorum weight, no reward)
+	RewardCoin     Hash     // RewardCoin is the coin the validator's liquid epoch reward is credited to (zero = unset)
 }
 
 // ValidatorSet holds the active validators with their network addresses.
@@ -174,6 +175,7 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 			SelfStake:      info.SelfStake,
 			DelegatedTotal: info.DelegatedTotal,
 			Jailed:         info.Jailed,
+			RewardCoin:     info.RewardCoin,
 		}
 	}
 
@@ -188,6 +190,17 @@ func (vs *ValidatorSet) SetSelfStake(pubkey Hash, stake uint64) {
 
 	if idx, exists := vs.index[pubkey]; exists {
 		vs.validators[idx].SelfStake = stake
+	}
+}
+
+// SetRewardCoin sets the coin a validator's liquid epoch reward is credited to.
+// It is a no-op if the validator is not in the set.
+func (vs *ValidatorSet) SetRewardCoin(pubkey Hash, coin Hash) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		vs.validators[idx].RewardCoin = coin
 	}
 }
 
@@ -296,6 +309,7 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 			SelfStake:      v.SelfStake,
 			DelegatedTotal: v.DelegatedTotal,
 			Jailed:         v.Jailed,
+			RewardCoin:     v.RewardCoin,
 		}
 	}
 

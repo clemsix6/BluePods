@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 9
+	snapshotVersion = 10
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -301,9 +301,16 @@ func sortValidatorInfos(validators []*consensus.ValidatorInfo) {
 // record: 8-byte self-stake + 8-byte delegated total + 1-byte jail flag.
 const validatorStakeBytes = 17
 
-// encodeValidators encodes validators with their QUIC address, BLS pubkey, and stake.
+// validatorRewardCoinBytes is the size of the reward-coin suffix appended after
+// the stake suffix: a fixed 32-byte coin ID (zero when the validator designates
+// none).
+const validatorRewardCoinBytes = 32
+
+// encodeValidators encodes validators with their QUIC address, BLS pubkey, stake,
+// and reward coin.
 // Format per validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte
-// bls_pubkey + 8-byte self_stake (BE) + 8-byte delegated_total (BE) + 1-byte jailed.
+// bls_pubkey + 8-byte self_stake (BE) + 8-byte delegated_total (BE) + 1-byte
+// jailed + 32-byte reward_coin.
 func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 	var buf bytes.Buffer
 
@@ -329,6 +336,9 @@ func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 			stakeBuf[16] = 1
 		}
 		buf.Write(stakeBuf)
+
+		// Reward coin (32 bytes fixed; zero when unset)
+		buf.Write(v.RewardCoin[:])
 	}
 
 	return buf.Bytes()
@@ -374,6 +384,15 @@ func decodeValidators(data []byte) []*consensus.ValidatorInfo {
 		v.DelegatedTotal = binary.BigEndian.Uint64(data[8:16])
 		v.Jailed = data[16] != 0
 		data = data[validatorStakeBytes:]
+
+		// Reward coin (32 bytes). Guard before reading so the trailing reward-coin
+		// bytes of the last validator are never misread as the next record's
+		// pubkey, which would yield a phantom validator.
+		if len(data) < validatorRewardCoinBytes {
+			break
+		}
+		copy(v.RewardCoin[:], data[:validatorRewardCoinBytes])
+		data = data[validatorRewardCoinBytes:]
 
 		validators = append(validators, v)
 	}

@@ -37,6 +37,29 @@ func TestStakeFieldsZeroValue(t *testing.T) {
 	}
 }
 
+// TestRewardCoinCarriedInCopies checks that the RewardCoin designation set via
+// AddWithStake is preserved in both the Get and All copy constructors.
+func TestRewardCoinCarriedInCopies(t *testing.T) {
+	vs := NewValidatorSet(nil)
+
+	coin := Hash{0x9A, 0x9B, 0x9C}
+	vs.AddWithStake(Hash{1}, "addr:9000", [48]byte{0xAB}, 10, 20, false)
+	vs.SetRewardCoin(Hash{1}, coin)
+
+	got := vs.Get(Hash{1})
+	if got == nil {
+		t.Fatal("validator not found")
+	}
+	if got.RewardCoin != coin {
+		t.Fatalf("Get copy lost RewardCoin: got %x, want %x", got.RewardCoin, coin)
+	}
+
+	all := vs.All()
+	if len(all) != 1 || all[0].RewardCoin != coin {
+		t.Fatalf("All copy lost RewardCoin: got %x, want %x", all[0].RewardCoin, coin)
+	}
+}
+
 // TestDelegatedMutators checks AddDelegated/SubDelegated including the floor-0
 // behavior and the false return on an unknown pubkey.
 func TestDelegatedMutators(t *testing.T) {

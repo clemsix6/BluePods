@@ -679,6 +679,58 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 	}
 }
 
+// TestHandleRegisterValidator_RewardCoinFromArgs checks a register_validator tx
+// that carries an explicit reward-coin arg stores it on the validator.
+func TestHandleRegisterValidator_RewardCoinFromArgs(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+	rewardCoin := Hash{0x11, 0x22, 0x33}
+
+	atxBytes := buildRegisterATXWithReward(t, newVal.pubKey, testSystemPod, "quic://r:1", [48]byte{0xAA}, rewardCoin)
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5, Hash{}, nil)
+
+	info := dag.validators.Get(newVal.pubKey)
+	if info == nil {
+		t.Fatal("validator should be registered")
+	}
+	if info.RewardCoin != rewardCoin {
+		t.Fatalf("reward coin = %x, want %x", info.RewardCoin, rewardCoin)
+	}
+}
+
+// TestHandleRegisterValidator_NoRewardCoinLeavesZero checks that registering
+// without a reward-coin arg and without an owned gas coin leaves RewardCoin zero
+// (it is filled later by a gas-paying tx or never, in which case the liquid
+// reward is skipped with a warning rather than failing the epoch).
+func TestHandleRegisterValidator_NoRewardCoinLeavesZero(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil)
+	defer dag.Close()
+
+	newVal := newTestValidator()
+	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2", [48]byte{0xAA})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	dag.executeTx(atx, 5, Hash{}, nil)
+
+	info := dag.validators.Get(newVal.pubKey)
+	if info == nil {
+		t.Fatal("validator should be registered")
+	}
+	if info.RewardCoin != (Hash{}) {
+		t.Fatalf("reward coin should be zero (unset), got %x", info.RewardCoin)
+	}
+}
+
 // TestHandleRegisterValidator_WrongPod tests that register on wrong pod is ignored.
 func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	db := newTestStorage(t)
@@ -2112,6 +2164,49 @@ func encodeRegisterValidatorArgsBorsh(quicAddr, blsPubkey []byte) []byte {
 	buf = append(buf, blsPubkey...)
 
 	return buf
+}
+
+// buildRegisterATXWithReward creates a register_validator ATX that also carries
+// an explicit reward-coin arg (a trailing Borsh Vec<u8> after the BLS key).
+func buildRegisterATXWithReward(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey [48]byte, rewardCoin Hash) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+
+	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey[:])
+	lenBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(rewardCoin)))
+	args = append(args, lenBuf...)
+	args = append(args, rewardCoin[:]...)
+
+	hashVec := builder.CreateByteVector(make([]byte, 32))
+	senderVec := builder.CreateByteVector(sender[:])
+	podVec := builder.CreateByteVector(pod[:])
+	funcNameOff := builder.CreateString("register_validator")
+	argsVec := builder.CreateByteVector(args)
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	txOff := types.TransactionEnd(builder)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objVec := builder.EndVector(0)
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	prfVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objVec)
+	types.AttestedTransactionAddProofs(builder, prfVec)
+	atxOff := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOff)
+
+	return builder.FinishedBytes()
 }
 
 // buildRegisterATXWithShortSender creates a register_validator ATX with a 16-byte sender.
