@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"crypto/ed25519"
+	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
@@ -10,25 +11,31 @@ import (
 	"BluePods/internal/types"
 )
 
-// buildVertex creates a new vertex with the given parameters.
+// buildVertex creates a new vertex with the given parameters. The timestamp is
+// read once from the local clock and threaded into BOTH the unsigned body (so
+// it feeds the hash) and the signed body (with the identical value), so the
+// signed field matches exactly what was hashed and signed.
 func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 	builder := flatbuffers.NewBuilder(4096 + len(txs)*1024)
 
-	// Build unsigned vertex first (includes transactions for hash)
-	unsigned := d.buildUnsignedVertex(builder, round, parents, txs)
+	timestamp := uint64(time.Now().UnixNano())
+
+	// Build unsigned vertex first (includes transactions and timestamp for hash)
+	unsigned := d.buildUnsignedVertex(builder, round, parents, txs, timestamp)
 
 	// Compute hash and signature
 	hash := hashVertex(unsigned)
 	sig := ed25519.Sign(d.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash and signature, reusing the same timestamp
 	builder.Reset()
 
-	return d.buildSignedVertex(builder, round, parents, txs, hash, sig)
+	return d.buildSignedVertex(builder, round, parents, txs, hash, sig, timestamp)
 }
 
-// buildUnsignedVertex creates a vertex without hash and signature.
-func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte) []byte {
+// buildUnsignedVertex creates a vertex without hash and signature. The timestamp
+// is part of this body so it is covered by the vertex hash (and thus signed).
+func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, timestamp uint64) []byte {
 	txsVec := d.buildTxVector(builder, txs)
 	feeSummaryOff := d.buildFeeSummary(builder, txs)
 	parentsVec := d.buildParentsVector(builder, parents)
@@ -41,6 +48,7 @@ func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, pa
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, d.epoch)
 	types.VertexAddFeeSummary(builder, feeSummaryOff)
+	types.VertexAddTimestamp(builder, timestamp)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
@@ -48,8 +56,10 @@ func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, pa
 	return builder.FinishedBytes()
 }
 
-// buildSignedVertex creates a complete vertex with hash and signature.
-func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, hash Hash, sig []byte) []byte {
+// buildSignedVertex creates a complete vertex with hash and signature. The
+// timestamp must be the identical value passed to buildUnsignedVertex so the
+// signed field matches what was hashed and signed.
+func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, hash Hash, sig []byte, timestamp uint64) []byte {
 	txsVec := d.buildTxVector(builder, txs)
 	feeSummaryOff := d.buildFeeSummary(builder, txs)
 	hashVec := builder.CreateByteVector(hash[:])
@@ -66,6 +76,7 @@ func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, pare
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, d.epoch)
 	types.VertexAddFeeSummary(builder, feeSummaryOff)
+	types.VertexAddTimestamp(builder, timestamp)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)

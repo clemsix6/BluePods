@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"crypto/ed25519"
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -90,5 +91,48 @@ func TestTryRebuildAttestedTx_ValidRoundtrip(t *testing.T) {
 
 	if string(tx.FunctionName()) != "test_func" {
 		t.Fatalf("expected function 'test_func', got '%s'", string(tx.FunctionName()))
+	}
+}
+
+// TestBuildVertex_TimestampSignedAndHashed verifies a produced vertex carries a
+// non-zero timestamp, that the timestamp is covered by the signed hash, and that
+// the signature verifies against the producer over that hash.
+func TestBuildVertex_TimestampSignedAndHashed(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	data := dag.buildVertex(0, nil, nil)
+	vertex := types.GetRootAsVertex(data, 0)
+
+	if vertex.Timestamp() == 0 {
+		t.Fatal("expected non-zero vertex timestamp")
+	}
+
+	pubkey := vertex.ProducerBytes()
+	if !ed25519.Verify(pubkey, vertex.HashBytes(), vertex.SignatureBytes()) {
+		t.Fatal("signature does not verify against the signed hash")
+	}
+}
+
+// TestBuildVertex_TimestampInHash verifies that the timestamp feeds the vertex
+// hash: two unsigned bodies differing only in timestamp must hash differently.
+func TestBuildVertex_TimestampInHash(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	hashAt := func(ts uint64) Hash {
+		builder := flatbuffers.NewBuilder(1024)
+		unsigned := dag.buildUnsignedVertex(builder, 0, nil, nil, ts)
+		return hashVertex(unsigned)
+	}
+
+	if hashAt(1000) == hashAt(2000) {
+		t.Fatal("vertices differing only in timestamp must hash differently")
 	}
 }
