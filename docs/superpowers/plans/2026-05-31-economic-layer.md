@@ -26,7 +26,7 @@ This is one plan. Work is grouped into **batches**; each batch is a coherent, in
 
 | Batch | Subsystem | Spec § | Tasks |
 |---|---|---|---|
-| 1 | Tx authenticity at commit; genesis as state; close the fee-less hole | 9, 11, 5 | 9 |
+| 1 | Tx authenticity at commit; genesis as state; close the fee-less hole; gas-coin wiring | 9, 11, 5 | 12 |
 | 2 | `total_supply` accounting; lock storage deposits; remove the scarcity burn | 7, 5.2, 4 | 8 |
 | 3 | Stake on `ValidatorInfo`; carry it in snapshots; `total_bonded`; jailing | 2, 1 | 8 |
 | 4 | Delegation (positions, commission, epoch-boundary split) | 2 | 7 |
@@ -289,7 +289,40 @@ The faucet must move balance from the genesis reserve coin to the requester. In 
 - [ ] **Verify:** `go test ./internal/genesis/ -count=1` and `go test ./test/integration/ -run TestSimConsensus -count=1 -timeout 5m`.
 - [ ] **Commit:** `git add -A && git commit -m "[&] Faucet splits from the genesis reserve (no fee-less mint)"`
 
-### Task 1.9: Verify Batch 1; push
+### Task 1.9: Wire a gas coin through the client SDK
+
+**Files:** Modify `client/transactions.go` (every op) + the client request types; Test `client/*_test.go`.
+
+Closing the fee-less hole (1.7) made a funded gas coin mandatory at commit, but `client/transactions.go` builds every op (`Split`, `Transfer`, `CreateObject`, `TransferObject`, `SetObject`) with `gasCoin=nil, maxGas=0`, so every client tx is now rejected at commit. Give the client a gas-coin model (the correct end state — every value-bearing tx pays its own gas).
+
+- [ ] **Test:** each client op produces a tx whose `GasCoinBytes()` is 32 bytes and `MaxGas() >= MinGas`; a coin op (Split/Transfer) uses the operated coin as its own gas; an object op accepts a caller-supplied gas coin.
+- [ ] **Run, expect FAIL.**
+- [ ] **Implement:** for coin operations, use the operated coin (owned by the sender, a singleton) as the gas coin. For object operations (`CreateObject`/`TransferObject`/`SetObject`), add a gas-coin argument (an owned coin ID + version) the caller supplies. Thread a `maxGas` (a sane default constant >= `MinGas`, caller-overridable). Pass these into the existing `BuildUnsignedTxBytesWithRefs`/`BuildTxTableWithRefs` calls. Keep the SDK surface minimal — one extra option/param, not a rewrite.
+- [ ] **Run, expect PASS;** `go test ./client/ -count=1 -timeout 120s`.
+- [ ] **Commit:** `git add client/ && git commit -m "[&] Wire a gas coin through client transactions"`
+
+### Task 1.10: Make the faucet robust to the single-reserve-coin version race
+
+**Files:** Modify `cmd/node/clienthandlers.go` (`handleFaucet`/`buildFaucetTx`); Test `cmd/node/*_test.go` or an integration assertion.
+
+Every faucet split mutates the ONE genesis reserve coin. Rapid sequential faucet requests all read the same reserve version, so only the first commits and the rest hit `version conflict func=split` and are silently dropped (the new coin is never created → `WaitForObject` times out). Make the faucet serialize and refresh the version.
+
+- [ ] **Test:** two faucet requests issued back-to-back both result in a created coin for their respective requesters (no silent version-conflict drop).
+- [ ] **Run, expect FAIL.**
+- [ ] **Implement:** serialize faucet handling (a mutex around the reserve) and track the reserve coin's next version deterministically: either wait for each split to commit before issuing the next (re-reading the reserve version from state), or keep an in-memory "next reserve version" counter incremented per issued split so sequential splits carry V, V+1, V+2… in submission order. Dev-only tooling — prefer the simplest robust option (wait-for-commit is fine; the sims already wait on the new coin).
+- [ ] **Run, expect PASS.**
+- [ ] **Commit:** `git add cmd/node/ && git commit -m "[!] Serialize faucet so rapid requests do not lose the reserve version race"`
+
+### Task 1.11: Fix the integration sims for the mandatory-gas-coin model
+
+**Files:** Modify `test/integration/sim_bootstrap_test.go`, `test/integration/sim_consensus_test.go` (or wherever the affected ATP cases live).
+
+- [ ] **Fund-then-transact:** every sim wallet that performs a value-bearing op (transfer/create/set/transfer-object) must be **fauceted first** so it owns a coin, and that coin (or a designated owned coin) is passed as the op's gas coin. ATP-15.2/15.3/15.4/15.5, ATP-3.4, ATP-24.1 in `TestSimConsensus` and ATP-1.26 in `TestSimBootstrap` are the affected cases (a zero-balance wallet genuinely cannot create objects under mandatory gas — that is the case Batch 8's sponsored tx will later also serve; for now, faucet then pay).
+- [ ] **ATP-16.3 amount:** the "large mint/faucet" case requests more than the reserve holds (`InitialMint − GenesisStake`); cap the requested amount to the reserve, or assert it fails gracefully on insufficient reserve.
+- [ ] **Run the sims:** `go test ./test/integration/ -run TestSimBootstrap -count=1 -timeout 5m`; `go test ./test/integration/ -run TestSimConsensus -count=1 -timeout 5m`. Both must pass.
+- [ ] **Commit:** `git add test/integration/ && git commit -m "[&] Sims: fund wallets and pay gas under the mandatory-gas-coin model"`
+
+### Task 1.12: Verify Batch 1; push
 
 - [ ] **Unit gate:** `go test ./internal/... ./client/... -count=1 -timeout 180s`.
 - [ ] **Sims:** `go test ./test/integration/ -run TestSimBootstrap -count=1 -timeout 5m`; `go test ./test/integration/ -run TestSimConsensus -count=1 -timeout 5m`.

@@ -139,7 +139,7 @@ In line with newer L1s, this chantier ships without principal slashing and witho
 ## 11. Genesis and fee integrity
 
 - **Genesis is initial state, not transactions.** The initial coin allocation, founding validator set, and their initial bonded stake are the ledger's starting state, set at chain creation (a real bootstrap rewrite, not a relabel).
-- **Every user transaction requires a funded gas coin** (or a sponsor) or it is rejected. The missing-gas-coin exemption is removed.
+- **Every value-bearing user transaction requires a funded gas coin** (or a sponsor) or it is rejected. The blanket missing-gas-coin exemption is removed. The one narrow exception is the validator-set system transactions `register_validator` / `deregister_validator`: they move no value and carry zero quorum weight until the validator bonds (so they cannot be abused), and a node joining at genesis holds no coin yet, so requiring gas for them would be a join chicken-and-egg. They are still authenticated (signed by the sender, section 9). This exemption is revisited when bonding lands: a registrant that must bond already needs a funded coin, so registration can then carry its own gas.
 - **The faucet** becomes a `split` from a genesis-allocated reserve coin (a transfer only reassigns ownership; moving an amount to a new account is a split). Production has no faucet reserve.
 - **The user-callable `mint` is removed.** It would create unbacked supply; the only token creation is genesis seeding and protocol issuance.
 - **The founding validator's self-stake is genesis state**, locked from the genesis coin so its bonded weight has real backing (the stake-weighted quorum needs non-zero genesis stake to reach quorum).
