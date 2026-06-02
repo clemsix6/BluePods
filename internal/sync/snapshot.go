@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 7
+	snapshotVersion = 8
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -295,8 +295,13 @@ func sortValidatorInfos(validators []*consensus.ValidatorInfo) {
 	})
 }
 
-// encodeValidators encodes validators with their QUIC address and BLS pubkey.
-// Format: for each validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte bls_pubkey
+// validatorStakeBytes is the size of the stake suffix appended to each validator
+// record: 8-byte self-stake + 8-byte delegated total + 1-byte jail flag.
+const validatorStakeBytes = 17
+
+// encodeValidators encodes validators with their QUIC address, BLS pubkey, and stake.
+// Format per validator: 32-byte pubkey + u16 quic_len + quic_bytes + 48-byte
+// bls_pubkey + 8-byte self_stake (BE) + 8-byte delegated_total (BE) + 1-byte jailed.
 func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 	var buf bytes.Buffer
 
@@ -313,6 +318,15 @@ func encodeValidators(validators []*consensus.ValidatorInfo) []byte {
 
 		// BLS pubkey (48 bytes fixed)
 		buf.Write(v.BLSPubkey[:])
+
+		// Stake suffix: self-stake, delegated total (8 BE each), jailed (1 byte)
+		stakeBuf := make([]byte, validatorStakeBytes)
+		binary.BigEndian.PutUint64(stakeBuf[0:8], v.SelfStake)
+		binary.BigEndian.PutUint64(stakeBuf[8:16], v.DelegatedTotal)
+		if v.Jailed {
+			stakeBuf[16] = 1
+		}
+		buf.Write(stakeBuf)
 	}
 
 	return buf.Bytes()
@@ -347,6 +361,17 @@ func decodeValidators(data []byte) []*consensus.ValidatorInfo {
 		}
 		copy(v.BLSPubkey[:], data[:48])
 		data = data[48:]
+
+		// Stake suffix (17 bytes). Guard before reading so the trailing stake
+		// bytes of the last validator are never misread as the next record's
+		// pubkey, which would yield a phantom validator.
+		if len(data) < validatorStakeBytes {
+			break
+		}
+		v.SelfStake = binary.BigEndian.Uint64(data[0:8])
+		v.DelegatedTotal = binary.BigEndian.Uint64(data[8:16])
+		v.Jailed = data[16] != 0
+		data = data[validatorStakeBytes:]
 
 		validators = append(validators, v)
 	}

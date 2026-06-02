@@ -330,6 +330,58 @@ func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSnapshot_ValidatorStakeRoundtrip confirms that two validators with
+// distinct self-stake, delegated total, and jail flag survive an encode/decode
+// round-trip with both records intact (a single-validator test would not catch
+// a loop-guard misalignment), and that the stake fields are checksum-covered.
+func TestSnapshot_ValidatorStakeRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	v1 := &consensus.ValidatorInfo{
+		QUICAddr:       "127.0.0.1:9001",
+		SelfStake:      111,
+		DelegatedTotal: 222,
+		Jailed:         false,
+	}
+	v1.Pubkey[0] = 1
+	v2 := &consensus.ValidatorInfo{
+		QUICAddr:       "127.0.0.1:9002",
+		SelfStake:      333,
+		DelegatedTotal: 444,
+		Jailed:         true,
+	}
+	v2.Pubkey[0] = 2
+
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot (checksum must cover stake): %v", err)
+	}
+
+	extracted := ExtractValidators(snapshot)
+	if len(extracted) != 2 {
+		t.Fatalf("extracted validators count = %d, want 2 (loop guard misalignment?)", len(extracted))
+	}
+
+	// Sorted by pubkey: v1 (pubkey[0]=1) first, v2 (pubkey[0]=2) second.
+	if extracted[0].SelfStake != 111 || extracted[0].DelegatedTotal != 222 || extracted[0].Jailed {
+		t.Errorf("v1 stake not preserved: self=%d delegated=%d jailed=%v",
+			extracted[0].SelfStake, extracted[0].DelegatedTotal, extracted[0].Jailed)
+	}
+	if extracted[1].SelfStake != 333 || extracted[1].DelegatedTotal != 444 || !extracted[1].Jailed {
+		t.Errorf("v2 stake not preserved: self=%d delegated=%d jailed=%v",
+			extracted[1].SelfStake, extracted[1].DelegatedTotal, extracted[1].Jailed)
+	}
+}
+
 func TestChecksumVerification_Corrupted(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
