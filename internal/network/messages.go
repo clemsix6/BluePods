@@ -360,20 +360,24 @@ func EncodeStatus() []byte {
 // StatusResponse carries the node's consensus status and a few operational
 // fields the daemon and operators read over QUIC (the former HTTP /status).
 type StatusResponse struct {
-	Round         uint64   // Round is the current consensus round
-	EpochLength   uint64   // EpochLength is the number of rounds per epoch
-	Epoch         uint64   // Epoch is the current epoch
-	LastCommitted uint64   // LastCommitted is the last committed round
-	Validators    uint32   // Validators is the active validator count
-	EpochHolders  uint32   // EpochHolders is the frozen holder-snapshot count
-	SystemPod     [32]byte // SystemPod is the system pod ID
+	Round          uint64   // Round is the current consensus round
+	EpochLength    uint64   // EpochLength is the number of rounds per epoch
+	Epoch          uint64   // Epoch is the current epoch
+	LastCommitted  uint64   // LastCommitted is the last committed round
+	Validators     uint32   // Validators is the active validator count
+	EpochHolders   uint32   // EpochHolders is the frozen holder-snapshot count
+	SystemPod      [32]byte // SystemPod is the system pod ID
+	TotalTx        uint64   // TotalTx is the total committed transactions seen
+	TPSMilli       uint32   // TPSMilli is the current transactions-per-second times 1000
+	ConnectedPeers uint32   // ConnectedPeers is the count of connected mesh peers
 }
 
 // EncodeStatusResp encodes a status response.
 // Format: [1B tag] [8B round] [8B epochLength] [8B epoch] [8B lastCommitted]
-// [4B validators] [4B epochHolders] [32B systemPod].
+// [4B validators] [4B epochHolders] [32B systemPod] [8B totalTx] [4B tpsMilli]
+// [4B connectedPeers].
 func EncodeStatusResp(resp *StatusResponse) []byte {
-	buf := make([]byte, 73)
+	buf := make([]byte, 89)
 	buf[0] = MsgTagStatusResp
 	binary.BigEndian.PutUint64(buf[1:9], resp.Round)
 	binary.BigEndian.PutUint64(buf[9:17], resp.EpochLength)
@@ -382,6 +386,9 @@ func EncodeStatusResp(resp *StatusResponse) []byte {
 	binary.BigEndian.PutUint32(buf[33:37], resp.Validators)
 	binary.BigEndian.PutUint32(buf[37:41], resp.EpochHolders)
 	copy(buf[41:73], resp.SystemPod[:])
+	binary.BigEndian.PutUint64(buf[73:81], resp.TotalTx)
+	binary.BigEndian.PutUint32(buf[81:85], resp.TPSMilli)
+	binary.BigEndian.PutUint32(buf[85:89], resp.ConnectedPeers)
 
 	return buf
 }
@@ -404,6 +411,12 @@ func DecodeStatusResp(data []byte) (*StatusResponse, error) {
 		resp.Validators = binary.BigEndian.Uint32(data[33:37])
 		resp.EpochHolders = binary.BigEndian.Uint32(data[37:41])
 		copy(resp.SystemPod[:], data[41:73])
+	}
+
+	if len(data) >= 89 {
+		resp.TotalTx = binary.BigEndian.Uint64(data[73:81])
+		resp.TPSMilli = binary.BigEndian.Uint32(data[81:85])
+		resp.ConnectedPeers = binary.BigEndian.Uint32(data[85:89])
 	}
 
 	return resp, nil

@@ -218,6 +218,25 @@ func TestDomainResolveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStatusRespRoundTripWithOperationalFields(t *testing.T) {
+	in := &StatusResponse{
+		Round: 1428, EpochLength: 1000, Epoch: 3, LastCommitted: 1426,
+		Validators: 7, EpochHolders: 7, TotalTx: 18392, TPSMilli: 12400, ConnectedPeers: 6,
+	}
+	in.SystemPod[0] = 0xAB
+
+	out, err := DecodeStatusResp(EncodeStatusResp(in))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.TotalTx != 18392 || out.TPSMilli != 12400 || out.ConnectedPeers != 6 {
+		t.Fatalf("operational fields lost: %+v", out)
+	}
+	if out.Round != 1428 || out.Validators != 7 || out.SystemPod[0] != 0xAB {
+		t.Fatalf("base fields lost: %+v", out)
+	}
+}
+
 func TestClientTagsDoNotCollideWithAttestation(t *testing.T) {
 	// Attestation tags are 0x01-0x03; all client tags must be >= 0x04.
 	allTags := []byte{
