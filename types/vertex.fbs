@@ -45,13 +45,15 @@ table VertexLink {
 
 // FeeSummary aggregates fee breakdown for all transactions in a vertex.
 table FeeSummary {
-    // total_fees is the sum of all fees collected from transactions.
+    // total_fees is the sum of all consumed fees collected from transactions.
     total_fees:uint64;
 
-    // total_burned is the 30% portion permanently removed from supply.
+    // total_burned is vestigial: always 0 since the scarcity burn was removed.
+    // Kept (soft-deprecated) so the field layout stays stable; carries no value.
     total_burned:uint64;
 
-    // total_epoch is the 70% portion accumulated for epoch reward distribution.
+    // total_epoch is the portion accumulated for epoch reward distribution
+    // (100% of consumed fees; the storage deposit is locked, not summarized).
     total_epoch:uint64;
 }
 
