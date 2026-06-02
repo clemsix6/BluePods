@@ -84,43 +84,169 @@ func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
 	return safeMul(EffectiveStake(v), d.epochRoundsProduced[v.Pubkey])
 }
 
-// distributeEpochRewards distributes the epoch reward pool to validators. The
-// pool is epochFees + issuance (the thermostat mint, added by runThermostat only
-// when the pool is fully distributable). Weight is effective_stake × liveness
-// (rewardWeight), NOT attestation count, so self-dealing earns nothing. The
-// crediting itself is wired in a later task; this body still computes the
-// stake-weighted proportional split and logs it.
+// distributeEpochRewards credits the epoch reward pool (epochFees + issuance) to
+// validators in full. Each validator's share is effective_stake × liveness over
+// the total weight; the share is split with its delegators (creditDelegators) and
+// its own portion is auto-restaked and credited liquid (creditValidatorReward).
+// The integer-division remainder goes to the deterministic top-weight validator so
+// the whole pool lands in coins/stake (sum credited == pool, no orphaned tokens).
 func (d *DAG) distributeEpochRewards(issuance uint64) {
 	if d.feeParams == nil || d.coinStore == nil {
 		return
 	}
 
 	pool := safeAdd(d.epochFees, issuance)
-	if pool == 0 {
-		return
-	}
-
 	totalWeight := d.totalRewardWeight()
-	if totalWeight == 0 {
+	if pool == 0 || totalWeight == 0 {
 		return
 	}
 
-	for _, v := range d.validators.All() {
-		weight := d.rewardWeight(v)
-		if weight == 0 {
+	vals := d.validators.All()
+	top := pickRemainderRecipient(vals, d.rewardWeight)
+
+	var distributed uint64
+	for _, v := range vals {
+		share := safeMul(pool, d.rewardWeight(v)) / totalWeight
+		distributed += d.creditShare(v, share)
+	}
+
+	d.creditRemainder(top, pool-distributed)
+}
+
+// creditShare credits one validator's epoch share: it splits the share with the
+// validator's delegators, credits each delegator's coin, then credits the
+// validator's own portion (auto-restake + liquid). It returns the total moved
+// into coins/stake for this validator.
+func (d *DAG) creditShare(v *ValidatorInfo, share uint64) uint64 {
+	dels := d.delegatorShares(v.Pubkey)
+	validatorAmount, delegatorPayouts := splitValidatorReward(share, v.SelfStake, d.commissionBPS, dels)
+
+	return d.creditDelegators(delegatorPayouts, v.Pubkey) +
+		d.creditValidatorReward(v, validatorAmount)
+}
+
+// pickRemainderRecipient returns the pubkey of the validator with the greatest
+// reward weight, breaking ties by the lower pubkey bytes, so the remainder is
+// awarded deterministically across all nodes. It returns the zero hash when no
+// validator has positive weight (the caller distributes nothing in that case).
+func pickRemainderRecipient(vals []*ValidatorInfo, weightOf func(*ValidatorInfo) uint64) Hash {
+	var best Hash
+	var bestWeight uint64
+
+	for _, v := range vals {
+		w := weightOf(v)
+		if w == 0 {
 			continue
 		}
 
-		// Divide last to limit overflow; the denominator is nonzero here.
-		share := safeMul(pool, weight) / totalWeight
-
-		// TODO: credit to validator's reward_coin (Task 7.3 replaces this log).
-		logger.Debug("epoch reward",
-			"validator_prefix", v.Pubkey[:4],
-			"weight", weight,
-			"share", share,
-		)
+		if w > bestWeight || (w == bestWeight && bytes.Compare(v.Pubkey[:], best[:]) < 0) {
+			best, bestWeight = v.Pubkey, w
+		}
 	}
+
+	return best
+}
+
+// creditDelegators compounds each delegator's reward into its stake position: the
+// position's amount and the validator's delegated total both rise by the allotted
+// reward, so it is returned with the principal on undelegate (spec §2). It returns
+// the total credited. A position whose amount cannot be raised is logged and
+// skipped (its tokens flow to the remainder recipient), so it never fails the
+// epoch. The reward compounds into stake rather than a liquid coin because the
+// protocol tracks the delegator only by its position, not by a payout coin.
+func (d *DAG) creditDelegators(payouts []delegatorShare, validator Hash) uint64 {
+	var credited uint64
+	for _, del := range payouts {
+		if !d.compoundDelegation(del.Delegator, validator, del.Amount) {
+			continue
+		}
+		credited += del.Amount
+	}
+
+	return credited
+}
+
+// compoundDelegation raises a delegation position's amount and the validator's
+// delegated total by reward, persisting the rebuilt position. It returns false
+// (a no-op) when the reward is zero or the position is missing/malformed.
+func (d *DAG) compoundDelegation(delegator, validator Hash, reward uint64) bool {
+	if reward == 0 {
+		return false
+	}
+
+	posID := DelegationID(delegator, validator)
+	current, ok := d.readDelegationAmount(posID, validator)
+	if !ok {
+		logger.Warn("delegator reward skipped; position missing", "validator_prefix", validator[:4])
+		return false
+	}
+
+	d.coinStore.SetObject(buildDelegationObject(delegator, validator, safeAdd(current, reward)))
+	d.validators.AddDelegated(validator, reward)
+	return true
+}
+
+// creditValidatorReward credits a validator's own portion of its share: a
+// fraction is auto-restaked into its self-stake and the rest is credited liquid to
+// its reward coin. It returns the total moved into stake/coin. The liquid portion
+// is skipped (with a warning, so the epoch does not fail) when the validator
+// designates no reward coin; the skipped amount then flows to the remainder
+// recipient, preserving conservation.
+func (d *DAG) creditValidatorReward(v *ValidatorInfo, amount uint64) uint64 {
+	restake := safeMul(amount, d.thermostat.AutoRestakeMille) / milleMax
+	liquid := amount - restake
+
+	if restake > 0 {
+		d.validators.SetSelfStake(v.Pubkey, safeAdd(v.SelfStake, restake))
+	}
+
+	if v.RewardCoin == (Hash{}) {
+		logger.Warn("validator has no reward coin; liquid reward skipped", "validator_prefix", v.Pubkey[:4])
+		return restake
+	}
+
+	if err := creditCoin(d.coinStore, v.RewardCoin, liquid); err != nil {
+		logger.Warn("validator reward credit failed", "error", err)
+		return restake
+	}
+
+	return restake + liquid
+}
+
+// creditRemainder credits the undistributed remainder to the top-weight
+// validator's reward coin so the full pool lands in coins. It is a no-op when the
+// remainder is zero or the recipient designates no reward coin.
+func (d *DAG) creditRemainder(top Hash, remainder uint64) {
+	if remainder == 0 {
+		return
+	}
+
+	info := d.validators.Get(top)
+	if info == nil || info.RewardCoin == (Hash{}) {
+		logger.Warn("remainder undistributable; no reward coin on top validator", "remainder", remainder)
+		return
+	}
+
+	if err := creditCoin(d.coinStore, info.RewardCoin, remainder); err != nil {
+		logger.Warn("remainder credit failed", "error", err)
+	}
+}
+
+// delegatorShares enumerates the delegation positions targeting a validator as
+// reward-split inputs. It returns nil when no enumerator is wired (some unit
+// tests) so the split treats the validator as having no delegators.
+func (d *DAG) delegatorShares(validator Hash) []delegatorShare {
+	if d.delegations == nil {
+		return nil
+	}
+
+	entries := d.delegations.DelegationsFor(validator)
+	dels := make([]delegatorShare, len(entries))
+	for i, e := range entries {
+		dels[i] = delegatorShare{Delegator: e.Delegator, Amount: e.Amount}
+	}
+
+	return dels
 }
 
 // applyPendingRemovals removes validators from the active set.

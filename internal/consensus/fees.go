@@ -43,6 +43,10 @@ func DefaultFeeParams() FeeParams {
 // bpsMax is the basis point denominator (100% = 10000).
 const bpsMax = 10000
 
+// milleMax is the per-mille denominator (100% = 1000), used for the auto-restake
+// fraction of an epoch reward.
+const milleMax = 1000
+
 // safeMul returns a * b, capping at MaxUint64 on overflow.
 // Prevents attackers from crafting large max_gas * gas_price that wraps to a small fee.
 func safeMul(a, b uint64) uint64 {

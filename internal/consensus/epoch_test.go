@@ -1783,6 +1783,124 @@ func TestRewardWeight_LivenessCountsDistinctRounds(t *testing.T) {
 	}
 }
 
+// TestRewardCrediting drives the full crediting path for one producing validator
+// with a self-stake, a reward coin, and one delegator. It asserts the validator's
+// liquid portion lands in its reward coin, the auto-restake fraction raises its
+// self-stake, the delegator's portion lands in its coin, and the credits conserve
+// the pool exactly (sum credited + restaked == pool).
+func TestRewardCrediting(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+
+	rewardCoin := [32]byte{0xAA}
+	delegator := [32]byte{0xD2}
+	store.SetObject(buildTestCoinObject(rewardCoin, 0, pk, 0))
+	// A delegation position owned by the delegator targeting pk, amount 100. The
+	// delegator's reward compounds into this position (spec §2: returned with the
+	// principal on undelegate), not into a separate liquid coin.
+	store.SetObject(buildDelegationObject(delegator, pk, 100))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()), // AutoRestakeMille 200 (20%)
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 100)
+	dag.validators.AddDelegated(pk, 100)
+	dag.validators.SetRewardCoin(pk, rewardCoin)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+	dag.epochFees = 1000
+
+	dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
+
+	// Expected split: share = 1000 (single producer). splitValidatorReward(1000,
+	// self 100, commission 10%, dels [{d2,100}]) → validator 550, delegator 450.
+	// Auto-restake 20% of 550 = 110 → self 100+110 = 210; liquid 440 → reward coin.
+	if got := coinBalance(t, store, rewardCoin); got != 440 {
+		t.Errorf("reward coin balance = %d, want 440 (liquid validator portion)", got)
+	}
+	if got := dag.validators.Get(pk).SelfStake; got != 210 {
+		t.Errorf("self-stake after restake = %d, want 210 (100 + 110)", got)
+	}
+
+	// The delegator's 450 reward compounds into its position: amount 100 -> 550,
+	// and the validator's delegated total rises by 450 (effective next epoch).
+	posAmount, ok := dag.readDelegationAmount(DelegationID(delegator, pk), pk)
+	if !ok || posAmount != 550 {
+		t.Errorf("delegation position amount = %d (ok=%v), want 550", posAmount, ok)
+	}
+	if got := dag.validators.Get(pk).DelegatedTotal; got != 100+450 {
+		t.Errorf("delegated total after reward = %d, want 550", got)
+	}
+
+	credited := uint64(440 + 110 + 450)
+	if credited != 1000 {
+		t.Fatalf("credits do not conserve the pool: %d != 1000", credited)
+	}
+}
+
+// TestRewardCrediting_RemainderToTopValidator checks the integer-division
+// remainder (and any zero-share validators) is credited to the deterministic
+// top-weight validator so the full pool is distributed (sum credited == pool).
+func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+	top := validators[0].pubKey
+	low := validators[1].pubKey
+	// Deterministic top is max weight; ensure top is the larger-weight one.
+	if bytes.Compare(top[:], low[:]) > 0 {
+		top, low = low, top
+	}
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+	topCoin := [32]byte{0x01}
+	lowCoin := [32]byte{0x02}
+	store.SetObject(buildTestCoinObject(topCoin, 0, top, 0))
+	store.SetObject(buildTestCoinObject(lowCoin, 0, low, 0))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	) // thermostat off → AutoRestakeMille 0, all liquid
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	// top weight 7, low weight 3, totalWeight 10. pool 100 → top 70, low 30, no
+	// remainder; use pool 101 to force a remainder of 1 (70+30=100, 1 left).
+	dag.validators.SetSelfStake(top, 7)
+	dag.validators.SetSelfStake(low, 3)
+	dag.validators.SetRewardCoin(top, topCoin)
+	dag.validators.SetRewardCoin(low, lowCoin)
+	dag.epochRoundsProduced[top] = 1
+	dag.epochRoundsProduced[low] = 1
+	dag.epochTotalRounds = 1
+	dag.epochFees = 101
+
+	dag.distributeEpochRewards(0)
+
+	topBal := coinBalance(t, store, topCoin)
+	lowBal := coinBalance(t, store, lowCoin)
+	if lowBal != 30 {
+		t.Errorf("low validator balance = %d, want 30", lowBal)
+	}
+	// top gets its 70 share PLUS the remainder of 1.
+	if topBal != 71 {
+		t.Errorf("top validator balance = %d, want 71 (70 share + 1 remainder)", topBal)
+	}
+	if topBal+lowBal != 101 {
+		t.Fatalf("pool not fully distributed: %d != 101", topBal+lowBal)
+	}
+}
+
 func thermostatTestDAG(t *testing.T, supply uint64) (*DAG, *mockCoinStore, [32]byte) {
 	t.Helper()
 
