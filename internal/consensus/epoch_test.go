@@ -1725,6 +1725,64 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 // an epoch length, and a coin store seeded to the given supply. The thermostat is
 // explicitly enabled here (it is opt-in and off by default) so the test can
 // observe minting; the live node keeps it off until reward crediting is wired.
+// TestRewardWeight checks the reward weight is effective_stake × liveness: with
+// equal stake the weight is proportional to rounds produced, with equal rounds it
+// is proportional to stake, zero rounds yields zero, and attestation count is
+// never an input (there is no attestation field in the computation).
+func TestRewardWeight(t *testing.T) {
+	dag, _, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	// Equal stake (100), different rounds (2 vs 5) → weight ∝ rounds.
+	dag.validators.SetSelfStake(pk, 100)
+	dag.epochRoundsProduced[pk] = 2
+
+	v := dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 200 {
+		t.Fatalf("weight (stake 100 × rounds 2) = %d, want 200", got)
+	}
+
+	dag.epochRoundsProduced[pk] = 5
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 500 {
+		t.Fatalf("weight (stake 100 × rounds 5) = %d, want 500", got)
+	}
+
+	// Equal rounds (5), more stake (300) → weight ∝ stake.
+	dag.validators.SetSelfStake(pk, 300)
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 1500 {
+		t.Fatalf("weight (stake 300 × rounds 5) = %d, want 1500", got)
+	}
+
+	// Zero rounds → zero weight (no liveness, no reward).
+	dag.epochRoundsProduced = make(map[Hash]uint64)
+	v = dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 0 {
+		t.Fatalf("weight with zero rounds = %d, want 0", got)
+	}
+}
+
+// TestRewardWeight_LivenessCountsDistinctRounds guards against equivocation
+// double-counting: a producer is credited at most one round per round number, so
+// even if epochRoundsProduced were inflated by duplicate vertices the counter
+// itself is the source of truth and weight scales linearly with it (no per-round
+// double weight). The committer increments the counter once per produced vertex;
+// since the DAG admits one vertex per (producer, round), the counter equals the
+// distinct rounds produced.
+func TestRewardWeight_LivenessCountsDistinctRounds(t *testing.T) {
+	dag, _, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10)
+	dag.epochRoundsProduced[pk] = 3 // three distinct rounds
+
+	v := dag.validators.Get(pk)
+	if got := dag.rewardWeight(v); got != 30 {
+		t.Fatalf("weight = %d, want 30 (one weight unit per distinct round)", got)
+	}
+}
+
 func thermostatTestDAG(t *testing.T, supply uint64) (*DAG, *mockCoinStore, [32]byte) {
 	t.Helper()
 

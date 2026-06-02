@@ -75,12 +75,21 @@ func (d *DAG) transitionEpoch(round uint64) {
 	}
 }
 
+// rewardWeight returns a validator's epoch reward weight: effective_stake ×
+// liveness, where liveness is the validator's rounds produced this epoch (one
+// vertex per round, so equivocation cannot double it). A jailed or zero-stake
+// validator, or one that produced no rounds, has zero weight. Uses safeMul. The
+// common epochTotalRounds denominator cancels in the share, so it is omitted.
+func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
+	return safeMul(EffectiveStake(v), d.epochRoundsProduced[v.Pubkey])
+}
+
 // distributeEpochRewards distributes the epoch reward pool to validators. The
 // pool is epochFees + issuance (the thermostat mint, added by runThermostat only
-// when the pool is fully distributable). The crediting itself is wired in a later
-// batch; this body still computes the proportional split and logs it. The
-// epochFees==0 early-return is removed so a zero-fee, issuance-only epoch (the
-// bootstrap incentive) is still distributed.
+// when the pool is fully distributable). Weight is effective_stake × liveness
+// (rewardWeight), NOT attestation count, so self-dealing earns nothing. The
+// crediting itself is wired in a later task; this body still computes the
+// stake-weighted proportional split and logs it.
 func (d *DAG) distributeEpochRewards(issuance uint64) {
 	if d.feeParams == nil || d.coinStore == nil {
 		return
@@ -91,30 +100,24 @@ func (d *DAG) distributeEpochRewards(issuance uint64) {
 		return
 	}
 
-	// Calculate weights: stake × (rounds_produced / total_rounds).
-	// With equal stake (1), weight = rounds_produced.
-	var totalWeight uint64
-	for _, rounds := range d.epochRoundsProduced {
-		totalWeight += rounds
-	}
-
+	totalWeight := d.totalRewardWeight()
 	if totalWeight == 0 {
 		return
 	}
 
-	// Distribute to each validator proportionally.
-	for pubkey, rounds := range d.epochRoundsProduced {
-		share := pool * rounds / totalWeight
-
-		if share == 0 {
+	for _, v := range d.validators.All() {
+		weight := d.rewardWeight(v)
+		if weight == 0 {
 			continue
 		}
 
-		// TODO: credit to validator's reward_coin once ValidatorInfo stores reward_coin ObjectID (Batch 7)
-		// For now, log the distribution.
+		// Divide last to limit overflow; the denominator is nonzero here.
+		share := safeMul(pool, weight) / totalWeight
+
+		// TODO: credit to validator's reward_coin (Task 7.3 replaces this log).
 		logger.Debug("epoch reward",
-			"validator_prefix", pubkey[:4],
-			"rounds", rounds,
+			"validator_prefix", v.Pubkey[:4],
+			"weight", weight,
 			"share", share,
 		)
 	}
