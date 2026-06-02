@@ -6,6 +6,14 @@ BluePods is a decentralized cloud. The goal is to host arbitrary backends, writt
 
 The closest existing system in ambition is the Internet Computer. BluePods shares the vision and makes the opposite architectural choice at the center, which is the subject of the positioning section below.
 
+## The token
+
+The native token follows from what BluePods is. A cloud wants a stable medium of payment, not a speculative asset, so the token is utility-first and stability-oriented: it exists to pay for compute and storage and to secure the network. The more stable its value, the better the product. This is a deliberate rejection of the hybrid utility-plus-value posture most chains adopt, where the token is sold partly as an investment.
+
+That stance settles two questions that a value-seeking token would answer differently. There is no scarcity burn. Burning fees manufactures scarcity and upward price pressure, which is exactly what a stable medium of payment should not have, so the token is left mildly inflationary instead. And issuance exists at all: a small, perpetual inflation pays validators and keeps the network secured, on the view that a cloud is healthier resting at low inflation than chasing a fixed cap. The bias is always to err on the low side of issuance, because low inflation is benign and easily corrected while runaway inflation is not.
+
+Real price stability, a peg, and the data that would anchor it are later work. The commitment here is the direction: stability over scarcity, utility over speculation. The mechanics, the fee split, the issuance control loop, the supply accounting, live in the whitepaper.
+
 ## The problem
 
 Most Layer 1 blockchains force a choice between throughput, decentralization, and state management. Ethereum keeps strong decentralization but every validator stores and processes the whole state, which caps throughput. Solana reaches high throughput through a leader-based pipeline, but the leader is a bottleneck and the hardware bar limits who can participate. Sui introduces an object model that allows parallel execution, but still has every validator process every transaction.
