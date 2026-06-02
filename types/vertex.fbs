@@ -80,6 +80,13 @@ table Vertex {
 
     // fee_summary aggregates the fee breakdown for all transactions in this vertex.
     fee_summary:FeeSummary;
+
+    // timestamp is the producer's local wall-clock (Unix nanoseconds) at vertex
+    // production. It is part of the signed/hashed body. The median-derivation
+    // pipeline, monotonic coercion, and pod-context exposure are deferred to the
+    // branch that ships the first time-using pod; for now the field is carried,
+    // signed, and ignored by everything (money never reads it).
+    timestamp:uint64;
 }
 
 root_type Vertex;

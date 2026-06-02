@@ -555,6 +555,7 @@ impl<'a> Vertex<'a> {
   pub const VT_TRANSACTIONS: ::flatbuffers::VOffsetT = 14;
   pub const VT_EPOCH: ::flatbuffers::VOffsetT = 16;
   pub const VT_FEE_SUMMARY: ::flatbuffers::VOffsetT = 18;
+  pub const VT_TIMESTAMP: ::flatbuffers::VOffsetT = 20;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -566,6 +567,7 @@ impl<'a> Vertex<'a> {
     args: &'args VertexArgs<'args>
   ) -> ::flatbuffers::WIPOffset<Vertex<'bldr>> {
     let mut builder = VertexBuilder::new(_fbb);
+    builder.add_timestamp(args.timestamp);
     builder.add_epoch(args.epoch);
     builder.add_round(args.round);
     if let Some(x) = args.fee_summary { builder.add_fee_summary(x); }
@@ -634,6 +636,13 @@ impl<'a> Vertex<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<FeeSummary>>(Vertex::VT_FEE_SUMMARY, None)}
   }
+  #[inline]
+  pub fn timestamp(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Vertex::VT_TIMESTAMP, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Vertex<'_> {
@@ -650,6 +659,7 @@ impl ::flatbuffers::Verifiable for Vertex<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<AttestedTransaction>>>>("transactions", Self::VT_TRANSACTIONS, false)?
      .visit_field::<u64>("epoch", Self::VT_EPOCH, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<FeeSummary>>("fee_summary", Self::VT_FEE_SUMMARY, false)?
+     .visit_field::<u64>("timestamp", Self::VT_TIMESTAMP, false)?
      .finish();
     Ok(())
   }
@@ -663,6 +673,7 @@ pub struct VertexArgs<'a> {
     pub transactions: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<AttestedTransaction<'a>>>>>,
     pub epoch: u64,
     pub fee_summary: Option<::flatbuffers::WIPOffset<FeeSummary<'a>>>,
+    pub timestamp: u64,
 }
 impl<'a> Default for VertexArgs<'a> {
   #[inline]
@@ -676,6 +687,7 @@ impl<'a> Default for VertexArgs<'a> {
       transactions: None,
       epoch: 0,
       fee_summary: None,
+      timestamp: 0,
     }
   }
 }
@@ -718,6 +730,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> VertexBuilder<'a, 'b, A> {
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<FeeSummary>>(Vertex::VT_FEE_SUMMARY, fee_summary);
   }
   #[inline]
+  pub fn add_timestamp(&mut self, timestamp: u64) {
+    self.fbb_.push_slot::<u64>(Vertex::VT_TIMESTAMP, timestamp, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> VertexBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     VertexBuilder {
@@ -743,6 +759,7 @@ impl ::core::fmt::Debug for Vertex<'_> {
       ds.field("transactions", &self.transactions());
       ds.field("epoch", &self.epoch());
       ds.field("fee_summary", &self.fee_summary());
+      ds.field("timestamp", &self.timestamp());
       ds.finish()
   }
 }
