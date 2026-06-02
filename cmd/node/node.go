@@ -216,7 +216,11 @@ func (n *Node) Snapshot() tui.Snapshot {
 // a signal otherwise. Both paths end by closing the node.
 func (n *Node) serve() error {
 	if n.useTUI {
-		n.redirectLogsToDisk()
+		if err := n.redirectLogsToDisk(); err != nil {
+			logger.Warn("dashboard disabled, logging to terminal", "error", err)
+			return n.waitForShutdown()
+		}
+
 		err := tui.Run(n)
 		n.Close()
 		return err
@@ -228,16 +232,15 @@ func (n *Node) serve() error {
 // redirectLogsToDisk sends log output to a file under the data directory so log
 // lines do not corrupt the dashboard. The file is left open for the lifetime of
 // the process; the OS closes it on exit.
-func (n *Node) redirectLogsToDisk() {
+func (n *Node) redirectLogsToDisk() error {
 	path := n.cfg.DataPath + "/node.log"
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		// Fall back to discarding logs rather than polluting the TUI.
-		logger.SetOutput(os.Stderr)
-		return
+		return fmt.Errorf("open log file %s:\n%w", path, err)
 	}
 
 	logger.SetOutput(f)
+	return nil
 }
 
 // myPubkey returns this node's public key as a consensus.Hash.
