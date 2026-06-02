@@ -167,6 +167,9 @@ impl<'a> Transaction<'a> {
   pub const VT_MAX_CREATE_DOMAINS: ::flatbuffers::VOffsetT = 22;
   pub const VT_MAX_GAS: ::flatbuffers::VOffsetT = 24;
   pub const VT_GAS_COIN: ::flatbuffers::VOffsetT = 26;
+  pub const VT_FEE_PAYER: ::flatbuffers::VOffsetT = 28;
+  pub const VT_SPONSOR_SIGNATURE: ::flatbuffers::VOffsetT = 30;
+  pub const VT_VALID_UNTIL: ::flatbuffers::VOffsetT = 32;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -178,7 +181,10 @@ impl<'a> Transaction<'a> {
     args: &'args TransactionArgs<'args>
   ) -> ::flatbuffers::WIPOffset<Transaction<'bldr>> {
     let mut builder = TransactionBuilder::new(_fbb);
+    builder.add_valid_until(args.valid_until);
     builder.add_max_gas(args.max_gas);
+    if let Some(x) = args.sponsor_signature { builder.add_sponsor_signature(x); }
+    if let Some(x) = args.fee_payer { builder.add_fee_payer(x); }
     if let Some(x) = args.gas_coin { builder.add_gas_coin(x); }
     if let Some(x) = args.args { builder.add_args(x); }
     if let Some(x) = args.function_name { builder.add_function_name(x); }
@@ -278,6 +284,27 @@ impl<'a> Transaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_GAS_COIN, None)}
   }
+  #[inline]
+  pub fn fee_payer(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_FEE_PAYER, None)}
+  }
+  #[inline]
+  pub fn sponsor_signature(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_SPONSOR_SIGNATURE, None)}
+  }
+  #[inline]
+  pub fn valid_until(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Transaction::VT_VALID_UNTIL, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Transaction<'_> {
@@ -298,6 +325,9 @@ impl ::flatbuffers::Verifiable for Transaction<'_> {
      .visit_field::<u16>("max_create_domains", Self::VT_MAX_CREATE_DOMAINS, false)?
      .visit_field::<u64>("max_gas", Self::VT_MAX_GAS, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("gas_coin", Self::VT_GAS_COIN, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("fee_payer", Self::VT_FEE_PAYER, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("sponsor_signature", Self::VT_SPONSOR_SIGNATURE, false)?
+     .visit_field::<u64>("valid_until", Self::VT_VALID_UNTIL, false)?
      .finish();
     Ok(())
   }
@@ -315,6 +345,9 @@ pub struct TransactionArgs<'a> {
     pub max_create_domains: u16,
     pub max_gas: u64,
     pub gas_coin: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub fee_payer: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub sponsor_signature: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub valid_until: u64,
 }
 impl<'a> Default for TransactionArgs<'a> {
   #[inline]
@@ -332,6 +365,9 @@ impl<'a> Default for TransactionArgs<'a> {
       max_create_domains: 0,
       max_gas: 0,
       gas_coin: None,
+      fee_payer: None,
+      sponsor_signature: None,
+      valid_until: 0,
     }
   }
 }
@@ -390,6 +426,18 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> TransactionBuilder<'a, 'b, A>
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_GAS_COIN, gas_coin);
   }
   #[inline]
+  pub fn add_fee_payer(&mut self, fee_payer: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_FEE_PAYER, fee_payer);
+  }
+  #[inline]
+  pub fn add_sponsor_signature(&mut self, sponsor_signature: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_SPONSOR_SIGNATURE, sponsor_signature);
+  }
+  #[inline]
+  pub fn add_valid_until(&mut self, valid_until: u64) {
+    self.fbb_.push_slot::<u64>(Transaction::VT_VALID_UNTIL, valid_until, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> TransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     TransactionBuilder {
@@ -419,6 +467,9 @@ impl ::core::fmt::Debug for Transaction<'_> {
       ds.field("max_create_domains", &self.max_create_domains());
       ds.field("max_gas", &self.max_gas());
       ds.field("gas_coin", &self.gas_coin());
+      ds.field("fee_payer", &self.fee_payer());
+      ds.field("sponsor_signature", &self.sponsor_signature());
+      ds.field("valid_until", &self.valid_until());
       ds.finish()
   }
 }
