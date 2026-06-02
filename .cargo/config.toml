@@ -1,0 +1,8 @@
+# WebAssembly pods import their host functions (input_len, read_input,
+# write_output, gas) from the runtime. They are declared as bare `extern "C"`
+# in pod-sdk, so the linker must be told to emit them as WASM imports rather
+# than erroring on the undefined symbols. Recent rust-lld rejects undefined
+# symbols by default, which broke the CI `make release` step; --allow-undefined
+# restores the intended import behavior (the host resolves them at instantiation).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]
