@@ -151,15 +151,24 @@ func (d *DAG) commitRound(round uint64) {
 
 	verdicts := d.verifyRoundProofs(round, hashes)
 
+	// Track which producers were already credited liveness for THIS round so an
+	// equivocating producer (two distinct vertices in the same round) is credited
+	// once. Liveness is per distinct round, not per vertex; double-credit would
+	// inflate that producer's effective_stake x liveness reward share.
+	creditedThisRound := make(map[Hash]bool)
+
 	for _, h := range hashes {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
-		// Track round production per validator
+		// Credit round production per validator at most once per round.
 		producer := extractProducer(v)
-		d.epochRoundsProduced[producer]++
+		if !creditedThisRound[producer] {
+			creditedThisRound[producer] = true
+			d.epochRoundsProduced[producer]++
+		}
 
 		fees := d.processTransactions(v, round, verdicts)
 

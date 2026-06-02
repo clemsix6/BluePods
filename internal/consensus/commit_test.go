@@ -421,6 +421,50 @@ func TestCommitRoundProcessing(t *testing.T) {
 	}
 }
 
+// TestCommitRound_EquivocationCreditedOnce verifies a producer that places two
+// distinct vertices in the same round is credited liveness ONCE. The store dedups
+// only by vertex hash, so two distinct vertices both reach commitRound; without
+// per-round dedup this would double-credit the producer's effective_stake x
+// liveness reward share.
+func TestCommitRound_EquivocationCreditedOnce(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	// Two distinct vertices from the SAME producer in the SAME round: distinct
+	// parents give them distinct hashes, so the store keeps both.
+	const round = 7
+	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x01}})
+	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x02}})
+
+	if got := len(dag.store.getByRound(round)); got != 2 {
+		t.Fatalf("setup: expected 2 distinct vertices in round, got %d", got)
+	}
+
+	dag.commitRound(round)
+
+	if got := dag.epochRoundsProduced[validators[0].pubKey]; got != 1 {
+		t.Fatalf("equivocating producer credited %d rounds, want 1", got)
+	}
+}
+
+// storeRoundVertexWithParents builds a signed vertex for the validator at the
+// round with the given parents (so the hash varies) and inserts it directly into
+// the DAG store, bypassing parent validation.
+func storeRoundVertexWithParents(t *testing.T, dag *DAG, v testValidator, round uint64, parents []Hash) {
+	t.Helper()
+
+	data := buildTestVertex(t, v, round, parents, 1)
+	vertex := types.GetRootAsVertex(data, 0)
+
+	var hash Hash
+	copy(hash[:], vertex.HashBytes())
+
+	dag.store.add(data, hash, round, v.pubKey)
+}
+
 // TestIsRoundCommitted_StakeWeighted verifies the commit quorum is stake-weighted:
 // a round whose only producer carries a minority of capped stake does NOT commit,
 // while the supermajority-stake producer does. Uses two validators at 90%/10%
