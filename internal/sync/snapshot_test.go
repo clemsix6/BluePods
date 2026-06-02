@@ -330,6 +330,44 @@ func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSnapshot_IssuanceRateRoundtrip confirms the thermostat issuance rate
+// survives a snapshot round-trip and is covered by the checksum (tampering it
+// fails verification). The rate is stateful (the loop steps from it), so it must
+// persist rather than be re-derived.
+func TestSnapshot_IssuanceRateRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	data, err := CreateSnapshot(db, 9, nil, nil, nil, nil, 0, 18)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot: %v", err)
+	}
+
+	if got := snapshot.IssuanceRateMicro(); got != 18 {
+		t.Errorf("restored issuance_rate_micro: got %d, want 18", got)
+	}
+
+	// Tamper the issuance_rate_micro field in place; the checksum must catch it.
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+	tamperedSnap := types.GetRootAsSnapshot(tampered, 0)
+	if !tamperedSnap.MutateIssuanceRateMicro(99999) {
+		t.Fatal("MutateIssuanceRateMicro failed")
+	}
+
+	if _, err := ApplySnapshot(db2, tampered); err == nil {
+		t.Fatal("ApplySnapshot must fail when issuance_rate_micro is tampered (not checksum-covered)")
+	}
+}
+
 // TestSnapshot_ValidatorStakeRoundtrip confirms that two validators with
 // distinct self-stake, delegated total, and jail flag survive an encode/decode
 // round-trip with both records intact (a single-validator test would not catch
