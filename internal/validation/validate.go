@@ -189,7 +189,7 @@ func rebuildUnsignedTx(tx *types.Transaction) []byte {
 	readRefs := extractRefData(tx, false)
 	cor := extractCreatedObjectsReplication(tx)
 
-	return genesis.BuildUnsignedTxBytesWithRefs(
+	return genesis.BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(),
 		extractPod(tx),
 		string(tx.FunctionName()),
@@ -200,6 +200,7 @@ func rebuildUnsignedTx(tx *types.Transaction) []byte {
 		tx.GasCoinBytes(),
 		mutableRefs,
 		readRefs,
+		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 	)
 }
 

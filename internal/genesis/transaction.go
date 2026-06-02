@@ -186,6 +186,18 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 		gasCoinVec = builder.CreateByteVector(gcBytes)
 	}
 
+	// Rebuild the sponsorship vectors (absent for a self-paid tx), so wrapping a
+	// gossiped sponsored Transaction into an ATX preserves its fee_payer binding.
+	var feePayerVec flatbuffers.UOffsetT
+	if fpBytes := tx.FeePayerBytes(); len(fpBytes) > 0 {
+		feePayerVec = builder.CreateByteVector(fpBytes)
+	}
+
+	var sponsorSigVec flatbuffers.UOffsetT
+	if ssBytes := tx.SponsorSignatureBytes(); len(ssBytes) > 0 {
+		sponsorSigVec = builder.CreateByteVector(ssBytes)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
@@ -202,6 +214,18 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 
 	if gasCoinVec != 0 {
 		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
+
+	if feePayerVec != 0 {
+		types.TransactionAddFeePayer(builder, feePayerVec)
+	}
+
+	if sponsorSigVec != 0 {
+		types.TransactionAddSponsorSignature(builder, sponsorSigVec)
+	}
+
+	if vu := tx.ValidUntil(); vu != 0 {
+		types.TransactionAddValidUntil(builder, vu)
 	}
 
 	if mutRefsVec != 0 {
@@ -314,8 +338,28 @@ func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []b
 	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, nil, nil)
 }
 
+// Sponsorship carries the optional fee-payer binding of a sponsored transaction.
+// A zero value (empty FeePayer, zero ValidUntil) is a self-paid transaction and
+// contributes nothing to the canonical body, so the encoding stays byte-identical.
+type Sponsorship struct {
+	FeePayer   []byte // FeePayer is the 32-byte sponsor pubkey paying the gas (empty if self-paid).
+	ValidUntil uint64 // ValidUntil is the last epoch the sponsored tx may commit (0 if self-paid).
+}
+
 // BuildUnsignedTxBytesWithRefs creates transaction bytes with ObjectRef references.
+// It is the canonical unsigned-body primitive for a self-paid transaction; the
+// sponsored variant delegates here with its Sponsorship.
 func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData) []byte {
+	return BuildUnsignedTxBytesSponsored(sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, mutableRefs, readRefs, Sponsorship{})
+}
+
+// BuildUnsignedTxBytesSponsored builds the canonical unsigned transaction body,
+// optionally binding a sponsor's fee_payer and valid_until. This is the single
+// site that defines the body layout; ingress validation and the commit-time
+// authenticity check both reconstruct against it, so the three never drift. The
+// sponsorship fields follow the same absent-when-empty rule as gas_coin, so a
+// self-paid transaction (empty Sponsorship) serializes byte-identically to before.
+func BuildUnsignedTxBytesSponsored(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	argsVec := builder.CreateByteVector(args)
@@ -333,6 +377,11 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 		gasCoinVec = builder.CreateByteVector(gasCoin)
 	}
 
+	var feePayerVec flatbuffers.UOffsetT
+	if len(sponsor.FeePayer) > 0 {
+		feePayerVec = builder.CreateByteVector(sponsor.FeePayer)
+	}
+
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
@@ -347,6 +396,14 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 
 	if gasCoinVec != 0 {
 		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
+
+	if feePayerVec != 0 {
+		types.TransactionAddFeePayer(builder, feePayerVec)
+	}
+
+	if sponsor.ValidUntil != 0 {
+		types.TransactionAddValidUntil(builder, sponsor.ValidUntil)
 	}
 
 	if mutRefsVec != 0 {
@@ -365,6 +422,16 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 
 // BuildTxTableWithRefs builds a Transaction table with ObjectRef references in the given builder.
 func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
+	return BuildTxTableSponsored(builder, sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig, mutableRefs, readRefs, Sponsorship{}, nil)
+}
+
+// BuildTxTableSponsored builds a Transaction table, optionally carrying the
+// sponsor's fee_payer / valid_until (from sponsor) and the sponsor's signature
+// (sponsorSig) over the same body hash. Empty sponsorship and a nil sponsorSig
+// reproduce the self-paid encoding byte-for-byte. The fee_payer / valid_until
+// fields are written under the SAME absent-when-empty rule the unsigned body
+// uses, so the stored body hashes back to the declared hash.
+func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship, sponsorSig []byte) flatbuffers.UOffsetT {
 	hashVec := builder.CreateByteVector(hash[:])
 	sigVec := builder.CreateByteVector(sig)
 	argsVec := builder.CreateByteVector(args)
@@ -380,6 +447,16 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 	var gasCoinVec flatbuffers.UOffsetT
 	if len(gasCoin) > 0 {
 		gasCoinVec = builder.CreateByteVector(gasCoin)
+	}
+
+	var feePayerVec flatbuffers.UOffsetT
+	if len(sponsor.FeePayer) > 0 {
+		feePayerVec = builder.CreateByteVector(sponsor.FeePayer)
+	}
+
+	var sponsorSigVec flatbuffers.UOffsetT
+	if len(sponsorSig) > 0 {
+		sponsorSigVec = builder.CreateByteVector(sponsorSig)
 	}
 
 	types.TransactionStart(builder)
@@ -398,6 +475,18 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 
 	if gasCoinVec != 0 {
 		types.TransactionAddGasCoin(builder, gasCoinVec)
+	}
+
+	if feePayerVec != 0 {
+		types.TransactionAddFeePayer(builder, feePayerVec)
+	}
+
+	if sponsorSigVec != 0 {
+		types.TransactionAddSponsorSignature(builder, sponsorSigVec)
+	}
+
+	if sponsor.ValidUntil != 0 {
+		types.TransactionAddValidUntil(builder, sponsor.ValidUntil)
 	}
 
 	if mutRefsVec != 0 {

@@ -48,7 +48,7 @@ func rebuildUnsignedTxBody(tx *types.Transaction) []byte {
 		copy(pod[:], b)
 	}
 
-	return genesis.BuildUnsignedTxBytesWithRefs(
+	return genesis.BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(),
 		pod,
 		string(tx.FunctionName()),
@@ -59,6 +59,7 @@ func rebuildUnsignedTxBody(tx *types.Transaction) []byte {
 		tx.GasCoinBytes(),
 		mutableRefs,
 		readRefs,
+		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 	)
 }
 

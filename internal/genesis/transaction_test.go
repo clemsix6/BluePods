@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"testing"
 
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
 	"BluePods/internal/types"
@@ -70,4 +71,95 @@ func TestNonSponsoredTxByteIdentical(t *testing.T) {
 	if !ed25519.Verify(pub, tx.HashBytes(), tx.SignatureBytes()) {
 		t.Error("embedded sender signature does not verify")
 	}
+}
+
+// TestUnsignedBodyBindsSponsorship confirms the canonical unsigned body binds
+// fee_payer and valid_until: an absent fee_payer reproduces the legacy bytes,
+// two bodies differing only in fee_payer hash differently, and the body never
+// includes either signature field.
+func TestUnsignedBodyBindsSponsorship(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var pod, gasCoin, sponsorA, sponsorB [32]byte
+	pod[0] = 0x11
+	gasCoin[0] = 0x22
+	sponsorA[0] = 0xAA
+	sponsorB[0] = 0xBB
+
+	args := []byte{9, 8, 7}
+
+	legacy := BuildUnsignedTxBytesWithRefs(pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil)
+	empty := BuildUnsignedTxBytesSponsored(pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{})
+
+	// An empty Sponsorship must reproduce the legacy (self-paid) bytes exactly.
+	if !bytes.Equal(legacy, empty) {
+		t.Error("empty sponsorship body differs from the legacy self-paid body")
+	}
+
+	bodyA := sponsoredBody(pub, pod, args, gasCoin, sponsorA[:], 5)
+	bodyB := sponsoredBody(pub, pod, args, gasCoin, sponsorB[:], 5)
+
+	// Two bodies differing only in fee_payer must hash differently.
+	if bytes.Equal(bodyA, bodyB) {
+		t.Error("bodies with different fee_payer produced identical bytes")
+	}
+
+	// A present fee_payer must change the body vs the self-paid encoding.
+	if bytes.Equal(legacy, bodyA) {
+		t.Error("sponsored body matches the self-paid body despite a present fee_payer")
+	}
+
+	// The body carries fee_payer but never a sponsor signature: build a full table
+	// with a sponsor signature, then re-derive the body and confirm it ignores both
+	// signature fields (hash is stable regardless of either signature).
+	hash := blake3.Sum256(bodyA)
+	atx := buildSponsoredATX(t, pub, pod, args, gasCoin, sponsorA[:], 5, hash)
+	tx := types.GetRootAsAttestedTransaction(atx, 0).Transaction(nil)
+
+	if !bytes.Equal(tx.FeePayerBytes(), sponsorA[:]) {
+		t.Errorf("fee_payer not stored: got %x", tx.FeePayerBytes())
+	}
+
+	if tx.ValidUntil() != 5 {
+		t.Errorf("valid_until not stored: got %d", tx.ValidUntil())
+	}
+
+	// Re-derive the body from the parsed tx (the move ingress and commit make) and
+	// confirm it hashes back to the declared hash, never touching the signatures.
+	rebuilt := BuildUnsignedTxBytesSponsored(
+		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(),
+		nil, tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
+		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
+	)
+	rebuiltHash := blake3.Sum256(rebuilt)
+
+	if !bytes.Equal(rebuiltHash[:], tx.HashBytes()) {
+		t.Error("re-derived body hash does not match the declared hash")
+	}
+}
+
+// sponsoredBody builds an unsigned sponsored body for testing.
+func sponsoredBody(pub ed25519.PublicKey, pod [32]byte, args []byte, gasCoin [32]byte, feePayer []byte, validUntil uint64) []byte {
+	return BuildUnsignedTxBytesSponsored(
+		pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil,
+		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil},
+	)
+}
+
+// buildSponsoredATX builds a sponsored Transaction table (with a dummy sponsor
+// signature) wrapped in an ATX for round-trip testing.
+func buildSponsoredATX(t *testing.T, pub ed25519.PublicKey, pod [32]byte, args []byte, gasCoin [32]byte, feePayer []byte, validUntil uint64, hash [32]byte) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(1024)
+	dummySig := make([]byte, ed25519.SignatureSize)
+	txOff := BuildTxTableSponsored(
+		builder, pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], hash, dummySig, nil, nil,
+		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil}, dummySig,
+	)
+
+	return finishAttestedTx(builder, txOff)
 }
