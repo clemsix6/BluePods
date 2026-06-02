@@ -249,6 +249,43 @@ func TestHandleUndelegate_RemovesPositionAndLowersTotal(t *testing.T) {
 	}
 }
 
+// TestDelegationsFor_EnumeratesPositions checks the enumerator returns every
+// delegation position targeting a validator after multiple delegate txs.
+func TestDelegationsFor_EnumeratesPositions(t *testing.T) {
+	dag, store, validator, vCoin := bondTestDAG(t, 1000)
+	defer dag.Close()
+
+	// First delegator is the validator itself (self-delegation) using its coin.
+	if !dag.handleDelegate(buildDelegateTx(t, validator, vCoin, validator, "delegate", 200, true)) {
+		t.Fatal("self-delegation should be applied")
+	}
+
+	// Second delegator with its own funded coin.
+	d2 := [32]byte{0xB2}
+	d2Coin := [32]byte{0xC2}
+	store.SetObject(buildTestCoinObject(d2Coin, 1000, d2, 0))
+	if !dag.handleDelegate(buildDelegateTx(t, d2, d2Coin, validator, "delegate", 300, true)) {
+		t.Fatal("second delegation should be applied")
+	}
+
+	if dag.delegations == nil {
+		t.Fatal("SetFeeSystem must store the DelegationEnumerator")
+	}
+
+	entries := dag.delegations.DelegationsFor(validator)
+	if len(entries) != 2 {
+		t.Fatalf("DelegationsFor returned %d entries, want 2", len(entries))
+	}
+
+	byOwner := map[[32]byte]uint64{}
+	for _, e := range entries {
+		byOwner[e.Delegator] = e.Amount
+	}
+	if byOwner[validator] != 200 || byOwner[d2] != 300 {
+		t.Fatalf("enumerated amounts = %v, want {validator:200, d2:300}", byOwner)
+	}
+}
+
 // TestSplitValidatorReward checks the proportional split: self-stake share plus
 // commission to the validator, post-commission remainder pro-rata to delegators,
 // conserving the reward exactly with the rounding remainder going to the validator.

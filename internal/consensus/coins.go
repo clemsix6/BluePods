@@ -6,6 +6,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/state"
 	"BluePods/internal/types"
 )
 
@@ -27,6 +28,17 @@ type CoinStore interface {
 	AddSupply(amount uint64)
 	// SubSupply decreases the total supply (deletion burn, future slashing).
 	SubSupply(amount uint64)
+}
+
+// DelegationEnumerator returns the delegation positions targeting a validator.
+// It is a narrow read-only contract so consensus never needs general object
+// iteration on CoinStore; *state.State implements it (the consensus test stub
+// implements it too, so unit tests inject a mock rather than a *state.State).
+// The entry type lives in state, the package that owns object storage, so
+// consensus can name the result without state importing consensus (a cycle).
+type DelegationEnumerator interface {
+	// DelegationsFor returns every delegation position targeting validator.
+	DelegationsFor(validator [32]byte) []state.DelegationEntry
 }
 
 // readCoinBalance reads the balance from a serialized Coin object.

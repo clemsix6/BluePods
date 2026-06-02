@@ -123,9 +123,10 @@ type DAG struct {
 	verifyTxAuth func(tx *types.Transaction) error
 
 	// Fee system: protocol-level fee deduction and credits.
-	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
-	feeParams      *FeeParams // feeParams holds fee constants (nil = fees disabled)
-	computeHolders HolderFunc // computeHolders computes holders for replication ratio
+	coinStore      CoinStore            // coinStore provides access to coin objects for fee operations
+	feeParams      *FeeParams           // feeParams holds fee constants (nil = fees disabled)
+	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
+	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
 	// Epoch rewards: accumulated fees and round tracking per validator.
 	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
@@ -469,6 +470,13 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 	d.coinStore = store
 	d.feeParams = params
 	d.computeHolders = holders
+
+	// The same store (*state.State in production) also enumerates delegation
+	// positions for the reward split. Stored via assertion so the call site
+	// signature is unchanged; nil when the store does not implement it.
+	if de, ok := store.(DelegationEnumerator); ok {
+		d.delegations = de
+	}
 }
 
 // SeedGenesis seeds the initial ledger state directly: the genesis coin object

@@ -7,6 +7,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/state"
 	"BluePods/internal/types"
 )
 
@@ -52,6 +53,25 @@ func (m *mockCoinStore) SetObject(data []byte) {
 
 func (m *mockCoinStore) DeleteObject(id [32]byte) {
 	delete(m.objects, id)
+}
+
+// DelegationsFor implements DelegationEnumerator over the in-memory objects so
+// consensus unit tests can exercise the enumeration path without a *state.State.
+func (m *mockCoinStore) DelegationsFor(validator [32]byte) []state.DelegationEntry {
+	var entries []state.DelegationEntry
+	for _, data := range m.objects {
+		obj := types.GetRootAsObject(data, 0)
+		gotValidator, amount, ok := decodeDelegationContent(obj.ContentBytes())
+		if !ok || gotValidator != validator {
+			continue
+		}
+
+		var delegator [32]byte
+		copy(delegator[:], obj.OwnerBytes())
+		entries = append(entries, state.DelegationEntry{Delegator: delegator, Amount: amount})
+	}
+
+	return entries
 }
 
 // buildTestCoinObject creates a serialized Coin object with given properties.
