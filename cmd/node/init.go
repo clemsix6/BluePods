@@ -99,6 +99,7 @@ func (n *Node) initConsensus() error {
 
 	n.setupValidatorCallback()
 	n.initAggregation(validators)
+	n.seedGenesisState()
 
 	return nil
 }
@@ -119,13 +120,15 @@ func (n *Node) buildValidatorSet() *consensus.ValidatorSet {
 	return consensus.NewValidatorSet(nil)
 }
 
-// buildConsensusOpts creates consensus options including genesis transactions.
+// buildConsensusOpts creates consensus options for the bootstrap node.
+// Genesis is seeded as state after the fee system is wired (seedGenesisState),
+// not injected as transactions.
 func (n *Node) buildConsensusOpts() []consensus.Option {
 	if !n.cfg.Bootstrap {
 		return nil
 	}
 
-	// Derive BLS key early so it's available for genesis
+	// Derive BLS key early so it's available for genesis seeding.
 	blsKey, err := aggregation.DeriveFromED25519(n.cfg.PrivateKey)
 	if err != nil {
 		logger.Warn("failed to derive BLS key for genesis", "error", err)
@@ -134,22 +137,7 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 
 	n.blsKey = blsKey
 
-	genesisCfg := genesis.Config{
-		PrivateKey:  n.cfg.PrivateKey,
-		InitialMint: n.cfg.InitialMint,
-		QUICAddress: n.cfg.QUICAddress,
-		SystemPodID: n.systemPod,
-		BLSPubkey:   blsKey.PublicKeyBytes(),
-	}
-
-	txs, err := genesis.BuildTransactions(genesisCfg)
-	if err != nil {
-		logger.Warn("failed to build genesis txs", "error", err)
-		return nil
-	}
-
 	opts := []consensus.Option{
-		consensus.WithGenesisTxs(txs),
 		consensus.WithBootstrap(),
 		consensus.WithMinValidators(n.cfg.MinValidators),
 	}
@@ -159,6 +147,51 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 	}
 
 	return n.appendEpochOpts(opts)
+}
+
+// genesisConfig builds the genesis configuration for the bootstrap node.
+// GenesisStake defaults to a tenth of the mint (with a small floor) so the
+// founding validator has non-zero stake-weighted quorum weight.
+func (n *Node) genesisConfig() genesis.Config {
+	stake := n.cfg.InitialMint / 10
+	if stake == 0 {
+		stake = n.cfg.InitialMint
+	}
+
+	return genesis.Config{
+		PrivateKey:   n.cfg.PrivateKey,
+		InitialMint:  n.cfg.InitialMint,
+		GenesisStake: stake,
+		QUICAddress:  n.cfg.QUICAddress,
+		SystemPodID:  n.systemPod,
+		BLSPubkey:    n.blsKey.PublicKeyBytes(),
+	}
+}
+
+// seedGenesisState seeds the initial ledger state on the bootstrap node. It must
+// run after initAggregation wires SetFeeSystem so the coin store is available.
+func (n *Node) seedGenesisState() {
+	if !n.cfg.Bootstrap {
+		return
+	}
+
+	owner := deriveOwner(n.cfg.PrivateKey)
+	is := genesis.BuildInitialState(n.genesisConfig(), owner)
+
+	n.dag.SeedGenesis(is)
+
+	logger.Info("seeded genesis state",
+		"supply", is.Supply,
+		"self_stake", is.SelfStake,
+	)
+}
+
+// deriveOwner returns the 32-byte owner pubkey from an Ed25519 private key.
+func deriveOwner(priv ed25519.PrivateKey) [32]byte {
+	var owner [32]byte
+	copy(owner[:], priv.Public().(ed25519.PublicKey))
+
+	return owner
 }
 
 // appendEpochOpts adds epoch and transition options if configured.

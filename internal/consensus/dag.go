@@ -135,14 +135,6 @@ type DAG struct {
 // Option configures the DAG during creation.
 type Option func(*DAG)
 
-// WithGenesisTxs sets transactions to include in the first vertex.
-// These are injected into pendingTxs before the consensus loops start.
-func WithGenesisTxs(txs [][]byte) Option {
-	return func(d *DAG) {
-		d.pendingTxs = append(d.pendingTxs, txs...)
-	}
-}
-
 // WithLastCommittedRound sets the initial lastCommittedRound.
 // Used when initializing from a snapshot. Sets lastCommitted to round+1
 // because lastCommitted means "next round to commit".

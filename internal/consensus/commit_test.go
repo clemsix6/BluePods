@@ -395,9 +395,10 @@ func TestCommitRoundProcessing(t *testing.T) {
 
 	atxBytes := buildTestATX(t, "some_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 
-	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
-		WithGenesisTxs([][]byte{atxBytes}))
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+
+	dag.SubmitTx(atxBytes)
 
 	// With 1 validator, quorum=1 so our own vertices are enough.
 	// Wait for vertex production and commit.
@@ -450,12 +451,13 @@ func TestCommittedTxOutput(t *testing.T) {
 	validators, vs := newTestValidatorSet(1)
 	mock := &mockBroadcaster{}
 
-	// Include tx in genesis so validator[0] produces it in round 0
+	// Submit a tx so validator[0] produces it in an early round.
 	atxBytes := buildTestATX(t, "some_func", nil, nil, 0)
 
-	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil,
-		WithGenesisTxs([][]byte{atxBytes}))
+	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
+
+	dag.SubmitTx(atxBytes)
 
 	// With 1 validator, quorum=1 so the DAG self-commits
 	select {
