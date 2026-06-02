@@ -94,10 +94,19 @@ func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uin
 
 // SetStorageFees configures protocol-level storage deposits and refunds.
 // When storageFee > 0, created objects get a storage deposit in their fees field.
+// totalValidators is only a fallback; SetValidatorCount supplies the live count.
 func (s *State) SetStorageFees(storageFee uint64, storageRefundBPS uint64, totalValidators int) {
 	s.storageFee = storageFee
 	s.storageRefundBPS = storageRefundBPS
 	s.totalValidators = totalValidators
+}
+
+// SetValidatorCount wires a live validator-count source for the storage-deposit
+// formula. It must be bound to the SAME validator set consensus reads (its Len),
+// so the deposit stamped here always equals the storage fee debited at commit,
+// across both validator-set growth and shrinkage.
+func (s *State) SetValidatorCount(fn func() int) {
+	s.validatorCount = fn
 }
 
 // Execute runs an attested transaction and updates the state.
@@ -599,17 +608,24 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 }
 
 // computeStorageDeposit calculates the storage deposit for a new object.
+// It reads the live validator count (so the deposit matches the storage fee
+// debited at commit), falling back to the init-time count if none is wired.
 func (s *State) computeStorageDeposit(replication uint16) uint64 {
-	if s.storageFee == 0 || s.totalValidators == 0 {
+	total := s.totalValidators
+	if s.validatorCount != nil {
+		total = s.validatorCount()
+	}
+
+	if s.storageFee == 0 || total == 0 {
 		return 0
 	}
 
 	effRep := int(replication)
 	if replication == 0 {
-		effRep = s.totalValidators
+		effRep = total
 	}
 
-	return uint64(effRep) * s.storageFee / uint64(s.totalValidators)
+	return uint64(effRep) * s.storageFee / uint64(total)
 }
 
 // creditGasCoin adds a refund amount to a gas_coin balance.

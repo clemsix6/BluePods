@@ -76,6 +76,36 @@ func TestNewState(t *testing.T) {
 	}
 }
 
+// TestComputeStorageDeposit_FollowsLiveValidatorCount confirms the storage
+// deposit is computed against the live validator count when one is wired, and
+// that it tracks the count both as it grows and as it shrinks. This is the
+// linchpin that keeps the debited storage fee equal to the stamped deposit.
+func TestComputeStorageDeposit_FollowsLiveValidatorCount(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	count := 4
+	s.SetValidatorCount(func() int { return count })
+	s.SetStorageFees(1000, 9500, 0) // totalValidators fallback unused once live count is wired
+
+	// Singleton (replication 0) -> effRep == count -> deposit == storageFee.
+	if got := s.computeStorageDeposit(0); got != 1000 {
+		t.Errorf("deposit at 4 validators: got %d, want 1000", got)
+	}
+
+	// Grow the set: a replication-2 object pays 2/8 of the storage fee.
+	count = 8
+	if got := s.computeStorageDeposit(2); got != 250 {
+		t.Errorf("deposit at 8 validators, rep 2: got %d, want 250", got)
+	}
+
+	// Shrink the set: a replication-2 object now pays 2/2 of the storage fee.
+	count = 2
+	if got := s.computeStorageDeposit(2); got != 1000 {
+		t.Errorf("deposit at 2 validators, rep 2: got %d, want 1000", got)
+	}
+}
+
 func TestStateSetGetObject(t *testing.T) {
 	db := newTestStorage(t)
 	state := New(db, nil)

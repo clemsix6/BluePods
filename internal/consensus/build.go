@@ -96,6 +96,8 @@ func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbu
 }
 
 // computeTxFeeSplit calculates the fee split for a single AttestedTransaction.
+// The summary covers only the consumed portion (compute+transit+domain): the
+// storage deposit is locked in the object, never pooled, so it is not summarized.
 func (d *DAG) computeTxFeeSplit(txBytes []byte) FeeSplit {
 	if len(txBytes) < 8 {
 		return FeeSplit{}
@@ -112,9 +114,9 @@ func (d *DAG) computeTxFeeSplit(txBytes []byte) FeeSplit {
 		return FeeSplit{}
 	}
 
-	fee := d.calculateTxFee(tx, atx)
+	consumed, _ := d.calculateTxFeeSplit(tx, atx)
 
-	return SplitFee(fee, *d.feeParams)
+	return SplitFee(consumed, *d.feeParams)
 }
 
 // buildParentsVector creates the parents vector for a vertex.

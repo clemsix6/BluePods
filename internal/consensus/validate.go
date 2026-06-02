@@ -212,7 +212,9 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	return nil
 }
 
-// validateFeeSummary verifies the vertex fee_summary by recalculating from tx headers.
+// validateFeeSummary verifies the vertex fee_summary by recalculating from tx
+// headers, over the consumed portion only (in lockstep with buildFeeSummary).
+// The storage deposit is locked in the object, not pooled, so it is not summarized.
 // Skipped if fee system is not active (feeParams nil).
 func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 	if d.feeParams == nil {
@@ -242,8 +244,10 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 			continue
 		}
 
-		fee := d.calculateTxFee(tx, &atx)
-		split := SplitFee(fee, *d.feeParams)
+		// Summarize the consumed portion only, in lockstep with buildFeeSummary;
+		// the storage deposit is locked in the object and is not pooled.
+		consumed, _ := d.calculateTxFeeSplit(tx, &atx)
+		split := SplitFee(consumed, *d.feeParams)
 
 		totalFees += split.Total
 		totalBurned += split.Burned

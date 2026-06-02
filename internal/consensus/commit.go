@@ -442,29 +442,52 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		return FeeSplit{}, false
 	}
 
-	// Calculate fee from tx header
-	fee := d.calculateTxFee(tx, atx)
+	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
+	// the object's locked deposit, debited from the coin but never pooled.
+	consumed, storage := d.calculateTxFeeSplit(tx, atx)
+	fee := consumed + storage
 	if fee == 0 {
 		return FeeSplit{}, true
 	}
 
-	// Deduct fee from gas_coin
-	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
+	// Deduct consumed+storage from gas_coin in one debit.
+	_, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
 	if err != nil {
 		logger.Warn("fee deduction failed", "error", err)
 		return FeeSplit{}, false
 	}
 
-	// Split the actually deducted amount
-	split := SplitFee(deducted, *d.feeParams)
-
-	// If insufficient funds: fees partially deducted, tx rejected
+	// If insufficient funds: fees partially deducted, tx rejected.
 	if !fullyCovered {
-		split.Total = fee
-		return split, false
+		return FeeSplit{Total: fee}, false
 	}
 
-	return split, true
+	// Pool only the consumed portion; the storage deposit stays locked in the object.
+	return SplitFee(consumed, *d.feeParams), true
+}
+
+// calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
+// to the epoch reward pool) and the storage portion (locked in the created
+// objects as a refundable deposit, never pooled). The storage term sums
+// StorageDeposit over the created objects using the SAME live validator count
+// state.computeStorageDeposit reads, so the debited storage equals the stamped
+// deposit and total_supply is unchanged at create time.
+func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTransaction) (consumed, storage uint64) {
+	if d.feeParams == nil {
+		return 0, 0
+	}
+
+	totalValidators := d.validators.Len()
+	for _, rep := range extractCreatedObjectsReplication(tx) {
+		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee))
+	}
+
+	full := d.calculateTxFee(tx, atx)
+	if full < storage {
+		return 0, full // defensive: never let storage exceed the full fee
+	}
+
+	return full - storage, storage
 }
 
 // validateGasCoin checks that the gas_coin exists, is a singleton, and belongs to sender.
