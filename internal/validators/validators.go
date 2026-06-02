@@ -7,10 +7,12 @@ type Hash [32]byte
 
 // ValidatorInfo holds information about a validator.
 type ValidatorInfo struct {
-	Pubkey    Hash     // Pubkey is the validator's Ed25519 public key
-	QUICAddr  string   // QUICAddr is the QUIC P2P endpoint (may be empty)
-	BLSPubkey [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
-	SelfStake uint64   // SelfStake is the validator's bonded self-stake
+	Pubkey         Hash     // Pubkey is the validator's Ed25519 public key
+	QUICAddr       string   // QUICAddr is the QUIC P2P endpoint (may be empty)
+	BLSPubkey      [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
+	SelfStake      uint64   // SelfStake is the validator's bonded self-stake
+	DelegatedTotal uint64   // DelegatedTotal is the aggregate stake delegated to this validator
+	Jailed         bool     // Jailed, when true, zeroes the validator's effective stake (no quorum weight, no reward)
 }
 
 // ValidatorSet holds the active validators with their network addresses.
@@ -166,10 +168,12 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 		info := vs.validators[idx]
 		// Return a copy to avoid races
 		return &ValidatorInfo{
-			Pubkey:    info.Pubkey,
-			QUICAddr:  info.QUICAddr,
-			BLSPubkey: info.BLSPubkey,
-			SelfStake: info.SelfStake,
+			Pubkey:         info.Pubkey,
+			QUICAddr:       info.QUICAddr,
+			BLSPubkey:      info.BLSPubkey,
+			SelfStake:      info.SelfStake,
+			DelegatedTotal: info.DelegatedTotal,
+			Jailed:         info.Jailed,
 		}
 	}
 
@@ -195,10 +199,12 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	result := make([]*ValidatorInfo, len(vs.validators))
 	for i, v := range vs.validators {
 		result[i] = &ValidatorInfo{
-			Pubkey:    v.Pubkey,
-			QUICAddr:  v.QUICAddr,
-			BLSPubkey: v.BLSPubkey,
-			SelfStake: v.SelfStake,
+			Pubkey:         v.Pubkey,
+			QUICAddr:       v.QUICAddr,
+			BLSPubkey:      v.BLSPubkey,
+			SelfStake:      v.SelfStake,
+			DelegatedTotal: v.DelegatedTotal,
+			Jailed:         v.Jailed,
 		}
 	}
 
