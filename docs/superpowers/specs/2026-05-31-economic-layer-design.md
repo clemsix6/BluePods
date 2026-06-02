@@ -99,7 +99,7 @@ This finishes the `TODO: credit to validator's reward_coin` in `epoch.go`.
 
 ## 7. Supply and bonded tracking
 
-- **`total_supply`** is a maintained protocol counter (a dedicated key): increased by mint and issuance, decreased by the deletion burn and future slashing. Maintained in the commit path, persisted, included in snapshots. Makes the burn real and feeds the thermostat denominator. Net-new concept. Invariant to property-test: `sum(coin balances) + total_bonded + sum(locked storage deposits) == total_supply` after every commit.
+- **`total_supply`** is a maintained protocol counter (a dedicated key): set at genesis, increased by issuance, decreased by the deletion burn and future slashing. There is no user-callable mint (it would create unbacked supply); the only token creation is genesis seeding and protocol issuance. Maintained in the commit path, persisted, included in snapshots and the snapshot checksum. Feeds the thermostat denominator. Net-new concept. Invariant to property-test: `sum(coin balances) + total_bonded + sum(locked storage deposits) + fees_in_flight == total_supply`, where `fees_in_flight` is the epoch's accumulated consumed fees not yet credited to validators. It is zero immediately after an epoch boundary, so the invariant is asserted there as exact equality. The storage component of a fee is locked in the object's `fees` (debited from the gas coin, never pooled), so it stays accounted as a locked deposit until 95 percent is refunded and 5 percent burned on deletion.
 - **`total_bonded`** is derived: sum of (`self-stake` + `delegated_total`) over the active set at the epoch boundary, O(validators).
 
 ---
@@ -119,7 +119,7 @@ A deterministic on-chain clock will be a useful pod primitive (subscriptions, ti
 A zero-balance new user cannot make a first transaction (every user tx needs a funded gas coin owned by the sender, section 11). The fix, and the resolution of the off-chain design's open relayer/sponsor tier, is native sponsored transactions, done the Sui way (a protocol-level fee payer), not the Base way (layered ERC-4337).
 
 - **Schema.** `transaction.fbs` gains `fee_payer`, `sponsor_signature`, and `valid_until` (an epoch). These are optional, encoded as absent-when-empty (a sentinel/absent encoding) so a non-sponsored tx serializes byte-identically to today and its existing single-sender hash and signature still verify.
-- **Mutual binding.** Both the sender and the sponsor sign the SAME canonical body hash, covering everything except the two signature fields. Neither field can be swapped after the other signs. The sponsor signature is verified in the validation layer, gated on `fee_payer`; the gas-coin ownership check becomes `owner == fee_payer`.
+- **Mutual binding.** Both the sender and the sponsor sign the SAME canonical body hash, covering everything except the two signature fields. Neither field can be swapped after the other signs. The sponsor signature is verified in the commit path (`executeTx`), deterministically on every node, gated on `fee_payer`; the gas-coin ownership check becomes `owner == fee_payer`. The sender signature and the transaction hash are (re)verified at the same commit-path site, not only at client ingress: a transaction can reach commit via a gossiped vertex without passing local ingress validation, so authenticity must be enforced where every node agrees, closing the gap where inner transactions embedded in a (producer-signed) vertex were trusted unverified.
 - **Replay** is prevented by the existing commit-once guard (the tx hash now covers the sponsor binding). `valid_until` (in epochs), checked against the commit epoch, kills stale sponsorships.
 - **Sponsor exposure** is managed off-chain (the sponsor signs only what it will pay; the chain cannot overdraw its coin) and the sponsor is the natural submitter. Honest caveat: a sponsored tx that fails on a version conflict still charges the sponsor's gas, and a malicious holder of the signed artifact can submit it at an inconvenient time within the window; the sponsor prices this and bounds it with `valid_until`. On a sponsored create then delete, the storage refund goes to the owner-deleter, not the sponsor (accepted).
 - **Coordination is off-chain;** the chain sees only the final doubly-signed tx. For a sponsored tx that also needs attestation, the submitter collects it last to avoid widening the version-race window.
@@ -140,7 +140,9 @@ In line with newer L1s, this chantier ships without principal slashing and witho
 
 - **Genesis is initial state, not transactions.** The initial coin allocation, founding validator set, and their initial bonded stake are the ledger's starting state, set at chain creation (a real bootstrap rewrite, not a relabel).
 - **Every user transaction requires a funded gas coin** (or a sponsor) or it is rejected. The missing-gas-coin exemption is removed.
-- **The faucet** becomes a transfer from a genesis-allocated reserve. Production has no faucet reserve.
+- **The faucet** becomes a `split` from a genesis-allocated reserve coin (a transfer only reassigns ownership; moving an amount to a new account is a split). Production has no faucet reserve.
+- **The user-callable `mint` is removed.** It would create unbacked supply; the only token creation is genesis seeding and protocol issuance.
+- **The founding validator's self-stake is genesis state**, locked from the genesis coin so its bonded weight has real backing (the stake-weighted quorum needs non-zero genesis stake to reach quorum).
 - **Protocol actions** (issuance, reward crediting, fee deduction, future slashing) are consensus-driven state mutations, not transactions, so they need no gas coin.
 
 ---
