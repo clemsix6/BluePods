@@ -398,15 +398,68 @@ func TestCommitRoundProcessing(t *testing.T) {
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
+	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
+	// does so the single validator carries the whole capped stake and commits.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
 	dag.SubmitTx(atxBytes)
 
-	// With 1 validator, quorum=1 so our own vertices are enough.
+	// With 1 staked validator, its vertices carry full stake quorum.
 	// Wait for vertex production and commit.
 	time.Sleep(2 * time.Second)
 
 	if v := dag.tracker.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1 after commit, got %d", v)
 	}
+}
+
+// TestIsRoundCommitted_StakeWeighted verifies the commit quorum is stake-weighted:
+// a round whose only producer carries a minority of capped stake does NOT commit,
+// while the supermajority-stake producer does. Uses two validators at 90%/10%
+// with a loose voting cap so the 90% producer's weight is not floored away.
+func TestIsRoundCommitted_StakeWeighted(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	// votingCap 90% so the equal-share floor (50%) does not clamp the big stake
+	// below the 2/3 threshold; this isolates the stake-weighting behavior.
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithVotingCapMille(900))
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
+	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
+
+	// Case 1: only the SMALL (10%) producer at round+2 → no stake quorum, even
+	// though by COUNT one producer could look like progress. This also fails under
+	// count quorum (QuorumSize=2), so it is the stake-side check below that matters.
+	const r1 = 5
+	storeRoundVertex(t, dag, validators[1], r1+2)
+	if dag.isRoundCommitted(r1) {
+		t.Fatal("round committed on minority-stake producer (10%), expected NOT committed")
+	}
+
+	// Case 2: only the BIG (90%) producer at round+2 → stake quorum reached with a
+	// SINGLE producer. Under the old count rule (QuorumSize=2) one producer would
+	// NOT commit, so this case only passes once the quorum is stake-weighted.
+	const r2 = 8
+	storeRoundVertex(t, dag, validators[0], r2+2)
+	if !dag.isRoundCommitted(r2) {
+		t.Fatal("round NOT committed with single supermajority-stake producer (90%), expected committed")
+	}
+}
+
+// storeRoundVertex builds a signed vertex for the validator at the round and
+// inserts it directly into the DAG store, bypassing parent validation.
+func storeRoundVertex(t *testing.T, dag *DAG, v testValidator, round uint64) {
+	t.Helper()
+
+	data := buildTestVertex(t, v, round, nil, 1)
+	vertex := types.GetRootAsVertex(data, 0)
+
+	var hash Hash
+	copy(hash[:], vertex.HashBytes())
+
+	dag.store.add(data, hash, round, v.pubKey)
 }
 
 // TestBuildReplicationMap tests replication map extraction from ATX objects.
@@ -457,9 +510,13 @@ func TestCommittedTxOutput(t *testing.T) {
 	dag := New(db, vs, mock, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
+	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
+	// does so the single validator carries full stake quorum and self-commits.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
 	dag.SubmitTx(atxBytes)
 
-	// With 1 validator, quorum=1 so the DAG self-commits
+	// With 1 staked validator carrying full stake, the DAG self-commits.
 	select {
 	case committed := <-dag.Committed():
 		if committed.Function != "some_func" {

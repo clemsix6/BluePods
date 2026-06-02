@@ -64,43 +64,68 @@ func (d *DAG) checkCommits() {
 }
 
 // isRoundCommitted checks if a round has reached commit (referenced by N+2 quorum).
-// Only vertices from known validators are counted toward quorum.
-// When a round commits with full BFT quorum (not relaxed), marks fullQuorumAchieved.
+// The authoritative quorum is stake-weighted: the round+2 producers must carry a
+// 2/3 majority of capped effective stake in the holder snapshot for this round's
+// commit epoch (HoldersForEpoch(commitEpochForRound), the SAME snapshot production
+// reads, so they never weigh against different stake sets across a boundary).
+// During bootstrap and the transition/convergence window the check is relaxed to a
+// single producer (genesis seeds stake, but early convergence still needs a single
+// producer to make progress). Marks fullQuorumAchieved when a round commits with
+// strict stake quorum after the relaxed window.
 func (d *DAG) isRoundCommitted(round uint64) bool {
 	round2Hashes := d.store.getByRound(round + 2)
 
-	// Determine required quorum for commit
-	fullQuorum := d.validators.QuorumSize()
-	requiredQuorum := fullQuorum
-
-	// During init (before minValidators), use quorum=1 to observe bootstrap's chain.
-	// This allows all nodes to see registrations and reach minValidators together.
-	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
-		requiredQuorum = 1
-	}
-
-	// During transition + convergence, use quorum=1 for commit.
-	// Matches the isRoundInTransitionOrBuffer logic.
-	relaxed := d.isRoundInTransitionOrBuffer(round + 2)
-	if relaxed {
-		requiredQuorum = 1
-	}
-
-	if len(round2Hashes) < requiredQuorum {
+	producers := d.knownProducersAt(round2Hashes)
+	if len(producers) == 0 {
 		return false
 	}
 
-	// Count unique producers that are valid validators
+	// Relaxed bootstrap/transition: a single known producer commits the round so
+	// the network can converge before stake weighting becomes authoritative.
+	if d.isCommitQuorumRelaxed(round) {
+		return true
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
+	if !ok {
+		set = d.validators
+	}
+
+	cappedSum, total := d.cappedStakeOf(set, producers)
+	committed := quorumReached(cappedSum, total)
+
+	// Commit-side signal that the network has truly converged on strict quorum.
+	if committed {
+		d.markFullQuorumAchieved()
+	}
+
+	return committed
+}
+
+// isCommitQuorumRelaxed reports whether the commit quorum for a round should be
+// relaxed to a single producer: during init (before minValidators) so all nodes
+// observe the bootstrap chain, and during the transition/convergence window so
+// late-propagating vertices do not stall progress.
+func (d *DAG) isCommitQuorumRelaxed(round uint64) bool {
+	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
+		return true
+	}
+
+	return d.isRoundInTransitionOrBuffer(round + 2)
+}
+
+// knownProducersAt returns the set of distinct known-validator producers among the
+// given vertex hashes. Vertices from unknown producers are ignored (security).
+func (d *DAG) knownProducersAt(hashes []Hash) map[Hash]bool {
 	producers := make(map[Hash]bool)
-	for _, h := range round2Hashes {
+
+	for _, h := range hashes {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
 		producer := extractProducer(v)
-
-		// Security: only count vertices from known validators
 		if !d.validators.Contains(producer) {
 			continue
 		}
@@ -108,15 +133,7 @@ func (d *DAG) isRoundCommitted(round uint64) bool {
 		producers[producer] = true
 	}
 
-	committed := len(producers) >= requiredQuorum
-
-	// Mark full quorum achieved when a round commits with strict BFT quorum.
-	// This is the commit-side signal that the network has truly converged.
-	if committed && !relaxed && len(producers) >= fullQuorum {
-		d.markFullQuorumAchieved()
-	}
-
-	return committed
+	return producers
 }
 
 // commitRound processes all transactions from a committed round.

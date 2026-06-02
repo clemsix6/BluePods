@@ -29,15 +29,15 @@ func TestCommitEpochForRound(t *testing.T) {
 		round uint64
 		want  uint64
 	}{
-		{0, 0},     // before the first boundary
-		{1, 0},     // epoch 0
-		{99, 0},    // last round of epoch 0
-		{100, 0},   // boundary round: committed before the increment, still epoch 0
-		{101, 1},   // first round served by epoch 1's holders
-		{199, 1},   // epoch 1
-		{200, 1},   // boundary round: still epoch 1
-		{201, 2},   // epoch 2
-		{1000, 9},  // boundary round: still epoch 9
+		{0, 0},    // before the first boundary
+		{1, 0},    // epoch 0
+		{99, 0},   // last round of epoch 0
+		{100, 0},  // boundary round: committed before the increment, still epoch 0
+		{101, 1},  // first round served by epoch 1's holders
+		{199, 1},  // epoch 1
+		{200, 1},  // boundary round: still epoch 1
+		{201, 2},  // epoch 2
+		{1000, 9}, // boundary round: still epoch 9
 	}
 
 	for _, tt := range tests {
@@ -101,15 +101,15 @@ func TestIsEpochBoundary(t *testing.T) {
 		round    uint64
 		expected bool
 	}{
-		{0, false},     // round 0 is never an epoch boundary
-		{1, false},     // not a multiple
-		{50, false},    // not a multiple
-		{99, false},    // not a multiple
-		{100, true},    // first epoch boundary
-		{200, true},    // second epoch boundary
-		{300, true},    // third epoch boundary
-		{101, false},   // not a multiple
-		{1000, true},   // large multiple
+		{0, false},   // round 0 is never an epoch boundary
+		{1, false},   // not a multiple
+		{50, false},  // not a multiple
+		{99, false},  // not a multiple
+		{100, true},  // first epoch boundary
+		{200, true},  // second epoch boundary
+		{300, true},  // third epoch boundary
+		{101, false}, // not a multiple
+		{1000, true}, // large multiple
 	}
 
 	for _, tt := range tests {
@@ -1689,8 +1689,14 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 
 	dag.InitEpochHolders()
 
-	// With 1 validator (quorum=1), round R is committed when there's
-	// a validator vertex at round R+2.
+	// Stake is now the commit-quorum weight (a zero-stake set cannot commit by
+	// the degenerate-safety guard), so seed the founder's self-stake the way
+	// genesis does. With a single staked validator it carries the whole capped
+	// stake and reaches quorum on its own.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+
+	// With 1 staked validator, round R is committed when its stake is a 2/3
+	// majority of the holder snapshot and there is a vertex at round R+2.
 	// Epoch boundary at round 5 → needs commit of round 5 → needs vertex at round 7.
 	for round := uint64(0); round <= 7; round++ {
 		data := buildVertexWithProperParents(t, dag, validators[0], round, 0)
