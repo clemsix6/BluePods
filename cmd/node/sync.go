@@ -86,7 +86,7 @@ func (n *Node) runValidator() error {
 
 	logger.Info("validator mode active", "round", n.dag.Round())
 
-	return n.waitForShutdown()
+	return n.serve()
 }
 
 // runListener runs the node in listener mode (observe only).
@@ -123,7 +123,7 @@ func (n *Node) runListener() error {
 	// Process committed transactions
 	go n.processCommitted()
 
-	return n.waitForShutdown()
+	return n.serve()
 }
 
 // performSync executes the full sync process: buffer, snapshot, replay.

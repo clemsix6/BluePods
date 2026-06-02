@@ -24,6 +24,15 @@ func Init() {
 	})
 }
 
+// SetOutput redirects all subsequent log output to w. It replaces the default
+// logger handler and is safe to call after Init. Pass io.Discard to silence logs
+// or a file writer to capture them without polluting the terminal.
+func SetOutput(w io.Writer) {
+	handler := NewHandler(w)
+	defaultLogger = slog.New(handler)
+	slog.SetDefault(defaultLogger)
+}
+
 // Handler is a custom slog handler with precise timestamps.
 type Handler struct {
 	out io.Writer

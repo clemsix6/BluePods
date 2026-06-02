@@ -69,6 +69,9 @@ type Config struct {
 	// TransitionBuffer is the extra buffer rounds after the grace period.
 	// 0 means use default (10).
 	TransitionBuffer int
+
+	// LogMode forces line logs even on a terminal (no dashboard).
+	LogMode bool
 }
 
 // parseFlags parses command-line flags into Config.
@@ -91,6 +94,7 @@ func parseFlags() *Config {
 	flag.IntVar(&cfg.GossipFanout, "gossip-fanout", 0, "Gossip fanout (peers per vertex, 0 = default 40)")
 	flag.IntVar(&cfg.TransitionGrace, "transition-grace", 0, "Grace rounds after minValidators reached (0 = default 20)")
 	flag.IntVar(&cfg.TransitionBuffer, "transition-buffer", 0, "Buffer rounds after grace period (0 = default 10)")
+	flag.BoolVar(&cfg.LogMode, "log", false, "Force line logs instead of the dashboard, even on a terminal")
 	flag.Parse()
 
 	return cfg

@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"golang.org/x/term"
+
+	"BluePods/cmd/node/tui"
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
@@ -41,6 +44,8 @@ type Node struct {
 	stats   *Stats         // stats accumulates transaction-derived counters
 	txIndex *txStatusIndex // txIndex maps a tx hash to its last-known status
 
+	useTUI bool // useTUI is true when the dashboard should run instead of line logs
+
 	// Aggregation components
 	blsKey     *aggregation.BLSKeyPair // blsKey is the BLS key for signing attestations
 	attHandler *aggregation.Handler    // attHandler responds to attestation requests
@@ -58,6 +63,7 @@ type Node struct {
 // NewNode creates and initializes a new node.
 func NewNode(cfg *Config) (*Node, error) {
 	n := &Node{cfg: cfg, stats: newStats(), txIndex: newTxStatusIndex()}
+	n.useTUI = !cfg.LogMode && term.IsTerminal(int(os.Stdout.Fd()))
 
 	// Listener mode needs storage for snapshot and network
 	if cfg.Listener {
@@ -141,7 +147,7 @@ func (n *Node) runBootstrap() error {
 
 	go n.processCommitted()
 
-	return n.waitForShutdown()
+	return n.serve()
 }
 
 // processCommitted handles committed transactions from the DAG, feeding the
@@ -171,6 +177,67 @@ func (n *Node) waitForShutdown() error {
 	logger.Info("shutting down", "signal", sig.String())
 
 	return n.Close()
+}
+
+// Snapshot assembles the dashboard view from the stats source plus live DAG and
+// network reads. It implements tui.Provider.
+func (n *Node) Snapshot() tui.Snapshot {
+	s := tui.Snapshot{
+		NodeAddr: n.cfg.QUICAddress,
+		TotalTx:  n.stats.TotalTx(),
+		FailedTx: n.stats.FailedTx(),
+		TPS:      n.stats.TPS(),
+	}
+
+	if n.dag != nil {
+		s.Round = n.dag.Round()
+		s.Epoch = n.dag.Epoch()
+		s.LastCommitted = n.dag.LastCommittedRound()
+		s.Validators = len(n.dag.ValidatorsInfo())
+	}
+
+	if n.network != nil {
+		s.ConnectedPeers = n.network.ConnectedPeers()
+	}
+
+	for _, tx := range n.stats.Recent() {
+		s.Recent = append(s.Recent, tui.RecentTx{
+			Hash:     hex.EncodeToString(tx.Hash[:4]),
+			Function: tx.Function,
+			Success:  tx.Success,
+			Reason:   tx.Reason.String(),
+		})
+	}
+
+	return s
+}
+
+// serve blocks until shutdown, running the dashboard on a terminal or waiting for
+// a signal otherwise. Both paths end by closing the node.
+func (n *Node) serve() error {
+	if n.useTUI {
+		n.redirectLogsToDisk()
+		err := tui.Run(n)
+		n.Close()
+		return err
+	}
+
+	return n.waitForShutdown()
+}
+
+// redirectLogsToDisk sends log output to a file under the data directory so log
+// lines do not corrupt the dashboard. The file is left open for the lifetime of
+// the process; the OS closes it on exit.
+func (n *Node) redirectLogsToDisk() {
+	path := n.cfg.DataPath + "/node.log"
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		// Fall back to discarding logs rather than polluting the TUI.
+		logger.SetOutput(os.Stderr)
+		return
+	}
+
+	logger.SetOutput(f)
 }
 
 // myPubkey returns this node's public key as a consensus.Hash.
