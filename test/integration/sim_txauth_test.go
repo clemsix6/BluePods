@@ -23,11 +23,14 @@ const (
 // and mutable_ref, signed by an attacker key (an invalid signature). It asserts
 // the transaction does NOT commit and the victim's coin is NOT stolen.
 //
-// This is the regression test for the commit-time authenticity enforcement bug:
-// before the fix, the inner-tx signature check was wired through a nil-able field
-// that production never set, so a forged tx reaching commit via gossip could
-// reassign the victim's coin. With authenticity enforced unconditionally at
-// commit on every node, the forged tx is rejected and the owner is unchanged.
+// Scope note: this submits through the node's normal ingress, where signature
+// validation already rejects the forged tx before it enters the DAG, so this
+// exercises the INGRESS defense (defense in depth), not the commit-time gate.
+// The authoritative regression guard for the commit-time authenticity check
+// (the path a gossiped vertex bypassing local ingress would take) is the unit
+// test TestExecuteTx_RejectsForged, which drives executeTx directly and fails
+// if the gate is removed. A full gossip-bypass-to-commit end-to-end test belongs
+// to the deterministic-simulation work and is deferred there.
 func TestSimForgedTxAuth(t *testing.T) {
 	cluster := NewCluster(t, 5, WithHTTPBase(18900), WithQUICBase(18900+920))
 	cluster.WaitReady(60 * time.Second)
