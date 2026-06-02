@@ -191,6 +191,97 @@ func (vs *ValidatorSet) SetSelfStake(pubkey Hash, stake uint64) {
 	}
 }
 
+// AddDelegated increases a validator's aggregate delegated stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) AddDelegated(pubkey Hash, amount uint64) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].DelegatedTotal += amount
+	return true
+}
+
+// SubDelegated decreases a validator's aggregate delegated stake, flooring at 0.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) SubDelegated(pubkey Hash, amount uint64) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	if amount > vs.validators[idx].DelegatedTotal {
+		vs.validators[idx].DelegatedTotal = 0
+	} else {
+		vs.validators[idx].DelegatedTotal -= amount
+	}
+
+	return true
+}
+
+// Jail marks a validator as jailed, zeroing its effective stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) Jail(pubkey Hash) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].Jailed = true
+	return true
+}
+
+// Unjail clears a validator's jailed flag, restoring its effective stake.
+// Returns false if the validator is not in the set.
+func (vs *ValidatorSet) Unjail(pubkey Hash) bool {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	idx, exists := vs.index[pubkey]
+	if !exists {
+		return false
+	}
+
+	vs.validators[idx].Jailed = false
+	return true
+}
+
+// AddWithStake adds a validator carrying its self-stake, delegated total, and
+// jail flag. It is used by the epoch holder snapshot rebuild so stake survives
+// the snapshot. If the validator already exists, its stake fields are updated.
+func (vs *ValidatorSet) AddWithStake(pubkey Hash, quicAddr string, blsPubkey [48]byte, selfStake, delegated uint64, jailed bool) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		existing := vs.validators[idx]
+		existing.SelfStake = selfStake
+		existing.DelegatedTotal = delegated
+		existing.Jailed = jailed
+		return
+	}
+
+	vs.index[pubkey] = len(vs.validators)
+	vs.validators = append(vs.validators, &ValidatorInfo{
+		Pubkey:         pubkey,
+		QUICAddr:       quicAddr,
+		BLSPubkey:      blsPubkey,
+		SelfStake:      selfStake,
+		DelegatedTotal: delegated,
+		Jailed:         jailed,
+	})
+}
+
 // All returns a copy of all validator infos.
 func (vs *ValidatorSet) All() []*ValidatorInfo {
 	vs.mu.RLock()
