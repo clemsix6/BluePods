@@ -990,6 +990,16 @@ func (d *DAG) handleUnbond(tx *types.Transaction) bool {
 		return false
 	}
 
+	// Minimum-stake floor: a full exit (down to exactly 0) is allowed, but an
+	// unbond that would leave a POSITIVE self-stake below minStake is rejected, so
+	// a registered validator can never sit beneath the floor handleBond enforces.
+	remaining := current.SelfStake - amount
+	if d.minStake > 0 && remaining > 0 && remaining < d.minStake {
+		logger.Warn("unbond would leave sub-minimum stake",
+			"remaining", remaining, "min_stake", d.minStake)
+		return false
+	}
+
 	if err := creditCoin(d.coinStore, coinID, amount); err != nil {
 		logger.Warn("unbond credit failed", "error", err)
 		return false

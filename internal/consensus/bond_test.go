@@ -161,6 +161,46 @@ func TestHandleUnbond_LowersStakeAndCreditsCoin(t *testing.T) {
 	}
 }
 
+// TestHandleUnbond_MinStakeFloor checks the minimum-stake floor on unbond: an
+// unbond that would leave a POSITIVE self-stake below minStake is rejected, while
+// a full exit down to exactly 0 is allowed.
+func TestHandleUnbond_MinStakeFloor(t *testing.T) {
+	dag, store, sender, coinID := bondTestDAG(t, 1000, WithMinStake(500))
+	defer dag.Close()
+
+	if !dag.handleBond(buildStakeTx(t, sender, coinID, "bond", 800)) {
+		t.Fatal("bond should be applied")
+	}
+	// coin: 200, stake: 800
+
+	// Unbond 500 → remaining 300 (positive, below minStake 500) → rejected.
+	if dag.handleUnbond(buildStakeTx(t, sender, coinID, "unbond", 500)) {
+		t.Fatal("unbond leaving sub-minimum self-stake should be rejected")
+	}
+	if got := dag.validators.Get(sender).SelfStake; got != 800 {
+		t.Fatalf("self-stake must be untouched on rejected unbond, got %d, want 800", got)
+	}
+	if got := coinBalance(t, store, coinID); got != 200 {
+		t.Fatalf("coin must be untouched on rejected unbond, got %d, want 200", got)
+	}
+
+	// Unbond 300 → remaining 500 (== minStake) → allowed.
+	if !dag.handleUnbond(buildStakeTx(t, sender, coinID, "unbond", 300)) {
+		t.Fatal("unbond leaving exactly minStake should be allowed")
+	}
+	if got := dag.validators.Get(sender).SelfStake; got != 500 {
+		t.Fatalf("self-stake = %d, want 500", got)
+	}
+
+	// Full exit: unbond the remaining 500 → 0 → allowed.
+	if !dag.handleUnbond(buildStakeTx(t, sender, coinID, "unbond", 500)) {
+		t.Fatal("full exit to zero self-stake should be allowed")
+	}
+	if got := dag.validators.Get(sender).SelfStake; got != 0 {
+		t.Fatalf("self-stake after full exit = %d, want 0", got)
+	}
+}
+
 // TestJailedValidatorCarriesZeroWeight confirms jailing zeroes effective stake.
 func TestJailedValidatorCarriesZeroWeight(t *testing.T) {
 	dag, _, sender, coinID := bondTestDAG(t, 1000)
