@@ -16,6 +16,9 @@ type CoinStore interface {
 	GetObject(id [32]byte) []byte
 	// SetObject stores a serialized object.
 	SetObject(data []byte)
+	// DeleteObject removes an object by ID (used to destroy a delegation position
+	// on undelegate, a protocol mutation outside pod execution).
+	DeleteObject(id [32]byte)
 	// TotalSupply returns the protocol-maintained total token supply.
 	TotalSupply() uint64
 	// SetTotalSupply overwrites the total supply (genesis seeding, snapshot restore).

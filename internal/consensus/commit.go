@@ -355,6 +355,8 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	d.handleDeregisterValidator(tx, commitRound)
 	d.handleBond(tx)
 	d.handleUnbond(tx)
+	d.handleDelegate(tx)
+	d.handleUndelegate(tx)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
@@ -889,6 +891,133 @@ func (d *DAG) handleUnbond(tx *types.Transaction) bool {
 
 	d.validators.SetSelfStake(sender, current.SelfStake-amount)
 	return true
+}
+
+// handleDelegate applies a delegate transaction atomically: it validates the
+// target validator is known and not jailed, strictly debits the delegator's coin
+// (the first mutable_ref) by amount, creates the stake-position object owned by
+// the delegator, and raises the validator's delegated total — all or nothing.
+// The delegated total is never raised without a funded position. Returns true
+// when the delegation was applied.
+func (d *DAG) handleDelegate(tx *types.Transaction) bool {
+	delegator, coinID, validator, amount, ok := d.parseDelegateTx(tx, d.isDelegateTx, true)
+	if !ok {
+		return false
+	}
+
+	target := d.validators.Get(validator)
+	if target == nil || target.Jailed {
+		return false
+	}
+
+	if !d.strictDebit(coinID, amount) {
+		return false
+	}
+
+	d.coinStore.SetObject(buildDelegationObject(delegator, validator, amount))
+	d.validators.AddDelegated(validator, amount)
+	return true
+}
+
+// handleUndelegate applies an undelegate transaction: it reads the delegator's
+// stake position, destroys it, credits the principal back to the coin (the first
+// mutable_ref), and lowers the validator's delegated total. Returns true when
+// applied. TODO: enforce an unbonding delay (the withdrawn delegation should stay
+// locked and slashable for a period, finalized with slashing in spec §10).
+func (d *DAG) handleUndelegate(tx *types.Transaction) bool {
+	delegator, coinID, validator, _, ok := d.parseDelegateTx(tx, d.isUndelegateTx, false)
+	if !ok {
+		return false
+	}
+
+	posID := DelegationID(delegator, validator)
+	amount, ok := d.readDelegationAmount(posID, validator)
+	if !ok {
+		return false
+	}
+
+	if err := creditCoin(d.coinStore, coinID, amount); err != nil {
+		logger.Warn("undelegate credit failed", "error", err)
+		return false
+	}
+
+	d.coinStore.DeleteObject(posID)
+	d.validators.SubDelegated(validator, amount)
+	return true
+}
+
+// readDelegationAmount loads a delegation position and returns its amount. ok is
+// false when the position is missing or its content does not target validator.
+func (d *DAG) readDelegationAmount(posID, validator [32]byte) (uint64, bool) {
+	data := d.coinStore.GetObject(posID)
+	if data == nil {
+		return 0, false
+	}
+
+	obj := types.GetRootAsObject(data, 0)
+	gotValidator, amount, ok := decodeDelegationContent(obj.ContentBytes())
+	if !ok || gotValidator != validator {
+		return 0, false
+	}
+
+	return amount, true
+}
+
+// parseDelegateTx validates a delegate/undelegate transaction and extracts the
+// delegator (sender), the coin ID (first mutable_ref), the target validator, and
+// (for delegate) the Borsh u64 amount. matches gates the pod and function name.
+// ok is false on any malformed input.
+func (d *DAG) parseDelegateTx(tx *types.Transaction, matches func(*types.Transaction) bool, withAmount bool) (delegator, coinID, validator [32]byte, amount uint64, ok bool) {
+	if d.coinStore == nil || !matches(tx) {
+		return delegator, coinID, validator, 0, false
+	}
+
+	senderBytes := tx.SenderBytes()
+	if len(senderBytes) != 32 {
+		return delegator, coinID, validator, 0, false
+	}
+	copy(delegator[:], senderBytes)
+
+	coinID, ok = firstMutableRefID(tx)
+	if !ok {
+		return delegator, coinID, validator, 0, false
+	}
+
+	validator, amount, ok = decodeDelegateArgs(tx.ArgsBytes(), withAmount)
+	if !ok || (withAmount && amount == 0) {
+		return delegator, coinID, validator, 0, false
+	}
+
+	return delegator, coinID, validator, amount, true
+}
+
+// decodeDelegateArgs reads the validator(32) and optional amount(8 LE) from
+// delegate/undelegate args. ok is false when the args are too short.
+func decodeDelegateArgs(args []byte, withAmount bool) (validator [32]byte, amount uint64, ok bool) {
+	need := 32
+	if withAmount {
+		need += 8
+	}
+	if len(args) < need {
+		return validator, 0, false
+	}
+
+	copy(validator[:], args[:32])
+	if withAmount {
+		amount = binary.LittleEndian.Uint64(args[32:40])
+	}
+
+	return validator, amount, true
+}
+
+// isDelegateTx checks if a transaction calls delegate on the system pod.
+func (d *DAG) isDelegateTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, delegateFunc)
+}
+
+// isUndelegateTx checks if a transaction calls undelegate on the system pod.
+func (d *DAG) isUndelegateTx(tx *types.Transaction) bool {
+	return d.isSystemFunc(tx, undelegateFunc)
 }
 
 // parseStakeTx validates a bond/unbond transaction and extracts the sender, the

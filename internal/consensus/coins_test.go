@@ -50,6 +50,10 @@ func (m *mockCoinStore) SetObject(data []byte) {
 	m.objects[id] = append([]byte(nil), data...)
 }
 
+func (m *mockCoinStore) DeleteObject(id [32]byte) {
+	delete(m.objects, id)
+}
+
 // buildTestCoinObject creates a serialized Coin object with given properties.
 func buildTestCoinObject(id [32]byte, balance uint64, owner [32]byte, replication uint16) []byte {
 	builder := flatbuffers.NewBuilder(256)

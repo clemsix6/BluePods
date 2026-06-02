@@ -226,6 +226,12 @@ func (s *State) SetObject(data []byte) {
 	s.objects.set(id, data)
 }
 
+// DeleteObject removes an object by ID. Used by consensus to destroy a
+// delegation position on undelegate (a protocol mutation, not pod execution).
+func (s *State) DeleteObject(id [32]byte) {
+	s.objects.delete(id)
+}
+
 // serializeInput builds the FlatBuffers PodExecuteInput.
 // Must rebuild nested tables (Transaction, Objects) field by field.
 func (s *State) serializeInput(tx *types.Transaction, objects []*types.Object) ([]byte, error) {
