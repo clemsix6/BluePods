@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"BluePods/client"
-	"BluePods/internal/genesis"
 )
 
 // TestSimBootstrap runs a single-node bootstrap simulation.
@@ -119,9 +118,10 @@ func runTxContentTests(t *testing.T, addr string, systemPod [32]byte) {
 	t.Run("ATP-1.22: valid tx returns 202", func(t *testing.T) {
 		w := client.NewWallet()
 		pk := w.Pubkey()
-		args := genesis.EncodeMintArgs(100, pk)
 
-		code, _ := SubmitRawBytes(addr, BuildValidTx(systemPod, "mint", args))
+		// The faucet is the canonical valid-tx path: it splits balance from the
+		// genesis reserve coin (there is no longer a user-callable mint).
+		code, _ := SubmitFaucet(addr, hex.EncodeToString(pk[:]), 100)
 		if code != statusAccepted {
 			t.Errorf("expected 202, got %d", code)
 		}

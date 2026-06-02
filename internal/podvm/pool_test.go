@@ -94,22 +94,18 @@ func findPodSystemWasm(t *testing.T) string {
 	return ""
 }
 
-// buildTestInput creates a PodExecuteInput for testing the "mint" function.
+// buildTestInput creates a PodExecuteInput for the "create_object" function: a
+// minimal load-and-execute smoke test that needs no input objects.
 func buildTestInput() []byte {
 	builder := flatbuffers.NewBuilder(512)
 
-	// Create MintArgs { amount: 100, owner: [32]byte } in borsh format
-	// amount: u64 little-endian (8 bytes) + owner: [u8; 32] (32 bytes)
-	mintArgs := make([]byte, 40)
-	mintArgs[0] = 100 // amount = 100 (little-endian u64)
-	// owner remains all zeros (bytes 8-39)
-	txArgs := builder.CreateByteVector(mintArgs)
+	txArgs := builder.CreateByteVector(encodeCreateObjectArgs())
 
 	// Create transaction
 	txHash := builder.CreateByteVector(make([]byte, 32))
 	txSender := builder.CreateByteVector(make([]byte, 32))
 	txPod := builder.CreateByteVector(make([]byte, 32))
-	txFuncName := builder.CreateString("mint")
+	txFuncName := builder.CreateString("create_object")
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, txHash)
@@ -119,24 +115,6 @@ func buildTestInput() []byte {
 	types.TransactionAddArgs(builder, txArgs)
 	tx := types.TransactionEnd(builder)
 
-	// Create Coin { balance: 1000 } in borsh format (u64 little-endian)
-	coinContent := []byte{232, 3, 0, 0, 0, 0, 0, 0} // 1000
-	objContent := builder.CreateByteVector(coinContent)
-	objID := builder.CreateByteVector(make([]byte, 32))
-	objOwner := builder.CreateByteVector(make([]byte, 32))
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, objID)
-	types.ObjectAddVersion(builder, 1)
-	types.ObjectAddOwner(builder, objOwner)
-	types.ObjectAddContent(builder, objContent)
-	coin := types.ObjectEnd(builder)
-
-	// Create local_objects vector
-	types.PodExecuteInputStartLocalObjectsVector(builder, 1)
-	builder.PrependUOffsetT(coin)
-	localObjects := builder.EndVector(1)
-
 	// Create sender
 	sender := builder.CreateByteVector(make([]byte, 32))
 
@@ -144,10 +122,17 @@ func buildTestInput() []byte {
 	types.PodExecuteInputStart(builder)
 	types.PodExecuteInputAddTransaction(builder, tx)
 	types.PodExecuteInputAddSender(builder, sender)
-	types.PodExecuteInputAddLocalObjects(builder, localObjects)
 	input := types.PodExecuteInputEnd(builder)
 
 	types.FinishPodExecuteInputBuffer(builder, input)
 
 	return builder.FinishedBytes()
+}
+
+// encodeCreateObjectArgs encodes create_object args in borsh format:
+// owner [u8;32] + replication u16 LE + metadata Vec<u8> (u32 LE length + bytes).
+func encodeCreateObjectArgs() []byte {
+	buf := make([]byte, 32+2+4) // owner + replication + empty metadata length
+	// owner all zeros, replication 0, metadata length 0
+	return buf
 }
