@@ -37,8 +37,12 @@ func (d *DAG) isEpochBoundary(round uint64) bool {
 func (d *DAG) transitionEpoch(round uint64) {
 	prevEpoch := d.currentEpoch
 
-	// Distribute rewards BEFORE removals (outgoing validators still get their share)
-	d.distributeEpochRewards()
+	// Run the thermostat (adjusts the rate every epoch, mints only when there is
+	// reward weight to distribute), then distribute the pool BEFORE removals so
+	// outgoing validators still get their share.
+	distributable := d.totalRewardWeight() > 0
+	issuance := d.runThermostat(distributable)
+	d.distributeEpochRewards(issuance)
 
 	d.applyPendingRemovals()
 
@@ -71,23 +75,24 @@ func (d *DAG) transitionEpoch(round uint64) {
 	}
 }
 
-// distributeEpochRewards distributes accumulated epoch fees to validators.
-// Each validator's share is proportional to stake × (rounds_produced / total_rounds).
-// For now, equal stake (1 per validator) is used.
-func (d *DAG) distributeEpochRewards() {
-	if d.feeParams == nil || d.coinStore == nil || d.epochFees == 0 {
+// distributeEpochRewards distributes the epoch reward pool to validators. The
+// pool is epochFees + issuance (the thermostat mint, added by runThermostat only
+// when the pool is fully distributable). The crediting itself is wired in a later
+// batch; this body still computes the proportional split and logs it. The
+// epochFees==0 early-return is removed so a zero-fee, issuance-only epoch (the
+// bootstrap incentive) is still distributed.
+func (d *DAG) distributeEpochRewards(issuance uint64) {
+	if d.feeParams == nil || d.coinStore == nil {
 		return
 	}
 
-	if d.epochTotalRounds == 0 {
+	pool := safeAdd(d.epochFees, issuance)
+	if pool == 0 {
 		return
 	}
 
-	// TODO: add issuance (inflation) to reward_total
-	rewardTotal := d.epochFees
-
-	// Calculate weights: stake × (rounds_produced / total_rounds)
-	// With equal stake (1), weight = rounds_produced
+	// Calculate weights: stake × (rounds_produced / total_rounds).
+	// With equal stake (1), weight = rounds_produced.
 	var totalWeight uint64
 	for _, rounds := range d.epochRoundsProduced {
 		totalWeight += rounds
@@ -97,16 +102,16 @@ func (d *DAG) distributeEpochRewards() {
 		return
 	}
 
-	// Distribute to each validator proportionally
+	// Distribute to each validator proportionally.
 	for pubkey, rounds := range d.epochRoundsProduced {
-		share := rewardTotal * rounds / totalWeight
+		share := pool * rounds / totalWeight
 
 		if share == 0 {
 			continue
 		}
 
-		// TODO: credit to validator's reward_coin once ValidatorInfo stores reward_coin ObjectID
-		// For now, log the distribution
+		// TODO: credit to validator's reward_coin once ValidatorInfo stores reward_coin ObjectID (Batch 7)
+		// For now, log the distribution.
 		logger.Debug("epoch reward",
 			"validator_prefix", pubkey[:4],
 			"rounds", rounds,

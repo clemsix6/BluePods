@@ -51,6 +51,51 @@ func defaultThermostatParams() thermostatParams {
 	}
 }
 
+// runThermostat advances the issuance control loop one epoch and returns the
+// tokens minted into the reward pool. It reads PRE-mint supply for the ratio (so
+// issuance cannot lower its own denominator) and adjusts the rate EVERY epoch.
+// When the rate and parameters are zero (the thermostat is off) the rate holds at
+// 0 and issuanceFor is 0, so nothing is minted. It mints only when distributable
+// (a positive totalRewardWeight): with no one to pay, minting would create
+// unbacked supply, so it mints nothing while still adjusting the rate for next
+// epoch.
+func (d *DAG) runThermostat(distributable bool) uint64 {
+	if d.coinStore == nil {
+		return 0 // fee system not wired (such as bare unit tests): nothing to mint
+	}
+
+	preMint := d.coinStore.TotalSupply()
+	bonded := d.totalBonded()
+	ratio := stakingRatioMille(bonded, preMint)
+
+	d.issuanceRateMicro = adjustRate(d.issuanceRateMicro, ratio, d.thermostat)
+
+	if !distributable {
+		return 0
+	}
+
+	issuance := issuanceFor(d.issuanceRateMicro, preMint)
+	d.coinStore.AddSupply(issuance)
+
+	return issuance
+}
+
+// totalRewardWeight sums effective_stake × liveness over the active set, where
+// liveness is the validator's rounds produced this epoch. It is the EXACT
+// denominator reward distribution uses, so minting only when it is positive
+// guarantees the pool is fully distributable (it covers the edge where producers
+// have zero stake while stakers produced zero rounds). Batch 7 reuses it.
+func (d *DAG) totalRewardWeight() uint64 {
+	var total uint64
+
+	for _, v := range d.validators.All() {
+		rounds := d.epochRoundsProduced[v.Pubkey]
+		total = safeAdd(total, safeMul(EffectiveStake(v), rounds))
+	}
+
+	return total
+}
+
 // stakingRatioMille returns the staking ratio bonded/supply in per-mille
 // (bonded*1000/supply). It is read on PRE-mint supply so issuance cannot lower its
 // own denominator. A zero supply yields 0 (no division by zero). Uses safeMul.

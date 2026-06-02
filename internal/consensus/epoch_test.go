@@ -1720,3 +1720,145 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 	t.Logf("epoch transition fired via commit path at epoch %d (last committed: %d)",
 		lastEpoch, dag.LastCommittedRound())
 }
+
+// thermostatTestDAG builds a single-validator DAG with the thermostat enabled,
+// an epoch length, and a coin store seeded to the given supply. The thermostat is
+// explicitly enabled here (it is opt-in and off by default) so the test can
+// observe minting; the live node keeps it off until reward crediting is wired.
+func thermostatTestDAG(t *testing.T, supply uint64) (*DAG, *mockCoinStore, [32]byte) {
+	t.Helper()
+
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(supply)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()),
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+
+	return dag, store, pk
+}
+
+// TestRunThermostat_MintsWhenDistributable checks that at a boundary with bonded
+// stake below the band and at least one producing validator, the issuance rate
+// rises (step-capped) and total_supply grows by exactly the minted issuance.
+func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	// Bonded far below the 25% band → the rate should rise.
+	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+
+	rateBefore := dag.issuanceRateMicro // 18 (genesis)
+	supplyBefore := store.TotalSupply()
+
+	dag.transitionEpoch(10)
+
+	wantRate := rateBefore + testThermostatParams().StepCapMicro
+	if dag.issuanceRateMicro != wantRate {
+		t.Errorf("rate should rise by the step cap: got %d, want %d",
+			dag.issuanceRateMicro, wantRate)
+	}
+
+	// The rate is adjusted FIRST, then minting uses the adjusted rate against the
+	// pre-mint supply (spec §3: mint r * total_supply with the adjusted r).
+	wantIssuance := issuanceFor(wantRate, supplyBefore)
+	if got := store.TotalSupply() - supplyBefore; got != wantIssuance {
+		t.Errorf("supply grew by %d, want %d (minted issuance)", got, wantIssuance)
+	}
+	if wantIssuance == 0 {
+		t.Fatal("test misconfigured: expected nonzero issuance")
+	}
+}
+
+// TestRunThermostat_ZeroFeeStillMints checks the bootstrap incentive: a zero-FEE
+// epoch with production still mints issuance (the pool is issuance even with no
+// fees), so total_supply grows.
+func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	dag.epochRoundsProduced[pk] = 3
+	dag.epochTotalRounds = 3
+	dag.epochFees = 0 // no fees this epoch
+
+	supplyBefore := store.TotalSupply()
+	dag.transitionEpoch(10)
+
+	if store.TotalSupply() <= supplyBefore {
+		t.Errorf("zero-fee epoch with production must still mint: supply %d -> %d",
+			supplyBefore, store.TotalSupply())
+	}
+}
+
+// TestRunThermostat_ZeroWeightMintsNothing checks that an epoch with no reward
+// weight (no rounds produced) mints NOTHING (there is no one to pay), while the
+// rate still adjusts for the next epoch.
+func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
+	dag, store, pk := thermostatTestDAG(t, 1_000_000)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	// No rounds produced this epoch → totalRewardWeight == 0.
+	dag.epochRoundsProduced = make(map[Hash]uint64)
+	dag.epochTotalRounds = 0
+
+	rateBefore := dag.issuanceRateMicro
+	supplyBefore := store.TotalSupply()
+
+	dag.transitionEpoch(10)
+
+	if store.TotalSupply() != supplyBefore {
+		t.Errorf("zero-weight epoch must mint nothing: supply %d -> %d",
+			supplyBefore, store.TotalSupply())
+	}
+
+	// The rate still adjusts (bonded is below the band, so it rises).
+	if dag.issuanceRateMicro == rateBefore {
+		t.Errorf("rate should still adjust in a zero-weight epoch: stayed %d", rateBefore)
+	}
+}
+
+// TestRunThermostat_OffByDefaultMintsNothing checks the critical correctness
+// guard: a DAG WITHOUT WithThermostat (the live-node default) has zero params and
+// a zero rate, so it mints nothing at a boundary even with production. Reward
+// crediting lands in a later batch; until then the node must not inflate supply.
+func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		// No WithThermostat: the thermostat is off.
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+
+	supplyBefore := store.TotalSupply()
+	dag.transitionEpoch(10)
+
+	if dag.issuanceRateMicro != 0 {
+		t.Errorf("rate must stay 0 with the thermostat off, got %d", dag.issuanceRateMicro)
+	}
+	if store.TotalSupply() != supplyBefore {
+		t.Errorf("thermostat off must mint nothing: supply %d -> %d", supplyBefore, store.TotalSupply())
+	}
+}
