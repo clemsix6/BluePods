@@ -43,7 +43,7 @@ func TestSnapshotSignatureRoundTripServesWithoutSigning(t *testing.T) {
 	}
 
 	// Snapshot the source and apply it to the destination store.
-	snapData, err := sync.CreateSnapshot(source, 7, nil, nil, nil, nil, 0)
+	snapData, err := sync.CreateSnapshot(source, 7, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("create snapshot: %v", err)
 	}

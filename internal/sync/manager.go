@@ -34,6 +34,10 @@ type SnapshotProvider interface {
 
 	// TotalSupply returns the protocol-maintained total token supply.
 	TotalSupply() uint64
+
+	// IssuanceRateMicro returns the thermostat's current per-epoch issuance rate
+	// in millionths, persisted because the loop steps from the previous value.
+	IssuanceRateMicro() uint64
 }
 
 // DomainExporter exports domain entries for snapshot inclusion.
@@ -155,7 +159,7 @@ func (m *SnapshotManager) createSnapshot() {
 	}
 
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply())
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro())
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return

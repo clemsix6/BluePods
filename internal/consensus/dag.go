@@ -139,6 +139,14 @@ type DAG struct {
 	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
 	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
 
+	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
+	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
+	// 0 and issuanceFor returns 0: the node mints nothing. Reward crediting (the
+	// consumer of issuance) lands in a later batch, so the live node keeps the
+	// thermostat off until crediting is wired, to preserve the supply invariant.
+	thermostat        thermostatParams // thermostat holds the issuance control loop parameters (zero = off)
+	issuanceRateMicro uint64           // issuanceRateMicro is the current per-epoch issuance rate in millionths
+
 	// Lifecycle
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -206,6 +214,29 @@ func WithCommissionBPS(bps uint64) Option {
 func WithVotingCapMille(capMille uint64) Option {
 	return func(d *DAG) {
 		d.votingCapMille = capMille
+	}
+}
+
+// WithThermostat enables the adaptive issuance thermostat with the default
+// parameters and seeds the per-epoch rate to the genesis rate. It is opt-in: a
+// DAG built without it leaves thermostat zero-valued, so the rate holds at 0 and
+// the node mints no issuance. Enable it only together with reward crediting, so
+// minted supply is always backed by a credit and the supply invariant holds.
+func WithThermostat(p thermostatParams) Option {
+	return func(d *DAG) {
+		d.thermostat = p
+		d.issuanceRateMicro = p.GenesisRateMicro
+	}
+}
+
+// WithIssuanceRate seeds the per-epoch issuance rate (in millionths), overriding
+// the genesis default. Used on the sync path to restore the persisted rate at DAG
+// construction: the rate lives only on the DAG (not in DB-backed state), and the
+// DAG does not exist when the snapshot is applied, so it must ride a construction
+// Option rather than a post-sync setter (which would nil-panic).
+func WithIssuanceRate(rateMicro uint64) Option {
+	return func(d *DAG) {
+		d.issuanceRateMicro = rateMicro
 	}
 }
 
@@ -395,6 +426,13 @@ func (d *DAG) TotalSupply() uint64 {
 // FullQuorumAchieved returns true if BFT quorum has been observed.
 func (d *DAG) FullQuorumAchieved() bool {
 	return d.fullQuorumAchieved.Load()
+}
+
+// IssuanceRateMicro returns the thermostat's current per-epoch issuance rate in
+// millionths. It is 0 when the thermostat is off. Persisted in snapshots because
+// the control loop steps from the previous value and cannot be re-derived.
+func (d *DAG) IssuanceRateMicro() uint64 {
+	return d.issuanceRateMicro
 }
 
 // ValidatorCount returns the number of active validators.

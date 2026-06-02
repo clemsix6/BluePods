@@ -66,7 +66,7 @@ func TestCreateSnapshot_EmptyStorage(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestCreateSnapshot_WithObjects(t *testing.T) {
 		t.Fatalf("store obj2: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestCreateSnapshot_IgnoresConsensusData(t *testing.T) {
 		t.Fatalf("store meta: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestApplySnapshot_EmptySnapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create empty snapshot
-	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestApplySnapshot_WithObjects(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestChecksumVerification_Valid(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 7, nil, nil, nil, nil, 12345)
+	data, err := CreateSnapshot(db, 7, nil, nil, nil, nil, 12345, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestSnapshot_ValidatorStakeRoundtrip(t *testing.T) {
 	}
 	v2.Pubkey[0] = 2
 
-	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestChecksumVerification_Corrupted(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestFullRoundtrip_CreateCompressDecompressApply(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -495,8 +495,8 @@ func TestDeterministicChecksum(t *testing.T) {
 	db2.Set(id2[:], obj2)
 	db2.Set(id1[:], obj1)
 
-	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil, 0)
-	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil, 0)
+	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil, 0, 0)
+	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil, 0, 0)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)
@@ -520,7 +520,7 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	v2.Pubkey[0] = 2
 	validators := []*consensus.ValidatorInfo{v1, v2}
 
-	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -554,12 +554,12 @@ func TestSnapshotReplicationAffectsChecksum(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil, 0)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil, 0)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestSnapshot_WithDomains(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0)
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -664,12 +664,12 @@ func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
 		t.Fatalf("store domain: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -721,8 +721,8 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	v2 := &consensus.ValidatorInfo{}
 	v2.Pubkey[0] = 2
 
-	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil, 0)
-	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil, 0)
+	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil, 0, 0)
+	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil, 0, 0)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)

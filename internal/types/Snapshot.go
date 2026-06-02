@@ -245,8 +245,20 @@ func (rcv *Snapshot) MutateTotalSupply(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(22, n)
 }
 
+func (rcv *Snapshot) IssuanceRateMicro() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Snapshot) MutateIssuanceRateMicro(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(24, n)
+}
+
 func SnapshotStart(builder *flatbuffers.Builder) {
-	builder.StartObject(10)
+	builder.StartObject(11)
 }
 func SnapshotAddVersion(builder *flatbuffers.Builder, version uint32) {
 	builder.PrependUint32Slot(0, version, 0)
@@ -298,6 +310,9 @@ func SnapshotStartSignaturesVector(builder *flatbuffers.Builder, numElems int) f
 }
 func SnapshotAddTotalSupply(builder *flatbuffers.Builder, totalSupply uint64) {
 	builder.PrependUint64Slot(9, totalSupply, 0)
+}
+func SnapshotAddIssuanceRateMicro(builder *flatbuffers.Builder, issuanceRateMicro uint64) {
+	builder.PrependUint64Slot(10, issuanceRateMicro, 0)
 }
 func SnapshotEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

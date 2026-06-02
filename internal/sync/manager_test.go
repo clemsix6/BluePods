@@ -39,6 +39,10 @@ func (m *mockSnapshotProvider) TotalSupply() uint64 {
 	return 0
 }
 
+func (m *mockSnapshotProvider) IssuanceRateMicro() uint64 {
+	return 0
+}
+
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {
 	t.Helper()
 

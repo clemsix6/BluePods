@@ -90,6 +90,11 @@ table Snapshot {
 
     // total_supply is the protocol-maintained total token supply at this state.
     total_supply:uint64;
+
+    // issuance_rate_micro is the thermostat's per-epoch issuance rate in
+    // millionths. It is stateful (the loop steps from the previous value), so it
+    // is persisted and checksum-covered rather than re-derived.
+    issuance_rate_micro:uint64;
 }
 
 // SnapshotRequest is sent by a node to request the current snapshot.
