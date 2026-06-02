@@ -37,6 +37,21 @@ This is one plan. Work is grouped into **batches**; each batch is a coherent, in
 | 9 | `Vertex.timestamp` field (pipeline deferred) | 8 | 4 |
 | 10 | Docs and schema comments | Doc impact | 4 |
 
+## Code-quality guardrails (enforced every batch)
+
+The design pushed conceptual complexity into small pure functions, so clean code is the path of least resistance — but the per-batch subagent review MUST gate on these, not just on "tests pass":
+
+- **Function size:** ≤ 25 lines per function (project rule). New pure helpers (`adjustRate`, `cappedWeight`, `quorumReached`, `issuanceFor`, `splitValidatorReward`, `EffectiveStake`, `stakingRatioMille`) are each a small arithmetic function — keep them that way.
+- **Keep the hot paths thin.** `executeTx`, `deductFees`, and `distributeEpochRewards` are the three functions at risk of bloat. New logic goes in NAMED helpers, only thin calls inline:
+  - commit-time auth → `verifyTxAuthenticity` (its own file `txauth.go`); bond/delegate → `handleBond`/`handleDelegate` (mirroring `handleRegisterValidator`); one call each in `executeTx`.
+  - fee split → `calculateTxFeeSplit`; `deductFees` gains a few lines, not a branch tree.
+  - reward payout → decompose `distributeEpochRewards` into `rewardWeight` / `creditValidatorReward` / `creditDelegators` / `pickRemainderRecipient`; the orchestrator stays a short story, each helper does one thing.
+- **File size:** ≤ 300 lines; that is why the economic logic lands in dedicated files (`stake.go`, `thermostat.go`, `delegation.go`, `supply` methods in `coins.go`) rather than growing `dag.go`/`commit.go`.
+- **Minimal API:** new symbols are unexported by default (`cappedWeight`, `quorumReached`, `splitValidatorReward`, `isSponsored`, `totalRewardWeight`, `verifyTxAuthenticity`); export only the genuinely cross-package ones (`SeedGenesis`, `EffectiveStake`, `BuildInitialState`, the `With*` Options, `DelegationsFor`).
+- **Docstrings + error wrapping** per `.claude/CLAUDE.md` on every new function/type/field.
+
+A batch is not "done" until its diff also passes this checklist; a reviewer that finds a 40-line `distributeEpochRewards` sends it back.
+
 ---
 
 ## File map (created / modified across the plan)
@@ -737,6 +752,8 @@ No `carryoverPool` field (it would be unpersisted consensus state → a synced n
 ### Task 7.3: Credit rewards; split; auto-restake; distribute the full pool
 
 **Files:** Modify `internal/consensus/epoch.go` (`distributeEpochRewards(issuance uint64)`); Test `internal/consensus/epoch_test.go`.
+
+Keep `distributeEpochRewards` a short orchestrator (≤ 25 lines): extract `rewardWeight(v) uint64`, `pickRemainderRecipient(validators) Hash`, `creditValidatorReward(v, amount)` (handles the auto-restake/liquid split), and `creditDelegators(v, amount)`. The orchestrator computes the pool, loops validators calling the helpers, then credits the remainder — it should read like a story.
 
 - [ ] **Test** `TestRewardCrediting`: each validator's `share` is split via `splitValidatorReward`; the validator's portion minus the auto-restake part is `creditCoin`'d to its `RewardCoin`; the auto-restake part raises `SelfStake`; each delegator's portion is `creditCoin`'d to its coin; `sum(all credited + all restaked) == pool` EXACTLY — the integer-division remainder (floored shares + any `share==0` validators) is credited to the deterministic top-weight validator (largest `weight`, ties broken by lower pubkey bytes), so nothing is orphaned and no carry state is needed.
 - [ ] **Run, expect FAIL.**
