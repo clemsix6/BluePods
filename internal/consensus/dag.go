@@ -21,6 +21,9 @@ const (
 	// defaultGossipFanout is the number of peers to gossip vertices to.
 	defaultGossipFanout = 40
 
+	// defaultCommissionBPS is the fixed delegation commission when unset (10%).
+	defaultCommissionBPS = 1000
+
 	// transitionGraceRounds is how many rounds after minValidators is reached
 	// before full quorum is required. During this period, vertices with at least
 	// 1 valid parent are accepted to let the network converge.
@@ -71,6 +74,7 @@ type DAG struct {
 	isBootstrap   bool // isBootstrap allows producing even with few validators
 	minValidators int    // minValidators is the threshold before non-bootstrap nodes produce
 	minStake      uint64 // minStake is the minimum self-stake a bond must leave (0 = no minimum)
+	commissionBPS uint64 // commissionBPS is the fixed, governed delegation commission in basis points (1000 = 10%)
 	gossipFanout  int    // gossipFanout is the number of peers to send each vertex to
 	graceRounds   int  // graceRounds is the transition grace period (0 = use default 20)
 	bufferRounds  int  // bufferRounds is the transition buffer period (0 = use default 10)
@@ -177,6 +181,16 @@ func WithMinStake(stake uint64) Option {
 	}
 }
 
+// WithCommissionBPS sets the fixed delegation commission in basis points. This
+// is a single governed parameter for the whole network (not per-validator), so
+// it avoids a commission field, rate-limited change mechanics, and rug-pull risk.
+// Default is 1000 (10%).
+func WithCommissionBPS(bps uint64) Option {
+	return func(d *DAG) {
+		d.commissionBPS = bps
+	}
+}
+
 // WithGossipFanout sets the number of peers to send each vertex to.
 // Higher values increase reliability at the cost of more bandwidth.
 // Default is 40 (defaultGossipFanout).
@@ -258,6 +272,7 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
 		epochRoundsProduced: make(map[Hash]uint64),
+		commissionBPS:       defaultCommissionBPS,
 		stop:                make(chan struct{}),
 	}
 	d.transitionRound.Store(-1) // not yet in transition
