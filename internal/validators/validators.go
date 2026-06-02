@@ -10,6 +10,7 @@ type ValidatorInfo struct {
 	Pubkey    Hash     // Pubkey is the validator's Ed25519 public key
 	QUICAddr  string   // QUICAddr is the QUIC P2P endpoint (may be empty)
 	BLSPubkey [48]byte // BLSPubkey is the validator's BLS public key for attestation signing
+	SelfStake uint64   // SelfStake is the validator's bonded self-stake
 }
 
 // ValidatorSet holds the active validators with their network addresses.
@@ -168,10 +169,22 @@ func (vs *ValidatorSet) Get(pubkey Hash) *ValidatorInfo {
 			Pubkey:    info.Pubkey,
 			QUICAddr:  info.QUICAddr,
 			BLSPubkey: info.BLSPubkey,
+			SelfStake: info.SelfStake,
 		}
 	}
 
 	return nil
+}
+
+// SetSelfStake sets a validator's bonded self-stake.
+// It is a no-op if the validator is not in the set.
+func (vs *ValidatorSet) SetSelfStake(pubkey Hash, stake uint64) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	if idx, exists := vs.index[pubkey]; exists {
+		vs.validators[idx].SelfStake = stake
+	}
 }
 
 // All returns a copy of all validator infos.
@@ -185,6 +198,7 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 			Pubkey:    v.Pubkey,
 			QUICAddr:  v.QUICAddr,
 			BLSPubkey: v.BLSPubkey,
+			SelfStake: v.SelfStake,
 		}
 	}
 

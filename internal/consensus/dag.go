@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
@@ -443,6 +444,20 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 	d.coinStore = store
 	d.feeParams = params
 	d.computeHolders = holders
+}
+
+// SeedGenesis seeds the initial ledger state directly: the genesis coin object
+// into the coin store and the founding validator (with its bonded self-stake)
+// into the validator set. Genesis is state, not transactions. Must be called
+// AFTER SetFeeSystem (so coinStore is wired) and before the node produces.
+func (d *DAG) SeedGenesis(is genesis.InitialState) {
+	d.coinStore.SetObject(is.Coin)
+
+	var bls [48]byte
+	copy(bls[:], is.BLS)
+
+	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
+	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
 }
 
 // ValidatorSet returns the underlying validator set.
