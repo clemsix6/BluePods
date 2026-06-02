@@ -328,6 +328,16 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		}
 	}
 
+	// Sponsored-transaction expiry: a sponsor bounds its exposure to a stale signed
+	// artifact with valid_until (in epochs). This runs before fee deduction so an
+	// expired sponsorship never charges the sponsor's coin. A non-sponsored tx is
+	// not subject to it (its absent valid_until defaults to 0).
+	if !d.sponsoredTxStillValid(tx, commitRound) {
+		logger.Warn("sponsored tx expired or unbounded", "func", funcName)
+		d.emitTransaction(tx, false)
+		return FeeSplit{}
+	}
+
 	// Commit-once guard: a transaction can reach the commit path more than once
 	// when several producers include the same gossiped transaction in their
 	// vertices. The first occurrence proceeds; later occurrences are skipped so
@@ -510,6 +520,26 @@ func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTran
 	}
 
 	return full - storage, storage
+}
+
+// sponsoredTxStillValid reports whether a sponsored transaction may commit at the
+// given round, enforcing its valid_until bound. A sponsored tx (fee_payer present)
+// MUST carry a nonzero valid_until and may commit only while valid_until is at
+// least the round's commit epoch. The boundary round k*epochLength is committed
+// before transitionEpoch increments currentEpoch, so commitEpochForRound maps it
+// to epoch k-1 (handled there), keeping this check exact across all validators. A
+// non-sponsored transaction never reads valid_until and is always valid here.
+func (d *DAG) sponsoredTxStillValid(tx *types.Transaction, commitRound uint64) bool {
+	if !isSponsored(tx) {
+		return true
+	}
+
+	validUntil := tx.ValidUntil()
+	if validUntil == 0 {
+		return false
+	}
+
+	return validUntil >= d.commitEpochForRound(commitRound)
 }
 
 // validateGasCoin checks that the gas_coin exists, is a singleton, and belongs to sender.

@@ -124,3 +124,67 @@ func signedGasCoinTx(t *testing.T, senderKey ed25519.PrivateKey, gasCoin [32]byt
 
 	return types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
 }
+
+// TestSponsoredTxValidUntil confirms valid_until enforcement against the round's
+// commit epoch: an expired bound is rejected, a current/future bound proceeds, a
+// sponsored tx with valid_until==0 is rejected, and a non-sponsored tx is never
+// subject to the check. The boundary round (which maps to epoch k-1) is exercised
+// explicitly so a naive round/epochLength mapping would fail the test.
+func TestSponsoredTxValidUntil(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil, WithEpochLength(100))
+	defer dag.Close()
+
+	_, senderKey, _ := ed25519.GenerateKey(nil)
+	_, sponsorKey, _ := ed25519.GenerateKey(nil)
+
+	var gasCoin [32]byte
+	gasCoin[0] = 0x55
+
+	build := func(validUntil uint64) *types.Transaction {
+		return sponsoredTestTx(t, senderKey, sponsorKey, gasCoin, validUntil)
+	}
+
+	// round 250 → commit epoch 2.
+	const round = uint64(250)
+	if dag.commitEpochForRound(round) != 2 {
+		t.Fatalf("test setup: commitEpochForRound(%d) = %d, want 2", round, dag.commitEpochForRound(round))
+	}
+
+	if dag.sponsoredTxStillValid(build(0), round) {
+		t.Error("sponsored tx with valid_until==0 accepted, want rejection")
+	}
+
+	if dag.sponsoredTxStillValid(build(1), round) {
+		t.Error("sponsored tx with valid_until(1) < commit epoch(2) accepted, want rejection")
+	}
+
+	if !dag.sponsoredTxStillValid(build(2), round) {
+		t.Error("sponsored tx with valid_until(2) == commit epoch(2) rejected, want acceptance")
+	}
+
+	if !dag.sponsoredTxStillValid(build(3), round) {
+		t.Error("sponsored tx with valid_until(3) > commit epoch(2) rejected, want acceptance")
+	}
+
+	// Boundary round 200 maps to epoch 1 (not 2): valid_until==1 must proceed.
+	const boundary = uint64(200)
+	if dag.commitEpochForRound(boundary) != 1 {
+		t.Fatalf("test setup: commitEpochForRound(%d) = %d, want 1", boundary, dag.commitEpochForRound(boundary))
+	}
+
+	if !dag.sponsoredTxStillValid(build(1), boundary) {
+		t.Error("boundary round: valid_until(1) == commit epoch(1) rejected, want acceptance")
+	}
+
+	if dag.sponsoredTxStillValid(build(0), boundary) {
+		t.Error("boundary round: valid_until==0 accepted, want rejection")
+	}
+
+	// A non-sponsored tx (no fee_payer, valid_until absent) is always valid.
+	nonSponsored := signedGasCoinTx(t, senderKey, gasCoin)
+	if !dag.sponsoredTxStillValid(nonSponsored, round) {
+		t.Error("non-sponsored tx rejected by valid_until check")
+	}
+}
