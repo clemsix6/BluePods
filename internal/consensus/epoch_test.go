@@ -188,6 +188,54 @@ func TestTransitionEpoch_FreezesValidatorSet(t *testing.T) {
 	}
 }
 
+// TestTransitionEpoch_CarriesStake checks that the epoch holder snapshot (and the
+// grace-window prevEpochHolders built by snapshotOf at the first boundary) carry
+// each validator's self-stake, delegated total, and jail flag. Batch 5 reads this
+// snapshot for the stake-weighted quorum, so dropping stake here would regress it.
+func TestTransitionEpoch_CarriesStake(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	)
+	defer dag.Close()
+
+	// Seed distinct stake on the live set; jail the third validator.
+	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	dag.validators.AddDelegated(validators[0].pubKey, 50)
+	dag.validators.SetSelfStake(validators[1].pubKey, 200)
+	dag.validators.SetSelfStake(validators[2].pubKey, 300)
+	dag.validators.Jail(validators[2].pubKey)
+
+	dag.transitionEpoch(10)
+
+	// The frozen epoch holders must carry the stake fields.
+	holders := dag.EpochHolders()
+	v0 := holders.Get(validators[0].pubKey)
+	if v0 == nil || v0.SelfStake != 100 || v0.DelegatedTotal != 50 {
+		t.Fatalf("epochHolders dropped stake for v0: %+v", v0)
+	}
+	v2 := holders.Get(validators[2].pubKey)
+	if v2 == nil || v2.SelfStake != 300 || !v2.Jailed {
+		t.Fatalf("epochHolders dropped jail/stake for v2: %+v", v2)
+	}
+
+	// The grace-window snapshot (built by snapshotOf) must also carry stake.
+	prev := dag.prevEpochHolders
+	if prev == nil {
+		t.Fatal("prevEpochHolders not set at first boundary")
+	}
+	p0 := prev.Get(validators[0].pubKey)
+	if p0 == nil || p0.SelfStake != 100 || p0.DelegatedTotal != 50 {
+		t.Fatalf("prevEpochHolders dropped stake for v0: %+v", p0)
+	}
+	p2 := prev.Get(validators[2].pubKey)
+	if p2 == nil || p2.SelfStake != 300 || !p2.Jailed {
+		t.Fatalf("prevEpochHolders dropped jail/stake for v2: %+v", p2)
+	}
+}
+
 // TestTransitionEpoch_AppliesPendingRemovals tests that removed validators are excluded.
 func TestTransitionEpoch_AppliesPendingRemovals(t *testing.T) {
 	db := newTestStorage(t)
