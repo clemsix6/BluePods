@@ -13,16 +13,16 @@ type FeeParams struct {
 	TransitFee         uint64 // TransitFee is the fixed fee per standard object in the ATX
 	StorageFee         uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
 	DomainFee          uint64 // DomainFee is the fixed fee per registered domain
-	BurnBPS            uint64 // BurnBPS is the burn share in basis points (3000 = 30%)
-	EpochBPS           uint64 // EpochBPS is the epoch reward share in basis points (7000 = 70%)
+	BurnBPS            uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
+	EpochBPS           uint64 // EpochBPS is the epoch reward share in basis points (10000 = 100% of consumed fees)
 	StorageRefundBPS   uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
 }
 
-// FeeSplit holds the breakdown of a fee into its two components.
+// FeeSplit holds the breakdown of a consumed fee into its two components.
 type FeeSplit struct {
-	Total  uint64 // Total is the full fee amount
-	Burned uint64 // Burned is the burned share (30%)
-	Epoch  uint64 // Epoch is the epoch reward share (70%)
+	Total  uint64 // Total is the full consumed fee amount
+	Burned uint64 // Burned is the scarcity burn share (vestigial, 0: the scarcity burn is removed)
+	Epoch  uint64 // Epoch is the epoch reward share (100% of consumed fees)
 }
 
 // DefaultFeeParams returns the default fee parameters.
@@ -34,8 +34,8 @@ func DefaultFeeParams() FeeParams {
 		TransitFee:       10,
 		StorageFee:       1000,
 		DomainFee:        10000,
-		BurnBPS:          3000,
-		EpochBPS:         7000,
+		BurnBPS:          0,
+		EpochBPS:         10000,
 		StorageRefundBPS: 9500,
 	}
 }

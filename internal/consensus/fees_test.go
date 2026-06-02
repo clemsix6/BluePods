@@ -281,6 +281,19 @@ func TestSplitFee_DefaultRatios(t *testing.T) {
 	}
 }
 
+// TestSplitFee_NoScarcityBurn confirms the default params remove the scarcity
+// burn entirely: 100% of consumed fees flow to the epoch reward pool.
+func TestSplitFee_NoScarcityBurn(t *testing.T) {
+	split := SplitFee(1000, DefaultFeeParams())
+
+	if split.Burned != 0 {
+		t.Errorf("default burned: got %d, want 0", split.Burned)
+	}
+	if split.Epoch != 1000 {
+		t.Errorf("default epoch: got %d, want 1000", split.Epoch)
+	}
+}
+
 func TestSplitFee_Rounding(t *testing.T) {
 	params := FeeParams{
 		BurnBPS:  3000,
