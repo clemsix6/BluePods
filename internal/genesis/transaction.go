@@ -37,6 +37,33 @@ func BuildSplitTx(privKey ed25519.PrivateKey, systemPod [32]byte, reserveCoinID 
 	return finishAttestedTx(builder, txOffset)
 }
 
+// BuildSponsoredTx builds a doubly-signed sponsored transaction wrapped in an ATX.
+// The sender and the sponsor both sign the SAME canonical body hash, which binds
+// fee_payer (the sponsor's pubkey) and valid_until, so neither signature can be
+// lifted onto a different body. The sponsor's coin pays the gas; the gas coin must
+// be owned by the sponsor (enforced at commit). createdReps/mutableRefs/readRefs
+// describe the operation exactly as a self-paid build would.
+func BuildSponsoredTx(senderKey, sponsorKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdReps []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin [32]byte, validUntil uint64, mutableRefs, readRefs []ObjectRefData) []byte {
+	senderPub := senderKey.Public().(ed25519.PublicKey)
+	sponsorPub := sponsorKey.Public().(ed25519.PublicKey)
+
+	sponsor := Sponsorship{FeePayer: sponsorPub, ValidUntil: validUntil}
+	body := BuildUnsignedTxBytesSponsored(
+		senderPub, pod, funcName, args, createdReps, maxCreateDomains, maxGas, gasCoin[:], mutableRefs, readRefs, sponsor,
+	)
+
+	hash := blake3.Sum256(body)
+	senderSig := ed25519.Sign(senderKey, hash[:])
+	sponsorSig := ed25519.Sign(sponsorKey, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOff := BuildTxTableSponsored(
+		builder, senderPub, pod, funcName, args, createdReps, maxCreateDomains, maxGas, gasCoin[:], hash, senderSig, mutableRefs, readRefs, sponsor, sponsorSig,
+	)
+
+	return finishAttestedTx(builder, txOff)
+}
+
 // finishAttestedTx wraps a built Transaction table in an AttestedTransaction with
 // empty objects and proofs vectors and returns the finished bytes.
 func finishAttestedTx(builder *flatbuffers.Builder, txOffset flatbuffers.UOffsetT) []byte {

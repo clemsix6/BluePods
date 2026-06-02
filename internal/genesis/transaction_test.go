@@ -141,6 +141,68 @@ func TestUnsignedBodyBindsSponsorship(t *testing.T) {
 	}
 }
 
+// TestBuildSponsoredTx confirms a doubly-signed sponsored transaction: both the
+// sender and sponsor signatures verify against the same canonical body hash, the
+// fee_payer equals the sponsor's pubkey, and valid_until is carried.
+func TestBuildSponsoredTx(t *testing.T) {
+	senderPub, senderKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate sender key: %v", err)
+	}
+
+	sponsorPub, sponsorKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate sponsor key: %v", err)
+	}
+
+	var pod, gasCoin, recipient [32]byte
+	pod[0] = 0x11
+	gasCoin[0] = 0x99
+	recipient[0] = 0x42
+
+	args := EncodeSplitArgs(0, recipient)
+	atxBytes := BuildSponsoredTx(senderKey, sponsorKey, pod, "create_object", args, []uint16{1}, 0, 1000, gasCoin, 7, nil, nil)
+
+	tx := types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
+	if tx == nil {
+		t.Fatal("missing transaction")
+	}
+
+	if !bytes.Equal(tx.SenderBytes(), senderPub) {
+		t.Errorf("sender: got %x, want %x", tx.SenderBytes(), []byte(senderPub))
+	}
+
+	if !bytes.Equal(tx.FeePayerBytes(), sponsorPub) {
+		t.Errorf("fee_payer: got %x, want sponsor %x", tx.FeePayerBytes(), []byte(sponsorPub))
+	}
+
+	if tx.ValidUntil() != 7 {
+		t.Errorf("valid_until: got %d, want 7", tx.ValidUntil())
+	}
+
+	hash := tx.HashBytes()
+
+	if !ed25519.Verify(senderPub, hash, tx.SignatureBytes()) {
+		t.Error("sender signature does not verify against the body hash")
+	}
+
+	if !ed25519.Verify(sponsorPub, hash, tx.SponsorSignatureBytes()) {
+		t.Error("sponsor signature does not verify against the body hash")
+	}
+
+	// The declared hash must equal the recomputed canonical body hash.
+	rebuilt := BuildUnsignedTxBytesSponsored(
+		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(),
+		[]uint16{1}, 0, tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
+		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
+	)
+	rebuiltHash := blake3.Sum256(rebuilt)
+
+	if !bytes.Equal(rebuiltHash[:], hash) {
+		t.Error("declared hash differs from the recomputed canonical body hash")
+	}
+}
+
 // sponsoredBody builds an unsigned sponsored body for testing.
 func sponsoredBody(pub ed25519.PublicKey, pod [32]byte, args []byte, gasCoin [32]byte, feePayer []byte, validUntil uint64) []byte {
 	return BuildUnsignedTxBytesSponsored(
