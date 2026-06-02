@@ -179,6 +179,16 @@ func (t *QUICTransport) Faucet(pubkey [32]byte, amount uint64) ([32]byte, error)
 	return coinID, nil
 }
 
+// GetTxStatus fetches a transaction's status by hash over QUIC.
+func (t *QUICTransport) GetTxStatus(hash [32]byte) (*network.GetTxStatusResponse, error) {
+	resp, err := t.roundTrip(network.EncodeGetTxStatus(&network.GetTxStatusRequest{Hash: hash}))
+	if err != nil {
+		return nil, fmt.Errorf("get tx status:\n%w", err)
+	}
+
+	return network.DecodeGetTxStatusResp(resp)
+}
+
 // roundTrip dials the node, sends one length-prefixed request, and returns the
 // length-prefixed response.
 func (t *QUICTransport) roundTrip(request []byte) ([]byte, error) {

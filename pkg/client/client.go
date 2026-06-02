@@ -178,6 +178,11 @@ func (c *Client) Status() (*network.StatusResponse, error) {
 	return c.transport.Status()
 }
 
+// GetTxStatus returns a transaction's status (state and failure reason) over QUIC.
+func (c *Client) GetTxStatus(hash [32]byte) (*network.GetTxStatusResponse, error) {
+	return c.transport.GetTxStatus(hash)
+}
+
 // ParseObject parses an Object FlatBuffer into an ObjectInfo. It is exported for
 // callers (such as the integration tests) that fetch raw object bytes over the
 // QUIC transport and need to decode them.
