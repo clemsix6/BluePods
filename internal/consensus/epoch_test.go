@@ -1901,6 +1901,83 @@ func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
 	}
 }
 
+// TestRewardConservation is the property test for Task 7.4: over a real epoch
+// boundary the full pool (epochFees + issuance) lands in coins/stake exactly
+// (sum of credited + restaked == pool), and the supply grows by exactly the
+// minted issuance (crediting/restaking only MOVES value; the fee portion was
+// already in-flight supply). It drives transitionEpoch with the thermostat on.
+func TestRewardConservation(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	const supply = 1_000_000
+	store := newMockCoinStore()
+	store.SetTotalSupply(supply)
+
+	rewardCoin := [32]byte{0xAA}
+	delegator := [32]byte{0xD2}
+	store.SetObject(buildTestCoinObject(rewardCoin, 0, pk, 0))
+	store.SetObject(buildDelegationObject(delegator, pk, 100))
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+		WithThermostat(testThermostatParams()),
+	)
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio → rate rises, issuance > 0
+	dag.validators.AddDelegated(pk, 100)
+	dag.validators.SetRewardCoin(pk, rewardCoin)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochTotalRounds = 5
+	dag.epochFees = 1234
+
+	// Pre-boundary value held in coins + stake + delegation positions.
+	beforeValue := rewardSideValue(t, store, dag, pk)
+	epochFees := dag.epochFees
+
+	// Compute the issuance the thermostat will mint (rate adjusts first).
+	wantRate := dag.issuanceRateMicro + testThermostatParams().StepCapMicro
+	issuance := issuanceFor(wantRate, supply)
+	if issuance == 0 {
+		t.Fatal("test misconfigured: expected nonzero issuance")
+	}
+	pool := epochFees + issuance
+
+	dag.transitionEpoch(10)
+
+	afterValue := rewardSideValue(t, store, dag, pk)
+
+	// Conservation: every token of the pool moved into coins/stake, nothing lost.
+	if afterValue-beforeValue != pool {
+		t.Errorf("pool not conserved: value grew by %d, want pool %d (fees %d + issuance %d)",
+			afterValue-beforeValue, pool, epochFees, issuance)
+	}
+
+	// Supply invariant at the boundary: supply grew by exactly the minted issuance
+	// (the fee portion was already counted in supply, only moved into the coin).
+	if got := store.TotalSupply() - supply; got != issuance {
+		t.Errorf("supply grew by %d, want issuance %d (no new supply beyond issuance)", got, issuance)
+	}
+}
+
+// rewardSideValue sums the value held on the reward side of the ledger: the
+// validator's reward-coin balance plus its effective stake (self + delegated). The
+// delegator's reward compounds into the validator's delegated total (same capital
+// as the position object), so EffectiveStake counts it once. It is the quantity
+// the epoch reward pool flows into.
+func rewardSideValue(t *testing.T, store *mockCoinStore, dag *DAG, pk [32]byte) uint64 {
+	t.Helper()
+
+	coin := coinBalance(t, store, [32]byte{0xAA})
+	stake := EffectiveStake(dag.validators.Get(pk))
+
+	return coin + stake
+}
+
 func thermostatTestDAG(t *testing.T, supply uint64) (*DAG, *mockCoinStore, [32]byte) {
 	t.Helper()
 
