@@ -331,7 +331,9 @@ func (n *Node) handleStatus() ([]byte, error) {
 }
 
 // handleFaucet grants tokens to a public key by splitting from the genesis
-// reserve coin, mirroring the HTTP faucet handler.
+// reserve coin. Handling is serialized so rapid sequential requests each
+// reference a distinct reserve-coin version and none lose the version race at
+// commit.
 func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 	req, err := network.DecodeFaucet(data)
 	if err != nil {
@@ -341,6 +343,9 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 	if req.Amount == 0 {
 		return network.EncodeFaucetResp(&network.FaucetResponse{Err: "amount must be > 0"}), nil
 	}
+
+	n.faucetMu.Lock()
+	defer n.faucetMu.Unlock()
 
 	txBytes := n.buildFaucetTx(req)
 
@@ -365,13 +370,30 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 // buildFaucetTx builds a signed split ATX moving tokens from the genesis reserve
 // coin to the requester. There is no user-callable mint; the faucet splits the
 // bootstrap node's reserve, paying its own gas from that same coin. Requests
-// fail naturally once the reserve is exhausted (insufficient balance).
+// fail naturally once the reserve is exhausted (insufficient balance). The caller
+// holds faucetMu, so the version it reserves is unique to this in-flight split.
 func (n *Node) buildFaucetTx(req *network.FaucetRequest) []byte {
 	owner := deriveOwner(n.cfg.PrivateKey)
 	reserveCoinID := genesis.GenesisCoinID(owner)
-	version := n.reserveCoinVersion(reserveCoinID)
+	version := n.pickReserveVersion(n.reserveCoinVersion(reserveCoinID))
 
 	return genesis.BuildSplitTx(n.cfg.PrivateKey, n.systemPod, reserveCoinID, version, req.Pubkey, req.Amount)
+}
+
+// pickReserveVersion returns the reserve-coin version the next faucet split must
+// reference and advances the in-memory counter past it. It takes the larger of
+// the committed version (committedVersion) and the in-memory counter, so the
+// counter stays ahead of in-flight splits yet self-heals to committed state once
+// splits actually commit (or after a restart). The caller must hold faucetMu.
+func (n *Node) pickReserveVersion(committedVersion uint64) uint64 {
+	chosen := committedVersion
+	if n.faucetNextVersion > chosen {
+		chosen = n.faucetNextVersion
+	}
+
+	n.faucetNextVersion = chosen + 1
+
+	return chosen
 }
 
 // reserveCoinVersion reads the current version of the genesis reserve coin from
