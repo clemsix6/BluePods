@@ -36,7 +36,6 @@ Commands:
   object set <id-hex> <STRING>           Overwrite content via set_object
   object transfer <id-hex> <to-hex>      Transfer ownership
   object holders <id-hex>                Show actual vs rendezvous-expected holders
-  watch [--objects id1,id2,...]          Live dashboard (Ctrl-C to stop)
 `)
 }
 
@@ -87,8 +86,6 @@ func dispatch(e *env, cmd string, args []string) error {
 		return cmdCoin(e, args)
 	case "object":
 		return cmdObject(e, args)
-	case "watch":
-		return cmdWatch(e, args)
 	default:
 		usage()
 		return fmt.Errorf("unknown command: %s", cmd)

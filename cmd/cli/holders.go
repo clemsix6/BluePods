@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"sort"
 
-	"BluePods/internal/attest"
-	"BluePods/internal/validators"
 	"BluePods/pkg/client"
 )
 
 // cmdObjectHolders prints which validators actually hold an object versus the
-// rendezvous-expected holder set for its replication factor.
+// rendezvous-expected holder set.
 func cmdObjectHolders(e *env, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: object holders <id-hex>")
@@ -27,9 +25,9 @@ func cmdObjectHolders(e *env, args []string) error {
 		return err
 	}
 
-	obj, err := cli.GetObject(id)
+	report, err := cli.Holders(id)
 	if err != nil {
-		return fmt.Errorf("get object:\n%w", err)
+		return fmt.Errorf("holders:\n%w", err)
 	}
 
 	vals, err := cli.Validators()
@@ -37,52 +35,9 @@ func cmdObjectHolders(e *env, args []string) error {
 		return fmt.Errorf("get validators:\n%w", err)
 	}
 
-	expected := expectedHolders(vals, id, int(obj.Replication))
-	actual := probeHolders(vals, id)
-
-	printHolders(vals, expected, actual)
+	printHolders(vals, report.Expected, report.Actual)
 
 	return nil
-}
-
-// expectedHolders returns the set of validator pubkeys the rendezvous hashing
-// assigns to the object for its replication factor.
-func expectedHolders(vals []client.ValidatorInfo, id [32]byte, replication int) map[[32]byte]bool {
-	pubkeys := make([]validators.Hash, len(vals))
-	for i, v := range vals {
-		pubkeys[i] = validators.Hash(v.Pubkey)
-	}
-
-	vs := validators.NewValidatorSet(pubkeys)
-	holders := attest.ComputeHolders(vs, id, replication)
-
-	set := make(map[[32]byte]bool, len(holders))
-	for _, h := range holders {
-		set[[32]byte(h)] = true
-	}
-
-	return set
-}
-
-// probeHolders dials each validator and returns the set of pubkeys whose node
-// reports holding the object locally.
-func probeHolders(vals []client.ValidatorInfo, id [32]byte) map[[32]byte]bool {
-	held := make(map[[32]byte]bool)
-
-	for _, v := range vals {
-		if v.QUICAddr == "" {
-			continue
-		}
-
-		data, err := client.NewQUICTransport(v.QUICAddr).GetObjectLocal(id)
-		if err != nil || data == nil {
-			continue
-		}
-
-		held[v.Pubkey] = true
-	}
-
-	return held
 }
 
 // printHolders prints one line per validator, marking actual and expected status.
