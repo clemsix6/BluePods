@@ -318,7 +318,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// without recording the hash.
 	if err := d.proofVerdict(atx, commitRound, verdicts); err != nil {
 		logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
-		d.emitTransaction(tx, false)
+		d.emitTransaction(tx, false, FailAuth)
 		return FeeSplit{}
 	}
 
@@ -333,7 +333,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// and cannot be skipped; only unit tests with synthetic txs override it.
 	if err := d.verifyTxAuth(tx); err != nil {
 		logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
-		d.emitTransaction(tx, false)
+		d.emitTransaction(tx, false, FailAuth)
 		return FeeSplit{}
 	}
 
@@ -343,7 +343,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// not subject to it (its absent valid_until defaults to 0).
 	if !d.sponsoredTxStillValid(tx, commitRound) {
 		logger.Warn("sponsored tx expired or unbounded", "func", funcName)
-		d.emitTransaction(tx, false)
+		d.emitTransaction(tx, false, FailExpired)
 		return FeeSplit{}
 	}
 
@@ -365,7 +365,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Check and update versions atomically
 	if !d.tracker.checkAndUpdate(tx) {
 		logger.Debug("version conflict", "func", funcName)
-		d.emitTransaction(tx, false) // conflict
+		d.emitTransaction(tx, false, FailVersion)
 		return FeeSplit{}
 	}
 
@@ -375,14 +375,14 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// If fee deduction rejected tx (insufficient funds, invalid gas_coin, min_gas violation)
 	if !proceed {
 		logger.Debug("fee deduction rejected", "func", funcName)
-		d.emitTransaction(tx, false)
+		d.emitTransaction(tx, false, FailFee)
 		return feeSplit
 	}
 
 	// Ownership check: sender must own all mutable_ref objects
 	if !d.validateMutableRefOwnership(tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
-		d.emitTransaction(tx, false)
+		d.emitTransaction(tx, false, FailOwner)
 		return feeSplit
 	}
 
@@ -399,7 +399,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Otherwise → only holders of mutable objects execute.
 	if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
-		d.emitTransaction(tx, true)
+		d.emitTransaction(tx, true, FailNone)
 		return feeSplit
 	}
 
@@ -418,7 +418,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	logger.Debug("tx completed", "func", funcName, "success", success)
-	d.emitTransaction(tx, success)
+
+	reason := FailNone
+	if !success {
+		reason = FailRevert
+	}
+	d.emitTransaction(tx, success, reason)
 
 	return feeSplit
 }
@@ -1281,7 +1286,7 @@ func txCommitHash(tx *types.Transaction) (Hash, bool) {
 }
 
 // emitTransaction sends a committed transaction to the output channel.
-func (d *DAG) emitTransaction(tx *types.Transaction, success bool) {
+func (d *DAG) emitTransaction(tx *types.Transaction, success bool, reason FailReason) {
 	var txHash Hash
 	if hashBytes := tx.HashBytes(); len(hashBytes) == 32 {
 		copy(txHash[:], hashBytes)
@@ -1295,6 +1300,7 @@ func (d *DAG) emitTransaction(tx *types.Transaction, success bool) {
 	committed := CommittedTx{
 		Hash:     txHash,
 		Success:  success,
+		Reason:   reason,
 		Function: string(tx.FunctionName()),
 		Sender:   sender,
 	}
