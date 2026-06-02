@@ -221,6 +221,38 @@ func TestRoundProgression(t *testing.T) {
 	}
 }
 
+// TestHasQuorumFromRound_StakeWeighted verifies the production quorum is
+// stake-weighted against the SAME holder snapshot the committer uses
+// (HoldersForEpoch(commitEpochForRound)). A single supermajority-stake producer
+// reaches quorum; a single minority-stake producer does not. Distinguishes
+// stake-weighting from counting: with two validators the old count rule
+// (QuorumSize=2) would reject any single producer.
+func TestHasQuorumFromRound_StakeWeighted(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(2)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithVotingCapMille(900))
+	defer dag.Close()
+
+	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
+	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
+
+	// Only the SMALL (10%) producer at the round → minority stake, no quorum.
+	const r1 = 4
+	storeRoundVertex(t, dag, validators[1], r1)
+	if dag.hasQuorumFromRound(r1) {
+		t.Fatal("hasQuorumFromRound true on minority-stake (10%) producer, expected false")
+	}
+
+	// Only the BIG (90%) producer at the round → supermajority stake, quorum with
+	// a SINGLE producer (would fail the old count rule of QuorumSize=2).
+	const r2 = 6
+	storeRoundVertex(t, dag, validators[0], r2)
+	if !dag.hasQuorumFromRound(r2) {
+		t.Fatal("hasQuorumFromRound false on single supermajority-stake (90%) producer, expected true")
+	}
+}
+
 // buildTestVertex creates a signed vertex for testing.
 func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash, epoch uint64) []byte {
 	t.Helper()

@@ -892,26 +892,40 @@ func (d *DAG) canProduceVertex(round uint64) bool {
 	return d.hasQuorumFromRound(round - 1)
 }
 
-// hasQuorumFromRound checks if we have enough vertices from known validators.
-// Uses the same transition logic as validateParentsQuorum to stay consistent.
+// hasQuorumFromRound checks whether the given round's known-validator producers
+// carry a 2/3 capped-stake majority. The stake is read from the SAME holder
+// snapshot the committer uses (HoldersForEpoch(commitEpochForRound(round))), so
+// production and commit never weigh against different stake sets across an epoch
+// boundary. During the transition/convergence window the check is relaxed to a
+// single producer so the network can converge before stake weighting is
+// authoritative. ValidatorSet.QuorumSize is no longer the commit/production
+// authority; it remains only for relaxed-count logging.
 func (d *DAG) hasQuorumFromRound(round uint64) bool {
-	count := d.countValidatorVertices(round)
-	required := d.validators.QuorumSize()
-
-	// BFT quorum met: production can proceed
-	if count >= required {
-		return true
-	}
-
 	// Transition + convergence period: relax quorum to let the network converge.
 	if d.isInTransitionOrBuffer() || d.isRoundInTransitionOrBuffer(round) {
-		return count >= 1
+		return d.countValidatorVertices(round) >= 1
+	}
+
+	producers := d.knownProducersAt(d.store.getByRound(round))
+	if len(producers) == 0 {
+		return false
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
+	if !ok {
+		set = d.validators
+	}
+
+	cappedSum, total := d.cappedStakeOf(set, producers)
+	if quorumReached(cappedSum, total) {
+		return true
 	}
 
 	logger.Debug("quorum check failed",
 		"round", round,
-		"validatorVertices", count,
-		"requiredQuorum", required,
+		"validatorProducers", len(producers),
+		"cappedSum", cappedSum,
+		"total", total,
 	)
 
 	return false
