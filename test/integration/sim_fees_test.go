@@ -382,20 +382,21 @@ func runGasCoinValidationTests(t *testing.T, cli *client.Client, cluster *Cluste
 	})
 
 	t.Run("ATP-21.15: gas coin must be singleton", func(t *testing.T) {
-		// Create a replicated object (replication=5, NOT a singleton)
+		// Fund the wallet first so it owns a singleton coin to pay gas (mandatory
+		// gas-coin model), then create a replicated object (replication=5, NOT a
+		// singleton) that the bad-gas-coin attempt below will try to use as gas.
 		w := client.NewWallet()
-		objectID, err := w.CreateObject(cli, 5, []byte("not-a-coin"))
+		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
+		if err := w.RefreshCoin(cli, coinID); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+
+		objectID, err := w.CreateObject(cli, 5, []byte("not-a-coin"), coinID)
 		if err != nil {
 			t.Fatalf("create object: %v", err)
 		}
 
 		WaitForObject(t, cli, objectID, 30*time.Second)
-
-		// Create a real coin to attempt transfer
-		coinID := FaucetAndWait(t, cli, w, feesFaucetAmount, 30*time.Second)
-		if err := w.RefreshCoin(cli, coinID); err != nil {
-			t.Fatalf("refresh: %v", err)
-		}
 
 		// Try to use the object as gas_coin (rep=5, not singleton)
 		r := client.NewWallet()

@@ -11,6 +11,10 @@ import (
 	"BluePods/internal/network"
 )
 
+// gasFaucetAmount is the default amount FundGasCoin requests so a wallet has a
+// singleton coin large enough to pay gas for several value-bearing transactions.
+const gasFaucetAmount uint64 = 1_000_000
+
 // transportCache memoizes one QUIC transport per node address so polling-heavy
 // tests reuse a dialer instead of constructing one per call.
 var (
@@ -293,6 +297,16 @@ func FaucetAndWait(t *testing.T, cli *client.Client, w *client.Wallet, amount ui
 	WaitForObject(t, cli, coinID, timeout)
 
 	return coinID
+}
+
+// FundGasCoin faucets a wallet a default amount and returns an owned singleton
+// coin ID for paying transaction gas. Under the mandatory gas-coin model every
+// value-bearing transaction must reference a funded gas coin, so a wallet that
+// performs object operations is funded first with this helper.
+func FundGasCoin(t *testing.T, cli *client.Client, w *client.Wallet) [32]byte {
+	t.Helper()
+
+	return FaucetAndWait(t, cli, w, gasFaucetAmount, 30*time.Second)
 }
 
 // WaitForOwner polls until an object's owner matches expected or timeout.
