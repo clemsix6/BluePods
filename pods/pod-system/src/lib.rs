@@ -12,6 +12,7 @@ mod functions;
 mod objects;
 
 pod_sdk::dispatcher! {
+    "bond" => functions::bond::execute,
     "create_object" => functions::create_object::execute,
     "deregister_validator" => functions::deregister_validator::execute,
     "merge" => functions::merge::execute,
@@ -20,4 +21,5 @@ pod_sdk::dispatcher! {
     "split" => functions::split::execute,
     "transfer" => functions::transfer::execute,
     "transfer_object" => functions::transfer_object::execute,
+    "unbond" => functions::unbond::execute,
 }

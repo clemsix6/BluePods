@@ -1,3 +1,4 @@
+pub mod bond;
 pub mod create_object;
 pub mod deregister_validator;
 pub mod merge;
@@ -6,3 +7,4 @@ pub mod set_object;
 pub mod split;
 pub mod transfer;
 pub mod transfer_object;
+pub mod unbond;
