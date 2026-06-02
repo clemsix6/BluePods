@@ -1,7 +1,6 @@
 package client
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -35,5 +34,4 @@ func TestLoadWalletMissingFileIsError(t *testing.T) {
 	if _, err := LoadWallet(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 		t.Fatal("expected error for missing wallet file")
 	}
-	_ = os.Remove("unused")
 }

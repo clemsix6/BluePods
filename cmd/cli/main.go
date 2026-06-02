@@ -76,19 +76,50 @@ func run(args []string) error {
 	return dispatch(env, rest[0], rest[1:])
 }
 
-// runConsole connects, loads or creates the wallet, and opens the interactive console.
+// runConsole connects, loads or creates the wallet, opens the interactive console,
+// and persists the wallet on exit when a key path is set.
 func runConsole(e *env) error {
 	cli, err := connect(e)
 	if err != nil {
 		return err
 	}
 
-	w, err := wallet(e)
+	walletPath := ""
+	if e.keyPath != "" {
+		walletPath = e.keyPath + ".wallet"
+	}
+
+	w, err := loadOrBuildWallet(e, walletPath)
 	if err != nil {
 		return err
 	}
 
-	return tui.RunConsole(cli, w, e.nodeAddr)
+	runErr := tui.RunConsole(cli, w, e.nodeAddr)
+
+	if walletPath != "" {
+		if saveErr := w.Save(walletPath); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: save wallet: %v\n", saveErr)
+		}
+	}
+
+	return runErr
+}
+
+// loadOrBuildWallet loads a wallet from walletPath when the file exists, or
+// builds a fresh wallet from the key otherwise.
+func loadOrBuildWallet(e *env, walletPath string) (*client.Wallet, error) {
+	if walletPath != "" {
+		if _, err := os.Stat(walletPath); err == nil {
+			w, err := client.LoadWallet(walletPath)
+			if err != nil {
+				return nil, fmt.Errorf("load wallet:\n%w", err)
+			}
+
+			return w, nil
+		}
+	}
+
+	return wallet(e)
 }
 
 // env holds the resolved global flags shared across subcommands.
