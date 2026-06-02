@@ -2,6 +2,8 @@ module BluePods
 
 go 1.26
 
+toolchain go1.26.4
+
 require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/google/flatbuffers v25.12.19+incompatible
