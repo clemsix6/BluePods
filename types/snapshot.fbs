@@ -87,6 +87,9 @@ table Snapshot {
 
     // signatures contains eager per-object BLS attestations for current versions.
     signatures:[ObjectSig];
+
+    // total_supply is the protocol-maintained total token supply at this state.
+    total_supply:uint64;
 }
 
 // SnapshotRequest is sent by a node to request the current snapshot.

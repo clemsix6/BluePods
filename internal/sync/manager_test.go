@@ -35,6 +35,10 @@ func (m *mockSnapshotProvider) ExportTrackerEntries() []consensus.ObjectTrackerE
 	return nil
 }
 
+func (m *mockSnapshotProvider) TotalSupply() uint64 {
+	return 0
+}
+
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {
 	t.Helper()
 

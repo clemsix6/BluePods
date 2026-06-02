@@ -233,8 +233,20 @@ func (rcv *Snapshot) SignaturesLength() int {
 	return 0
 }
 
+func (rcv *Snapshot) TotalSupply() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(22))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Snapshot) MutateTotalSupply(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(22, n)
+}
+
 func SnapshotStart(builder *flatbuffers.Builder) {
-	builder.StartObject(9)
+	builder.StartObject(10)
 }
 func SnapshotAddVersion(builder *flatbuffers.Builder, version uint32) {
 	builder.PrependUint32Slot(0, version, 0)
@@ -283,6 +295,9 @@ func SnapshotAddSignatures(builder *flatbuffers.Builder, signatures flatbuffers.
 }
 func SnapshotStartSignaturesVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(4, numElems, 4)
+}
+func SnapshotAddTotalSupply(builder *flatbuffers.Builder, totalSupply uint64) {
+	builder.PrependUint64Slot(9, totalSupply, 0)
 }
 func SnapshotEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

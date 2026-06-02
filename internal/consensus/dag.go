@@ -340,6 +340,15 @@ func (d *DAG) LastCommittedRound() uint64 {
 	return d.lastCommitted
 }
 
+// TotalSupply returns the protocol-maintained total supply from the coin store.
+// Returns 0 when no coin store is wired (the fee system is disabled).
+func (d *DAG) TotalSupply() uint64 {
+	if d.coinStore == nil {
+		return 0
+	}
+	return d.coinStore.TotalSupply()
+}
+
 // FullQuorumAchieved returns true if BFT quorum has been observed.
 func (d *DAG) FullQuorumAchieved() bool {
 	return d.fullQuorumAchieved.Load()

@@ -31,6 +31,9 @@ type SnapshotProvider interface {
 
 	// ExportTrackerEntries returns all tracked objects with versions and replication.
 	ExportTrackerEntries() []consensus.ObjectTrackerEntry
+
+	// TotalSupply returns the protocol-maintained total token supply.
+	TotalSupply() uint64
 }
 
 // DomainExporter exports domain entries for snapshot inclusion.
@@ -152,7 +155,7 @@ func (m *SnapshotManager) createSnapshot() {
 	}
 
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries)
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply())
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return

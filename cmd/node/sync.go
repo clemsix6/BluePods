@@ -221,6 +221,10 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		n.state.ImportDomains(result.domainEntries)
 	}
 
+	// Restore the protocol supply counter. ApplySnapshot(db) has no *state.State,
+	// so the restore lives here where the state handle is available.
+	n.state.SetTotalSupply(snapshot.TotalSupply())
+
 	logger.Info("snapshot applied",
 		"round", result.lastCommittedRound,
 		"objects", snapshot.ObjectsLength(),
