@@ -37,6 +37,10 @@ type Node struct {
 	syncBuffer  atomic.Pointer[sync.VertexBuffer] // syncBuffer holds vertices during sync
 	systemPod   [32]byte
 
+	// Observability sources, fed from the committed stream and submission ingress.
+	stats   *Stats         // stats accumulates transaction-derived counters
+	txIndex *txStatusIndex // txIndex maps a tx hash to its last-known status
+
 	// Aggregation components
 	blsKey     *aggregation.BLSKeyPair // blsKey is the BLS key for signing attestations
 	attHandler *aggregation.Handler    // attHandler responds to attestation requests
@@ -53,7 +57,7 @@ type Node struct {
 
 // NewNode creates and initializes a new node.
 func NewNode(cfg *Config) (*Node, error) {
-	n := &Node{cfg: cfg}
+	n := &Node{cfg: cfg, stats: newStats(), txIndex: newTxStatusIndex()}
 
 	// Listener mode needs storage for snapshot and network
 	if cfg.Listener {
@@ -140,15 +144,20 @@ func (n *Node) runBootstrap() error {
 	return n.waitForShutdown()
 }
 
-// processCommitted handles committed transactions from the DAG.
+// processCommitted handles committed transactions from the DAG, feeding the
+// stats source and the tx-status index before logging.
 func (n *Node) processCommitted() {
 	for tx := range n.dag.Committed() {
-		hash := hex.EncodeToString(tx.Hash[:8])
+		round := n.dag.LastCommittedRound()
+		n.stats.record(tx)
+		n.txIndex.markCommitted(tx, round)
+		n.txIndex.prune(round)
 
+		hash := hex.EncodeToString(tx.Hash[:8])
 		if tx.Success {
 			logger.Info("committed tx", "hash", hash, "func", tx.Function)
 		} else {
-			logger.Warn("conflicted tx", "hash", hash)
+			logger.Warn("conflicted tx", "hash", hash, "reason", tx.Reason.String())
 		}
 	}
 }

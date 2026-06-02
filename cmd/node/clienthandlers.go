@@ -49,6 +49,8 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleFaucet(data)
 	case network.MsgTagDomainResolve:
 		return n.handleDomainResolve(data)
+	case network.MsgTagGetTxStatus:
+		return n.handleGetTxStatus(data)
 	default:
 		return nil, fmt.Errorf("unhandled client message tag: 0x%02x", tag)
 	}
@@ -75,6 +77,10 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 	if err != nil {
 		return submitErr(err.Error()), nil
 	}
+
+	var pendingHash [32]byte
+	copy(pendingHash[:], hash)
+	n.txIndex.markPending(pendingHash, n.dag.Round())
 
 	n.dag.SubmitTx(atx)
 	n.GossipTx(atx)
@@ -320,14 +326,29 @@ func (n *Node) handleStatus() ([]byte, error) {
 	}
 
 	return network.EncodeStatusResp(&network.StatusResponse{
-		Round:         n.dag.Round(),
-		EpochLength:   n.dag.EpochLength(),
-		Epoch:         n.dag.Epoch(),
-		LastCommitted: n.dag.LastCommittedRound(),
-		Validators:    uint32(len(n.dag.ValidatorsInfo())),
-		EpochHolders:  uint32(n.dag.EpochHoldersCount()),
-		SystemPod:     n.systemPod,
+		Round:          n.dag.Round(),
+		EpochLength:    n.dag.EpochLength(),
+		Epoch:          n.dag.Epoch(),
+		LastCommitted:  n.dag.LastCommittedRound(),
+		Validators:     uint32(len(n.dag.ValidatorsInfo())),
+		EpochHolders:   uint32(n.dag.EpochHoldersCount()),
+		SystemPod:      n.systemPod,
+		TotalTx:        n.stats.TotalTx(),
+		TPSMilli:       uint32(n.stats.TPS() * 1000),
+		ConnectedPeers: uint32(n.network.ConnectedPeers()),
 	}), nil
+}
+
+// handleGetTxStatus returns a transaction's last-known status from the index.
+func (n *Node) handleGetTxStatus(data []byte) ([]byte, error) {
+	req, err := network.DecodeGetTxStatus(data)
+	if err != nil {
+		return nil, err
+	}
+
+	state, reason := n.txIndex.get(req.Hash)
+
+	return network.EncodeGetTxStatusResp(&network.GetTxStatusResponse{State: state, Reason: reason}), nil
 }
 
 // handleFaucet grants tokens to a public key by splitting from the genesis
