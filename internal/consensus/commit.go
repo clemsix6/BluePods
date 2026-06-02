@@ -295,6 +295,21 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return FeeSplit{}
 	}
 
+	// Commit-time authenticity: re-verify the inner transaction's sender signature
+	// and hash. This runs deterministically on every node, after the proof verdict
+	// is consumed (so the batch-proof cursor stays aligned) and before the
+	// commit-once guard (so a forged tx cannot poison the tracker with a chosen
+	// hash to censor a legitimate one). A gossiped transaction can reach commit
+	// without passing local ingress validation, so authenticity must be enforced
+	// here, where every node agrees.
+	if d.verifyTxAuth != nil {
+		if err := d.verifyTxAuth(tx); err != nil {
+			logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
+			d.emitTransaction(tx, false)
+			return FeeSplit{}
+		}
+	}
+
 	// Commit-once guard: a transaction can reach the commit path more than once
 	// when several producers include the same gossiped transaction in their
 	// vertices. The first occurrence proceeds; later occurrences are skipped so

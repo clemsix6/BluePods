@@ -110,6 +110,12 @@ type DAG struct {
 	// checks run across cores before the sequential apply.
 	verifyATXProofsBatch func(atxs []*types.AttestedTransaction, commitRound uint64) []error
 
+	// verifyTxAuth re-verifies an inner transaction's sender signature and hash in
+	// the commit path, deterministically on every node. It is nil in unit tests
+	// that drive executeTx with deliberately forged transactions; production wires
+	// it to verifyTxAuthenticity so gossiped transactions cannot commit unverified.
+	verifyTxAuth func(tx *types.Transaction) error
+
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore  // coinStore provides access to coin objects for fee operations
 	feeParams      *FeeParams // feeParams holds fee constants (nil = fees disabled)
@@ -421,6 +427,14 @@ func (d *DAG) SetATXProofVerifier(fn func(atx *types.AttestedTransaction, commit
 // before transactions are committed.
 func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction, commitRound uint64) []error) {
 	d.verifyATXProofsBatch = fn
+}
+
+// SetTxAuthVerifier sets the commit-time transaction-authenticity verifier. It
+// re-checks each committed transaction's sender signature and hash so a forged
+// transaction injected via gossip cannot commit. Production wires it to
+// verifyTxAuthenticity; it must be set after DAG creation, before commits.
+func (d *DAG) SetTxAuthVerifier(fn func(tx *types.Transaction) error) {
+	d.verifyTxAuth = fn
 }
 
 // SetFeeSystem configures protocol-level fee deduction.
