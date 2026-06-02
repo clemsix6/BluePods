@@ -13,6 +13,11 @@ type Config struct {
 	// InitialMint is the amount of tokens to mint for the bootstrap account.
 	InitialMint uint64
 
+	// GenesisStake is the founder's bonded self-stake, locked from InitialMint so
+	// the bootstrap validator has real backing for its stake-weighted quorum
+	// weight. Clamped to InitialMint to keep the coin balance from underflowing.
+	GenesisStake uint64
+
 	// QUICAddress is the validator's QUIC P2P endpoint (e.g., "192.168.1.1:9000").
 	QUICAddress string
 
