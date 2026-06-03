@@ -1,58 +1,24 @@
 # BluePods
 
-BluePods is a Layer 1 blockchain built from scratch in Go. The core idea is simple: not every validator needs to process every transaction.
+BluePods is a decentralized cloud, built as a Layer 1 blockchain in Go. Its premise is that not every validator needs to process every transaction. The state is not a global tree but a collection of independent, versioned objects, each replicated on a small subset of validators called its holders, and a transaction is executed only by the holders of the objects it touches. Adding validators therefore spreads the work thinner instead of duplicating it, and the network's aggregate capacity grows rather than staying fixed. What BluePods refuses to trade away for that scale are the two properties that make a cloud usable rather than merely possible: zero rollback, so a finalized operation is never reverted, and global synchronous atomic composability, so any backend can call any other in a single finalized step regardless of which holders own the objects involved. Keeping both at once requires one global order that every validator sees, which bounds total throughput to a single node rather than the sum of all of them; the wager that makes this affordable is that per-node bandwidth keeps rising. Everything else in the system follows from that one choice.
 
-Most blockchains today work the same way: every node stores the entire state and executes every transaction. This works, but it means that adding more validators to the network doesn't increase its capacity. Whether you have 100 or 10,000 validators, each one does the same amount of work. Throughput is capped by what a single machine can handle.
+Three ideas carry the design. The first is objects in place of accounts: there is no global state trie, only discrete units each carrying an ID, a version, an owner, and a replication factor, so two transactions that touch different objects can never conflict and detecting a conflict is a version comparison rather than a lock. The second is a leaderless DAG for ordering, in the lineage of Mysticeti: every validator produces vertices in parallel with no designated proposer, and a vertex is final once producers carrying a supermajority of stake acknowledge it two rounds later. The third is that execution follows the data, with each transaction run by the holders of the objects it mutates rather than by the whole network; the attestations that prove an object's state are collected off-chain by the client, so their cost tracks an object's replication factor and not the size of the validator set. The backends themselves, called pods, are Rust compiled to WebAssembly and run in a sandbox whose entire interface to the outside world is four host functions.
 
-BluePods takes a different approach. The network state is composed of independent objects, each replicated on a specific subset of validators called holders. When a transaction comes in, only the holders of the objects it touches need to execute it. A transfer between two users with objects replicated on 10 holders means 10 validators do the work, not the entire network. Adding more validators means the workload is spread thinner, and the network's aggregate capacity actually grows.
+The reasoning behind each of these choices, and the parts this page deliberately leaves out, the economic layer and its monetary policy, the attestation and fee mechanics, validator management, and the security analysis, lives in two documents of record. [docs/VISION.md](docs/VISION.md) is the why: the goal of a decentralized cloud, the properties BluePods will not compromise, the tradeoff it accepts, and where it stands against the Internet Computer, Sui, Solana, and Ethereum. [docs/WHITEPAPER.md](docs/WHITEPAPER.md) is the how, in full. The acceptance criteria are in [docs/ATP.md](docs/ATP.md), and the multi-node integration tests are described in [test/integration/TESTING.md](test/integration/TESTING.md).
 
-This isn't a new idea: it's essentially horizontal sharding, the same principle that makes distributed databases scale. The challenge is making it work in a Byzantine environment where you can't trust anyone. That's what most of this codebase is about.
+## Build and run
 
-## How it works
+BluePods needs Go 1.26 or newer and a Rust toolchain with the WebAssembly target (`rustup target add wasm32-unknown-unknown`).
 
-### Objects, not accounts
-
-There's no global state tree. The state is a collection of discrete objects, each with an ID, a version, an owner, and a replication factor. An object with replication 10 is stored by 10 holders. An object with replication 0 (a singleton) is stored by everyone.
-
-Two transactions touching different objects can never conflict. When they do touch the same object, conflict detection is trivial: just compare the declared version against the current one. No locks, no speculative execution, no rollbacks.
-
-### DAG consensus
-
-Consensus is a leaderless directed acyclic graph inspired by Mysticeti. Every validator produces vertices in parallel: there's no designated block proposer, so there's no leader bottleneck. Vertices reference each other across rounds, and a vertex is committed when it's been acknowledged (directly or transitively) by a supermajority of the network 2 rounds later. Finality is fast and deterministic.
-
-The important property of the DAG is that it orders transactions without executing them. Every validator can track object versions just by scanning the committed history. If a transaction declares an object in its mutable list, that object's version gets incremented, regardless of what the smart contract actually does with it. This makes version tracking deterministic and deducible from the DAG alone.
-
-### Off-chain attestation
-
-In traditional BFT consensus, validators broadcast votes to everyone. With N validators, that's N² messages per round. At 200 nodes it's fine. At 2,000 it's a problem.
-
-BluePods replaces this with off-chain collection done by the client. A client daemon contacts only the holders of the referenced objects over QUIC, collects their BLS signatures on the object hashes, aggregates them into a single compact proof, and submits the result as an attested transaction (an ATX). A validator no longer aggregates on the user's behalf: it verifies the ATX and orders it. Holders sign each object version once, eagerly at execution, and serve the stored signature on request, so answering an attestation is a pure read.
-
-The result is that attestation cost scales with the object's replication factor, not with the network size, and the consensus-critical path no longer carries the aggregation work. A transaction involving a 50-holder object contacts 50 holders, whether the network has 100 or 5,000 validators. A transaction touching only singletons (coins) needs no attestation at all and is submitted raw.
-
-### Pods
-
-Smart contracts are called pods. They're Rust compiled to WebAssembly, executed in a sandboxed wazero runtime with gas metering. The interface is minimal: four host functions (gas, input_len, read_input, write_output) and nothing else. No filesystem, no network, no clock. The pod receives its inputs as a FlatBuffers message, does its logic, and returns the state changes.
-
-The system pod handles the basics: minting coins, transfers, splits, merges, generic objects, and validator registration/deregistration. Application developers build their own pods using the Rust SDK.
-
-### Fees
-
-Fees are computed at the protocol level, outside of pod execution. This is deliberate: if fees were deducted inside a smart contract, the gas coin (a singleton) would force every validator to execute every transaction, destroying the whole point of sharding.
-
-Instead, fee computation is pure arithmetic on the transaction header. Four components: compute (gas budget × gas price × fraction of validators that execute), transit (per standard object in the transaction body), storage (per created object, weighted by replication), and domain registration. Fees are always deducted, even if the transaction fails. 70% accumulates for epoch rewards and 30% is burned; there is no aggregator share, since aggregation is off-chain.
-
-## Build & run
-
-Prerequisites: **Go 1.26+** and **Rust** with the WASM target (`rustup target add wasm32-unknown-unknown`).
+Build the system pod, the node, and the client. The pod's `make release` compiles it to WebAssembly, builds the `wasm-gas` instrumenter, and injects gas metering into the deployed `build/pod.wasm`.
 
 ```bash
-# Build the system pod (Rust → WASM) and the node binary (Go)
 cd pods/pod-system && make release && cd ../..
 go build -o node ./cmd/node
+go build -o bpctl ./cmd/cli
 ```
 
-Start a local cluster in separate terminals:
+Start a local cluster in separate terminals, one bootstrap node and as many joiners as you like:
 
 ```bash
 ./node -bootstrap -quic 127.0.0.1:9000 -data ./data1
@@ -60,74 +26,20 @@ Start a local cluster in separate terminals:
 ./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9002 -data ./data3
 ```
 
-The node is QUIC only; there is no HTTP. Talk to it with the `bpctl` CLI:
+On a terminal a node shows a live dashboard with the round, transactions per second, connected peers, and total committed transactions. Pass `--log` to force line logs instead, which is also what happens automatically when the output is not a terminal, for example under a service manager.
+
+The network is QUIC only, with no HTTP. Talk to it with `bpctl`. Run bare on a terminal it opens an interactive console with a live header and a command line, where `faucet`, `transfer`, `split`, the `object` operations, `coins`, `objects`, and `pubkey` are typed directly while each transaction's status and your balance update in place:
 
 ```bash
-go build -o bpctl ./cmd/cli
-./bpctl status                            # round, epoch, validator count
-./bpctl validators                        # active validator list with QUIC addresses
-./bpctl object create --replication 3 --content "hello"
-./bpctl object holders <id>               # which holders store the object
-./bpctl object set <id> "world"           # mutate it through off-chain aggregation
+./bpctl --node 127.0.0.1:9000
 ```
 
-The node supports bootstrap mode (genesis), validator mode (joins an existing network), and listener mode (observe without participating in consensus). Run `./node -help` for all flags: epoch length, churn limits, gossip fanout, sync buffer, etc.
-
-## Testing
-
-This is a consensus system. If the tests don't prove it works, nothing does.
-
-The test suite is split into two layers: unit tests that verify individual components in isolation, and integration tests that spin up real multi-node clusters and run end-to-end scenarios against them.
-
-### Unit tests
-
-Standard Go tests spread across all packages. They cover the DAG validation logic, fee calculation and overflow safety, BLS signature aggregation and verification (sequential and parallel-batch), version tracking, snapshot encoding/decoding, Rendezvous hashing, the WASM runtime, and the transaction validation layer.
+With a subcommand it is a one-shot tool for scripts:
 
 ```bash
-go test ./internal/... ./client/...
+./bpctl --node 127.0.0.1:9000 status
+./bpctl --node 127.0.0.1:9000 coin faucet <pubkey-hex> <amount>
+./bpctl --node 127.0.0.1:9000 object holders <id-hex>
 ```
 
-### Integration tests
-
-The integration tests are where it gets interesting. Each test is a simulation that starts a real cluster of N nodes as separate processes, waits for them to reach consensus, then runs a sequence of scenarios against the live network. When the test ends, the cluster is torn down automatically.
-
-There are 7 simulations, each targeting a different aspect of the system:
-
-**TestSimBootstrap** starts a single node in bootstrap mode and hammers the API with ~35 test cases. It submits transactions with wrong field sizes, bad hashes, invalid signatures, duplicate object references, oversized bodies, malformed FlatBuffers, everything that should be rejected at the validation layer. It also verifies that valid transactions go through, that the faucet works, and that the pod VM correctly executes mints.
-
-**TestSimConsensus** spins up 5 nodes and tests the actual consensus mechanism. It verifies that rounds progress, that vertices are gossipped to all nodes, that the commit rule works. Then it runs client operations (faucet, split, transfer, object creation) and checks that all 5 nodes converge to the same state. It also tests security: replay attacks, hash tampering, and signature forgery are all rejected.
-
-**TestSimFees** runs a 5-node cluster with the fee system enabled. It mints coins, performs operations, and verifies that fees are correctly deducted from the gas coin. Tests the exact-balance boundary case (balance equals fee exactly), verifies that transactions without a gas coin skip fee deduction, and checks that all nodes agree on the final balances.
-
-**TestSimEpochs** starts 10 nodes with a short epoch length (50 rounds). It waits for an epoch boundary, verifies the epoch counter increments and the epochHolders snapshot is taken. Then it registers a new validator mid-epoch and checks that it's included at the next boundary. It deregisters a validator and verifies it's removed. It also tests the edge case of an epoch with zero fees collected.
-
-**TestSimObjects** runs 12 nodes and focuses on the object sharding layer. It creates objects with different replication factors and verifies they're stored only by the correct holders (determined by Rendezvous hashing). It tests that singletons are stored by all validators, that routing correctly forwards object queries to holders, and that `?local=true` prevents cascading lookups.
-
-**TestSimStress** pushes a 12-node cluster under load. It fires concurrent modifications at the same objects from multiple clients to trigger version conflicts. It tests double-spend resistance under concurrency, submits transactions during epoch transitions, and verifies that no node panics or produces unexpected errors throughout the entire run.
-
-**TestSimProgressiveJoining** tests the network's ability to grow. It starts with 5 validators, then adds 5 more one by one, verifying that each new validator syncs, starts producing vertices, and reaches consensus with the rest. A variant (TestSimBatchJoining) adds validators in batches of 5 up to 20 total.
-
-```bash
-# Run everything (slow: the suite is setup-dominated; prefer running sims individually)
-go test ./test/integration/ -count=1 -timeout 40m
-
-# Run a single simulation
-go test ./test/integration/ -v -run TestSimConsensus -count=1 -timeout 5m
-
-# Run a specific test case
-go test ./test/integration/ -v -run "TestSimBootstrap/tx-validation/ATP-1.1" -count=1
-```
-
-The full [acceptance test plan](docs/ATP.md) documents ~417 test cases across 38 categories, covering every protocol feature, edge case, and attack vector. The integration test [architecture and coverage map](test/integration/TESTING.md) shows which ATP items are covered by which simulation.
-
-## Stack
-
-The node is written in Go, pods are written in Rust and compiled to WebAssembly (executed via [wazero](https://github.com/tetratelabs/wazero)). Protocol serialization uses [FlatBuffers](https://github.com/google/flatbuffers) for zero-copy access, pod arguments use [Borsh](https://borsh.io). Cryptography: Ed25519 for transaction signatures, [BLS12-381](https://github.com/supranational/blst) for attestation aggregation, [BLAKE3](https://github.com/zeebo/blake3) for all hashing. P2P networking over [QUIC](https://github.com/quic-go/quic-go), storage on [Pebble](https://github.com/cockroachdb/pebble), snapshots compressed with zstd.
-
-## Documentation
-
-The **[vision](docs/VISION.md)** covers why the project exists: the goal of a decentralized cloud, the properties it will not compromise, the tradeoff it accepts, and how it positions against ICP, Sui, Solana, and Ethereum.
-
-The **[design document](docs/WHITEPAPER.md)** covers how it works: object model, consensus, attestation, execution sharding, fee system, validator management, and security analysis.
-
-The **[acceptance test plan](docs/ATP.md)** is an exhaustive list of ~417 test cases across 38 categories, covering every protocol feature, security mechanism, edge case, and attack vector.
+A node also runs in validator mode, joining an existing network, and in listener mode, observing without taking part in consensus. Run `./node -help` for every flag, including epoch length, churn limits, gossip fanout, and the sync buffer.
