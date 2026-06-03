@@ -8,10 +8,12 @@ import (
 	"os"
 )
 
-// walletFile is the on-disk wallet shape: the key and the known coin IDs.
+// walletFile is the on-disk wallet shape: the key, known coin IDs, and created
+// object IDs.
 type walletFile struct {
-	Key   string   `json:"key"`   // Key is the hex-encoded Ed25519 private key
-	Coins []string `json:"coins"` // Coins is the hex-encoded list of known coin IDs
+	Key     string   `json:"key"`     // Key is the hex-encoded Ed25519 private key
+	Coins   []string `json:"coins"`   // Coins is the hex-encoded list of known coin IDs
+	Objects []string `json:"objects"` // Objects is the hex-encoded list of created object IDs
 }
 
 // Track records a coin ID as owned so the wallet includes it in balance queries.
@@ -36,11 +38,29 @@ func (w *Wallet) CoinIDs() [][32]byte {
 	return ids
 }
 
+// TrackObject records a created object's ID so the wallet can list it later.
+func (w *Wallet) TrackObject(id [32]byte) {
+	w.objects[id] = true
+}
+
+// ObjectIDs returns the tracked object IDs.
+func (w *Wallet) ObjectIDs() [][32]byte {
+	ids := make([][32]byte, 0, len(w.objects))
+	for id := range w.objects {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
 // Save writes the wallet (key and known coin IDs) to path.
 func (w *Wallet) Save(path string) error {
 	wf := walletFile{Key: hex.EncodeToString(w.privKey)}
 	for id := range w.coins {
 		wf.Coins = append(wf.Coins, hex.EncodeToString(id[:]))
+	}
+	for id := range w.objects {
+		wf.Objects = append(wf.Objects, hex.EncodeToString(id[:]))
 	}
 
 	data, err := json.MarshalIndent(wf, "", "  ")
@@ -82,6 +102,17 @@ func LoadWallet(path string) (*Wallet, error) {
 		var id [32]byte
 		copy(id[:], raw)
 		w.Track(id)
+	}
+
+	for _, o := range wf.Objects {
+		raw, err := hex.DecodeString(o)
+		if err != nil || len(raw) != 32 {
+			return nil, fmt.Errorf("invalid object id %q", o)
+		}
+
+		var id [32]byte
+		copy(id[:], raw)
+		w.TrackObject(id)
 	}
 
 	return w, nil

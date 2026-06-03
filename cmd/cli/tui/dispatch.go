@@ -34,6 +34,8 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 		return dispatchBalance(c, w)
 	case "coins":
 		return dispatchCoins(c, w)
+	case "objects":
+		return dispatchObjects(c, w)
 	case "pubkey":
 		return dispatchPubkey(w)
 	case "help":
@@ -170,7 +172,34 @@ func dispatchObjectCreate(c *client.Client, w *client.Wallet, cmd command) (stri
 		return "", [32]byte{}, err
 	}
 
-	return fmt.Sprintf("object created %s (replication %d)", hex.EncodeToString(objectID[:4]), rep64), txHash, nil
+	w.TrackObject(objectID)
+
+	return fmt.Sprintf("object created %s (replication %d)", hex.EncodeToString(objectID[:]), rep64), txHash, nil
+}
+
+// dispatchObjects handles: objects. It lists each tracked object with its full
+// hex ID and current version/owner, so the full ID can be copied for object
+// show/set/transfer.
+func dispatchObjects(c *client.Client, w *client.Wallet) (string, [32]byte, error) {
+	ids := w.ObjectIDs()
+	if len(ids) == 0 {
+		return "no objects yet (use object create)", [32]byte{}, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "objects (%d):", len(ids))
+
+	for _, id := range ids {
+		obj, err := c.GetObject(id)
+		if err != nil {
+			fmt.Fprintf(&b, "\n  %s  (unavailable)", hex.EncodeToString(id[:]))
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s  v%d  owner=%s  rep=%d",
+			hex.EncodeToString(id[:]), obj.Version, hex.EncodeToString(obj.Owner[:4]), obj.Replication)
+	}
+
+	return b.String(), [32]byte{}, nil
 }
 
 // dispatchObjectSet handles: object set <id> <gasCoin> <content...>
@@ -342,6 +371,7 @@ commands:
   validators                             list active validators
   balance                                show total balance
   coins                                  list known coins with full ids
+  objects                                list created objects with full ids
   pubkey                                 show this wallet's public key
   quit                                   exit the console`)
 }

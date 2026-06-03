@@ -14,6 +14,10 @@ func TestWalletSaveLoadRoundTrip(t *testing.T) {
 	coin[0] = 0x42
 	w.Track(coin)
 
+	var obj [32]byte
+	obj[0] = 0x99
+	w.TrackObject(obj)
+
 	if err := w.Save(path); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -27,6 +31,11 @@ func TestWalletSaveLoadRoundTrip(t *testing.T) {
 	}
 	if !loaded.Knows(coin) {
 		t.Fatalf("coin not persisted")
+	}
+
+	ids := loaded.ObjectIDs()
+	if len(ids) != 1 || ids[0] != obj {
+		t.Fatalf("object not persisted: %v", ids)
 	}
 }
 

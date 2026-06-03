@@ -27,6 +27,7 @@ type Wallet struct {
 	privKey ed25519.PrivateKey     // privKey is the Ed25519 private key
 	pubKey  ed25519.PublicKey      // pubKey is the Ed25519 public key
 	coins   map[[32]byte]*CoinInfo // coins tracks owned coins by ID
+	objects map[[32]byte]bool      // objects tracks IDs of created objects
 }
 
 // CoinInfo holds metadata about a coin.
@@ -89,6 +90,7 @@ func NewWallet() *Wallet {
 		privKey: priv,
 		pubKey:  pub,
 		coins:   make(map[[32]byte]*CoinInfo),
+		objects: make(map[[32]byte]bool),
 	}
 }
 
@@ -99,6 +101,7 @@ func NewWalletFromKey(privKey ed25519.PrivateKey) *Wallet {
 		privKey: privKey,
 		pubKey:  privKey.Public().(ed25519.PublicKey),
 		coins:   make(map[[32]byte]*CoinInfo),
+		objects: make(map[[32]byte]bool),
 	}
 }
 
