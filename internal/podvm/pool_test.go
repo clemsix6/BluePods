@@ -29,13 +29,17 @@ func TestPool_LoadAndExecute(t *testing.T) {
 
 	input := buildTestInput()
 
-	output, gasUsed, err := pool.Execute(id, input, 10000)
+	output, gasUsed, err := pool.Execute(id, input, 10_000_000)
 	if err != nil {
 		t.Fatalf("failed to execute: %v", err)
 	}
 
-	// Note: gasUsed will be 0 unless WASM is instrumented with wasm-gas
-	t.Logf("gas consumed: %d (0 if not instrumented)", gasUsed)
+	// With the instrumented pod this is the real per-instruction gas cost of a
+	// create_object call; it must sit well under the 10M execution budget.
+	t.Logf("gas consumed: %d", gasUsed)
+	if gasUsed == 0 {
+		t.Error("gasUsed is 0: pod is not instrumented (run: cd pods/pod-system && make release)")
+	}
 
 	if len(output) == 0 {
 		t.Fatal("expected output bytes")
@@ -49,10 +53,29 @@ func TestPool_LoadAndExecute(t *testing.T) {
 	t.Logf("execution successful: gasUsed=%d, outputLen=%d", gasUsed, len(output))
 }
 
-// TestPool_GasExhausted tests that execution stops when gas is exhausted.
-// Requires WASM to be instrumented with wasm-gas.
+// TestPool_GasExhausted verifies that execution aborts when the gas budget is
+// exceeded. A tiny budget is exhausted by the first metered block, which only
+// happens once the pod is instrumented with wasm-gas (make release).
 func TestPool_GasExhausted(t *testing.T) {
-	t.Skip("requires instrumented WASM (wasm-gas)")
+	wasmPath := findPodSystemWasm(t)
+
+	wasmBytes, err := os.ReadFile(wasmPath)
+	if err != nil {
+		t.Fatalf("failed to read wasm: %v", err)
+	}
+
+	pool := New()
+	defer pool.Close()
+
+	id, err := pool.Load(wasmBytes, nil)
+	if err != nil {
+		t.Fatalf("failed to load module: %v", err)
+	}
+
+	_, _, err = pool.Execute(id, buildTestInput(), 10)
+	if err != ErrGasExhausted {
+		t.Fatalf("expected ErrGasExhausted with a tiny budget, got %v", err)
+	}
 }
 
 // TestPool_ModuleNotFound tests that executing an unknown module returns an error.
@@ -72,10 +95,11 @@ func TestPool_ModuleNotFound(t *testing.T) {
 func findPodSystemWasm(t *testing.T) string {
 	t.Helper()
 
-	// Try relative path from test
+	// Prefer the instrumented build output (build/pod.wasm), which is what the
+	// node actually loads. Gas metering is only exercised against this artifact.
 	paths := []string{
-		"../../pods/pod-system/target/wasm32-unknown-unknown/release/pod_system.wasm",
-		"pods/pod-system/target/wasm32-unknown-unknown/release/pod_system.wasm",
+		"../../pods/pod-system/build/pod.wasm",
+		"pods/pod-system/build/pod.wasm",
 	}
 
 	for _, p := range paths {
@@ -89,7 +113,7 @@ func findPodSystemWasm(t *testing.T) string {
 		}
 	}
 
-	t.Skip("pod_system.wasm not found, run: cd pods/pod-system && cargo build --target wasm32-unknown-unknown --release")
+	t.Skip("instrumented pod.wasm not found, run: cd pods/pod-system && make release")
 
 	return ""
 }
