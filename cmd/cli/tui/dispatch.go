@@ -32,6 +32,8 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 		return dispatchValidators(c)
 	case "balance":
 		return dispatchBalance(c, w)
+	case "coins":
+		return dispatchCoins(c, w)
 	case "pubkey":
 		return dispatchPubkey(w)
 	case "help":
@@ -292,6 +294,31 @@ func dispatchBalance(c *client.Client, w *client.Wallet) (string, [32]byte, erro
 	return fmt.Sprintf("balance %d  (%d coins)", total, len(ids)), [32]byte{}, nil
 }
 
+// dispatchCoins handles: coins. It lists each known coin with its full hex ID and
+// refreshed balance, so the full ID can be copied for use as a gas coin or
+// transfer source.
+func dispatchCoins(c *client.Client, w *client.Wallet) (string, [32]byte, error) {
+	ids := w.CoinIDs()
+	if len(ids) == 0 {
+		return "no coins yet (use faucet)", [32]byte{}, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "coins (%d):", len(ids))
+
+	for _, id := range ids {
+		var bal uint64
+		if err := w.RefreshCoin(c, id); err == nil {
+			if ci := w.GetCoin(id); ci != nil {
+				bal = ci.Balance
+			}
+		}
+		fmt.Fprintf(&b, "\n  %s  %d", hex.EncodeToString(id[:]), bal)
+	}
+
+	return b.String(), [32]byte{}, nil
+}
+
 // dispatchPubkey handles: pubkey
 func dispatchPubkey(w *client.Wallet) (string, [32]byte, error) {
 	pk := w.Pubkey()
@@ -314,6 +341,7 @@ commands:
   object holders <id>                    show holder report
   validators                             list active validators
   balance                                show total balance
+  coins                                  list known coins with full ids
   pubkey                                 show this wallet's public key
   quit                                   exit the console`)
 }
