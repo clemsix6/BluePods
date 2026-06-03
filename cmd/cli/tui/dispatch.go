@@ -32,6 +32,8 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 		return dispatchValidators(c)
 	case "balance":
 		return dispatchBalance(c, w)
+	case "pubkey":
+		return dispatchPubkey(w)
 	case "help":
 		return helpText(), track, nil
 	default:
@@ -290,6 +292,13 @@ func dispatchBalance(c *client.Client, w *client.Wallet) (string, [32]byte, erro
 	return fmt.Sprintf("balance %d  (%d coins)", total, len(ids)), [32]byte{}, nil
 }
 
+// dispatchPubkey handles: pubkey
+func dispatchPubkey(w *client.Wallet) (string, [32]byte, error) {
+	pk := w.Pubkey()
+
+	return "pubkey " + hex.EncodeToString(pk[:]), [32]byte{}, nil
+}
+
 // helpText returns the console command reference.
 func helpText() string {
 	return strings.TrimSpace(`
@@ -305,6 +314,7 @@ commands:
   object holders <id>                    show holder report
   validators                             list active validators
   balance                                show total balance
+  pubkey                                 show this wallet's public key
   quit                                   exit the console`)
 }
 

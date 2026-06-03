@@ -11,6 +11,7 @@ import (
 // from the client, the wallet, and the tracked-tx map.
 type consoleState struct {
 	NodeAddr   string   // NodeAddr is the connected node address
+	Pubkey     string   // Pubkey is this wallet's public key (hex)
 	Connected  bool     // Connected reports node reachability
 	Round      uint64   // Round is the latest consensus round
 	Epoch      uint64   // Epoch is the latest epoch
@@ -37,8 +38,8 @@ func renderConsole(s consoleState) string {
 		conn = dotOK
 	}
 
-	header := fmt.Sprintf("bpctl  node %s  %s\nround %d  epoch %d  val %d  peers %d  %.1f tps\nbalance %d  (%d coins)",
-		s.NodeAddr, conn, s.Round, s.Epoch, s.Validators, s.Peers, s.TPS, s.Balance, s.CoinCount)
+	header := fmt.Sprintf("bpctl  node %s  %s\nround %d  epoch %d  val %d  peers %d  %.1f tps\nbalance %d  (%d coins)\nyou %s",
+		s.NodeAddr, conn, s.Round, s.Epoch, s.Validators, s.Peers, s.TPS, s.Balance, s.CoinCount, s.Pubkey)
 
 	body := strings.Join(s.Activity, "\n")
 

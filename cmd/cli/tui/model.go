@@ -46,10 +46,12 @@ func NewConsole(c *client.Client, w *client.Wallet, nodeAddr string) consoleMode
 	in.Placeholder = "type a command (help, quit)"
 	in.Focus()
 
+	pk := w.Pubkey()
+
 	return consoleModel{
 		client:  c,
 		wallet:  w,
-		state:   consoleState{NodeAddr: nodeAddr},
+		state:   consoleState{NodeAddr: nodeAddr, Pubkey: hex.EncodeToString(pk[:])},
 		input:   in,
 		tracked: make(map[[32]byte]bool),
 	}
@@ -80,6 +82,7 @@ func (m consoleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		msg.state.Activity = m.state.Activity
 		msg.state.Input = m.input.Value()
+		msg.state.Pubkey = m.state.Pubkey
 		m.state = msg.state
 		return m, nil
 	case trackMsg:
