@@ -30,7 +30,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             pods/pod-system/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('pods/pod-system/Cargo.lock') }}
+            wasm-gas/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('pods/pod-system/Cargo.lock', 'wasm-gas/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build system pod
@@ -40,4 +41,4 @@ jobs:
         run: go build ./cmd/node
 
       - name: Run unit tests
-        run: go test ./internal/... ./client/...
+        run: go test ./internal/... ./pkg/... ./cmd/...
