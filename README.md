@@ -1,16 +1,14 @@
 # BluePods
 
-BluePods is a decentralized cloud, built as a Layer 1 blockchain in Go. Its premise is that not every validator needs to process every transaction. The state is not a global tree but a collection of independent, versioned objects, each replicated on a small subset of validators called its holders, and a transaction is executed only by the holders of the objects it touches. Adding validators therefore spreads the work thinner instead of duplicating it, and the network's aggregate capacity grows rather than staying fixed. What BluePods refuses to trade away for that scale are the two properties that make a cloud usable rather than merely possible: zero rollback, so a finalized operation is never reverted, and global synchronous atomic composability, so any backend can call any other in a single finalized step regardless of which holders own the objects involved. Keeping both at once requires one global order that every validator sees, which bounds total throughput to a single node rather than the sum of all of them; the wager that makes this affordable is that per-node bandwidth keeps rising. Everything else in the system follows from that one choice.
+BluePods is a decentralized cloud, written from scratch in Go. The idea behind it is that not every validator should have to process every transaction. State is split into independent objects, each one held by a small subset of validators, and a transaction runs only on the holders of the objects it touches. Add more validators and the work spreads out instead of piling up, so capacity grows with the network rather than standing still. Two guarantees are non-negotiable, because they are what make a cloud worth building on. Nothing finalized is ever rolled back. And any backend can call any other atomically, in one finalized step, no matter who holds what. The price for both at once is a single global order that every validator sees, which caps throughput at what one machine can take rather than the whole fleet combined. The bet is that per-node bandwidth keeps climbing fast enough to make that a good trade.
 
-Three ideas carry the design. The first is objects in place of accounts: there is no global state trie, only discrete units each carrying an ID, a version, an owner, and a replication factor, so two transactions that touch different objects can never conflict and detecting a conflict is a version comparison rather than a lock. The second is a leaderless DAG for ordering, in the lineage of Mysticeti: every validator produces vertices in parallel with no designated proposer, and a vertex is final once producers carrying a supermajority of stake acknowledge it two rounds later. The third is that execution follows the data, with each transaction run by the holders of the objects it mutates rather than by the whole network; the attestations that prove an object's state are collected off-chain by the client, so their cost tracks an object's replication factor and not the size of the validator set. The backends themselves, called pods, are Rust compiled to WebAssembly and run in a sandbox whose entire interface to the outside world is four host functions.
+A few choices do most of the work. There is no global state tree, only discrete objects, each with an ID, a version, an owner, and a replication factor. Two transactions on different objects can never collide, and when they hit the same one, catching it is a version check, not a lock. Ordering runs on a leaderless DAG in the Mysticeti lineage: validators produce vertices in parallel, with no proposer to bottleneck on, and a vertex is final once enough stake has acknowledged it two rounds later. Execution goes to where the data already lives, on an object's holders rather than the whole network, and the proofs of an object's state are gathered off-chain by the client, so their cost follows how widely the object is replicated, not how large the network has grown. The backends are called pods. They are Rust compiled to WebAssembly, sandboxed behind four host functions and nothing else.
 
-The reasoning behind each of these choices, and the parts this page deliberately leaves out, the economic layer and its monetary policy, the attestation and fee mechanics, validator management, and the security analysis, lives in two documents of record. [docs/VISION.md](docs/VISION.md) is the why: the goal of a decentralized cloud, the properties BluePods will not compromise, the tradeoff it accepts, and where it stands against the Internet Computer, Sui, Solana, and Ethereum. [docs/WHITEPAPER.md](docs/WHITEPAPER.md) is the how, in full. The acceptance criteria are in [docs/ATP.md](docs/ATP.md), and the multi-node integration tests are described in [test/integration/TESTING.md](test/integration/TESTING.md).
+This page is the short version. The rest lives in two documents of record: [VISION.md](docs/VISION.md) for why BluePods exists and how it sits against the Internet Computer, Sui, Solana, and Ethereum, and the [whitepaper](docs/WHITEPAPER.md) for how it actually works, from the object model through consensus, attestation, fees, the economic layer, and the security analysis. The acceptance tests are in [ATP.md](docs/ATP.md), and [TESTING.md](test/integration/TESTING.md) walks through the multi-node simulations.
 
 ## Build and run
 
-BluePods needs Go 1.26 or newer and a Rust toolchain with the WebAssembly target (`rustup target add wasm32-unknown-unknown`).
-
-Build the system pod, the node, and the client. The pod's `make release` compiles it to WebAssembly, builds the `wasm-gas` instrumenter, and injects gas metering into the deployed `build/pod.wasm`.
+You will need Go 1.26 or newer and Rust with the WebAssembly target (`rustup target add wasm32-unknown-unknown`). Building the pod with `make release` also compiles the `wasm-gas` instrumenter and stitches gas metering into the deployed `build/pod.wasm`.
 
 ```bash
 cd pods/pod-system && make release && cd ../..
@@ -18,7 +16,7 @@ go build -o node ./cmd/node
 go build -o bpctl ./cmd/cli
 ```
 
-Start a local cluster in separate terminals, one bootstrap node and as many joiners as you like:
+Bring up a local cluster across a few terminals, one bootstrap node and as many joiners as you want:
 
 ```bash
 ./node -bootstrap -quic 127.0.0.1:9000 -data ./data1
@@ -26,15 +24,15 @@ Start a local cluster in separate terminals, one bootstrap node and as many join
 ./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9002 -data ./data3
 ```
 
-On a terminal a node shows a live dashboard with the round, transactions per second, connected peers, and total committed transactions. Pass `--log` to force line logs instead, which is also what happens automatically when the output is not a terminal, for example under a service manager.
+Run on a terminal, a node draws a live dashboard: round, transactions per second, connected peers, committed transactions. Add `--log` if you would rather have plain logs, which is also what you get automatically when the output is not a terminal.
 
-The network is QUIC only, with no HTTP. Talk to it with `bpctl`. Run bare on a terminal it opens an interactive console with a live header and a command line, where `faucet`, `transfer`, `split`, the `object` operations, `coins`, `objects`, and `pubkey` are typed directly while each transaction's status and your balance update in place:
+The network speaks QUIC, not HTTP, so you reach it through `bpctl`. With no command it opens an interactive console, a live header above a prompt, where you type `faucet`, `transfer`, `split`, the `object` commands, `coins`, `objects`, and `pubkey` as you go, and balances and transaction statuses update in place:
 
 ```bash
 ./bpctl --node 127.0.0.1:9000
 ```
 
-With a subcommand it is a one-shot tool for scripts:
+Give it a command instead and it becomes a one-shot tool for scripts:
 
 ```bash
 ./bpctl --node 127.0.0.1:9000 status
@@ -42,4 +40,4 @@ With a subcommand it is a one-shot tool for scripts:
 ./bpctl --node 127.0.0.1:9000 object holders <id-hex>
 ```
 
-A node also runs in validator mode, joining an existing network, and in listener mode, observing without taking part in consensus. Run `./node -help` for every flag, including epoch length, churn limits, gossip fanout, and the sync buffer.
+A node can also join an existing network as a validator, or sit in listener mode and watch without taking part in consensus. Run `./node -help` for the full set of flags.
