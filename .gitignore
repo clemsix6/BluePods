@@ -11,6 +11,9 @@
 .claude/*
 !.claude/settings.json
 
+# Task worktrees (development workflow)
+.wt/
+
 # Go binaries
 /node
 /bpctl

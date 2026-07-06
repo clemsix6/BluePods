@@ -6,7 +6,7 @@
 
 **Guiding principle:** The index is derived state, not user state. It is computed deterministically by every node from the committed transaction stream, so its correctness rides on consensus, not on a separate honesty assumption. Verifiability replaces policing: a node cannot lie about an index answer because the answer carries a Merkle proof against a quorum-attested root, so there is no index-specific slashing to build. The execution model stays a pure function over a statically declared, pre-attested input set; nothing here lets a pod traverse the index at runtime.
 
-This is one design of record, implemented as one chantier on the `verifiable-indexing` branch, decomposed into ordered plans.
+This is one design of record, implemented as one chantier on the `verifiable-indexing` branch, decomposed into ordered plans. It has one prerequisite that ships separately first (section 2).
 
 ---
 
@@ -15,178 +15,216 @@ This is one design of record, implemented as one chantier on the `verifiable-ind
 In scope:
 
 - An object model change: the `owner` field generalizes to a `parent` reference (an owner key or another object), and ownership cascades down the tree.
-- A domain registry index: `name -> objectID`.
-- A hierarchy index: `parent -> [childID]`, where `parent` is an owner key or an object ID.
-- Both indexes authenticated by a Sparse Merkle Tree whose root is anchored in every vertex.
-- Domain economics: a recurring rental (consumed fee) with an expiry lifecycle.
+- Ownership mutation and object deletion become protocol-declared operations carried in the transaction; pods lose write authority over both.
+- A domain registry index: `name -> objectID`, with an owner, a rental lifecycle, and enforced namespace ownership.
+- A hierarchy index: parent-to-children and child-to-parent, both authenticated.
+- A validator index: the epoch's validator set and capped stakes, authenticated, so light clients can verify quorums without trusting the serving node.
+- All indexes authenticated by Sparse Merkle Trees whose combined root is anchored in every vertex through a detached provable header.
 - The sync, client/API, and documentation changes these require.
 
 Non-goals, deliberately excluded and justified:
 
 - **No dynamic on-chain traversal.** A pod cannot read the index or load objects it discovers at runtime. The access list stays static and pre-attested; this is the direct consequence of execution sharding (a holder physically lacks objects it does not hold, and their attestations). The index is read by whoever builds the transaction (the client), not by the pod mid-execution.
 - **No protocol-managed multi-round transactions.** Chains of dependent transactions are orchestrated off-chain by the client, where the attestation-gathering layer already lives. Each transaction is atomic; a chain is a saga (the client retries a step on a version conflict). The atomic boundary is the transaction, never split across a chain.
-- **No rent for the hierarchy index.** A name is a scarce, squattable namespace and pays rent. The hierarchy index is automatic per-object derived state, not a namespace; it pays only the storage it consumes, folded into the object's existing creation deposit.
-- **No new state root beyond the index.** Object content stays verified by the existing per-holder `ObjectSig` attestations. The anchored root commits to the index (domain registry plus parent graph), not to a full object-state tree. The mechanism is extensible to a full state root later, but that is out of scope here.
+- **No rent for the hierarchy index.** A name is a scarce, squattable namespace and pays rent. The hierarchy index is automatic per-object derived state, not a namespace; it pays only the storage it consumes, as a flat term folded into the object's existing creation deposit.
+- **No new state root beyond the index.** Object content stays verified by the existing per-holder `ObjectSig` attestations. The anchored root commits to the index (domain registry, parent graph, validator set), not to a full object-state tree. The mechanism is extensible to a full state root later, but that is out of scope here.
 
 ---
 
-## 2. Object model: parent and cascade ownership
+## 2. Prerequisite: deterministic commit (separate fix, lands first)
+
+The whole design assumes every node derives the index from the same committed transactions in the same order. The code today does not guarantee that: `commitRound` applies whatever vertices the node happens to hold when the commit rule fires, in arrival order, and a vertex arriving after its round committed locally is stored but never applied on that node. This nondeterminism is latent today (version increments commute, but fee deductions already diverge silently); a 32-byte root anchored in every vertex would convert any divergence into permanent, consensus-visible disagreement.
+
+The fix is full Mysticeti alignment, and it is a consensus bugfix independent of this design (the whitepaper section 5 already describes the intended behavior):
+
+- A **deterministic anchor vertex per round**, designated by hash. Not a production leader: every validator still produces; the anchor is only the pivot the commit rule keys on.
+- The commit batch for a round is the anchor's **entire not-yet-committed causal history**, any round, ordered by (round, vertex hash). The batch is a pure function of the DAG's hash links, so its membership and order are identical on every node.
+- A late vertex is appended in the batch where committed history first references it. Admission is late, never retroactive: the committed log is append-only and zero rollback is preserved. A vertex never referenced by the following round is dead permanently.
+- The existing N+2 stake-quorum rule becomes the anchor's certification rule. No latency is added.
+
+This ships on its own branch with divergence tests (two nodes fed the same vertices in different orders must produce identical committed logs) before the indexing work begins.
+
+---
+
+## 3. Object model: parent and cascade ownership
 
 Today an object has an `owner` field holding a 32-byte public key, and the protocol checks `owner == sender` before allowing a mutation or deletion. This generalizes.
 
 **The `parent` reference.** An object's `owner` field becomes a `parent` reference: a 32-byte value plus a one-byte kind tag, where kind is either `KeyRoot` (the 32 bytes are an owner public key, the object is a tree root, identical to today's top-level objects) or `ObjectParent` (the 32 bytes are another object's ID, the object is nested). A pod sets the parent when it creates an object.
 
+**Creation is permissioned.** A created object's declared parent must be under the sender's control: the sender's own key, an object whose parent walk terminates at the sender's key, or an object this transaction references through a domain reference (the existing shared-access exemption, extended coherently). Without this rule anyone could attach junk objects to any key or object, polluting a user-visible, provable enumeration. Enforcement runs at commit during creation, which every node already executes.
+
 **Effective controller.** The key that controls an object is the terminal public key reached by walking the parent chain to its `KeyRoot`. Controlling a root key therefore controls the entire subtree beneath it: if you own an object, you own its children, recursively. This is the Sui object-owns-object model.
 
-**The permission check is a local walk over global metadata, not a sharded traversal.** This is the crux that keeps cascade ownership compatible with execution sharding. The parent of every object lives in the global object tracker (section 5), which every node holds in full, exactly as it already holds every object's version. So to check "may sender mutate object X", any node walks X's parent chain to its root key entirely in local metadata, without needing the bodies of the ancestor objects (which are sharded elsewhere). Permission resolution touches metadata; execution touches the body and stays on the holders. The two concerns are independent, which is precisely why co-location is not required.
+**The permission check is a local walk over global metadata, not a sharded traversal.** The parent of every object lives in the global object tracker (section 6), which every node holds in full, exactly as it already holds every object's version. To check "may sender mutate object X", any node walks X's parent chain to its root key entirely in local metadata, without the bodies of the ancestor objects (which are sharded elsewhere). Permission resolution touches metadata; execution touches the body and stays on the holders.
 
-This also retires the "declared ancestor path" idea: because the parent graph is global, no transaction needs to carry its ancestor chain as read-refs. The walk is free local metadata lookups at commit time.
+**Reassignment and deletion are protocol-declared operations, and pods lose authority over both.** Changing who controls an object, or removing it, is civil-registry work, not application logic. Today both ride pod execution output, which only holders run, so most of the network never observes them; that is the divergence channel this design closes. The mechanism:
 
-**Subtree transfer is cheap; effective owner is derived, never denormalized.** Because the controller is derived by walking to the root, transferring a whole subtree is a single mutation of the root object's parent (its `KeyRoot` changes to the new owner key). No descendant is touched, so there is no cascade write and no contention near the root. The effective owner is never stored on each object; storing it would force a cascade rewrite on every transfer, which sharding cannot do in one transaction.
+- The transaction carries an explicit **declared operations** list, visible to every node without execution: `reparent{objectID, newParent}` (a transfer is a reparent to a `KeyRoot`), `delete{objectID}`, and the domain operations of section 8. Declared operations are signed by the sender, covered by the canonical body hash, and applied deterministically at commit, exactly like version increments.
+- At commit the protocol enforces, from tracker metadata alone: the sender controls the object; a reparent target is itself sender-controlled and creates no cycle (reject if the target is the object or any descendant; the walk is bounded by the depth cap); a deleted object has no children (rmdir semantics: delete leaves first or reparent them); the deposit refund of section 8 applies on delete.
+- A declared operation increments the object's version (it is a mutation like any other, same conflict detection) and fails cleanly on a version mismatch. Fees are paid regardless, as everywhere else.
+- **A transaction is either declared operations or a pod call, never both.** This keeps each transaction's semantics atomic without asking non-holders to observe a pod revert: a reverted pod call cannot strand a half-applied reparent because the two cannot share a transaction. A pod may still set the parent of an object it creates (creation is globally executed); it may never change the parent of an existing object. `applyUpdatedObjects` rejects any output whose parent bytes differ from the tracker.
+- **Pod-driven deletion survives in exactly one case: globally-executed transactions.** The reason pods lose deletion is observability (only holders run the pod), so where execution is global the capability stays: a transaction that creates objects, or whose mutable refs are all singletons, is executed by every node, so a `deleted_objects` entry there is observed by all and stays valid. This is what keeps the system pod's `merge` working: singleton-coin transactions execute everywhere, and every node sees the merged-away coin die. A sharded object is deleted only through the declared operation.
+- The system pod's `transfer` and `transfer_object` functions are retired; both become declared operations built directly by the client. A pure transfer no longer executes WASM at all, which is faster and cheaper.
 
-**Reparenting.** An object's parent may change after creation (a reparent operation). The protocol requires that the sender controls both the object and the target parent, and that the new edge does not create a cycle. Cycle detection is a local ancestor walk over global metadata (cheap, same as the permission walk): reject if the target parent is the object itself or any of its descendants. A reparent (and a transfer, which is a reparent to a `KeyRoot`) declares the new parent in the transaction, so it is applied deterministically by every node from the committed transaction without pod execution (section 5).
+The precedent is in the codebase already: staking operations are parsed and applied at the protocol level, and fee deduction is protocol-level for the same reason. Everything that must be seen by every node without execution lives in the transaction, not in the WASM.
 
-**Deletion.** An object with children cannot be deleted (rmdir semantics): the children would dangle. Delete the leaves first, or reparent them. This keeps the forest invariant with no orphan-handling special case.
-
-**Depth bound.** Tree depth is capped at a parameter (default 256) so the permission and cycle walks have a bounded worst case. This is a denial-of-service guard, not a functional limit; 256 is far beyond any realistic hierarchy.
-
----
-
-## 3. The index structure: a two-level Sparse Merkle Tree
-
-Two indexes share one primitive.
-
-**Primitive: binary Sparse Merkle Tree (SMT), BLAKE3, empty-subtree compression.** A key's position is `BLAKE3(key)`, so the structure is a pure function of its key-value set with no insertion-order dependence and no rebalancing. This determinism is mandatory: every node must compute the identical root. Empty subtrees collapse to a precomputed default hash per level, and only non-empty paths are materialized, so effective depth is about `log2(n)` for `n` entries. Inclusion and absence proofs cost the same (an absence proof shows the leaf at the key's position is the default). The Jellyfish Merkle Tree (Diem, Aptos) is the production-hardened form of exactly this primitive and is the reference implementation to follow. Merkle Patricia tries (heavy, Ethereum is moving away) and Verkle trees (exotic vector-commitment crypto, premature) are rejected.
-
-**Domain index: a flat SMT.** Key `BLAKE3(name)`, value the leaf record `{name, objectID, expiry_epoch}` (the name is stored in the leaf so a proof is self-describing). Resolution is a point lookup with an inclusion or absence proof.
-
-**Hierarchy index: a two-level SMT (a map of sets).** Hashing scatters keys, which destroys the locality needed to enumerate one parent's children and prove the enumeration complete. So the hierarchy nests:
-
-- Top tree: key `BLAKE3(parentID)` (where `parentID` is an owner key or an object ID), value the root of that parent's children subtree.
-- Children subtree (one per parent): key `childID`, value `present`.
-
-Enumerating a parent's children is a walk of its subtree. Completeness is provable because the subtree root commits to exactly that child set (an absence proof inside the subtree shows "nothing else"). Adding or removing a child is an `O(log k)` update in the parent's subtree plus one leaf update in the top tree; no list is ever rewritten wholesale.
-
-**Combined index root.** The anchored value is `indexRoot = BLAKE3(domainRoot || hierarchyRoot)`, leaving room to fold in further indexes later behind one anchor.
+**Depth bound.** Tree depth is capped at a parameter (default 256) so the permission and cycle walks have a bounded worst case. This is a denial-of-service guard, not a functional limit.
 
 ---
 
-## 4. Verifiability: proofs, not slashing
+## 4. The index structure: Sparse Merkle Trees
+
+One primitive, four trees, one root.
+
+**Primitive: binary Sparse Merkle Tree (SMT), BLAKE3, empty-subtree compression.** A key's position is `BLAKE3(key)`, so the structure is a pure function of its key-value set with no insertion-order dependence and no rebalancing. This determinism is mandatory: every node must compute the identical root. Empty subtrees collapse to a precomputed default hash per level, and only non-empty paths are materialized, so effective depth is about `log2(n)` for `n` entries. Inclusion and absence proofs cost the same. The Jellyfish Merkle Tree (Diem, Aptos) is the production-hardened form of this primitive and is the reference implementation to follow. Merkle Patricia tries (heavy, Ethereum is moving away) and Verkle trees (exotic vector-commitment crypto, premature) are rejected.
+
+**Domain tree: a flat SMT.** Key `BLAKE3(name)`, value the leaf record `{name, objectID, owner, expiry_epoch}`. The name is stored in the leaf so a proof is self-describing; the owner (a 32-byte public key, initially the registrant) is what renewal, update, transfer, and sub-namespace authority check against (section 8). Resolution is a point lookup with an inclusion or absence proof.
+
+**Parent tree: a flat SMT keyed by child.** Key `BLAKE3(childID)`, value `{childID, parentKind, parentBytes}`. This answers "what is X's parent" with one inclusion proof per edge, and makes an ancestry walk provably terminating: the kind tag lives inside the authenticated leaf, so the client can verify the terminal edge really is a `KeyRoot` and not an object whose own parent edge the server withheld. The single-parent invariant (each object appears exactly once) is enforced by consensus and stated here so clients may rely on it.
+
+**Children tree: a two-level SMT (a map of sets).** Top tree: key `BLAKE3(parentID)` (an owner key or an object ID), value the root of that parent's children subtree. Children subtree: key `childID`, value `present`. Enumerating a parent's children is a walk of its subtree, and completeness is provable because the subtree root commits to exactly that child set. Adding or removing a child is an `O(log k)` update in the parent's subtree plus one leaf update in the top tree. The parent tree and children tree are two views of the same edge set, both derived from the tracker; the double bookkeeping costs one extra `O(log n)` path per parent change and buys provable enumeration in one direction and provable ancestry in the other.
+
+**Validator tree: a flat SMT, frozen per epoch.** Key `BLAKE3(validatorPubkey)`, value `{pubkey, cappedStake, blsKey, status}`, rebuilt at each epoch boundary from the same snapshot that freezes `epochHolders`. This is what lets a light client verify a stake quorum without trusting the serving node (section 5).
+
+**Combined index root.** `indexRoot = BLAKE3(domainRoot || parentRoot || childrenRoot || validatorRoot)`, leaving room to fold in further indexes later behind one anchor.
+
+---
+
+## 5. Verifiability: proofs, not slashing
 
 A client reads the index from a single node and verifies the answer itself:
 
-1. It asks one node to resolve `name` (or list a parent's children).
-2. The node returns the value, a Merkle proof, and the `indexRoot` with the quorum attestation that backs it (section 6).
-3. The client verifies, locally, that the root is attested by a stake quorum of the validator set and that the proof links the value to that root.
+1. It asks one node to resolve `name`, list a parent's children, or walk an ancestry.
+2. The node returns the value, a Merkle proof, and the anchor bundle: a stake quorum of producer-signed vertex headers all reporting the same `(frontier_round, indexRoot)`.
+3. The client verifies, locally, that the headers are signed by validators of the right epoch carrying a stake quorum, and that the proof links the value to that root.
 
-A node cannot lie: it cannot forge a proof for a false value, nor sign a false root in place of the quorum. A node cannot hide an entry: absence and completeness proofs make omission detectable ("here are all my objects, none withheld"). One honest node suffices; a client queries a second node only for availability (the first is down or refuses), never to vote on the answer. This is the same trust the client already places when reading an object via its holder attestation, applied to the index root.
+**The detached provable header.** Verifying an anchor must not require downloading full vertices. The vertex signature therefore changes shape: the producer signs `BLAKE3(header)`, where the header is a compact struct `{producer, round, epoch, frontier_round, indexRoot, bodyHash}` and `bodyHash` is the BLAKE3 of everything else (parents, transactions, fee summary, timestamp). The header hash becomes the vertex's identity: parent links and the store key point at `BLAKE3(header)`, which commits to the body through `bodyHash`. Full vertex validation recomputes `bodyHash`; a light client needs only the header and the signature, about 200 bytes per validator. A quorum bundle at 100 validators is roughly 20 KB, assembled once per frontier by the serving node (which sees all vertices anyway) and cached; one bundle serves every query at that frontier. The header's `epoch` field is populated with the producer's current epoch (today's vertex epoch field is vestigially zero; this fixes it), so a client knows which validator tree weighs the quorum.
 
-There is therefore **no index-specific slashing**. Slashing is the tool when you cannot verify and must detect-and-punish; here a lie is worthless, caught for free by the proof. The remaining concern, a wrong root reaching commit, is covered by the consensus security that already exists: the root is deterministic, so every honest validator recomputes it and refuses to attest a vertex carrying a wrong one; forcing a bad root needs a two-thirds-of-stake collusion, which is the base assumption failing. A validator that signs a verifiably wrong root commits an attributable consensus fault under whatever general accountability the chain gains, not a bespoke index mechanism. The index sits downstream of execution integrity (the open fraud-proof problem already noted in the whitepaper) and neither solves nor worsens it.
+**Where the client's validator set comes from.** The validator tree closes the circularity: epoch N's quorum-attested root commits to epoch N+1's validator set, so a client that trusts one checkpoint can walk forward across epoch boundaries by reading each new set out of the index with a proof, exactly the light-client pattern of other proof-of-stake systems. Bootstrap trust is a configured checkpoint (a `(epoch, indexRoot, validator set hash)` obtained out-of-band); this is standard weak subjectivity, stated here explicitly rather than assumed silently.
 
----
+**Enforcement inside the network** follows the codebase's existing two-tier doctrine (ingress validates what a receiver can reliably check at that moment; convergence-sensitive checks are enforced authoritatively at production and commit, the same pattern as the parents-quorum presence check and transaction authenticity at commit):
 
-## 5. Global tracking of the parent graph
+- **Ingress:** if a received vertex anchors a frontier at or below the receiver's own committed frontier (the common case), the receiver verifies the root against its retained history, a 32-byte compare, and rejects a mismatch exactly like a bad fee summary. A vertex anchoring a frontier the receiver has not reached yet is accepted without buffering; blocking the door on it would couple vertex acceptance to commit lag and slow the DAG under skew.
+- **Production (the teeth):** a producer never selects as parent a vertex whose anchor it has not verified. A producer at round N references round N-1 vertices whose anchors trail its own commit by the structural lag, so it nearly always can verify. Combined with the deterministic commit rule (a batch is the anchor's causal history), a wrong-root vertex is never referenced by honest producers and therefore never enters committed history: network-wide exclusion, deterministic, with zero receive-side liveness cost.
+- **Commit (the record):** as its commit advances, every node re-verifies the anchor of each committed vertex. A mismatch produces signed, attributable fault evidence: the producer's signed header plus the deterministic recomputation prove the lie to anyone. It is logged today and becomes slashable material when slashing lands.
 
-The hierarchy index and the cascade permission check both need every node to know every object's parent. The object tracker, today 18 bytes per object (`version`, `replication`, `fees`), gains the `parent` reference (32 bytes plus the one-byte kind tag). This keeps body sharded, metadata global, exactly the split the version tracker already embodies.
+Root history retention: a bounded `round -> indexRoot` map (about 1,000 rounds) plus one checkpoint per epoch, enough to verify lagging producers and serve clients.
 
-Two write paths keep the global parent current, both without requiring a non-holder to execute a pod:
+There is therefore **no index-specific slashing**. A lie is worthless: it cannot enter committed history, it cannot fool a client (who requires a stake quorum a minority cannot forge), and it convicts its author with his own signature. The index sits downstream of execution integrity (the open fraud-proof problem already noted in the whitepaper) and neither solves nor worsens it.
 
-- **Creation.** A transaction that creates objects already forces every validator to execute it (the holder set of a created object is unknown until its ID is computed). So every node observes a created object's parent at creation and records it.
-- **Reassignment (transfer or reparent).** This is a protocol-level operation: the new parent is declared in the transaction, so every node applies the change deterministically from the committed transaction, exactly as it applies version increments from the header, with no pod execution. The protocol enforces the control and acyclicity checks of section 2 at this point.
-
-Because both paths are globally observable, the parent graph in the tracker is globally consistent, and the hierarchy SMT every node builds from it has the same root everywhere.
-
----
-
-## 6. Anchoring the root in consensus
-
-The root must be backed by a stake quorum so a client can trust it. The vertex already carries a single producer signature, and finality is structural (a round commits when round+2 producers carrying a stake quorum reference it); there is no separate per-round aggregate signature to extend. So the root rides the signatures that already exist.
-
-- Each producer embeds, in the vertex it builds, the `indexRoot` of its committed frontier together with the round number of that frontier. The root covers already-committed state only, because a producer cannot know the committed order of its own in-flight round (it settles at round+2). This is a structural lag of about two rounds, not a tunable delay.
-- The root is computed incrementally: each committed round rehashes only the SMT paths its transactions touched (a few thousand BLAKE3 hashes, sub-millisecond). The marginal cost on consensus is about 32 bytes per vertex plus this rehash. No new signing step.
-- A client assembles a verified root by collecting producer-signed vertices that report the same `(frontier_round, indexRoot)` until they reach a stake quorum, and takes the highest such frontier. This is the same structural-quorum assembly the commit rule uses for finality; honest producers converge on the identical deterministic root for a given height, so the quorum forms.
-
-A periodic checkpoint (a dedicated aggregate signature every N rounds) was rejected: it would add a signing subsystem and an epoch cadence for a benefit (instant provability) nobody needs, while per-vertex anchoring is fresher and reuses existing signatures. Per-round anchoring is a checkpoint with N=1 that costs no extra signature.
+**Freshness.** The anchored root covers committed state only and trails the live tip by the structural lag of about two rounds. Responses carry `frontier_round`; a client that just saw its transaction finalize at round R either waits for a bundle at frontier >= R (sub-second) or accepts the live unproven read, and the client library exposes exactly that choice. Frontier skew across producers is normal; the client (or the serving node assembling the bundle) takes the highest frontier carrying a stake quorum within a small sliding window.
 
 ---
 
-## 7. Economics
+## 6. Global tracking of the parent graph
 
-The index plugs into the existing two-bucket accounting unchanged: consumed fees feed the epoch reward pool, storage is a locked refundable deposit. Nothing new is invented.
+The hierarchy indexes and the cascade permission check both need every node to know every object's parent. The object tracker, today 18 bytes per object (`version`, `replication`, `fees`), gains the `parent` reference (32 bytes plus the one-byte kind tag). Body stays sharded, metadata goes global, exactly the split the version tracker already embodies.
 
-**Domains pay rent, not a deposit.** A name is a scarce namespace, so it is leased, like a real domain. Registration and renewal pay a recurring rental that is a consumed fee to the reward pool. A refundable storage deposit on a name is rejected as over-engineering: the rent (deliberately far larger than the few bytes an entry occupies) covers the storage many times over, and a refundable deposit deters squatting not at all (the squatter gets it back). The rent is also the anti-squat lever; a one-time fee would let a squatter pay once and hold forever, so the cost recurs.
+Two write paths keep the global parent current, and they are now exhaustive:
 
-Domain lifecycle:
+- **Creation.** A transaction that creates objects already forces every validator to execute it (the holder set of a created object is unknown until its ID is computed). Every node observes a created object's parent, validates the creation-permission rule of section 3, and records it.
+- **Declared operations.** Reparent, transfer, and delete are read from the transaction and applied deterministically by every node at commit, with the control, acyclicity, and no-children checks of section 3. No pod execution is involved. Deletion finally exercises `tracker.deleteObject` (today dead code), removes both hierarchy entries, and releases the deposit.
 
-- Each domain entry carries an `expiry_epoch`.
-- Registration sets `expiry_epoch` and pays rent for the initial term (in epochs). Renewal pays for further terms and pushes `expiry_epoch` forward; prepaying ahead and renewing late are the same operation.
-- At each epoch boundary (existing machinery), the protocol deterministically sweeps entries past `expiry_epoch` plus a grace window. During grace, only the current owner may renew. After grace the name is removed from the SMT and is re-registrable by anyone.
-- Dangling references: when a name expires it simply stops resolving (resolution is dynamic, at execution time). The object it pointed to is unaffected; it still belongs to its owner. After grace, someone else may claim the name and point it elsewhere. A name is a lease, not property, and applications must treat name references accordingly.
-
-**The hierarchy index pays only storage, folded into object creation.** It is not a namespace, so no rent. But it is genuine global state: a `parent -> child` entry lives on every node, and for a small, lightly replicated object that full-replication entry can weigh as much as the sharded object body itself, so it cannot be unpriced (an unpriced global write is a state-bloat vector). The clean treatment, with no new line item: the object-creation storage deposit, today sized for the object's sharded footprint, also accounts for its global index entry (a full-replication term), and the whole deposit is refunded when the object is deleted (which removes the index entry). Using the hierarchy is free as a feature; the storage it induces is covered by the deposit object creation already pays, and recovered on cleanup.
-
-**Default parameters** (mechanism fixed, numbers calibratable at review): rental rate per epoch quoted relative to the base compute fee; initial and renewal terms denominated in epochs; grace window a small number of epochs. These are proposed defaults, not load-bearing constants.
+The pod output path is closed (section 3), so there is no third channel. Both remaining paths are globally observable, so the parent graph in the tracker is globally consistent and the SMTs every node builds from it have the same root everywhere.
 
 ---
 
-## 8. Sync
+## 7. Anchoring the root in consensus
 
-The existing flow already handles "rounds pass during sync" and the index fits it with one addition and one upgrade.
+Finality is structural (a round commits when the anchor's certification quorum references it), and the root rides the signatures that already exist; no new signing step is added.
 
-The flow (verified in `cmd/node/sync.go`): a joining node installs a vertex buffer and starts buffering gossiped vertices *before* requesting a snapshot; it buffers for `SyncBufferSec` (default 12s); it requests a snapshot pinned at `last_committed_round` (carrying objects, validators, tracker, domains, the last 100 rounds of vertices, supply, issuance); it applies the snapshot, switches the handler so live vertices go straight to the DAG, replays the buffer to bridge the gap to the live tip, and goes live. The 100-round vertex history overlaps the buffer so there is no gap. Replay is faster than live (committed history, no consensus wait), so it converges.
+- Each producer embeds in its vertex header the `indexRoot` of its committed frontier together with that frontier's round number. The root covers already-committed state only, because a producer cannot know the committed order of its own in-flight round. This is a structural lag of about two rounds, not a tunable delay.
+- The root is computed incrementally: each committed batch rehashes only the SMT paths its transactions touched (a few thousand BLAKE3 hashes, sub-millisecond). The marginal cost on consensus is about 32 bytes per vertex plus this rehash.
+- A client assembles a verified root by collecting producer-signed headers that report the same `(frontier_round, indexRoot)` until they reach a stake quorum of the header's epoch (verified against the validator tree), taking the highest such frontier. Honest producers converge on the identical deterministic root for a given frontier, which the prerequisite of section 2 guarantees, so the quorum forms.
+
+A periodic checkpoint (a dedicated aggregate signature every N rounds) stays rejected: per-vertex anchoring through the detached header is fresher, lighter for the verifier than full vertices, and reuses the one signature per vertex that already exists.
+
+---
+
+## 8. Economics
+
+The index plugs into the existing two-bucket accounting unchanged: consumed fees feed the epoch reward pool, storage is a locked refundable deposit. Nothing new is invented, and the protocol's only burn (the 5% deletion burn) is untouched.
+
+**Domain operations are declared operations.** `domain_register{name, objectID, term_epochs}`, `domain_renew{name, term_epochs}`, `domain_update{name, newObjectID}`, `domain_transfer{name, newOwner}`, `domain_delete{name}`. They live in the transaction, so the fee is derivable from the header alone by every node, which the fee architecture requires (`validateFeeSummary` recomputes per vertex); nothing about a domain touches pod execution, and the insert-only `registered_domains` pod output is removed along with `MaxCreateDomains`. The system pod gains no domain entrypoints; `bpctl` builds declared-operation transactions directly. Naming a just-created object takes two transactions (create, then register), per the either-ops-or-pod rule; the client saga layer handles the pair.
+
+**Domains pay rent, not a deposit.** A name is a scarce namespace, so it is leased. Registration and renewal pay `rental_rate x term_epochs`, a consumed fee to the reward pool. A refundable deposit on a name is rejected: it deters squatting not at all (the squatter gets it back). Rent is consumed immediately, in the paying transaction's epoch. The alternative, escrowing and recognizing rent epoch by epoch, would introduce a third accounting bucket and, worse, touch every domain leaf every epoch, rewriting the SMT wholesale; it is rejected. The distortion of immediate consumption (today's validators are paid for service rendered over the term) is bounded by the term cap below and by validator-set continuity across a capped term.
+
+**Term cap.** `expiry_epoch` may never exceed `current_epoch + max_term_epochs` (a governed parameter). Without it, unbounded prepay would let a squatter pay once and hold a name effectively forever, the exact failure recurring rent exists to prevent. Prepaying ahead and renewing late remain the same operation, inside the cap.
+
+**Ownership and namespaces.** The leaf's `owner` is the registrant, or whoever a `domain_transfer` handed the name to. Renewal, update, transfer, and deletion require `sender == owner`; during the grace window only the owner may renew. Registering a dotted name requires owning the immediate parent name (`x.y` requires owning `y`), which recursively makes the whitepaper's first-come-first-served namespace rule real for the first time; bare roots are first-come-first-served and `system.*` stays reserved. All checks are point lookups in the domain tree at commit, deterministic on every node.
+
+**Lifecycle.** Registration sets `expiry_epoch`. At each epoch boundary (existing machinery, through a narrow consensus-to-state hook), the protocol deterministically sweeps entries past `expiry_epoch` plus a grace window. After grace the name leaves the SMT and is re-registrable by anyone. A name that expires simply stops resolving; the object it pointed to is unaffected. A name is a lease, not property, and applications must treat name references accordingly.
+
+**The hierarchy index pays a flat deposit term, folded into object creation.** A hierarchy entry is genuine global state (roughly 100 bytes on every node), so it cannot be unpriced, but pricing it as `storage_fee x 1` (the full-replication rate for a 4 KB object) would overcharge it by an order of magnitude. The creation deposit becomes `storage_fee x effective_rep / total_validators + index_entry_fee`, where `index_entry_fee` is a new flat constant sized for the entry's true full-replication footprint. The debit at creation and the deposit stamped on the object are computed by the same shared function, so supply stays exact at creation. On deletion the whole deposit, index term included, follows the existing rule: 95% refunded, 5% burned. The burn's anti-churn role applies to index entries exactly as to bodies (creation/deletion cycles churn the SMT), so no exception is made.
+
+**Default parameters** (mechanism fixed, numbers calibratable at review): `rental_rate` per epoch quoted relative to the base compute fee; `max_term_epochs`; a grace window of a small number of epochs; `index_entry_fee`; flat per-operation fees for reparent and delete alongside the existing `min_gas`. These are proposed defaults, not load-bearing constants.
+
+---
+
+## 9. Sync
+
+The existing flow already handles "rounds pass during sync" and the index fits it with additions.
+
+The flow (verified in `cmd/node/sync.go`): a joining node installs a vertex buffer and starts buffering gossiped vertices before requesting a snapshot; it buffers for `SyncBufferSec` (default 12s); it requests a snapshot pinned at `last_committed_round` (carrying objects, validators with stakes, tracker, domains, the last 100 rounds of vertices, supply, issuance); it applies the snapshot, switches the handler so live vertices go straight to the DAG, replays the buffer to bridge the gap to the live tip, and goes live.
 
 Index additions:
 
-- **Tracker carries `parent`.** The snapshot's tracker entries gain the parent reference (the entry grows by 33 bytes). Same sync mechanism, slightly larger payload. Domains already ship in the snapshot.
-- **The SMT is rebuilt, not shipped.** Both trees are derived from the raw mappings (domain entries and the tracker's parent fields), so the joining node rebuilds them locally and computes the root. Nothing Merkle-shaped travels on the wire.
-- **Verifiable snapshot.** Today the snapshot has only a checksum, which catches corruption but not a dishonest bootstrap. After rebuilding the index, the joining node recomputes `indexRoot` and verifies it against the quorum-attested root assembled from the snapshot's vertices (section 6). A lying bootstrap is caught. This composes with the per-object `ObjectSig` attestations the snapshot already carries for bodies. The standard weak-subjectivity caveat applies: trustlessness assumes the validator set comes from a trusted anchor, a property of every proof-of-stake sync, not introduced here.
-- **Replay keeps the index current.** Each replayed committed vertex updates the trees deterministically, so at the tip the root matches the live attested root with no special handling.
+- **Tracker carries `parent`.** The snapshot's tracker entries gain the parent reference (33 bytes per entry). Same mechanism, slightly larger payload. Domain leaves now carry owner and expiry.
+- **The SMTs are rebuilt, not shipped.** All four trees are derived from raw mappings (domain entries, the tracker's parent fields, the epoch validator snapshot), so the joining node rebuilds them locally and computes the root. Nothing Merkle-shaped travels on the wire.
+- **Verifiable snapshot, fail-closed.** After rebuilding, the joining node recomputes `indexRoot` at the snapshot frontier F, replays the snapshot's vertex history, and goes live only once a stake quorum of matching anchors exists for some frontier at or beyond F reached during replay. If no quorum forms, sync fails; the node does not go live on an unverified state. A lying bootstrap is caught. The residual trust is the same configured checkpoint as for light clients (section 5): the validator set and stakes that weigh the quorum bootstrap from a trusted anchor, because a snapshot cannot self-certify. The sync path is also fixed to import stakes from the snapshot (today it drops them and rebuilds the set unstaked).
+- **Replay keeps the index current.** Each replayed committed batch updates the trees deterministically, so at the tip the root matches the live attested root.
 
-Honest cost: the global metadata (tracker plus domains) grows with the total object count, and a joining node downloads all of it, unlike sharded bodies of which it takes only its share. Adding `parent` increases this constant, a property the version tracker already has. As the snapshot grows, `SyncBufferSec` and the 100-round history may need to scale to preserve the overlap.
+Honest cost: the global metadata (tracker plus domains) grows with total object count, and a joining node downloads all of it, unlike sharded bodies. Deletion now actually removing entries (section 3) and the deposit refund encouraging cleanup temper the growth; as the snapshot grows, `SyncBufferSec` and the vertex-history depth may need to scale to preserve the overlap, and the committed-tx-hash retention window remains an open scaling item outside this design's scope.
 
 ---
 
-## 9. Client and API surface
+## 10. Client and API surface
 
 QUIC messages and `bpctl` commands expose the indexes; the wallet uses them instead of its local-only object list. Minimal surface:
 
-- `ResolveDomain(name) -> {objectID, proof, root, attestation}` (extend the existing `DomainResolve`, which today returns an unproven id, to carry the proof and attested root).
-- `ListChildren(parentID) -> {childIDs, completenessProof, root, attestation}` where `parentID` is an owner key (a user's top-level objects) or an object ID (a subtree).
-- `GetAncestors(objectID) -> {path, proofs}` for client-side ownership verification (walk to the root key with a proof per edge).
-- `bpctl` verbs: `domain register|renew|resolve <name>`, `objects [owner|parentID]`, `object parent <id>`. The system pod gains a domain-registration entrypoint and a parent-assignment entrypoint so registration and reparenting are actually reachable (today no pod emits either).
+- `GetIndexAnchor() -> {frontier_round, indexRoot, headers[]}`: the cached quorum bundle for the highest quorum-carrying frontier (section 5). All other proofs verify against it.
+- `ResolveDomain(name) -> {leaf, proof}`: extends the existing `DomainResolve` (which today returns an unproven id) with the domain-tree inclusion or absence proof.
+- `ListChildren(parentID) -> {childIDs, proof}` where `parentID` is an owner key or an object ID. The proof is the top-tree inclusion of the parent's subtree root; for large child sets the node streams raw leaves and the client rebuilds the subtree and checks its root against the proven leaf, which preserves the completeness guarantee without per-chunk range proofs.
+- `GetAncestors(objectID) -> {edges[], proofs[]}`: one parent-tree inclusion proof per edge; the walk provably terminates at a `KeyRoot` because the kind lives in the authenticated leaf.
+- `GetValidatorTree(epoch) -> {leaves, proof}` for light-client epoch walking.
+- `bpctl` verbs: `domain register|renew|resolve|transfer <name>`, `objects [owner|parentID]`, `object parent <id>`, `object reparent|delete|transfer <id>`. All mutation verbs build declared-operation transactions; none goes through a pod.
 
-Client verification is a library function: verify a proof against an attested root, given the validator set. It is shared by query verification and snapshot verification.
+"My objects" is `ListChildren(pubkey)` at the top level plus recursion into object-parented subtrees; the wallet file becomes a cache, and recovery from a bare key works by walking the index. The creation-permission rule of section 3 keeps this enumeration spam-free.
+
+Client verification is a library function: verify a proof against an anchored root given a trusted checkpoint, walking validator trees across epochs. It is shared by query verification and snapshot verification.
 
 ---
 
-## 10. Code to remove and documents to update
+## 11. Code to remove and documents to update
 
-Remove: the dead `pods/pod-sdk/src/domain_generated.rs` and its `TrieNode`/`DomainRegistry` types (an abandoned on-chain-trie registry, unreferenced by the SDK).
+Remove: the dead `pods/pod-sdk/src/domain_generated.rs` and its `TrieNode`/`DomainRegistry` types; the `registered_domains` field of `PodExecuteOutput` and `MaxCreateDomains` (superseded by declared operations); the system pod's `transfer` and `transfer_object` functions (superseded by declared operations). `deleted_objects` stays, restricted to globally-executed transactions (section 3).
 
-Whitepaper consequences (the whitepaper is the document of record for the how, edited in place):
+Whitepaper consequences (edited in place):
 
-- Section 3 (Domain Name System) is rewritten: the registry is no longer "local infrastructure, not an object or a singleton" with a one-time fee. It is an authenticated index with a consensus-anchored root, a recurring rental, and an expiry lifecycle.
-- The object model section gains the `parent` reference, cascade ownership, and the local-metadata permission walk.
-- The fees and economics section gains the domain rental and the hierarchy-index storage term; the existing two-bucket split is unchanged.
-- The storage distribution / sync section gains the verifiable snapshot.
-- The Section 11 transport table gains `ListChildren` and `GetAncestors` and notes the proof-and-root extension to `DomainResolve`.
+- Section 3 (Domain Name System) is rewritten: the registry is an authenticated index with a consensus-anchored root, an owner, enforced namespaces, a recurring rental with a term cap, and an expiry lifecycle.
+- The object model section gains the `parent` reference, cascade ownership, the creation-permission rule, and the local-metadata permission walk.
+- The transaction lifecycle section gains declared operations and the either-ops-or-pod rule; the consensus section gains the deterministic anchor commit rule (from the prerequisite fix) and the detached provable header.
+- The fees section gains the domain rental, the term cap, and the `index_entry_fee` deposit term; the 95/5 refund and the two-bucket split are unchanged.
+- The sync section gains the verifiable fail-closed snapshot and the trusted-checkpoint caveat; the network section gains the new QUIC messages.
 
 VISION is unaffected: this strengthens the existing positioning (synchronous atomic composability within a transaction, off-chain orchestration across transactions) rather than changing the tradeoff.
 
 ---
 
-## 11. Testing strategy
+## 12. Testing strategy
 
+- **Deterministic commit (prerequisite):** two nodes fed the same vertices in different arrival orders produce byte-identical committed logs; late vertices commit exactly once, in the same batch everywhere; a never-referenced vertex commits nowhere.
 - **SMT determinism:** the same key-value set yields the same root regardless of insertion order; incremental updates match a from-scratch rebuild.
-- **Proofs:** inclusion verifies; absence verifies for an unregistered name and for a non-child; completeness verifies that a parent's enumerated children are exactly its set; a tampered value or omitted entry fails verification.
-- **Anchoring:** every honest producer computes the identical root for a given committed frontier; a client assembles a stake quorum of matching `(frontier_round, root)` and rejects a minority or mismatched root; a vertex carrying a wrong root is refused by honest validators.
-- **Cascade and parent:** the permission walk resolves the controlling key through nested parents using only tracker metadata; subtree transfer changes only the root object; reparenting rejects cycles and non-controlled targets; deleting a parent with children is rejected; the depth cap is enforced.
-- **Economics:** registration and renewal move `expiry_epoch`; the epoch-boundary sweep removes entries past expiry plus grace and refunds nothing for the name (rent, not deposit); an expired name stops resolving and becomes re-registrable; object deletion refunds the storage deposit including the index term.
-- **Sync:** a joining node rebuilds both trees from a snapshot, verifies the root against the attested root, rejects a snapshot whose rebuilt root does not match, and converges to the live tip after replay.
-- **Removal regression:** the build is clean after deleting the dead trie code.
+- **Proofs:** inclusion verifies; absence verifies for an unregistered name and a non-child; completeness verifies that an enumerated child set is exact; an ancestry walk verifies edge by edge and terminates at a proven `KeyRoot`; a tampered value, omitted entry, or truncated leaf stream fails verification.
+- **Anchoring:** honest producers report the identical root per frontier; a client assembles a stake quorum of headers and rejects a minority or mismatched root; a wrong-root vertex is rejected at ingress when verifiable, is never referenced by an honest producer, never commits, and leaves signed fault evidence at the commit re-check.
+- **Cascade and declared operations:** the permission walk resolves the controlling key through nested parents using tracker metadata only; subtree transfer changes only the root object; reparent rejects cycles, non-controlled targets, and version mismatches; deleting a parent with children is rejected; creation under a non-controlled parent is rejected; a pod output touching an existing parent is rejected; a pod output deleting a sharded object outside a globally-executed transaction is rejected while `merge` keeps working; the depth cap is enforced; ops-and-pod-call transactions are rejected.
+- **Economics:** registration and renewal move `expiry_epoch` within the term cap and revert beyond it; namespace registration requires owning the parent name; non-owners cannot renew, update, transfer, or delete a name; the sweep removes expired entries after grace and refunds nothing for a name; object deletion refunds 95% of the deposit including the index term and burns 5%; the supply invariant holds across all of the above.
+- **Sync:** a joining node rebuilds all four trees, verifies the root against a replay-assembled quorum, rejects a snapshot whose rebuilt root never reaches quorum, imports stakes, and converges to the live tip.
+- **Removal regression:** the build is clean after deleting the dead trie code, the pod output fields, and the transfer entrypoints.
 
 ---
 
-## 12. Implementation order (for the plan)
+## 13. Implementation order (for the plan)
 
-The plan will batch this; the natural dependency order is: (1) `parent` in the object model and the global tracker, with the metadata permission walk and reassignment as a protocol operation; (2) the SMT primitive and the two indexes built from the tracker and domain entries; (3) root computation and per-vertex anchoring with client-side quorum assembly and proof verification; (4) domain rental, expiry sweep, and the system-pod registration and reparent entrypoints; (5) snapshot carries `parent`, rebuilds the trees, verifies the root; (6) QUIC and `bpctl` surface, wallet switchover; (7) remove dead code; (8) documentation. Each batch produces working, tested software.
+Batch 0 is the prerequisite fix of section 2, on its own branch, landed first. The chantier then proceeds: (1) `parent` in the object model and the global tracker, declared operations (reparent, transfer, delete) with the permission walk, creation-permission rule, and pod-output lockdown; (2) the SMT primitive and the four trees built from the tracker, domain entries, and epoch snapshot; (3) the detached provable header, root computation, per-vertex anchoring, the three-stage enforcement, and client-side quorum assembly; (4) domain declared operations, rental with term cap, ownership and namespace rules, expiry sweep; (5) snapshot carries `parent` and stakes, rebuild, fail-closed verification; (6) QUIC and `bpctl` surface, wallet switchover, light-client library; (7) remove dead code and retired entrypoints; (8) documentation. Each batch produces working, tested software.
