@@ -19,10 +19,6 @@ func (m *mockSnapshotProvider) Round() uint64 {
 	return m.round
 }
 
-func (m *mockSnapshotProvider) LastCommittedRound() uint64 {
-	return m.round
-}
-
 func (m *mockSnapshotProvider) ValidatorsInfo() []*consensus.ValidatorInfo {
 	return nil
 }
@@ -43,8 +39,8 @@ func (m *mockSnapshotProvider) IssuanceRateMicro() uint64 {
 	return 0
 }
 
-func (m *mockSnapshotProvider) ExportRegimeState() []byte {
-	return nil
+func (m *mockSnapshotProvider) ExportRegimeState() (uint64, []byte) {
+	return m.round, nil
 }
 
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {

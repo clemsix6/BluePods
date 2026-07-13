@@ -20,9 +20,6 @@ type SnapshotProvider interface {
 	// Round returns the current (latest) round number.
 	Round() uint64
 
-	// LastCommittedRound returns the last committed round number.
-	LastCommittedRound() uint64
-
 	// ValidatorsInfo returns all validators with their network addresses.
 	ValidatorsInfo() []*consensus.ValidatorInfo
 
@@ -39,10 +36,11 @@ type SnapshotProvider interface {
 	// in millionths, persisted because the loop steps from the previous value.
 	IssuanceRateMicro() uint64
 
-	// ExportRegimeState returns the opaque consensus regime state (current epoch,
-	// holder snapshots, strict latch) as one consistent cut, so a joiner past the
-	// first epoch boundary can resolve epochs instead of wedging.
-	ExportRegimeState() []byte
+	// ExportRegimeState returns the commit cursor together with the opaque consensus
+	// regime state (current epoch, holder snapshots, strict latch) read as ONE consistent
+	// cut, so a snapshot pairs its cursor and epoch state from the same committed frontier
+	// and a joiner past the first epoch boundary resolves epochs instead of wedging.
+	ExportRegimeState() (cursor uint64, blob []byte)
 }
 
 // DomainExporter exports domain entries for snapshot inclusion.
@@ -141,11 +139,15 @@ const vertexHistoryRounds = 100
 
 // createSnapshot creates a new snapshot and stores it.
 func (m *SnapshotManager) createSnapshot() {
-	// Export the LAST-DECIDED round, not the next-to-decide cursor: the importer's
-	// WithLastCommittedRound(round) sets lastCommitted = round+1, so exporting the
-	// cursor (next-to-decide) would set the joiner one round ahead and silently skip
-	// a round on every join (I4). LastCommittedRound() is the next-to-decide cursor.
-	commitRound := lastDecidedRound(m.provider.LastCommittedRound())
+	// Read the commit cursor and the regime state as ONE atomic cut (I3): the commit loop
+	// advances the cursor and transitions the epoch under the same commitMu, so reading the
+	// cursor separately from the epoch state could pair a pre-boundary cursor with
+	// post-boundary epoch state and push the joiner an epoch ahead forever. Export the
+	// LAST-DECIDED round (cursor-1), not the next-to-decide cursor: the importer's
+	// WithLastCommittedRound(round) sets lastCommitted = round+1, so exporting the raw
+	// cursor would set the joiner one round ahead and silently skip a round on join (I4).
+	regimeCursor, regimeState := m.provider.ExportRegimeState()
+	commitRound := lastDecidedRound(regimeCursor)
 	currentRound := m.provider.Round()
 
 	// Skip if no new rounds since last snapshot
@@ -179,7 +181,7 @@ func (m *SnapshotManager) createSnapshot() {
 	}
 
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro(), m.provider.ExportRegimeState())
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro(), regimeState)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return

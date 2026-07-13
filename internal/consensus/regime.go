@@ -89,7 +89,9 @@ func (d *DAG) latchStrictRegime(atRound uint64) {
 func (d *DAG) freezeGenesisHolders() *ValidatorSet {
 	frozen := NewValidatorSet(nil)
 
-	for pubkey := range d.committedMembers {
+	// Iterate members in ascending pubkey order so the frozen set's All() order — and
+	// therefore its encoded blob bytes — is identical on every node, not Go map order.
+	for _, pubkey := range sortedMemberKeys(d.committedMembers) {
 		v := d.validators.Get(pubkey)
 		if v == nil {
 			continue

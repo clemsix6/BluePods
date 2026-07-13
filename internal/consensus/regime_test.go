@@ -1,6 +1,8 @@
 package consensus
 
 import (
+	"bytes"
+	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
@@ -211,7 +213,7 @@ func TestSyncCarriesRegimeStatePastBoundary_C2(t *testing.T) {
 	src.strictStartRound = 2
 	src.commitMu.Unlock()
 
-	blob := src.ExportRegimeState()
+	_, blob := src.ExportRegimeState()
 
 	const round = 6 // an epoch-1 round to decide
 	producer := designatedProducer(t, src, vals, round)
@@ -347,6 +349,104 @@ func TestNoLiveSetFallbackInAnchorPath(t *testing.T) {
 		}
 		if strings.Contains(string(data), needle) {
 			t.Fatalf("%s contains %q: the anchor path must never read the live validator set", file, needle)
+		}
+	}
+}
+
+// TestExportRegimeStateAtomicCursorEpoch_I3 is the I3 torn-read regression: the snapshot
+// export must read the commit cursor and the epoch state in ONE commitMu hold. The
+// commit loop advances lastCommitted and increments the epoch together under commitMu,
+// so if a boundary lands between a separate cursor read and a separate epoch-state read
+// (the old two-acquisition pattern), the snapshot pairs a pre-boundary cursor with
+// post-boundary epoch state; on import the joiner re-decides the boundary and transitions
+// again, ending one epoch ahead of the source forever. The atomic export returns a
+// mutually consistent pair whichever side of the boundary it lands on.
+func TestExportRegimeStateAtomicCursorEpoch_I3(t *testing.T) {
+	const epochLen = 4
+
+	vals, vs := newTestValidatorSet(4)
+	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, vals[0].privKey, nil, WithEpochLength(epochLen))
+	t.Cleanup(func() { dag.Close() })
+	setEqualStake(dag, vals, 25)
+
+	// consistent reports whether a carried (rawCursor, blob) pair reconstructs one
+	// committed frontier. On import WithLastCommittedRound(lastDecidedRound(rawCursor))
+	// sets lastCommitted == rawCursor, and the commit loop maintains the invariant
+	// currentEpoch == (lastCommitted-1)/epochLength once past round 0.
+	consistent := func(rawCursor uint64, blob []byte) bool {
+		epoch := binary.BigEndian.Uint64(blob[:8])
+		if rawCursor == 0 {
+			return epoch == 0
+		}
+		return epoch == (rawCursor-1)/epochLen
+	}
+
+	// Park the DAG exactly at boundary round 4: it is next-to-decide, still epoch 0.
+	dag.commitMu.Lock()
+	dag.lastCommitted = 4
+	dag.currentEpoch = 0
+	dag.epochHolders = snapshotOf(dag.validators)
+	dag.commitMu.Unlock()
+
+	// OLD two-acquisition pattern: read the cursor pre-boundary...
+	tornCursor := dag.LastCommittedRound()
+
+	// ...the commit loop crosses the boundary in the export window, advancing the cursor
+	// and incrementing the epoch together under commitMu (as advanceCommitCursor does)...
+	dag.commitMu.Lock()
+	dag.lastCommitted = 5
+	dag.currentEpoch = 1
+	dag.commitMu.Unlock()
+
+	// ...then the epoch state is read post-boundary. The pair is torn: a pre-boundary
+	// cursor beside a post-boundary epoch, which would push the joiner an epoch ahead.
+	_, tornBlob := dag.ExportRegimeState()
+	if consistent(tornCursor, tornBlob) {
+		t.Fatalf("expected the separate-read pattern to tear: cursor %d paired with epoch %d",
+			tornCursor, binary.BigEndian.Uint64(tornBlob[:8]))
+	}
+
+	// NEW atomic export: cursor and epoch come from one commitMu hold and always agree.
+	atomicCursor, atomicBlob := dag.ExportRegimeState()
+	if !consistent(atomicCursor, atomicBlob) {
+		t.Fatalf("atomic export desynced: cursor %d epoch %d",
+			atomicCursor, binary.BigEndian.Uint64(atomicBlob[:8]))
+	}
+}
+
+// TestFreezeGenesisHoldersCanonicalEncoding is the Finding 2 regression: freezing the
+// genesis holder set must iterate committed members in ascending pubkey order, so the
+// frozen set's All() order — and therefore its encoded blob bytes — is canonical on
+// every node rather than following Go's randomized map order. Byte-identical across two
+// builds that admit the members in opposite orders, and the frozen order is sorted.
+func TestFreezeGenesisHoldersCanonicalEncoding(t *testing.T) {
+	vals, _ := newTestValidatorSet(4)
+	pubkeys := keysOf(vals)
+
+	freeze := func(order []int) *ValidatorSet {
+		dag := New(newTestStorage(t), NewValidatorSet(pubkeys), nil, testSystemPod, 0, vals[0].privKey, nil)
+		t.Cleanup(func() { dag.Close() })
+		setEqualStake(dag, vals, 25)
+
+		dag.committedMembers = make(map[Hash]bool)
+		for _, i := range order {
+			dag.committedMembers[vals[i].pubKey] = true
+		}
+
+		return dag.freezeGenesisHolders()
+	}
+
+	forward := freeze([]int{0, 1, 2, 3})
+	reverse := freeze([]int{3, 2, 1, 0})
+
+	if !bytes.Equal(encodeHolderSnapshot(forward), encodeHolderSnapshot(reverse)) {
+		t.Fatal("frozen holder encoding is order-dependent across nodes")
+	}
+
+	members := forward.All()
+	for i := 1; i < len(members); i++ {
+		if bytes.Compare(members[i-1].Pubkey[:], members[i].Pubkey[:]) >= 0 {
+			t.Fatalf("frozen holders are not in ascending pubkey order at index %d", i)
 		}
 	}
 }

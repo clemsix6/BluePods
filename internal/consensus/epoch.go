@@ -268,7 +268,7 @@ func (d *DAG) applyPendingRemovals() {
 	// Sort by pubkey for deterministic order across all validators.
 	// Without sorting, Go map iteration is randomized and different
 	// validators would remove different sets when churn is limited.
-	sorted := sortedRemovals(d.pendingRemovals)
+	sorted := sortedMemberKeys(d.pendingRemovals)
 
 	applied := 0
 
@@ -287,10 +287,12 @@ func (d *DAG) applyPendingRemovals() {
 	}
 }
 
-// sortedRemovals extracts pending removal keys and sorts them by pubkey bytes.
-func sortedRemovals(pending map[Hash]bool) []Hash {
-	keys := make([]Hash, 0, len(pending))
-	for k := range pending {
+// sortedMemberKeys extracts the keys of a hash set and sorts them by pubkey bytes
+// ascending, giving a deterministic iteration order across all nodes regardless of
+// Go's randomized map order.
+func sortedMemberKeys(set map[Hash]bool) []Hash {
+	keys := make([]Hash, 0, len(set))
+	for k := range set {
 		keys = append(keys, k)
 	}
 

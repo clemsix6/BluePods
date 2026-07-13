@@ -8,11 +8,15 @@ import "encoding/binary"
 // three holder snapshots, and the strict latch, read as ONE consistent cut and
 // installed at construction, overriding any stale local epoch state (I3).
 
-// ExportRegimeState encodes the current epoch, the three holder snapshots, and the
-// strict latch as one consistent cut under commitMu, for a sync snapshot to carry.
-// Reading them together under the commit lock guarantees the exported cursor,
-// holders, and latch describe the same committed frontier (I3).
-func (d *DAG) ExportRegimeState() []byte {
+// ExportRegimeState reads the commit cursor together with the encoded regime state
+// (current epoch, the three holder snapshots, the strict latch) as ONE consistent cut
+// under commitMu, for a sync snapshot to carry. Pairing the cursor with the epoch state
+// in a single hold is load-bearing: the commit loop advances lastCommitted and
+// transitions the epoch under the same commitMu, so a boundary that would otherwise land
+// between two separate reads cannot pair a pre-boundary cursor with post-boundary epoch
+// state and shift the joiner one epoch ahead forever (I3). The returned cursor is the
+// raw next-to-decide value; the caller converts it to the last-decided round.
+func (d *DAG) ExportRegimeState() (cursor uint64, blob []byte) {
 	d.commitMu.Lock()
 	defer d.commitMu.Unlock()
 
@@ -23,7 +27,7 @@ func (d *DAG) ExportRegimeState() []byte {
 	buf = appendHolderBlob(buf, d.prevEpochHolders)
 	buf = appendHolderBlob(buf, d.nextEpochHolders)
 
-	return buf
+	return d.lastCommitted, buf
 }
 
 // WithSyncedRegimeState installs sync-carried regime state at construction. It runs
