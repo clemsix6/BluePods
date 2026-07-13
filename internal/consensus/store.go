@@ -25,16 +25,30 @@ type store struct {
 	mu          sync.RWMutex
 	byRound     map[uint64][]Hash // vertex hashes per round
 	latestRound uint64            // highest round seen
+
+	// committedVertices is the set of vertex hashes already folded into a commit
+	// batch, loaded from storage at boot so a restart never re-applies them.
+	committedVertices map[Hash]bool
+	// commitFloor is the snapshot round at or below which vertices are treated as
+	// already committed; it guards a freshly synced node against re-applying its
+	// imported history.
+	commitFloor uint64
+	// commitFloorSet reports whether a commit floor has been established via a
+	// snapshot import; without it, the zero floor would wrongly exclude round 0.
+	commitFloorSet bool
 }
 
 // newStore creates a vertex store backed by the given storage.
 func newStore(db *storage.Storage) *store {
 	s := &store{
-		db:      db,
-		byRound: make(map[uint64][]Hash),
+		db:                db,
+		byRound:           make(map[uint64][]Hash),
+		committedVertices: make(map[Hash]bool),
 	}
 
 	s.loadLatestRound()
+	s.loadCommittedFlags()
+	s.loadCommitFloor()
 
 	return s
 }
@@ -228,51 +242,53 @@ func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 	return entries
 }
 
-// ImportVertices loads vertices from snapshot data and rebuilds the index.
-// Returns the highest round imported.
-func (s *store) ImportVertices(entries []VertexEntry) uint64 {
+// ImportVertices loads vertices from snapshot data and rebuilds the index. Every
+// imported vertex at a round at or below lastCommittedRound is marked committed,
+// and the commit floor is raised to that round, so the first causal walk after a
+// sync never re-applies the imported history. Returns the highest round imported.
+func (s *store) ImportVertices(entries []VertexEntry, lastCommittedRound uint64) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var maxRound uint64
 
 	for _, entry := range entries {
-		// Parse vertex to get hash and producer
-		vertex := types.GetRootAsVertex(entry.Data, 0)
-		hashBytes := vertex.HashBytes()
-		producerBytes := vertex.ProducerBytes()
-
-		var hash, producer Hash
-		copy(hash[:], hashBytes)
-		copy(producer[:], producerBytes)
-
-		// Check if already exists
-		if s.hasLocked(hash) {
-			continue
-		}
-
-		// Store vertex data
-		vertexKey := makeVertexKey(hash)
-		_ = s.db.Set(vertexKey, entry.Data)
-
-		// Store round index entry
-		roundKey := makeRoundKey(entry.Round, hash)
-		_ = s.db.Set(roundKey, producer[:])
-
-		// Update in-memory index
-		s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
-
-		// Track max round
-		if entry.Round > maxRound {
+		if s.importVertexLocked(entry, lastCommittedRound) && entry.Round > maxRound {
 			maxRound = entry.Round
 		}
 	}
 
-	// Update latest round if needed
+	s.setCommitFloorLocked(lastCommittedRound)
+
 	if maxRound > s.latestRound {
 		s.latestRound = maxRound
 		s.saveLatestRound(maxRound)
 	}
 
 	return maxRound
+}
+
+// importVertexLocked persists one snapshot vertex and its round-index entry,
+// marking it committed when it is at or below lastCommittedRound. It returns false
+// when the vertex already exists. The caller must hold s.mu.
+func (s *store) importVertexLocked(entry VertexEntry, lastCommittedRound uint64) bool {
+	vertex := types.GetRootAsVertex(entry.Data, 0)
+
+	var hash, producer Hash
+	copy(hash[:], vertex.HashBytes())
+	copy(producer[:], vertex.ProducerBytes())
+
+	if s.hasLocked(hash) {
+		return false
+	}
+
+	_ = s.db.Set(makeVertexKey(hash), entry.Data)
+	_ = s.db.Set(makeRoundKey(entry.Round, hash), producer[:])
+	s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
+
+	if entry.Round <= lastCommittedRound {
+		s.markVertexCommittedLocked(hash)
+	}
+
+	return true
 }

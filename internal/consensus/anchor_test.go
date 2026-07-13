@@ -2,8 +2,10 @@ package consensus
 
 import (
 	"bytes"
+	"os"
 	"testing"
 
+	"BluePods/internal/storage"
 	"BluePods/internal/types"
 )
 
@@ -183,4 +185,312 @@ func buildRoundVertex(t *testing.T, v testValidator, round uint64, parents []Has
 	copy(hash[:], vertex.HashBytes())
 
 	return data, hash
+}
+
+// addRoundVertex builds and stores a vertex for the validator at the round with
+// the given parents, returning its hash.
+func addRoundVertex(t *testing.T, s *store, v testValidator, round uint64, parents []Hash) Hash {
+	t.Helper()
+
+	data, hash := buildRoundVertex(t, v, round, parents)
+	s.add(data, hash, round, v.pubKey)
+
+	return hash
+}
+
+// roundOf reads a stored vertex's round, failing the test if it is absent.
+func roundOf(t *testing.T, s *store, hash Hash) uint64 {
+	t.Helper()
+
+	v := s.get(hash)
+	if v == nil {
+		t.Fatalf("vertex %x absent from store", hash[:4])
+	}
+
+	return v.Round()
+}
+
+// assertBatchOrder verifies the batch is sorted by round ascending, then by hash
+// bytes ascending within a round.
+func assertBatchOrder(t *testing.T, s *store, batch []Hash) {
+	t.Helper()
+
+	for i := 1; i < len(batch); i++ {
+		prev := roundOf(t, s, batch[i-1])
+		cur := roundOf(t, s, batch[i])
+
+		if prev > cur {
+			t.Fatalf("batch not round-ordered at %d: round %d then %d", i, prev, cur)
+		}
+
+		if prev == cur && bytes.Compare(batch[i-1][:], batch[i][:]) >= 0 {
+			t.Fatalf("batch not hash-ordered within round %d at index %d", cur, i)
+		}
+	}
+}
+
+// TestCausalBatchDiamondSingleInclusionAndOrder verifies the causal walk over a
+// diamond DAG: every ancestor is included exactly once (a vertex reached through
+// two branches is not duplicated), a round-8 vertex reached through a single
+// branch is still included, and the batch is ordered by (round, hash) with the
+// round-8 vertices before the round-9 vertices before the round-10 anchor.
+func TestCausalBatchDiamondSingleInclusionAndOrder(t *testing.T) {
+	validators, _ := newTestValidatorSet(2)
+	v0, v1 := validators[0], validators[1]
+	s := newStore(newTestStorage(t))
+
+	// Two round-8 leaves from distinct producers (so their hashes differ). g8 is
+	// reached through one branch only (b9); h8 is the diamond apex reached through
+	// both round-9 branches (b9 and c9).
+	g8 := addRoundVertex(t, s, v0, 8, nil)
+	h8 := addRoundVertex(t, s, v1, 8, nil)
+	b9 := addRoundVertex(t, s, v0, 9, []Hash{g8, h8})
+	c9 := addRoundVertex(t, s, v1, 9, []Hash{h8})
+	d10 := addRoundVertex(t, s, v0, 10, []Hash{b9, c9})
+
+	batch, ok := s.causalBatch(d10)
+	if !ok {
+		t.Fatal("expected ok: the anchor's causal history is fully present")
+	}
+
+	// Two round-8 leaves + two round-9 vertices + the anchor, each exactly once.
+	if len(batch) != 5 {
+		t.Fatalf("expected 5 vertices, got %d: %x", len(batch), batch)
+	}
+
+	counts := make(map[Hash]int)
+	for _, h := range batch {
+		counts[h]++
+	}
+	for _, h := range []Hash{g8, h8, b9, c9, d10} {
+		if counts[h] != 1 {
+			t.Fatalf("vertex %x included %d times, want exactly 1", h[:4], counts[h])
+		}
+	}
+
+	assertBatchOrder(t, s, batch)
+
+	if roundOf(t, s, batch[0]) != 8 || roundOf(t, s, batch[1]) != 8 {
+		t.Fatal("round-8 vertices must sort first")
+	}
+	if batch[len(batch)-1] != d10 {
+		t.Fatal("the round-10 anchor must sort last")
+	}
+}
+
+// TestCausalBatchMissingAncestor verifies the walk reports ok=false when a
+// referenced ancestor is absent from the local store, so the caller waits for it
+// rather than committing a partial history.
+func TestCausalBatchMissingAncestor(t *testing.T) {
+	v := newTestValidator()
+	s := newStore(newTestStorage(t))
+
+	// The anchor references a parent that was never stored.
+	anchor := addRoundVertex(t, s, v, 10, []Hash{{0xAB}})
+
+	if _, ok := s.causalBatch(anchor); ok {
+		t.Fatal("expected ok=false when an ancestor is missing")
+	}
+}
+
+// TestCausalBatchExcludesCommitted verifies that already-committed vertices are
+// excluded from the batch and bound the walk: the walk never traverses through a
+// committed vertex, so a missing grandparent behind it does not trigger ok=false.
+func TestCausalBatchExcludesCommitted(t *testing.T) {
+	v := newTestValidator()
+	s := newStore(newTestStorage(t))
+
+	// a8 references a parent that is absent; if the walk crossed a8 it would fail.
+	a8 := addRoundVertex(t, s, v, 8, []Hash{{0xEE}})
+	b9 := addRoundVertex(t, s, v, 9, []Hash{a8})
+	c10 := addRoundVertex(t, s, v, 10, []Hash{b9})
+
+	s.markVertexCommitted(a8)
+
+	batch, ok := s.causalBatch(c10)
+	if !ok {
+		t.Fatal("expected ok: a committed vertex must bound the walk")
+	}
+
+	if len(batch) != 2 {
+		t.Fatalf("expected 2 vertices (anchor + its parent), got %d", len(batch))
+	}
+	for _, h := range batch {
+		if h == a8 {
+			t.Fatal("committed vertex a8 must be excluded from the batch")
+		}
+	}
+}
+
+// TestCausalBatchDeterministicAcrossFeedOrders verifies that two stores fed the
+// same vertices in opposite orders return byte-identical batches: the walk's
+// output depends only on the DAG content, never on arrival order.
+func TestCausalBatchDeterministicAcrossFeedOrders(t *testing.T) {
+	validators, _ := newTestValidatorSet(2)
+	v0, v1 := validators[0], validators[1]
+
+	// Build one diamond's raw vertices once, then feed two stores in opposite
+	// orders. Each item carries the round used for storage.
+	type item struct {
+		data  []byte
+		hash  Hash
+		round uint64
+	}
+
+	g8d, g8 := buildRoundVertex(t, v0, 8, nil)
+	h8d, h8 := buildRoundVertex(t, v1, 8, nil)
+	b9d, b9 := buildRoundVertex(t, v0, 9, []Hash{g8, h8})
+	c9d, c9 := buildRoundVertex(t, v1, 9, []Hash{h8})
+	d10d, d10 := buildRoundVertex(t, v0, 10, []Hash{b9, c9})
+
+	items := []item{{g8d, g8, 8}, {h8d, h8, 8}, {b9d, b9, 9}, {c9d, c9, 9}, {d10d, d10, 10}}
+	producers := map[Hash]Hash{g8: v0.pubKey, h8: v1.pubKey, b9: v0.pubKey, c9: v1.pubKey, d10: v0.pubKey}
+
+	storeA := newStore(newTestStorage(t))
+	for i := 0; i < len(items); i++ {
+		storeA.add(items[i].data, items[i].hash, items[i].round, producers[items[i].hash])
+	}
+
+	storeB := newStore(newTestStorage(t))
+	for i := len(items) - 1; i >= 0; i-- {
+		storeB.add(items[i].data, items[i].hash, items[i].round, producers[items[i].hash])
+	}
+
+	batchA, okA := storeA.causalBatch(d10)
+	batchB, okB := storeB.causalBatch(d10)
+	if !okA || !okB {
+		t.Fatalf("expected both walks to succeed (okA=%v okB=%v)", okA, okB)
+	}
+
+	if len(batchA) != len(batchB) {
+		t.Fatalf("batch lengths differ: A=%d B=%d", len(batchA), len(batchB))
+	}
+	for i := range batchA {
+		if batchA[i] != batchB[i] {
+			t.Fatalf("batches diverge at %d: A=%x B=%x", i, batchA[i][:4], batchB[i][:4])
+		}
+	}
+}
+
+// TestCausalBatchImportFloorExcludesRoundsAtOrBelow verifies that after
+// ImportVertices with a snapshot round R, no vertex at round <= R appears in a
+// later batch. Imported vertices are marked committed, and the floor is a second
+// guard that also excludes a non-committed vertex at round <= R (a late arrival).
+func TestCausalBatchImportFloorExcludesRoundsAtOrBelow(t *testing.T) {
+	validators, _ := newTestValidatorSet(2)
+	v0, v1 := validators[0], validators[1]
+	const snapshotRound = 5
+
+	// Snapshot chain rounds 1..5, imported as a snapshot committed up to round 5.
+	r1d, r1 := buildRoundVertex(t, v0, 1, nil)
+	r2d, r2 := buildRoundVertex(t, v0, 2, []Hash{r1})
+	r3d, r3 := buildRoundVertex(t, v0, 3, []Hash{r2})
+	r4d, r4 := buildRoundVertex(t, v0, 4, []Hash{r3})
+	r5d, r5 := buildRoundVertex(t, v0, 5, []Hash{r4})
+
+	entries := []VertexEntry{
+		{Round: 1, Data: r1d}, {Round: 2, Data: r2d}, {Round: 3, Data: r3d},
+		{Round: 4, Data: r4d}, {Round: 5, Data: r5d},
+	}
+
+	s := newStore(newTestStorage(t))
+	s.ImportVertices(entries, snapshotRound)
+
+	if !s.isVertexCommitted(r5) {
+		t.Fatal("imported vertex at the snapshot round must be marked committed")
+	}
+
+	// A late, non-committed round-5 vertex (distinct producer) arriving after the
+	// import: only the floor keeps it out of the batch.
+	lateData, late := buildRoundVertex(t, v1, 5, []Hash{r4})
+	s.add(lateData, late, 5, v1.pubKey)
+
+	// Anchor at round 6 references both the imported and the late round-5 vertex.
+	anchor := addRoundVertex(t, s, v0, 6, []Hash{r5, late})
+
+	batch, ok := s.causalBatch(anchor)
+	if !ok {
+		t.Fatal("expected ok: round-5 ancestors are present, just below the floor")
+	}
+
+	if len(batch) != 1 || batch[0] != anchor {
+		t.Fatalf("expected only the round-6 anchor, got %x", batch)
+	}
+	for _, h := range batch {
+		if h == late {
+			t.Fatal("floor must exclude the non-committed round-5 vertex")
+		}
+	}
+}
+
+// TestCausalBatchCommittedFlagSurvivesRestart verifies the committed flag is
+// persisted: after reopening the store, a previously committed vertex is still
+// committed and remains excluded from the batch, so a restart never re-applies it.
+func TestCausalBatchCommittedFlagSurvivesRestart(t *testing.T) {
+	dir, err := os.MkdirTemp("", "consensus_restart_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	v := newTestValidator()
+
+	a8d, a8 := buildRoundVertex(t, v, 8, []Hash{{0xEE}})
+	b9d, b9 := buildRoundVertex(t, v, 9, []Hash{a8})
+	c10d, c10 := buildRoundVertex(t, v, 10, []Hash{b9})
+
+	db1, err := storage.New(dir)
+	if err != nil {
+		t.Fatalf("failed to open storage: %v", err)
+	}
+	s1 := newStore(db1)
+	s1.add(a8d, a8, 8, v.pubKey)
+	s1.add(b9d, b9, 9, v.pubKey)
+	s1.add(c10d, c10, 10, v.pubKey)
+	s1.markVertexCommitted(a8)
+	db1.Close()
+
+	db2, err := storage.New(dir)
+	if err != nil {
+		t.Fatalf("failed to reopen storage: %v", err)
+	}
+	defer db2.Close()
+	s2 := newStore(db2)
+
+	if !s2.isVertexCommitted(a8) {
+		t.Fatal("committed flag did not survive restart")
+	}
+
+	batch, ok := s2.causalBatch(c10)
+	if !ok {
+		t.Fatal("expected ok after restart: the committed vertex still bounds the walk")
+	}
+	for _, h := range batch {
+		if h == a8 {
+			t.Fatal("committed vertex must stay excluded after restart")
+		}
+	}
+}
+
+// TestCausalBatchEdgeCases covers a lone anchor with no ancestry, an
+// already-committed anchor (empty batch), and a missing anchor (ok=false).
+func TestCausalBatchEdgeCases(t *testing.T) {
+	v := newTestValidator()
+	s := newStore(newTestStorage(t))
+
+	solo := addRoundVertex(t, s, v, 4, nil)
+	batch, ok := s.causalBatch(solo)
+	if !ok || len(batch) != 1 || batch[0] != solo {
+		t.Fatalf("lone anchor: expected [solo], got ok=%v batch=%x", ok, batch)
+	}
+
+	s.markVertexCommitted(solo)
+	batch, ok = s.causalBatch(solo)
+	if !ok || len(batch) != 0 {
+		t.Fatalf("committed anchor: expected empty batch, got ok=%v batch=%x", ok, batch)
+	}
+
+	if _, ok := s.causalBatch(Hash{0xDE, 0xAD}); ok {
+		t.Fatal("missing anchor must return ok=false")
+	}
 }
