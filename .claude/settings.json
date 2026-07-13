@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -d \"$HOME/Skills/.git\" ]; then git -C \"$HOME/Skills\" pull --ff-only --quiet || true; else git clone --quiet https://github.com/clemsix6/Skills \"$HOME/Skills\" || true; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
