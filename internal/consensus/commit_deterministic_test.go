@@ -420,11 +420,17 @@ func TestCheckCommits_FullQuorumLatchesAfterDirectCertification(t *testing.T) {
 	}
 }
 
-// TestCheckCommits_ResumesFromPersistedCursorAcrossRestart verifies the commit
-// cursor is persisted: a node re-opened over the same storage resumes strictly
-// past the rounds it already decided, rather than resetting to zero and
-// re-deriving them.
-func TestCheckCommits_ResumesFromPersistedCursorAcrossRestart(t *testing.T) {
+// TestCheckCommits_PersistsCommitCursorAcrossRestart verifies ONLY that the commit
+// cursor survives a restart: a node re-opened over the same storage loads the
+// persisted cursor instead of resetting to zero and re-deriving decided rounds. It
+// deliberately does not drive a post-restart commit — that resume is proven, within
+// epoch 0, by TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart.
+//
+// Limitation: the in-memory epoch state (currentEpoch and the epochHolders /
+// prevEpochHolders / nextEpochHolders snapshots) is NOT restored on reopen, so a
+// cursor past the first epoch boundary would wedge or fall back. Persisting and
+// restoring that state is Task 0.5 (C2).
+func TestCheckCommits_PersistsCommitCursorAcrossRestart(t *testing.T) {
 	db := newTestStorage(t)
 	vals, _ := newTestValidatorSet(4)
 	_, vs := reuseSet(vals)
@@ -452,11 +458,69 @@ func TestCheckCommits_ResumesFromPersistedCursorAcrossRestart(t *testing.T) {
 	}
 }
 
+// TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart proves the positive
+// half of the restart story that holds today: a node re-opened over the same storage
+// with a persisted cursor still inside epoch 0 (before any boundary) is not wedged.
+// Fed a fresh continuation of the DAG it advances the cursor and applies the new
+// rounds — the reopen resumes deciding, not merely loads the cursor. The pre-restart
+// node stops with rounds 3..4 undelivered; after reopen those rounds arrive and the
+// commit loop moves the cursor past where it stopped.
+//
+// It proves resume ONLY within epoch 0. A restart PAST the first epoch boundary is
+// not covered: currentEpoch and the holder snapshots are in-memory and not restored
+// on reopen, so such a node wedges or falls back until epoch state is persisted
+// (Task 0.5, C2).
+func TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart(t *testing.T) {
+	db := newTestStorage(t)
+	vals, _ := newTestValidatorSet(4)
+	_, vs := reuseSet(vals)
+
+	dag := New(db, vs, nil, testSystemPod, 0, vals[0].privKey, nil)
+	setEqualStake(dag, vals, 25)
+	disableTxAuth(dag)
+
+	// Deliver only rounds 0..2 before the crash: the node commits through its cursor
+	// and stops, leaving rounds 3..4 for after the restart.
+	spine := buildTaggedSpine(t, vals, 4)
+	cut := 3 * len(vals) // rounds 0..2 arrive before the crash; rounds 3..4 after.
+	ingest(dag, spine[:cut], forwardOrder(cut))
+	dag.checkCommits()
+
+	cursor := dag.LastCommittedRound()
+	if cursor == 0 {
+		t.Fatal("nothing decided before the restart; cannot test resume")
+	}
+	dag.Close()
+
+	// Re-open over the same storage: the cursor is restored, the in-memory graph is
+	// not, so the reopened node must decide from freshly delivered rounds.
+	_, vs2 := reuseSet(vals)
+	dag2 := New(db, vs2, nil, testSystemPod, 0, vals[0].privKey, nil)
+	t.Cleanup(func() { dag2.Close() })
+	setEqualStake(dag2, vals, 25)
+	disableTxAuth(dag2)
+
+	ingest(dag2, spine[cut:], forwardOrder(len(spine)-cut))
+	dag2.checkCommits()
+
+	if got := dag2.LastCommittedRound(); got <= cursor {
+		t.Fatalf("restart did not resume deciding: cursor stuck at %d (was %d)", got, cursor)
+	}
+	if committed := drainCommitted(dag2); len(committed) == 0 {
+		t.Fatal("restart advanced the cursor but applied nothing; resume decided no batch")
+	}
+}
+
 // TestCheckCommits_DecidedEpochTailNotReDerivedAfterChurn is the resolve-before-
 // transition regression: an epoch-tail round is decided via the one-epoch-ahead
 // holder proxy, the boundary transition then churns the holder set, and a restart
 // must resume PAST the decided tail from the persisted cursor — never re-derive it
 // against the churned holders, which could answer differently and fork the log.
+//
+// The reopened node's epoch state is NOT restored (currentEpoch resets to 0), which
+// is exactly why re-deriving the tail would be unsafe; the persisted cursor is what
+// carries the node past it. Restoring epoch state so a post-boundary node can itself
+// resume deciding is Task 0.5 (C2).
 func TestCheckCommits_DecidedEpochTailNotReDerivedAfterChurn(t *testing.T) {
 	db := newTestStorage(t)
 	vals, _ := newTestValidatorSet(4)

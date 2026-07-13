@@ -334,6 +334,9 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	// Resume the commit cursor from persisted state so a restart never re-derives an
 	// already decided round. A snapshot option (WithLastCommittedRound) applies below
 	// and takes precedence for a freshly synced node.
+	//
+	// TODO: restore currentEpoch and holder snapshots alongside the cursor (Task 0.5,
+	// C2) — a restart past the first epoch boundary currently wedges or falls back.
 	if cursor, ok := d.store.loadCommitCursor(); ok {
 		d.lastCommitted = cursor
 	}

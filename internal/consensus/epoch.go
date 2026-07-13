@@ -420,6 +420,9 @@ func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 		if d.epochHolders != nil {
 			return d.epochHolders, true
 		}
+		// TODO: remove this genesis live-set fallback (Task 0.5) — the live set mutates
+		// during epoch 0 and can diverge across nodes; a frozen genesis holder snapshot
+		// replaces it.
 		return d.validators, true
 	}
 
