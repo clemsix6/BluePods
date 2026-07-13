@@ -334,12 +334,17 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	// Resume the commit cursor from persisted state so a restart never re-derives an
 	// already decided round. A snapshot option (WithLastCommittedRound) applies below
 	// and takes precedence for a freshly synced node.
-	//
-	// TODO: restore currentEpoch and holder snapshots alongside the cursor (Task 0.5,
-	// C2) — a restart past the first epoch boundary currently wedges or falls back.
 	if cursor, ok := d.store.loadCommitCursor(); ok {
 		d.lastCommitted = cursor
 	}
+
+	// Restore currentEpoch and the holder snapshots BEFORE any commit decision (the
+	// commitLoop below is the first caller of anchorStatus/HoldersForEpoch), so a
+	// restart past the first epoch boundary resolves anchors and quorums against the
+	// same holder set it decided under instead of wedging or falling back to the
+	// genesis live set. A fresh (never-restarted) node has no persisted epoch state,
+	// so this is a no-op; the sync options below install their own state as before.
+	d.restoreEpochState()
 
 	for _, opt := range opts {
 		opt(d)

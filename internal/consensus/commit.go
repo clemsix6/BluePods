@@ -70,17 +70,23 @@ func (d *DAG) commitNextRound() bool {
 }
 
 // advanceCommitCursor moves the persisted commit cursor past the decided round and,
-// when that round is an epoch boundary, transitions the epoch. Persisting the cursor
-// BEFORE the transition is the resolve-before-transition guarantee: a restarted node
-// resumes strictly after this round and never re-derives its decision against the
-// churned holder set the transition installs.
+// when that round is an epoch boundary, transitions the epoch and persists the new
+// epoch state atomically WITH the cursor in one batch. Bundling them closes the crash
+// window where a cursor advanced past the boundary would be restored beside a stale
+// holder set (cursor says epoch k, holders say k-1). Off a boundary the epoch state
+// is unchanged, so the cursor is written alone. A crash before the batch leaves the
+// old cursor and old epoch state; the decided round's committed vertices are already
+// flagged, so re-deciding it yields an empty (idempotent) batch and re-transitions.
 func (d *DAG) advanceCommitCursor(round uint64) {
 	d.lastCommitted = round + 1
-	d.store.saveCommitCursor(d.lastCommitted)
 
 	if d.isEpochBoundary(round) {
 		d.transitionEpoch(round)
+		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		return
 	}
+
+	d.store.saveCommitCursor(d.lastCommitted)
 }
 
 // commitAnchorBatch applies the anchor's causal batch in deterministic order and

@@ -47,10 +47,34 @@ func newStore(db *storage.Storage) *store {
 	}
 
 	s.loadLatestRound()
+	s.loadByRound()
 	s.loadCommittedFlags()
 	s.loadCommitFloor()
 
 	return s
+}
+
+// loadByRound rebuilds the in-memory byRound index from the persisted round-index
+// entries (r:<round>:<hash>) at boot. Without it a restart leaves byRound empty for
+// every pre-crash round: a re-gossiped vertex is rejected by add as already stored
+// and never re-indexed, so getByRoundProducer reports the round's producers absent
+// and the commit loop spuriously blames or skips them, forking the committed order
+// from a peer that never crashed. Every persisted round is rebuilt, including rounds
+// above the commit cursor, so undecided rounds resolve identically after a restart.
+// One prefix scan over the round index at boot, the same order as loadCommittedFlags.
+func (s *store) loadByRound() {
+	_ = s.db.IteratePrefix(prefixRound, func(key, _ []byte) error {
+		if len(key) != len(prefixRound)+8+32 {
+			return nil
+		}
+
+		round := binary.BigEndian.Uint64(key[len(prefixRound) : len(prefixRound)+8])
+		var hash Hash
+		copy(hash[:], key[len(prefixRound)+8:])
+
+		s.byRound[round] = append(s.byRound[round], hash)
+		return nil
+	})
 }
 
 // add stores a vertex. Returns false if already exists.
@@ -203,6 +227,27 @@ func (s *store) saveLatestRound(round uint64) {
 	data := make([]byte, 8)
 	binary.BigEndian.PutUint64(data, round)
 	_ = s.db.Set(key, data)
+}
+
+// loadMetaUint64 reads a big-endian uint64 metadata value. ok is false when the key
+// is absent or malformed, so the caller keeps its default.
+func (s *store) loadMetaUint64(key []byte) (uint64, bool) {
+	data, err := s.db.Get(key)
+	if err != nil || len(data) < 8 {
+		return 0, false
+	}
+
+	return binary.BigEndian.Uint64(data), true
+}
+
+// loadMetaBytes reads a raw metadata value, or nil when it is absent.
+func (s *store) loadMetaBytes(key []byte) []byte {
+	data, err := s.db.Get(key)
+	if err != nil {
+		return nil
+	}
+
+	return data
 }
 
 // makeVertexKey creates a storage key for vertex data.

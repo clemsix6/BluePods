@@ -1,6 +1,10 @@
 package consensus
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"BluePods/internal/storage"
+)
 
 // prefixCommitted marks a vertex already folded into a commit batch:
 // vc/<hash> -> {1}. Persisted so a restart never re-applies a committed batch.
@@ -100,6 +104,20 @@ func (s *store) saveCommitCursor(round uint64) {
 	data := make([]byte, 8)
 	binary.BigEndian.PutUint64(data, round)
 	_ = s.db.Set(commitCursorKey, data)
+}
+
+// saveCommitCursorBatch atomically persists the commit cursor together with extra
+// metadata pairs (the epoch-boundary state) in ONE Pebble batch. Writing the cursor
+// and the epoch state together closes the crash window in which a cursor advanced
+// past an epoch boundary would be restored beside a stale holder set — the wedge
+// where the cursor says epoch k while the holders still say k-1. SetBatch is atomic:
+// either the whole boundary lands or none of it does.
+func (s *store) saveCommitCursorBatch(round uint64, extra []storage.KeyValue) {
+	data := make([]byte, 8)
+	binary.BigEndian.PutUint64(data, round)
+
+	pairs := append([]storage.KeyValue{{Key: commitCursorKey, Value: data}}, extra...)
+	_ = s.db.SetBatch(pairs)
 }
 
 // makeCommittedKey creates the storage key for a vertex's committed flag.

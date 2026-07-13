@@ -426,10 +426,11 @@ func TestCheckCommits_FullQuorumLatchesAfterDirectCertification(t *testing.T) {
 // deliberately does not drive a post-restart commit — that resume is proven, within
 // epoch 0, by TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart.
 //
-// Limitation: the in-memory epoch state (currentEpoch and the epochHolders /
-// prevEpochHolders / nextEpochHolders snapshots) is NOT restored on reopen, so a
-// cursor past the first epoch boundary would wedge or fall back. Persisting and
-// restoring that state is Task 0.5 (C2).
+// Scope: this test covers only cursor persistence within epoch 0. The epoch state
+// (currentEpoch and the epochHolders / prevEpochHolders / nextEpochHolders snapshots)
+// is now restored on reopen too (Task 0.5a); a restart past the first epoch boundary
+// resuming without wedge or genesis fallback is covered by
+// TestRestartResumesPastEpochBoundary.
 func TestCheckCommits_PersistsCommitCursorAcrossRestart(t *testing.T) {
 	db := newTestStorage(t)
 	vals, _ := newTestValidatorSet(4)
@@ -466,10 +467,10 @@ func TestCheckCommits_PersistsCommitCursorAcrossRestart(t *testing.T) {
 // node stops with rounds 3..4 undelivered; after reopen those rounds arrive and the
 // commit loop moves the cursor past where it stopped.
 //
-// It proves resume ONLY within epoch 0. A restart PAST the first epoch boundary is
-// not covered: currentEpoch and the holder snapshots are in-memory and not restored
-// on reopen, so such a node wedges or falls back until epoch state is persisted
-// (Task 0.5, C2).
+// It proves resume within epoch 0. A restart PAST the first epoch boundary — where
+// currentEpoch and the holder snapshots must be restored so the node does not wedge
+// or fall back to the genesis live set — is covered by
+// TestRestartResumesPastEpochBoundary (Task 0.5a).
 func TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart(t *testing.T) {
 	db := newTestStorage(t)
 	vals, _ := newTestValidatorSet(4)
@@ -517,10 +518,11 @@ func TestCheckCommits_ResumesDecidingWithinEpochZeroAfterRestart(t *testing.T) {
 // must resume PAST the decided tail from the persisted cursor — never re-derive it
 // against the churned holders, which could answer differently and fork the log.
 //
-// The reopened node's epoch state is NOT restored (currentEpoch resets to 0), which
-// is exactly why re-deriving the tail would be unsafe; the persisted cursor is what
-// carries the node past it. Restoring epoch state so a post-boundary node can itself
-// resume deciding is Task 0.5 (C2).
+// The persisted cursor is what carries the reopened node strictly past the decided
+// tail, so it is never re-derived — the guarantee this test pins, independent of the
+// holder set. The reopened node's epoch state is now also restored (Task 0.5a), so a
+// post-boundary node can itself resume deciding; that resume is covered by
+// TestRestartResumesPastEpochBoundary.
 func TestCheckCommits_DecidedEpochTailNotReDerivedAfterChurn(t *testing.T) {
 	db := newTestStorage(t)
 	vals, _ := newTestValidatorSet(4)
