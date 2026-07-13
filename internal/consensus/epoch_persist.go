@@ -16,6 +16,7 @@ var (
 	epochHoldersKey     = metaKey("epochHolders")     // epochHoldersKey holds the current epoch's frozen snapshot
 	prevEpochHoldersKey = metaKey("prevEpochHolders") // prevEpochHoldersKey holds the grace-window previous snapshot
 	nextEpochHoldersKey = metaKey("nextEpochHolders") // nextEpochHoldersKey holds the one-epoch-ahead forward proxy
+	strictStartRoundKey = metaKey("strictStartRound") // strictStartRoundKey holds the strict-regime latch; its presence means latched
 )
 
 // blsKeyLen is the byte length of a validator's BLS public key.
@@ -26,19 +27,31 @@ func metaKey(name string) []byte {
 	return append(append([]byte{}, prefixMeta...), []byte(name)...)
 }
 
-// epochStateKVs returns the persisted epoch-boundary state as batch pairs: the
-// epoch counter and the three holder snapshots. It is called only at a boundary,
-// right after transitionEpoch has set all four, so each snapshot is non-nil.
+// epochStateKVs returns the persisted epoch/regime state as batch pairs: the epoch
+// counter, the three holder snapshots, and the strict latch (only when latched, so
+// an unlatched node writes no latch key and restores as unlatched). It is written
+// atomically with the commit cursor both at an epoch boundary and, during the
+// genesis epoch, whenever the regime changes (a committed registration refreezes
+// the genesis snapshot or fires the latch), so a restart never desyncs the cursor
+// from the regime.
 func (d *DAG) epochStateKVs() []storage.KeyValue {
 	epoch := make([]byte, 8)
 	binary.BigEndian.PutUint64(epoch, d.currentEpoch)
 
-	return []storage.KeyValue{
+	kvs := []storage.KeyValue{
 		{Key: currentEpochKey, Value: epoch},
 		{Key: epochHoldersKey, Value: encodeHolderSnapshot(d.epochHolders)},
 		{Key: prevEpochHoldersKey, Value: encodeHolderSnapshot(d.prevEpochHolders)},
 		{Key: nextEpochHoldersKey, Value: encodeHolderSnapshot(d.nextEpochHolders)},
 	}
+
+	if d.strictLatched {
+		start := make([]byte, 8)
+		binary.BigEndian.PutUint64(start, d.strictStartRound)
+		kvs = append(kvs, storage.KeyValue{Key: strictStartRoundKey, Value: start})
+	}
+
+	return kvs
 }
 
 // restoreEpochState restores the persisted epoch counter and holder snapshots at
@@ -50,6 +63,8 @@ func (d *DAG) epochStateKVs() []storage.KeyValue {
 // untouched. It is a clean seam the sync importer (Task 0.5b) can reuse to install
 // snapshot-carried epoch state on the sync path.
 func (d *DAG) restoreEpochState() {
+	d.restoreStrictLatch()
+
 	epoch, ok := d.store.loadMetaUint64(currentEpochKey)
 	if !ok {
 		return
@@ -60,21 +75,51 @@ func (d *DAG) restoreEpochState() {
 	d.prevEpochHolders = d.loadHolderSnapshot(prevEpochHoldersKey)
 	d.nextEpochHolders = d.loadHolderSnapshot(nextEpochHoldersKey)
 
+	// Rebuild the committed member set from the restored genesis snapshot so a node
+	// restarted mid-bootstrap keeps refreezing from the full committed committee.
+	d.restoreCommittedMembers()
+
 	logger.Info("restored epoch state at boot",
 		"epoch", epoch,
 		"epochHolders", holderLen(d.epochHolders),
+		"strictLatched", d.strictLatched,
+		"strictStartRound", d.strictStartRound,
 	)
 }
 
+// restoreStrictLatch restores the strict-regime latch: its persisted key is present
+// only when the latch has fired, so a present key means latched at the stored round
+// and an absent key leaves the node unlatched (fully relaxed). It runs even when no
+// epoch boundary was ever crossed, since the latch fires within the genesis epoch.
+func (d *DAG) restoreStrictLatch() {
+	start, ok := d.store.loadMetaUint64(strictStartRoundKey)
+	if !ok {
+		return
+	}
+
+	d.strictLatched = true
+	d.strictStartRound = start
+}
+
 // loadHolderSnapshot decodes a persisted holder snapshot, or nil when the key is
-// absent, so a missing snapshot falls back to the genesis path rather than panicking.
+// absent OR encodes an empty set. An empty snapshot must restore as absent (nil),
+// not as a non-nil empty set: the codec encodes a nil snapshot as a count-0 record,
+// and a non-nil empty set would read as "resolved with zero holders" and misroute
+// HoldersForEpoch (an epoch-1 proxy would resolve to an empty committee instead of
+// falling through to the frozen genesis set). Restoring empty as nil closes that
+// absent-vs-empty asymmetry.
 func (d *DAG) loadHolderSnapshot(key []byte) *ValidatorSet {
 	data := d.store.loadMetaBytes(key)
 	if len(data) == 0 {
 		return nil
 	}
 
-	return decodeHolderSnapshot(data)
+	set := decodeHolderSnapshot(data)
+	if set.Len() == 0 {
+		return nil
+	}
+
+	return set
 }
 
 // holderLen returns a snapshot's size, or 0 when it is nil (for logging).

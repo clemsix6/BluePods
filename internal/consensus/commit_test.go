@@ -409,6 +409,7 @@ func TestCommitRoundProcessing(t *testing.T) {
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries the whole capped stake and commits.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the single-validator genesis committee for the anchor path
 
 	dag.SubmitTx(atxBytes)
 
@@ -467,6 +468,7 @@ func TestDirectAnchorVerdict_StakeWeighted(t *testing.T) {
 
 	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
 	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
+	freezeGenesis(dag)                                    // freeze the epoch-0 committee for the anchor path
 
 	// Case 1: the designated producer's round-N vertex is cited at round N+1 only by
 	// the SMALL (10%) validator → below the 2/3 stake quorum, so it does NOT certify.
@@ -555,6 +557,7 @@ func TestCommittedTxOutput(t *testing.T) {
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries full stake quorum and self-commits.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the single-validator genesis committee for the anchor path
 
 	dag.SubmitTx(atxBytes)
 

@@ -371,18 +371,17 @@ func (d *DAG) clearEpochState() {
 	d.epochTotalRounds = 0
 }
 
-// InitEpochHolders is a no-op during the genesis epoch on purpose.
+// InitEpochHolders is a no-op: the genesis epoch's holder snapshot is not taken
+// here.
 //
-// At process startup the validator set is still forming: the bootstrap knows only
-// itself, and each joining node knows only the validators it has synced so far.
-// A snapshot taken here would freeze that partial, per-node-divergent set as the
-// epoch-0 holder set, and attestation verification would then recompute holders
-// against it while the client daemon collected against the converged live set,
-// so quorum proofs would never match. Leaving epochHolders nil makes
-// HoldersForEpoch fall back to the live validator set for the genesis epoch,
-// which converges to the same set the daemon syncs. The first real frozen
-// snapshot is taken at the first epoch boundary by transitionEpoch, where the
-// set is already stable.
+// The epoch-0 holder set is the frozen GENESIS snapshot, built from committed
+// registrations only (genesis seeding plus committed register_validator
+// transactions) and refrozen as that committed set grows, then fixed at the strict
+// latch until the first epoch boundary. Freezing it here from the live validator
+// set would capture a partial, per-node-divergent set (an optimistic self-add is
+// not yet committed), so the freeze is driven by the commit path instead. Until it
+// is frozen, HoldersForEpoch reports epoch 0 unresolved and the commit loop waits;
+// it never reads the live, mutating set on the anchor path.
 func (d *DAG) InitEpochHolders() {}
 
 // commitEpochForRound returns the epoch whose holder snapshot an ATX committed
@@ -414,16 +413,17 @@ func (d *DAG) CommitEpochForRound(round uint64) uint64 {
 
 // HoldersForEpoch returns the holder snapshot for the given epoch, selecting the
 // current snapshot for currentEpoch and the retained previous snapshot for
-// currentEpoch-1. It returns false for any other epoch (too old or in the future).
+// currentEpoch-1. It NEVER falls back to the live, mutating validator set on the
+// anchor path: a missing snapshot returns false so the commit loop WAITs. During
+// the genesis epoch the current snapshot is the frozen genesis holder set (frozen
+// from committed registrations at the strict latch, refrozen as the committed set
+// grows before it); until it is frozen, epoch 0 is unresolved and the loop waits.
 func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 	if epoch == d.currentEpoch {
 		if d.epochHolders != nil {
 			return d.epochHolders, true
 		}
-		// TODO: remove this genesis live-set fallback (Task 0.5) — the live set mutates
-		// during epoch 0 and can diverge across nodes; a frozen genesis holder snapshot
-		// replaces it.
-		return d.validators, true
+		return nil, false
 	}
 
 	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
@@ -432,16 +432,16 @@ func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 
 	// One epoch ahead: resolve to the frozen forward proxy so the anchor rule can
 	// cross an epoch tail. The proxy is frozen at the first transition; during the
-	// genesis epoch (currentEpoch 0, no churn yet) the next epoch's holders are still
-	// the live set, so fall back to it. Without this the first epoch boundary is
-	// undecidable — its round-N+1 citers fall in epoch 1 — and the commit loop wedges
-	// on it before any transition can freeze a proxy.
+	// genesis epoch (currentEpoch 0, no proxy yet) the round-N+1 citers of the epoch-0
+	// tail fall in epoch 1, so resolve them to the frozen GENESIS committee (not the
+	// live set). Without this the first epoch boundary is undecidable and the commit
+	// loop wedges on it before any transition can freeze a proxy.
 	if epoch == d.currentEpoch+1 {
 		if d.nextEpochHolders != nil {
 			return d.nextEpochHolders, true
 		}
-		if d.currentEpoch == 0 {
-			return d.validators, true
+		if d.currentEpoch == 0 && d.epochHolders != nil {
+			return d.epochHolders, true
 		}
 	}
 

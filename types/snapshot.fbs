@@ -95,6 +95,13 @@ table Snapshot {
     // millionths. It is stateful (the loop steps from the previous value), so it
     // is persisted and checksum-covered rather than re-derived.
     issuance_rate_micro:uint64;
+
+    // epoch_state is the opaque consensus regime state a joiner must import to
+    // resolve epochs past the first boundary: the current epoch, the holder
+    // snapshots, and the strict latch, encoded by the consensus package. Without it
+    // a node landing after the first boundary cannot resolve HoldersForEpoch and
+    // wedges. Checksum-covered.
+    epoch_state:[ubyte];
 }
 
 // SnapshotRequest is sent by a node to request the current snapshot.

@@ -460,16 +460,25 @@ func TestInitEpochHolders(t *testing.T) {
 
 	dag.InitEpochHolders()
 
-	// The genesis epoch keeps no frozen snapshot: epochHolders stays nil so that
-	// the still-forming set is never frozen at a partial, per-node-divergent
-	// membership. HoldersForEpoch must then resolve epoch 0 to the live set.
+	// InitEpochHolders is a no-op: the genesis epoch keeps no snapshot from the live
+	// (still-forming, per-node-divergent) set. Until the genesis snapshot is frozen
+	// from committed registrations, epoch 0 is UNRESOLVED — HoldersForEpoch returns
+	// false so the anchor path waits, never falling back to the live set.
 	if dag.epochHolders != nil {
 		t.Fatal("epochHolders should remain nil in the genesis epoch")
 	}
 
+	if _, ok := dag.HoldersForEpoch(0); ok {
+		t.Fatal("genesis epoch must NOT resolve to the live set before the snapshot is frozen")
+	}
+
+	// Once the genesis snapshot is frozen from the committed committee, epoch 0
+	// resolves to that frozen snapshot.
+	freezeGenesis(dag)
+
 	holders, ok := dag.HoldersForEpoch(0)
 	if !ok {
-		t.Fatal("genesis epoch holders should resolve to the live set")
+		t.Fatal("genesis epoch holders should resolve to the frozen genesis snapshot")
 	}
 
 	if holders.Len() != 4 {
@@ -1694,6 +1703,7 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 	// genesis does. With a single staked validator it carries the whole capped
 	// stake and reaches quorum on its own.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the genesis committee so the anchor path resolves epoch 0
 
 	// With 1 staked validator, round R is committed when its stake is a 2/3
 	// majority of the holder snapshot and there is a vertex at round R+2.

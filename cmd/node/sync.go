@@ -23,6 +23,7 @@ type snapshotResult struct {
 	trackerEntries     []consensus.ObjectTrackerEntry // trackerEntries is the set of object tracker entries
 	domainEntries      []state.DomainEntry            // domainEntries is the set of domain mappings from the snapshot
 	issuanceRateMicro  uint64                         // issuanceRateMicro is the restored thermostat rate, applied via a DAG construction Option
+	regimeState        []byte                         // regimeState is the consensus epoch/latch state, applied via WithSyncedRegimeState so a joiner past the first boundary resolves epochs
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -216,6 +217,7 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		trackerEntries:     sync.ExtractTrackerEntries(snapshot),
 		domainEntries:      sync.ExtractDomains(snapshot),
 		issuanceRateMicro:  snapshot.IssuanceRateMicro(),
+		regimeState:        sync.ExtractRegimeState(snapshot),
 	}
 
 	// Import domain entries into state
@@ -248,6 +250,7 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		consensus.WithListenerMode(),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
 		consensus.WithIssuanceRate(result.issuanceRateMicro),
+		consensus.WithSyncedRegimeState(result.regimeState),
 	}
 
 	if n.cfg.EpochLength > 0 {
@@ -281,6 +284,7 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		consensus.WithMinValidators(n.cfg.MinValidators),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
 		consensus.WithIssuanceRate(result.issuanceRateMicro),
+		consensus.WithSyncedRegimeState(result.regimeState),
 	}
 
 	if n.cfg.GossipFanout > 0 {

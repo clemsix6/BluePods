@@ -95,7 +95,7 @@ func (d *DAG) directAnchorVerdict(round uint64) (anchorVerdict, Hash) {
 		return verdictWait, Hash{}
 	}
 
-	return d.verdictFromTally(set, d.tallyCitations(round, producer))
+	return d.verdictFromTally(set, d.tallyCitations(round, producer), d.roundIsRelaxed(round))
 }
 
 // tallyCitations classifies each round-N+1 producer as a supporter of every
@@ -176,34 +176,65 @@ func collectCitedCandidates(vertex *types.Vertex, candidates, votes map[Hash]boo
 	}
 }
 
-// verdictFromTally reduces a citation tally to a verdict over the round-N+1 stake
-// set: certified when one vertex's supporters reach the quorum, blamed when the
-// blamers reach it, undecided otherwise. Certified is tested first; certified and
-// blamed cannot both hold, since two 2/3 quorums over one stake set intersect.
-// Vertices are scanned hash-ascending, so the result stays deterministic even if
-// the honest-majority "at most one certifies" property is ever violated.
-func (d *DAG) verdictFromTally(set *ValidatorSet, tally citationTally) (anchorVerdict, Hash) {
+// verdictFromTally reduces a citation tally to a verdict over the round-N+1 holder
+// set. Certified is tested first, hash-ascending, so the candidate is selected by
+// the citations themselves — never by a local view — which keeps an equivocating
+// producer from forking the verdict. In the STRICT regime certified needs the 2/3
+// capped-stake quorum and blamed needs it too; the two are mutually exclusive since
+// two 2/3 quorums over one stake set intersect. In the RELAXED bootstrap regime a
+// single committed supporter certifies (the existing single-producer certificate),
+// and the round is NEVER directly blamed: a thin blame quorum would fork against a
+// peer that certified the vote-determined candidate on a delivery gap (I1), so an
+// absent producer is skipped by the indirect rule instead.
+func (d *DAG) verdictFromTally(set *ValidatorSet, tally citationTally, relaxed bool) (anchorVerdict, Hash) {
 	for _, v := range sortedHashKeys(tally.supporters) {
-		if d.producersReachQuorum(set, tally.supporters[v]) {
+		if d.certifies(set, tally.supporters[v], relaxed) {
 			return verdictCertified, v
 		}
 	}
 
-	if d.producersReachQuorum(set, tally.blamers) {
+	if !relaxed && d.reachesStrictQuorum(set, tally.blamers) {
 		return verdictBlamed, Hash{}
 	}
 
 	return verdictUndecided, Hash{}
 }
 
-// producersReachQuorum reports whether a set of producers carries the 2/3 capped
-// stake quorum within the holder snapshot, using the exact integer test. Producers
-// outside the snapshot contribute zero, so unknown or non-member citers cannot
-// manufacture a quorum.
-func (d *DAG) producersReachQuorum(set *ValidatorSet, producers map[Hash]bool) bool {
-	cappedSum, total := d.cappedStakeOf(set, producers)
+// certifies reports whether a set of supporters certifies its vertex. The strict
+// regime requires the 2/3 capped-stake quorum over the capped total. The relaxed
+// bootstrap regime accepts a single supporter that is a member of the holder set,
+// the existing single-producer certificate, so bootstrap converges before stake
+// weighting is authoritative; membership (not stake) is used so a not-yet-bonded
+// joiner can still certify.
+func (d *DAG) certifies(set *ValidatorSet, producers map[Hash]bool, relaxed bool) bool {
+	if relaxed {
+		return membersInSet(set, producers) >= 1
+	}
 
-	return quorumReached(cappedSum, total)
+	return d.reachesStrictQuorum(set, producers)
+}
+
+// reachesStrictQuorum reports whether a set of producers carries the 2/3 capped
+// stake quorum within the holder snapshot, dividing the capped sum by the capped
+// total. Producers outside the snapshot contribute zero, so unknown or non-member
+// citers cannot manufacture a quorum.
+func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bool {
+	cappedSum, cappedTotal := d.cappedStakeOf(set, producers)
+
+	return quorumReached(cappedSum, cappedTotal)
+}
+
+// membersInSet counts how many of the producers are members of the holder set.
+// Non-members (unknown or non-holder citers) never count toward a relaxed quorum.
+func membersInSet(set *ValidatorSet, producers map[Hash]bool) int {
+	count := 0
+	for _, v := range set.All() {
+		if producers[v.Pubkey] {
+			count++
+		}
+	}
+
+	return count
 }
 
 // resolveIndirect decides an undecided round from a later certified anchor: the

@@ -83,6 +83,17 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 	if d.isEpochBoundary(round) {
 		d.transitionEpoch(round)
 		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.regimeDirty = false
+		return
+	}
+
+	// A committed registration this round may have refrozen the genesis snapshot or
+	// fired the strict latch. Persist that regime change atomically WITH the cursor
+	// (during the genesis epoch, off a boundary) so a restart restores a consistent
+	// (cursor, regime) pair and never wedges on a stale epoch-0 holder set.
+	if d.regimeDirty {
+		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.regimeDirty = false
 		return
 	}
 
@@ -106,16 +117,20 @@ func (d *DAG) commitAnchorBatch(round uint64, anchor Hash) bool {
 	return true
 }
 
-// markQuorumIfDirect latches fullQuorumAchieved when the committed round was
-// certified DIRECTLY by a strict round-N+1 stake quorum. This is the sole caller of
-// markFullQuorumAchieved (it inherits that role from the round-quorum path it
-// replaced): without it fullQuorumAchieved never latches, production quorum stays
-// relaxed, and validateVertex keeps skipping validateParents, so a vertex citing a
-// fabricated parent could enter certified causal history and wedge every node's
-// causal walk on an unfetchable ancestor.
-// TODO(0.5): when the relaxed/strict commit regime split lands, gate this on the
-// strict regime explicitly rather than on a direct certification alone.
+// markQuorumIfDirect latches fullQuorumAchieved when a STRICT-regime round is
+// certified DIRECTLY by a round-N+1 stake quorum. Gating on the strict regime is
+// the deliberate seam: a relaxed round certifies on a single supporter, which is
+// not a BFT quorum, so latching the production posture on it would end convergence
+// early. The strict regime beginning (round >= strictStartRound) is now what makes
+// this fire — the first strict direct certification. It remains the sole caller of
+// markFullQuorumAchieved: without it fullQuorumAchieved never latches, production
+// quorum stays relaxed, and validateVertex keeps skipping validateParents, so a
+// vertex citing a fabricated parent could enter certified causal history.
 func (d *DAG) markQuorumIfDirect(round uint64) {
+	if d.roundIsRelaxed(round) {
+		return
+	}
+
 	if verdict, _ := d.directAnchorVerdict(round); verdict == verdictCertified {
 		d.markFullQuorumAchieved()
 	}
@@ -867,6 +882,11 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	}
 
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
+
+	// Admit the validator to the committed member set and refresh the genesis regime.
+	// This is the committed-only path (never an optimistic self-add), so the frozen
+	// genesis snapshot and the strict latch derive identically on every node (I7).
+	d.recordCommittedMember(pubkey, commitRound)
 
 	d.setRewardCoinFromArgs(tx, pubkey)
 

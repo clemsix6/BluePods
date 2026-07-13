@@ -97,6 +97,14 @@ type DAG struct {
 	transitionRound    atomic.Int64 // round when minValidators was reached (-1 = not yet)
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
 
+	// Regime latch (regime.go): the strict-regime boundary, a pure function of
+	// committed history. Round R runs the relaxed bootstrap certificate iff the
+	// latch is unset or R < strictStartRound. Guarded by commitMu.
+	strictLatched    bool          // strictLatched reports whether the strict latch has fired
+	strictStartRound uint64        // strictStartRound is the first strict-regime round (valid iff strictLatched)
+	committedMembers map[Hash]bool // committedMembers are validators admitted by COMMITTED registrations or genesis, never by an optimistic self-add
+	regimeDirty      bool          // regimeDirty flags that the latch or genesis snapshot changed and must be persisted with the cursor
+
 	// Epoch: frozen validator set for Rendezvous hashing.
 	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
 	currentEpoch      uint64             // currentEpoch is the current epoch number
@@ -559,6 +567,13 @@ func (d *DAG) SeedGenesis(is genesis.InitialState) {
 
 	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
 	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
+
+	// The founder is a committed genesis member: record it and freeze the genesis
+	// holder snapshot so the anchor path resolves epoch 0 without ever reading the
+	// live set. Under commitMu because the commit loop is already running.
+	d.commitMu.Lock()
+	d.recordCommittedMember(is.Pubkey, d.lastCommitted)
+	d.commitMu.Unlock()
 }
 
 // ValidatorSet returns the underlying validator set.
@@ -972,13 +987,16 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 		return false
 	}
 
+	// Production-local quorum check: unlike the anchor path this may weigh against
+	// the live set when no snapshot resolves, because it only gates whether THIS node
+	// produces a vertex — it never decides the committed log, so it cannot fork it.
 	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
 	if !ok {
 		set = d.validators
 	}
 
-	cappedSum, total := d.cappedStakeOf(set, producers)
-	if quorumReached(cappedSum, total) {
+	cappedSum, cappedTotal := d.cappedStakeOf(set, producers)
+	if quorumReached(cappedSum, cappedTotal) {
 		return true
 	}
 
@@ -986,7 +1004,7 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 		"round", round,
 		"validatorProducers", len(producers),
 		"cappedSum", cappedSum,
-		"total", total,
+		"cappedTotal", cappedTotal,
 	)
 
 	return false

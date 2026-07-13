@@ -30,9 +30,11 @@ func TestAnchorProducerDeterministicAcrossInstances(t *testing.T) {
 
 	dagA := New(newTestStorage(t), NewValidatorSet(pubkeys), nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dagA.Close()
+	freezeGenesis(dagA)
 
 	dagB := New(newTestStorage(t), NewValidatorSet(reversed), nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dagB.Close()
+	freezeGenesis(dagB)
 
 	for round := uint64(0); round < 100; round++ {
 		gotA, okA := dagA.anchorProducerFor(round)
@@ -55,6 +57,7 @@ func TestAnchorProducerSpreadAcrossRounds(t *testing.T) {
 	validators, vs := newTestValidatorSet(5)
 	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, validators[0].privKey, nil)
 	defer dag.Close()
+	freezeGenesis(dag)
 
 	members := make(map[Hash]bool, len(validators))
 	for _, v := range validators {

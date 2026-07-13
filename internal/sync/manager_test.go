@@ -43,6 +43,10 @@ func (m *mockSnapshotProvider) IssuanceRateMicro() uint64 {
 	return 0
 }
 
+func (m *mockSnapshotProvider) ExportRegimeState() []byte {
+	return nil
+}
+
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {
 	t.Helper()
 

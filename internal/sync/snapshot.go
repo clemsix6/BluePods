@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 10
+	snapshotVersion = 11
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -45,7 +45,7 @@ var (
 // It iterates over all objects in storage, excluding consensus data.
 // totalSupply is the protocol supply counter and issuanceRateMicro the
 // thermostat's per-epoch rate; both are persisted and checksum-covered.
-func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64) ([]byte, error) {
+func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) ([]byte, error) {
 	objects, err := collectObjects(db)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
@@ -56,7 +56,7 @@ func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators [
 		return nil, fmt.Errorf("collect signatures:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro)
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro, epochState)
 
 	return data, nil
 }
@@ -156,7 +156,7 @@ func isConsensusKey(key []byte) bool {
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
@@ -167,7 +167,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	sortSignatures(signatures)
 
 	// Compute checksum over canonical data (includes tracker entries and domain entries)
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro, epochState)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -272,6 +272,9 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	signaturesVector := builder.EndVector(len(sigOffsets))
 
+	// Opaque consensus regime state (encoded by the consensus package).
+	epochStateOffset := builder.CreateByteVector(epochState)
+
 	types.SnapshotStart(builder)
 	types.SnapshotAddVersion(builder, snapshotVersion)
 	types.SnapshotAddLastCommittedRound(builder, lastCommittedRound)
@@ -284,6 +287,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	types.SnapshotAddSignatures(builder, signaturesVector)
 	types.SnapshotAddTotalSupply(builder, totalSupply)
 	types.SnapshotAddIssuanceRateMicro(builder, issuanceRateMicro)
+	types.SnapshotAddEpochState(builder, epochStateOffset)
 	offset := types.SnapshotEnd(builder)
 	builder.Finish(offset)
 
@@ -409,7 +413,7 @@ func sortObjects(objects []objectEntry) {
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
 // Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures + total_supply (8 bytes) + issuance_rate_micro (8 bytes)
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64) [32]byte {
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -481,6 +485,11 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 	// Write issuance rate (per-epoch, millionths)
 	binary.BigEndian.PutUint64(buf[:], issuanceRateMicro)
 	hasher.Write(buf[:])
+
+	// Write the opaque consensus regime state (length-prefixed).
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(epochState)))
+	hasher.Write(buf[:4])
+	hasher.Write(epochState)
 
 	var checksum [32]byte
 	hasher.Sum(checksum[:0])
@@ -672,7 +681,7 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures, snapshot.TotalSupply(), snapshot.IssuanceRateMicro())
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures, snapshot.TotalSupply(), snapshot.IssuanceRateMicro(), snapshot.EpochStateBytes())
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {
@@ -690,6 +699,21 @@ func ExtractValidators(snapshot *types.Snapshot) []*consensus.ValidatorInfo {
 	}
 
 	return decodeValidators(validatorsData)
+}
+
+// ExtractRegimeState returns the opaque consensus regime state carried in a
+// snapshot, or nil when absent. The joiner passes it to
+// consensus.WithSyncedRegimeState so it can resolve epochs past the first boundary.
+func ExtractRegimeState(snapshot *types.Snapshot) []byte {
+	data := snapshot.EpochStateBytes()
+	if len(data) == 0 {
+		return nil
+	}
+
+	out := make([]byte, len(data))
+	copy(out, data)
+
+	return out
 }
 
 // ExtractVertices extracts DAG vertices from a snapshot.

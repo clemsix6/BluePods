@@ -10,6 +10,11 @@ func setEqualStake(dag *DAG, vals []testValidator, stake uint64) {
 	for _, v := range vals {
 		dag.validators.SetSelfStake(v.pubKey, stake)
 	}
+
+	// Freeze the epoch-0 genesis committee now that stakes are final, so the anchor
+	// path resolves epoch 0 from the frozen snapshot rather than the (removed) live-set
+	// fallback.
+	freezeGenesis(dag)
 }
 
 // addDagVertex builds a signed vertex for v at round with the given parents and

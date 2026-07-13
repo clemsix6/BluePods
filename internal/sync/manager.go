@@ -38,6 +38,11 @@ type SnapshotProvider interface {
 	// IssuanceRateMicro returns the thermostat's current per-epoch issuance rate
 	// in millionths, persisted because the loop steps from the previous value.
 	IssuanceRateMicro() uint64
+
+	// ExportRegimeState returns the opaque consensus regime state (current epoch,
+	// holder snapshots, strict latch) as one consistent cut, so a joiner past the
+	// first epoch boundary can resolve epochs instead of wedging.
+	ExportRegimeState() []byte
 }
 
 // DomainExporter exports domain entries for snapshot inclusion.
@@ -118,6 +123,17 @@ func (m *SnapshotManager) loop() {
 	}
 }
 
+// lastDecidedRound converts the consensus next-to-decide cursor into the last
+// DECIDED round the importer expects: cursor-1, or 0 when nothing has been decided.
+// This keeps the exported cursor semantic aligned with WithLastCommittedRound (I4).
+func lastDecidedRound(cursor uint64) uint64 {
+	if cursor == 0 {
+		return 0
+	}
+
+	return cursor - 1
+}
+
 // vertexHistoryRounds is how many rounds of vertices to include in snapshot.
 // This should be large enough to cover the buffer period plus some safety margin.
 // Too small causes chain divergence when new nodes miss intermediate rounds.
@@ -125,7 +141,11 @@ const vertexHistoryRounds = 100
 
 // createSnapshot creates a new snapshot and stores it.
 func (m *SnapshotManager) createSnapshot() {
-	commitRound := m.provider.LastCommittedRound()
+	// Export the LAST-DECIDED round, not the next-to-decide cursor: the importer's
+	// WithLastCommittedRound(round) sets lastCommitted = round+1, so exporting the
+	// cursor (next-to-decide) would set the joiner one round ahead and silently skip
+	// a round on every join (I4). LastCommittedRound() is the next-to-decide cursor.
+	commitRound := lastDecidedRound(m.provider.LastCommittedRound())
 	currentRound := m.provider.Round()
 
 	// Skip if no new rounds since last snapshot
@@ -159,7 +179,7 @@ func (m *SnapshotManager) createSnapshot() {
 	}
 
 	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro())
+	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro(), m.provider.ExportRegimeState())
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return
