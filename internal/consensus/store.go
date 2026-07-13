@@ -1,7 +1,9 @@
 package consensus
 
 import (
+	"bytes"
 	"encoding/binary"
+	"sort"
 	"sync"
 
 	"BluePods/internal/storage"
@@ -96,6 +98,46 @@ func (s *store) getByRound(round uint64) []Hash {
 	copy(result, hashes)
 
 	return result
+}
+
+// getByRoundProducer returns every locally-held vertex hash produced by producer
+// at round, sorted ascending by hash bytes. The order is derived from the hashes
+// alone, so two nodes that ingested an equivocator's vertices in different arrival
+// orders return the identical slice. It deliberately returns ALL of an
+// equivocator's vertices rather than picking a local winner: a locally-chosen
+// candidate is view-dependent and would fork the committed log. Arbitration among
+// them is by vote in the commit rule, never here. The bool is false when the
+// producer holds no vertex at the round.
+func (s *store) getByRoundProducer(round uint64, producer Hash) ([]Hash, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matches []Hash
+	for _, hash := range s.byRound[round] {
+		if s.producerAt(round, hash) == producer {
+			matches = append(matches, hash)
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return bytes.Compare(matches[i][:], matches[j][:]) < 0
+	})
+
+	return matches, len(matches) > 0
+}
+
+// producerAt reads the producer recorded for a vertex in the round index. It
+// returns the zero hash when the round-index entry is missing or malformed.
+func (s *store) producerAt(round uint64, hash Hash) Hash {
+	var producer Hash
+
+	data, err := s.db.Get(makeRoundKey(round, hash))
+	if err != nil || len(data) != 32 {
+		return producer
+	}
+
+	copy(producer[:], data)
+	return producer
 }
 
 // countByRound returns the number of vertices in a round.

@@ -1,6 +1,10 @@
 package validators
 
-import "sync"
+import (
+	"bytes"
+	"sort"
+	"sync"
+)
 
 // Hash is a 32-byte identifier for vertices and validators.
 type Hash [32]byte
@@ -314,6 +318,25 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	}
 
 	return result
+}
+
+// SortedKeys returns the validators' pubkeys sorted in ascending byte order.
+// The order is derived from the keys alone, so it is identical on every node
+// regardless of the order validators were added, which makes it a stable basis
+// for deterministic selection (such as anchor designation).
+func (vs *ValidatorSet) SortedKeys() []Hash {
+	vs.mu.RLock()
+	keys := make([]Hash, len(vs.validators))
+	for i, v := range vs.validators {
+		keys[i] = v.Pubkey
+	}
+	vs.mu.RUnlock()
+
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i][:], keys[j][:]) < 0
+	})
+
+	return keys
 }
 
 // Index returns the index of a validator in the set, or -1 if not found.
