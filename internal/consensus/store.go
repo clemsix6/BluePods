@@ -154,6 +154,16 @@ func (s *store) producerAt(round uint64, hash Hash) Hash {
 	return producer
 }
 
+// highestRound returns the greatest round for which any vertex is stored. It
+// bounds the anchor rule's forward scan so an undecided round yields WAIT rather
+// than scanning unboundedly.
+func (s *store) highestRound() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.latestRound
+}
+
 // countByRound returns the number of vertices in a round.
 func (s *store) countByRound(round uint64) int {
 	s.mu.RLock()

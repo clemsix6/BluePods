@@ -58,6 +58,14 @@ func (d *DAG) transitionEpoch(round uint64) {
 	}
 
 	d.snapshotEpochHolders()
+
+	// Freeze a one-epoch-ahead snapshot so the anchor rule's forward scan can weigh
+	// round-N+1 producers that fall in the next epoch when resolving a split at this
+	// epoch's tail, before that epoch's own boundary has transitioned. Absent the
+	// next epoch's real membership (churn is applied at its own boundary), the next
+	// epoch inherits this epoch's frozen holders as the agreed forward proxy.
+	d.nextEpochHolders = d.epochHolders
+
 	d.clearEpochState()
 
 	d.currentEpoch++
@@ -417,6 +425,13 @@ func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 
 	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
 		return d.prevEpochHolders, true
+	}
+
+	// One epoch ahead: resolve to the frozen forward proxy so the anchor rule can
+	// cross an epoch tail. It exists only after the first transition, so the genesis
+	// epoch (handled by the relaxed regime) is unaffected.
+	if epoch == d.currentEpoch+1 && d.nextEpochHolders != nil {
+		return d.nextEpochHolders, true
 	}
 
 	return nil, false

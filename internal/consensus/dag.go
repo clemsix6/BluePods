@@ -102,6 +102,7 @@ type DAG struct {
 	currentEpoch      uint64             // currentEpoch is the current epoch number
 	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
 	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	nextEpochHolders  *ValidatorSet      // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
 	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
 	epochAdditions    []Hash             // epochAdditions are validators added this epoch
 	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
