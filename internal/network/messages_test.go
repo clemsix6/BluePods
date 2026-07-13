@@ -311,3 +311,62 @@ func TestGossipTxRoundTrip(t *testing.T) {
 		t.Fatal("an untagged vertex must not decode as a gossip transaction")
 	}
 }
+
+// TestGetVertexRoundTrip verifies the mesh vertex-fetch request encodes, classifies
+// as a client request (a tag absent from clientRequestTags would never route), and
+// round-trips its 32-byte hash.
+func TestGetVertexRoundTrip(t *testing.T) {
+	var h [32]byte
+	for i := range h {
+		h[i] = byte(i + 1)
+	}
+
+	enc := EncodeGetVertex(&GetVertexRequest{Hash: h})
+
+	if enc[0] != MsgTagGetVertex {
+		t.Fatalf("get-vertex tag missing: got 0x%02x", enc[0])
+	}
+
+	if !IsClientMessage(enc) {
+		t.Fatal("get-vertex request must classify as a client request, or it never routes")
+	}
+
+	decoded, err := DecodeGetVertex(enc)
+	if err != nil {
+		t.Fatalf("DecodeGetVertex: %v", err)
+	}
+
+	if decoded.Hash != h {
+		t.Fatalf("hash round-trip mismatch: got %x, want %x", decoded.Hash, h)
+	}
+}
+
+// TestGetVertexRespRoundTrip verifies the vertex-fetch response round-trips both a
+// found payload and a not-found result.
+func TestGetVertexRespRoundTrip(t *testing.T) {
+	body := []byte{0x0c, 0x00, 0x00, 0x00, 0xAA, 0xBB}
+
+	enc := EncodeGetVertexResp(&GetVertexResponse{Found: true, Data: body})
+
+	decoded, err := DecodeGetVertexResp(enc)
+	if err != nil {
+		t.Fatalf("DecodeGetVertexResp: %v", err)
+	}
+
+	if !decoded.Found {
+		t.Fatal("expected Found=true")
+	}
+
+	if string(decoded.Data) != string(body) {
+		t.Fatalf("vertex body mismatch: got %x, want %x", decoded.Data, body)
+	}
+
+	notFound, err := DecodeGetVertexResp(EncodeGetVertexResp(&GetVertexResponse{Found: false}))
+	if err != nil {
+		t.Fatalf("DecodeGetVertexResp not-found: %v", err)
+	}
+
+	if notFound.Found {
+		t.Fatal("expected Found=false")
+	}
+}

@@ -70,6 +70,14 @@ type DAG struct {
 	commitMu      sync.Mutex
 	lastCommitted uint64 // lastCommitted is the next round to commit
 
+	// Missing-ancestor recovery: when a decided anchor's causal batch is blocked on
+	// an absent ancestor for two consecutive commit ticks, the missing ancestry is
+	// requested from mesh peers through vertexFetcher. All three fields are guarded by
+	// commitMu (the whole commit path holds it).
+	vertexFetcher VertexFetcher // vertexFetcher requests missing ancestry from peers (nil = recovery disabled)
+	stallAnchor   Hash          // stallAnchor is the anchor the commit cursor is currently blocked on
+	stallTicks    int           // stallTicks counts consecutive commit ticks stalled on stallAnchor
+
 	// Pending vertices buffer for out-of-order arrival
 	pendingMu       sync.Mutex
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
@@ -510,6 +518,47 @@ func (d *DAG) AddValidator(pubkey Hash, quicAddr string, blsPubkey [48]byte) {
 // Must be called after DAG creation, before transactions are committed.
 func (d *DAG) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
 	d.isHolder = fn
+}
+
+// VertexFetcher requests vertices that are missing locally from mesh peers. The
+// commit loop calls it when a decided anchor's causal history is not fully present.
+// Implementations MUST be asynchronous and non-blocking: FetchVertices is invoked
+// under the commit lock and must never perform network I/O inline.
+type VertexFetcher interface {
+	// FetchVertices requests the given vertex hashes from peers. It must return
+	// immediately; a fetched vertex re-enters through AddVertex and is picked up by
+	// the commit loop on a later tick.
+	FetchVertices(hashes []Hash)
+}
+
+// SetVertexFetcher installs the fetcher the commit loop uses to recover a decided
+// anchor's missing ancestry. It is nil-safe: with no fetcher set the recovery
+// trigger is a no-op and the node relies on gossip and the pending buffer alone.
+// EVERY node construction path must call this — a fetcher left unset ships
+// missing-ancestor recovery as dead code, and a joiner whose ancestry is never
+// gossiped stalls. Called at construction, before heavy commit activity.
+func (d *DAG) SetVertexFetcher(f VertexFetcher) {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	d.vertexFetcher = f
+}
+
+// VertexFetcherWired reports whether a vertex fetcher has been installed. It lets
+// each node construction path be tested to actually wire missing-ancestor recovery,
+// guarding the exact regression that once shipped it as dead code.
+func (d *DAG) VertexFetcherWired() bool {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	return d.vertexFetcher != nil
+}
+
+// VertexBytes returns the raw serialized bytes of a locally-held vertex by hash, or
+// nil when it is absent. It backs the mesh vertex-fetch handler, which serves the
+// single requested vertex and enumerates nothing else.
+func (d *DAG) VertexBytes(hash Hash) []byte {
+	return d.store.getRaw(hash)
 }
 
 // TrackObject registers a created object in the tracker.

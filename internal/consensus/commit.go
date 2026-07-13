@@ -58,15 +58,67 @@ func (d *DAG) commitNextRound() bool {
 	status := d.anchorStatus(round)
 
 	if status.kind == anchorWait {
+		d.clearStall()
 		return false
 	}
 
 	if status.kind == anchorCommit && !d.commitAnchorBatch(round, status.anchor) {
-		return false // anchor ancestry not fully local yet; the pending buffer delivers it
+		// Anchor decided, but its causal history is not fully local. Gossip and the
+		// pending buffer retry passively; after two consecutive stalled ticks, ask
+		// mesh peers for the missing ancestry.
+		d.onCausalStall(status.anchor)
+		return false
 	}
 
+	d.clearStall()
 	d.advanceCommitCursor(round)
 	return true
+}
+
+// onCausalStall records that the commit cursor's decided anchor is blocked on absent
+// causal history for another tick, and after two consecutive stalled ticks asks mesh
+// peers for the missing ancestry. The two-tick delay first gives gossip and the
+// pending buffer (a passive retry queue) a chance to deliver. It keeps re-requesting
+// each stalled tick thereafter; the fetcher's in-flight dedup bounds that to one
+// outstanding request per hash, so it is a retry, not a storm. Runs under commitMu.
+// I6 (deferred, out of scope): a gap on an UNDECIDED round has no trigger here.
+func (d *DAG) onCausalStall(anchor Hash) {
+	if d.stallAnchor != anchor {
+		d.stallAnchor = anchor
+		d.stallTicks = 1
+		return
+	}
+
+	d.stallTicks++
+	if d.stallTicks >= 2 {
+		d.requestMissingAncestors(anchor)
+	}
+}
+
+// clearStall resets the stall accounting when the cursor advances or the round is
+// not yet decidable, so the next stall starts its two-tick count fresh. Runs under
+// commitMu.
+func (d *DAG) clearStall() {
+	d.stallAnchor = Hash{}
+	d.stallTicks = 0
+}
+
+// requestMissingAncestors hands the anchor's absent causal frontier to the vertex
+// fetcher. It is a no-op when no fetcher is wired (nil-safe) or nothing is missing.
+// The fetcher is asynchronous, so this returns without blocking the commit loop on
+// network I/O; a fetched vertex re-enters through AddVertex and is picked up on a
+// later tick. Runs under commitMu.
+func (d *DAG) requestMissingAncestors(anchor Hash) {
+	if d.vertexFetcher == nil {
+		return
+	}
+
+	missing := d.store.missingAncestors(anchor)
+	if len(missing) == 0 {
+		return
+	}
+
+	d.vertexFetcher.FetchVertices(missing)
 }
 
 // advanceCommitCursor moves the persisted commit cursor past the decided round and,

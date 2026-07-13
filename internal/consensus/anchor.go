@@ -105,6 +105,46 @@ func (s *store) collectCausal(anchor Hash) ([]causalEntry, bool) {
 	return collected, true
 }
 
+// missingAncestors walks a decided anchor's causal history and returns the hashes
+// of every referenced vertex that is absent locally — the frontier the commit loop
+// is blocked on. It mirrors collectCausal's walk (same committed and commit-floor
+// bounds, same parent links) but, instead of aborting at the first gap, records
+// each absent hash and keeps going, so one call surfaces the whole current
+// frontier. An absent vertex's own ancestry is unknown and cannot be walked, so a
+// deeper gap only surfaces on a later call once this frontier arrives. The order is
+// arrival-derived and not relied upon: the fetcher deduplicates and the walk re-runs
+// each stalled tick.
+func (s *store) missingAncestors(anchor Hash) []Hash {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[Hash]bool)
+	queue := []Hash{anchor}
+	var missing []Hash
+
+	for len(queue) > 0 {
+		hash := queue[0]
+		queue = queue[1:]
+
+		if seen[hash] || s.committedVertices[hash] {
+			continue
+		}
+		seen[hash] = true
+
+		vertex := s.get(hash)
+		if vertex == nil {
+			missing = append(missing, hash)
+			continue
+		}
+
+		if round := vertex.Round(); !s.belowCommitFloor(round) {
+			queue = appendParentHashes(queue, vertex)
+		}
+	}
+
+	return missing
+}
+
 // belowCommitFloor reports whether round is at or below the snapshot commit floor,
 // meaning the vertex is already committed and must bound the causal walk.
 func (s *store) belowCommitFloor(round uint64) bool {

@@ -268,6 +268,10 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		opts...,
 	)
 
+	// Wire missing-ancestor recovery (synced-listener construction site). A listener
+	// commits the ordered log too, so it needs active recovery for liveness.
+	n.dag.SetVertexFetcher(n.newVertexFetcher())
+
 	n.setupValidatorCallback()
 
 	return nil
@@ -303,6 +307,9 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		n.state,
 		opts...,
 	)
+
+	// Wire missing-ancestor recovery (synced-validator construction site).
+	n.dag.SetVertexFetcher(n.newVertexFetcher())
 
 	logger.Info("DAG created for validator mode",
 		"validators", n.dag.ValidatorsInfo(),
