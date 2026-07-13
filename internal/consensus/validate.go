@@ -173,7 +173,7 @@ func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 // This is intentionally a presence check, not the authoritative quorum. The
 // authoritative quorum is stake-weighted (3*cappedSum >= 2*total over the epoch
 // holder snapshot) and is enforced at production in hasQuorumFromRound and at
-// commit in isRoundCommitted. A receiving node cannot recompute another node's
+// commit by the anchor rule (directAnchorVerdict). A receiving node cannot recompute another node's
 // stake-weighted quorum during convergence (validator sets and stakes may differ
 // transiently), so here it only confirms the vertex links at least one producer
 // it recognizes; the producing validator already enforced the real quorum.

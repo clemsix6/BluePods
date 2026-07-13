@@ -10,6 +10,13 @@ var prefixCommitted = []byte("vc/")
 // at or below which every vertex is treated as already committed after a sync.
 var commitFloorKey = append(append([]byte{}, prefixMeta...), []byte("commitFloor")...)
 
+// commitCursorKey is the metadata key holding the commit cursor: the next round the
+// commit loop will decide. Persisted so a restart resumes strictly past already
+// decided rounds and never re-derives a decision the churned holder set would answer
+// differently. Distinct from the commit floor: a skipped round advances the cursor
+// but not the floor, so its still-uncommitted vertices ride a later commit batch.
+var commitCursorKey = append(append([]byte{}, prefixMeta...), []byte("commitCursor")...)
+
 // isVertexCommitted reports whether the vertex has already been included in a
 // commit batch.
 func (s *store) isVertexCommitted(hash Hash) bool {
@@ -75,6 +82,24 @@ func (s *store) saveCommitFloor(round uint64) {
 	data := make([]byte, 8)
 	binary.BigEndian.PutUint64(data, round)
 	_ = s.db.Set(commitFloorKey, data)
+}
+
+// loadCommitCursor restores the persisted commit cursor at boot. The bool is false
+// when no cursor has been persisted (a fresh node), leaving the caller's default.
+func (s *store) loadCommitCursor() (uint64, bool) {
+	data, err := s.db.Get(commitCursorKey)
+	if err != nil || len(data) < 8 {
+		return 0, false
+	}
+
+	return binary.BigEndian.Uint64(data), true
+}
+
+// saveCommitCursor persists the commit cursor (the next round to decide).
+func (s *store) saveCommitCursor(round uint64) {
+	data := make([]byte, 8)
+	binary.BigEndian.PutUint64(data, round)
+	_ = s.db.Set(commitCursorKey, data)
 }
 
 // makeCommittedKey creates the storage key for a vertex's committed flag.

@@ -428,10 +428,18 @@ func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 	}
 
 	// One epoch ahead: resolve to the frozen forward proxy so the anchor rule can
-	// cross an epoch tail. It exists only after the first transition, so the genesis
-	// epoch (handled by the relaxed regime) is unaffected.
-	if epoch == d.currentEpoch+1 && d.nextEpochHolders != nil {
-		return d.nextEpochHolders, true
+	// cross an epoch tail. The proxy is frozen at the first transition; during the
+	// genesis epoch (currentEpoch 0, no churn yet) the next epoch's holders are still
+	// the live set, so fall back to it. Without this the first epoch boundary is
+	// undecidable — its round-N+1 citers fall in epoch 1 — and the commit loop wedges
+	// on it before any transition can freeze a proxy.
+	if epoch == d.currentEpoch+1 {
+		if d.nextEpochHolders != nil {
+			return d.nextEpochHolders, true
+		}
+		if d.currentEpoch == 0 {
+			return d.validators, true
+		}
 	}
 
 	return nil, false

@@ -35,83 +35,84 @@ func (d *DAG) commitLoop() {
 	}
 }
 
-// checkCommits looks for newly committed vertices.
-// Processes rounds sequentially: stops at the first uncommitted round
-// to avoid skipping rounds and losing them permanently.
+// checkCommits advances the commit cursor round by round. Each round is decided by
+// the anchor rule (commit, skip, or wait); commit batches are applied in
+// deterministic order, and the loop stops at the first round that cannot yet be
+// decided. Replaces the arrival-order round scan so every node commits the identical
+// ordered log regardless of the order vertices arrived in.
 func (d *DAG) checkCommits() {
 	d.commitMu.Lock()
 	defer d.commitMu.Unlock()
 
-	currentRound := d.round.Load()
-	if currentRound < 2 {
-		return
-	}
-
-	for round := d.lastCommitted; round <= currentRound-2; round++ {
-		if !d.isRoundCommitted(round) {
-			break
-		}
-
-		logger.Debug("committing round", "round", round)
-		d.commitRound(round)
-		d.lastCommitted = round + 1
-
-		// Check for epoch boundary after committing the round
-		if d.isEpochBoundary(round) {
-			d.transitionEpoch(round)
-		}
+	for d.commitNextRound() {
 	}
 }
 
-// isRoundCommitted checks if a round has reached commit (referenced by N+2 quorum).
-// The authoritative quorum is stake-weighted: the round+2 producers must carry a
-// 2/3 majority of capped effective stake in the holder snapshot for this round's
-// commit epoch (HoldersForEpoch(commitEpochForRound), the SAME snapshot production
-// reads, so they never weigh against different stake sets across a boundary).
-// During bootstrap and the transition/convergence window the check is relaxed to a
-// single producer (genesis seeds stake, but early convergence still needs a single
-// producer to make progress). Marks fullQuorumAchieved when a round commits with
-// strict stake quorum after the relaxed window.
-func (d *DAG) isRoundCommitted(round uint64) bool {
-	round2Hashes := d.store.getByRound(round + 2)
+// commitNextRound decides the round at the commit cursor and advances past it. It
+// returns true when the cursor advanced (so the loop continues) and false to stop:
+// on WAIT (not yet decidable) or on a COMMIT whose anchor ancestry is still in
+// flight. SKIP and an applied COMMIT both advance the cursor, so lastCommitted moves
+// forward on every decision.
+func (d *DAG) commitNextRound() bool {
+	round := d.lastCommitted
+	status := d.anchorStatus(round)
 
-	producers := d.knownProducersAt(round2Hashes)
-	if len(producers) == 0 {
+	if status.kind == anchorWait {
 		return false
 	}
 
-	// Relaxed bootstrap/transition: a single known producer commits the round so
-	// the network can converge before stake weighting becomes authoritative.
-	if d.isCommitQuorumRelaxed(round) {
-		return true
+	if status.kind == anchorCommit && !d.commitAnchorBatch(round, status.anchor) {
+		return false // anchor ancestry not fully local yet; the pending buffer delivers it
 	}
 
-	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
-	if !ok {
-		set = d.validators
-	}
-
-	cappedSum, total := d.cappedStakeOf(set, producers)
-	committed := quorumReached(cappedSum, total)
-
-	// Commit-side signal that the network has truly converged on strict quorum.
-	if committed {
-		d.markFullQuorumAchieved()
-	}
-
-	return committed
+	d.advanceCommitCursor(round)
+	return true
 }
 
-// isCommitQuorumRelaxed reports whether the commit quorum for a round should be
-// relaxed to a single producer: during init (before minValidators) so all nodes
-// observe the bootstrap chain, and during the transition/convergence window so
-// late-propagating vertices do not stall progress.
-func (d *DAG) isCommitQuorumRelaxed(round uint64) bool {
-	if d.minValidators > 0 && d.validators.Len() < d.minValidators {
-		return true
+// advanceCommitCursor moves the persisted commit cursor past the decided round and,
+// when that round is an epoch boundary, transitions the epoch. Persisting the cursor
+// BEFORE the transition is the resolve-before-transition guarantee: a restarted node
+// resumes strictly after this round and never re-derives its decision against the
+// churned holder set the transition installs.
+func (d *DAG) advanceCommitCursor(round uint64) {
+	d.lastCommitted = round + 1
+	d.store.saveCommitCursor(d.lastCommitted)
+
+	if d.isEpochBoundary(round) {
+		d.transitionEpoch(round)
+	}
+}
+
+// commitAnchorBatch applies the anchor's causal batch in deterministic order and
+// latches full quorum on a direct certification. It returns false when the anchor's
+// causal history is not fully present locally, so the caller stops and retries once
+// the pending-parent buffer delivers the missing ancestor.
+func (d *DAG) commitAnchorBatch(round uint64, anchor Hash) bool {
+	batch, ok := d.store.causalBatch(anchor)
+	if !ok {
+		return false
 	}
 
-	return d.isRoundInTransitionOrBuffer(round + 2)
+	logger.Debug("committing anchor batch", "round", round, "vertices", len(batch))
+	d.applyBatch(round, batch)
+	d.markQuorumIfDirect(round)
+
+	return true
+}
+
+// markQuorumIfDirect latches fullQuorumAchieved when the committed round was
+// certified DIRECTLY by a strict round-N+1 stake quorum. This is the sole caller of
+// markFullQuorumAchieved (it inherits that role from the round-quorum path it
+// replaced): without it fullQuorumAchieved never latches, production quorum stays
+// relaxed, and validateVertex keeps skipping validateParents, so a vertex citing a
+// fabricated parent could enter certified causal history and wedge every node's
+// causal walk on an unfetchable ancestor.
+// TODO(0.5): when the relaxed/strict commit regime split lands, gate this on the
+// strict regime explicitly rather than on a direct certification alone.
+func (d *DAG) markQuorumIfDirect(round uint64) {
+	if verdict, _ := d.directAnchorVerdict(round); verdict == verdictCertified {
+		d.markFullQuorumAchieved()
+	}
 }
 
 // knownProducersAt returns the set of distinct known-validator producers among the
@@ -136,54 +137,51 @@ func (d *DAG) knownProducersAt(hashes []Hash) map[Hash]bool {
 	return producers
 }
 
-// commitRound processes all transactions from a committed round.
-// Tracks per-validator round production and accumulates epoch fees.
-//
-// Before applying, it verifies the round's BLS quorum proofs in one parallel
-// gate: collectRoundProofs gathers every proof-bearing ATX in committed order,
-// the batch verifier checks their signatures across cores, and the resulting
-// per-ATX verdicts feed the sequential apply below. The verdict for each ATX is
-// the same value the inline sequential verifier would have produced, so the set
-// of accepted ATXs and their apply order are unchanged.
-func (d *DAG) commitRound(round uint64) {
-	hashes := d.store.getByRound(round)
+// producerRound keys liveness crediting by (producer, round) so an equivocating
+// producer's two vertices in the same round of one batch are credited once, while a
+// producer with vertices in several rounds of one batch is credited for each round.
+type producerRound struct {
+	producer Hash   // producer is the producing validator
+	round    uint64 // round is the vertex's round
+}
+
+// applyBatch applies every vertex of a committed anchor batch in the batch's
+// deterministic (round-then-hash) order, then marks each committed so no later batch
+// revisits it. commitRound is the deciding round, passed unchanged to the proof gate
+// and processTransactions so epoch and proof selection match the prior per-round
+// path. Before applying, verifyRoundProofs verifies the batch's BLS quorum proofs in
+// one parallel pass whose per-ATX verdicts feed the sequential apply in the identical
+// order, so the set of accepted ATXs is unchanged.
+func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 	d.epochTotalRounds++
 
-	verdicts := d.verifyRoundProofs(round, hashes)
+	verdicts := d.verifyRoundProofs(commitRound, batch)
+	credited := make(map[producerRound]bool)
 
-	// Track which producers were already credited liveness for THIS round so an
-	// equivocating producer (two distinct vertices in the same round) is credited
-	// once. Liveness is per distinct round, not per vertex; double-credit would
-	// inflate that producer's effective_stake x liveness reward share.
-	creditedThisRound := make(map[Hash]bool)
-
-	for _, h := range hashes {
+	for _, h := range batch {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
-		// Credit round production per validator at most once per round.
-		producer := extractProducer(v)
-		if !creditedThisRound[producer] {
-			creditedThisRound[producer] = true
-			d.epochRoundsProduced[producer]++
-		}
-
-		fees := d.processTransactions(v, round, verdicts)
-
-		// Accumulate epoch fees from vertex fee summary
-		d.epochFees += fees.Epoch
-
-		if fees.Total > 0 {
-			logger.Debug("vertex fees",
-				"round", round,
-				"total", fees.Total,
-				"burned", fees.Burned,
-				"epoch", fees.Epoch,
-			)
-		}
+		d.creditLiveness(v, credited)
+		d.epochFees += d.processTransactions(v, commitRound, verdicts).Epoch
+		d.store.markVertexCommitted(h)
 	}
+}
+
+// creditLiveness credits a vertex's producer one round of liveness, deduped by
+// (producer, round) within the batch so an equivocating producer's same-round
+// vertices count once. Liveness is per distinct round, not per vertex; a double
+// credit would inflate that producer's effective_stake x liveness reward share.
+func (d *DAG) creditLiveness(v *types.Vertex, credited map[producerRound]bool) {
+	key := producerRound{producer: extractProducer(v), round: v.Round()}
+	if credited[key] {
+		return
+	}
+
+	credited[key] = true
+	d.epochRoundsProduced[key.producer]++
 }
 
 // proofVerdicts carries the parallel proof-verification result of a round to the

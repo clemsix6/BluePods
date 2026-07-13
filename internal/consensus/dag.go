@@ -331,6 +331,13 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	}
 	d.transitionRound.Store(-1) // not yet in transition
 
+	// Resume the commit cursor from persisted state so a restart never re-derives an
+	// already decided round. A snapshot option (WithLastCommittedRound) applies below
+	// and takes precedence for a freshly synced node.
+	if cursor, ok := d.store.loadCommitCursor(); ok {
+		d.lastCommitted = cursor
+	}
+
 	for _, opt := range opts {
 		opt(d)
 	}
