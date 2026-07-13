@@ -333,12 +333,19 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 		"count", len(validators),
 	)
 
-	// Add each validator with their full info (pubkey + QUIC address + BLS key)
+	// Add each validator with their full info: pubkey, QUIC address, BLS key AND
+	// stake. The stake must be carried, not dropped: the genesis holder snapshot is
+	// refrozen from this live set whenever a registration commits during the genesis
+	// epoch (freezeGenesisHolders reads d.validators), so a stake-less founder here
+	// would refreeze a zero-stake committee — its capped stake total collapses to zero
+	// and the joiner can never reach the production or strict-commit quorum, wedging
+	// the relaxed bootstrap on a committed member that can never produce.
 	for _, v := range validators {
-		vs.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
+		vs.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
 			"quic", v.QUICAddr,
+			"selfStake", v.SelfStake,
 		)
 	}
 

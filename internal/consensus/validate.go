@@ -146,14 +146,15 @@ func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 			return nil
 		}
 
-		// If the parent is in the pending buffer, skip validation.
-		// The parent was received from the network but not yet processed.
-		// With sorted pending processing, it will be added to the store
-		// before or alongside this vertex.
-		if d.hasPendingVertex(parentHash) {
-			return nil
-		}
-
+		// The parent is a known validator's vertex that is not yet stored (it may be
+		// sitting in the pending buffer). Do NOT admit this child with an absent
+		// parent: a stored vertex whose round-(R-1) parent is missing lets the commit
+		// loop read a different round-R candidate/citation set than a peer that has the
+		// parent, so the causal batch composition — and the round at which a
+		// registration commits, hence when the committee grows — becomes arrival-order
+		// dependent and forks the committed log during bootstrap. Return the missing-
+		// parent error so AddVertex buffers this child and reprocesses it once the
+		// parent is stored, keeping the store causally closed.
 		logger.Debug("missing parent",
 			"parentHash", hex.EncodeToString(parentHash[:8]),
 			"parentProducer", hex.EncodeToString(parentProducer[:8]),

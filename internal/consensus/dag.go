@@ -798,16 +798,15 @@ func (d *DAG) tryProduceVertex() {
 		return
 	}
 
-	// Non-bootstrap nodes wait until minValidators threshold is reached.
-	// This prevents chain divergence during network initialization.
-	if !d.isBootstrap && d.minValidators > 0 && d.validators.Len() < d.minValidators {
-		logger.Debug("cannot produce: waiting for min validators",
-			"current", d.validators.Len(),
-			"required", d.minValidators)
-		return
-	}
-
-	// Security: only registered validators can produce vertices
+	// Security and liveness gate: a node produces once it is itself a registered
+	// validator (its self-add or a committed registration put it in the set) — never
+	// waiting for the full minValidators set. Under the deterministic anchor rule a
+	// committed validator is the designated anchor producer for a share of rounds; if a
+	// registered validator withheld production until it saw the whole set, its
+	// designated relaxed rounds could never certify and the commit cursor would wedge
+	// before the set ever reached minValidators (a bootstrap deadlock). The committed
+	// log stays deterministic regardless of who produces, so early production cannot
+	// fork it.
 	if !d.validators.Contains(d.pubKey) {
 		logger.Debug("cannot produce: not in validator set",
 			"pubkey", hex.EncodeToString(d.pubKey[:8]),
@@ -1194,15 +1193,6 @@ func (d *DAG) isUnknownProducerError(err error) bool {
 
 	errStr := err.Error()
 	return len(errStr) > 17 && errStr[:17] == "unknown producer:"
-}
-
-// hasPendingVertex checks if a vertex with the given hash is in the pending buffer.
-func (d *DAG) hasPendingVertex(hash Hash) bool {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-
-	_, exists := d.pendingVertices[hash]
-	return exists
 }
 
 // bufferPendingVertex adds a vertex to the pending buffer.
