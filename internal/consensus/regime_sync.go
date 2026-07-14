@@ -47,6 +47,11 @@ func (d *DAG) encodeRegimeState() []byte {
 	buf = appendMemberBlob(buf, d.prevEligibleHolders)
 	buf = appendMemberBlob(buf, d.nextEligibleHolders)
 
+	// Epoch settlement accumulators: a joiner landing mid-epoch must reach the
+	// boundary with the same fees and liveness as the source, or the reward mint
+	// forks (C-2). Length-prefixed, so the tail is append-only safe.
+	buf = d.appendEpochAccumulators(buf)
+
 	return buf
 }
 
@@ -118,7 +123,12 @@ func (d *DAG) applyRegimeState(blob []byte) {
 	d.producedMembers, rest = readMemberBlob(rest)
 	d.eligibleHolders, rest = readMemberBlob(rest)
 	d.prevEligibleHolders, rest = readMemberBlob(rest)
-	d.nextEligibleHolders, _ = readMemberBlob(rest)
+	d.nextEligibleHolders, rest = readMemberBlob(rest)
+
+	// Install the carried settlement accumulators so the joiner mints identically at
+	// the next boundary. An older, shorter blob leaves rest empty and keeps the zero
+	// accumulators.
+	d.readEpochAccumulators(rest)
 
 	d.restoreCommittedMembers()
 }

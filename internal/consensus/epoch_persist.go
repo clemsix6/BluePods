@@ -60,7 +60,9 @@ func (d *DAG) epochStateKVs() []storage.KeyValue {
 		kvs = append(kvs, storage.KeyValue{Key: strictStartRoundKey, Value: start})
 	}
 
-	return kvs
+	// The settlement accumulators ride the same atomic batch, so a boundary or dirty
+	// write persists the reward-mint inputs together with the holder snapshots.
+	return append(kvs, d.accumulatorKVs()...)
 }
 
 // restoreEpochState restores the persisted epoch counter and holder snapshots at
@@ -73,6 +75,11 @@ func (d *DAG) epochStateKVs() []storage.KeyValue {
 // snapshot-carried epoch state on the sync path.
 func (d *DAG) restoreEpochState() {
 	d.restoreStrictLatch()
+
+	// Restore the settlement accumulators unconditionally: they advance every
+	// committed round, including within the genesis epoch that persists no epoch
+	// counter, so they must be restored even when currentEpochKey is absent.
+	d.restoreAccumulators()
 
 	epoch, ok := d.store.loadMetaUint64(currentEpochKey)
 	if !ok {

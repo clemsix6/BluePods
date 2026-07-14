@@ -99,13 +99,6 @@ func (s *store) loadCommitCursor() (uint64, bool) {
 	return binary.BigEndian.Uint64(data), true
 }
 
-// saveCommitCursor persists the commit cursor (the next round to decide).
-func (s *store) saveCommitCursor(round uint64) {
-	data := make([]byte, 8)
-	binary.BigEndian.PutUint64(data, round)
-	_ = s.db.Set(commitCursorKey, data)
-}
-
 // saveCommitCursorBatch atomically persists the commit cursor together with extra
 // metadata pairs (the epoch-boundary state) in ONE Pebble batch. Writing the cursor
 // and the epoch state together closes the crash window in which a cursor advanced

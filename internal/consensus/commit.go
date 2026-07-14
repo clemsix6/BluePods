@@ -199,7 +199,12 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 		return
 	}
 
-	d.store.saveCommitCursor(d.lastCommitted)
+	// Off a boundary and with no regime/produced change, the cursor still rides the
+	// batch WITH the settlement accumulators: every committed round advanced the fees
+	// and per-validator liveness, and committed flags prevent re-deriving them by
+	// replay, so persisting them with the cursor keeps a restart's reward mint exact
+	// (C-2). The holder snapshots are unchanged here, so they are not rewritten.
+	d.store.saveCommitCursorBatch(d.lastCommitted, d.accumulatorKVs())
 }
 
 // commitAnchorBatch applies the anchor's causal batch in deterministic order and
