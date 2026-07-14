@@ -269,12 +269,15 @@ func makeRoundKey(round uint64, hash Hash) []byte {
 
 // VertexEntry represents a vertex with its round for snapshot serialization.
 type VertexEntry struct {
-	Round uint64
-	Data  []byte
+	Round     uint64 // Round is the vertex's DAG round
+	Data      []byte // Data is the serialized vertex (FlatBuffers Vertex)
+	Committed bool   // Committed reports whether the vertex was already folded into a commit batch at the export cut
 }
 
-// ExportVertices returns all vertices from the given round range.
-// Used for snapshot creation.
+// ExportVertices returns all vertices from the given round range, each tagged with
+// whether it was already folded into a commit batch. The committed flag is read
+// from committedVertices under the same lock as byRound, so it pairs with the
+// exported vertices at vertex grain (C-1). Used for snapshot creation.
 func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -287,8 +290,9 @@ func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 			data := s.getRaw(hash)
 			if data != nil {
 				entries = append(entries, VertexEntry{
-					Round: round,
-					Data:  data,
+					Round:     round,
+					Data:      data,
+					Committed: s.committedVertices[hash],
 				})
 			}
 		}
@@ -297,23 +301,39 @@ func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 	return entries
 }
 
-// ImportVertices loads vertices from snapshot data and rebuilds the index. Every
-// imported vertex at a round at or below lastCommittedRound is marked committed,
-// and the commit floor is raised to that round, so the first causal walk after a
-// sync never re-applies the imported history. Returns the highest round imported.
-func (s *store) ImportVertices(entries []VertexEntry, lastCommittedRound uint64) uint64 {
+// ImportVertices loads vertices from snapshot data and rebuilds the index. A vertex
+// is marked committed EXACTLY when its entry carries the committed flag (the
+// source's committed frontier at vertex grain), never by a round threshold: an
+// uncommitted same-round sibling of a decided anchor must stay uncommitted so it
+// rides a later batch, as it does on the source (C-1). The commit floor is set one
+// below the lowest imported round, so it bounds the causal walk strictly below the
+// imported window without ever standing in for the committed marker. Returns the
+// highest round imported.
+func (s *store) ImportVertices(entries []VertexEntry) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var maxRound uint64
+	var maxRound, minRound uint64
+	minSet := false
 
 	for _, entry := range entries {
-		if s.importVertexLocked(entry, lastCommittedRound) && entry.Round > maxRound {
+		if !minSet || entry.Round < minRound {
+			minRound = entry.Round
+			minSet = true
+		}
+
+		if s.importVertexLocked(entry) && entry.Round > maxRound {
 			maxRound = entry.Round
 		}
 	}
 
-	s.setCommitFloorLocked(lastCommittedRound)
+	// Bound the walk strictly below the imported window (minRound). Pre-window rounds
+	// were not imported and their vertices are already-applied history the committed
+	// flags stop the walk at; the floor is only the backstop below them. Round 0 has
+	// nothing beneath it, so no floor is set when the window reaches the origin.
+	if minSet && minRound > 0 {
+		s.setCommitFloorLocked(minRound - 1)
+	}
 
 	if maxRound > s.latestRound {
 		s.latestRound = maxRound
@@ -324,9 +344,9 @@ func (s *store) ImportVertices(entries []VertexEntry, lastCommittedRound uint64)
 }
 
 // importVertexLocked persists one snapshot vertex and its round-index entry,
-// marking it committed when it is at or below lastCommittedRound. It returns false
-// when the vertex already exists. The caller must hold s.mu.
-func (s *store) importVertexLocked(entry VertexEntry, lastCommittedRound uint64) bool {
+// marking it committed only when the entry's committed flag is set. It returns
+// false when the vertex already exists. The caller must hold s.mu.
+func (s *store) importVertexLocked(entry VertexEntry) bool {
 	vertex := types.GetRootAsVertex(entry.Data, 0)
 
 	var hash, producer Hash
@@ -341,7 +361,7 @@ func (s *store) importVertexLocked(entry VertexEntry, lastCommittedRound uint64)
 	_ = s.db.Set(makeRoundKey(entry.Round, hash), producer[:])
 	s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
 
-	if entry.Round <= lastCommittedRound {
+	if entry.Committed {
 		s.markVertexCommittedLocked(hash)
 	}
 

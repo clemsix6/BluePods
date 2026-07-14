@@ -716,7 +716,7 @@ func (d *DAG) importVerticesLocked(entries []VertexEntry) uint64 {
 		producers[producer] = true
 	}
 
-	maxRound := d.store.ImportVertices(entries, d.importCommitFloor())
+	maxRound := d.store.ImportVertices(entries)
 
 	// Advance local round to match imported state
 	d.updateRound(maxRound)
@@ -730,18 +730,6 @@ func (d *DAG) importVerticesLocked(entries []VertexEntry) uint64 {
 	logger.Info("sync mode enabled", "trustedProducers", len(producers))
 
 	return maxRound
-}
-
-// importCommitFloor returns the snapshot commit floor for an import: the last
-// committed round, or 0 when nothing has committed yet. lastCommitted is the next
-// round to commit, so the floor is one below it. Read before the background
-// goroutines start, so no lock is taken.
-func (d *DAG) importCommitFloor() uint64 {
-	if d.lastCommitted == 0 {
-		return 0
-	}
-
-	return d.lastCommitted - 1
 }
 
 // ExportTrackerEntries returns all tracked objects for snapshot.

@@ -64,7 +64,8 @@ func waitFrontierStore(t *testing.T) (st *store, wedgeRound uint64, missing Hash
 	validators, _ := newTestValidatorSet(2)
 	v0, v1 := validators[0], validators[1]
 
-	// Import a committed chain rounds 1..5 (floor = 5).
+	// Import a committed chain rounds 1..5: the entries carry the committed flag, so
+	// the walk stops at the committed round-5 parent, not at a round floor.
 	r1d, r1 := buildRoundVertex(t, v0, 1, nil)
 	r2d, r2 := buildRoundVertex(t, v0, 2, []Hash{r1})
 	r3d, r3 := buildRoundVertex(t, v0, 3, []Hash{r2})
@@ -73,9 +74,10 @@ func waitFrontierStore(t *testing.T) (st *store, wedgeRound uint64, missing Hash
 
 	st = newStore(newTestStorage(t))
 	st.ImportVertices([]VertexEntry{
-		{Round: 1, Data: r1d}, {Round: 2, Data: r2d}, {Round: 3, Data: r3d},
-		{Round: 4, Data: r4d}, {Round: 5, Data: r5d},
-	}, 5)
+		{Round: 1, Data: r1d, Committed: true}, {Round: 2, Data: r2d, Committed: true},
+		{Round: 3, Data: r3d, Committed: true}, {Round: 4, Data: r4d, Committed: true},
+		{Round: 5, Data: r5d, Committed: true},
+	})
 
 	// The round-6 vertex the joiner is missing (built but never stored).
 	_, missing = buildRoundVertex(t, v1, 6, []Hash{r5})
@@ -99,7 +101,7 @@ func TestMissingFrontierAbove_SurfacesGapAboveFloor(t *testing.T) {
 	}
 
 	// Deliver the missing vertex (as a successful fetch's AddVertex would): the frontier
-	// is then empty because the walk stops at the committed round-5 parent (below floor).
+	// is then empty because the walk stops at the committed round-5 parent (its flag set).
 	validators, _ := newTestValidatorSet(2)
 	_, r5 := buildRoundVertex(t, validators[0], 5, nil)
 	_ = r5

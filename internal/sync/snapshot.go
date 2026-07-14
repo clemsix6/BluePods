@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 11
+	snapshotVersion = 12
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -41,17 +41,31 @@ var (
 	prefixDomain  = []byte("d:")
 )
 
+// keyIterator is the read surface CreateSnapshot needs to collect object and
+// signature state: whole-store and prefix iteration. Both *storage.Storage and
+// *storage.Snapshot satisfy it, so the snapshot manager can pass a consistent cut
+// (a storage snapshot taken inside the commit hold) instead of the live store.
+type keyIterator interface {
+	// Iterate visits every key-value pair in lexicographic key order.
+	Iterate(fn func(key, value []byte) error) error
+
+	// IteratePrefix visits every key-value pair with the given prefix.
+	IteratePrefix(prefix []byte, fn func(key, value []byte) error) error
+}
+
 // CreateSnapshot creates a snapshot of the current committed state.
-// It iterates over all objects in storage, excluding consensus data.
-// totalSupply is the protocol supply counter and issuanceRateMicro the
+// It iterates over all objects in src, excluding consensus data. src is a
+// consistent read view (a storage snapshot taken inside the commit cut), so the
+// objects and signatures pair with the same committed frontier as the cursor and
+// vertices. totalSupply is the protocol supply counter and issuanceRateMicro the
 // thermostat's per-epoch rate; both are persisted and checksum-covered.
-func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) ([]byte, error) {
-	objects, err := collectObjects(db)
+func CreateSnapshot(src keyIterator, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) ([]byte, error) {
+	objects, err := collectObjects(src)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
 	}
 
-	signatures, err := collectSignatures(db)
+	signatures, err := collectSignatures(src)
 	if err != nil {
 		return nil, fmt.Errorf("collect signatures:\n%w", err)
 	}
@@ -61,11 +75,11 @@ func CreateSnapshot(db *storage.Storage, lastCommittedRound uint64, validators [
 	return data, nil
 }
 
-// collectObjects iterates storage and returns all objects (excluding consensus data).
-func collectObjects(db *storage.Storage) ([]objectEntry, error) {
+// collectObjects iterates src and returns all objects (excluding consensus data).
+func collectObjects(src keyIterator) ([]objectEntry, error) {
 	var objects []objectEntry
 
-	err := db.Iterate(func(key, value []byte) error {
+	err := src.Iterate(func(key, value []byte) error {
 		if isConsensusKey(key) {
 			return nil
 		}
@@ -112,10 +126,10 @@ type sigEntry struct {
 
 // collectSignatures scans the objsig: prefix and returns the stored signatures.
 // Stored values are version_u64_BE(8) || sig(96); malformed entries are skipped.
-func collectSignatures(db *storage.Storage) ([]sigEntry, error) {
+func collectSignatures(src keyIterator) ([]sigEntry, error) {
 	var sigs []sigEntry
 
-	err := db.IteratePrefix(prefixObjectSig, func(key, value []byte) error {
+	err := src.IteratePrefix(prefixObjectSig, func(key, value []byte) error {
 		if len(key) != len(prefixObjectSig)+32 || len(value) != 8+blsSignatureSize {
 			return nil
 		}
@@ -204,6 +218,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 		types.SnapshotVertexStart(builder)
 		types.SnapshotVertexAddRound(builder, v.Round)
 		types.SnapshotVertexAddData(builder, dataOffset)
+		types.SnapshotVertexAddCommitted(builder, v.Committed)
 		vertexOffsets[i] = types.SnapshotVertexEnd(builder)
 	}
 
@@ -737,8 +752,9 @@ func ExtractVertices(snapshot *types.Snapshot) []consensus.VertexEntry {
 		copy(dataCopy, data)
 
 		entries[i] = consensus.VertexEntry{
-			Round: v.Round(),
-			Data:  dataCopy,
+			Round:     v.Round(),
+			Data:      dataCopy,
+			Committed: v.Committed(),
 		}
 	}
 

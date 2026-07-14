@@ -375,16 +375,17 @@ func TestCausalBatchDeterministicAcrossFeedOrders(t *testing.T) {
 	}
 }
 
-// TestCausalBatchImportFloorExcludesRoundsAtOrBelow verifies that after
-// ImportVertices with a snapshot round R, no vertex at round <= R appears in a
-// later batch. Imported vertices are marked committed, and the floor is a second
-// guard that also excludes a non-committed vertex at round <= R (a late arrival).
-func TestCausalBatchImportFloorExcludesRoundsAtOrBelow(t *testing.T) {
+// TestCausalBatchImportExcludesByCommittedFlag pins the C-1 semantics: after an
+// import, exclusion from a later batch is by the per-vertex committed FLAG, never by
+// a round threshold. A committed vertex is excluded; an uncommitted same-round
+// sibling of a decided anchor is NOT dropped — it rides the next batch, exactly as it
+// would on the source (the old round-floor wrongly dropped it, losing its effects).
+func TestCausalBatchImportExcludesByCommittedFlag(t *testing.T) {
 	validators, _ := newTestValidatorSet(2)
 	v0, v1 := validators[0], validators[1]
-	const snapshotRound = 5
 
-	// Snapshot chain rounds 1..5, imported as a snapshot committed up to round 5.
+	// Snapshot chain rounds 1..5, all folded into a commit batch on the source, so
+	// every entry carries the committed flag.
 	r1d, r1 := buildRoundVertex(t, v0, 1, nil)
 	r2d, r2 := buildRoundVertex(t, v0, 2, []Hash{r1})
 	r3d, r3 := buildRoundVertex(t, v0, 3, []Hash{r2})
@@ -392,37 +393,48 @@ func TestCausalBatchImportFloorExcludesRoundsAtOrBelow(t *testing.T) {
 	r5d, r5 := buildRoundVertex(t, v0, 5, []Hash{r4})
 
 	entries := []VertexEntry{
-		{Round: 1, Data: r1d}, {Round: 2, Data: r2d}, {Round: 3, Data: r3d},
-		{Round: 4, Data: r4d}, {Round: 5, Data: r5d},
+		{Round: 1, Data: r1d, Committed: true}, {Round: 2, Data: r2d, Committed: true},
+		{Round: 3, Data: r3d, Committed: true}, {Round: 4, Data: r4d, Committed: true},
+		{Round: 5, Data: r5d, Committed: true},
 	}
 
 	s := newStore(newTestStorage(t))
-	s.ImportVertices(entries, snapshotRound)
+	s.ImportVertices(entries)
 
 	if !s.isVertexCommitted(r5) {
-		t.Fatal("imported vertex at the snapshot round must be marked committed")
+		t.Fatal("an imported vertex carrying the committed flag must be marked committed")
 	}
 
-	// A late, non-committed round-5 vertex (distinct producer) arriving after the
-	// import: only the floor keeps it out of the batch.
+	// A round-5 sibling of the imported chain that the source had NOT yet committed
+	// (a late arrival at the cut). It rode no batch on the source and must ride one here.
 	lateData, late := buildRoundVertex(t, v1, 5, []Hash{r4})
 	s.add(lateData, late, 5, v1.pubKey)
 
-	// Anchor at round 6 references both the imported and the late round-5 vertex.
+	// Anchor at round 6 references both the committed round-5 vertex and the sibling.
 	anchor := addRoundVertex(t, s, v0, 6, []Hash{r5, late})
 
 	batch, ok := s.causalBatch(anchor)
 	if !ok {
-		t.Fatal("expected ok: round-5 ancestors are present, just below the floor")
+		t.Fatal("expected ok: every referenced round-5 ancestor is present locally")
 	}
 
-	if len(batch) != 1 || batch[0] != anchor {
-		t.Fatalf("expected only the round-6 anchor, got %x", batch)
+	// The committed r5 is excluded; the uncommitted sibling and the anchor are kept.
+	if len(batch) != 2 {
+		t.Fatalf("expected the uncommitted sibling and the anchor, got %x", batch)
 	}
+
+	got := map[Hash]bool{}
 	for _, h := range batch {
-		if h == late {
-			t.Fatal("floor must exclude the non-committed round-5 vertex")
-		}
+		got[h] = true
+	}
+	if got[r5] {
+		t.Fatal("committed round-5 vertex must be excluded by its flag")
+	}
+	if !got[late] {
+		t.Fatal("uncommitted round-5 sibling must NOT be dropped: it rides this batch")
+	}
+	if !got[anchor] {
+		t.Fatal("the round-6 anchor must be in its own batch")
 	}
 }
 

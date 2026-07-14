@@ -294,6 +294,44 @@ func TestChecksumVerification_Valid(t *testing.T) {
 	}
 }
 
+// TestSnapshot_VertexCommittedFlagRoundtrip is the C-1 wire assertion: the
+// per-vertex committed flag survives a CreateSnapshot -> ExtractVertices round-trip
+// unchanged, so a joiner marks exactly the vertices the source had committed. If the
+// flag were dropped, a joiner would either re-apply committed history or (as the
+// round-grain cut did) mark uncommitted anchor siblings committed without effects.
+func TestSnapshot_VertexCommittedFlagRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	vertices := []consensus.VertexEntry{
+		{Round: 3, Data: []byte("committed-vertex"), Committed: true},
+		{Round: 4, Data: []byte("inflight-vertex"), Committed: false},
+	}
+
+	data, err := CreateSnapshot(db, 3, nil, vertices, nil, nil, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snap := types.GetRootAsSnapshot(data, 0)
+	got := ExtractVertices(snap)
+	if len(got) != 2 {
+		t.Fatalf("extracted %d vertices, want 2", len(got))
+	}
+
+	committedByRound := map[uint64]bool{}
+	for _, v := range got {
+		committedByRound[v.Round] = v.Committed
+	}
+
+	if !committedByRound[3] {
+		t.Error("round-3 vertex lost its committed flag across the round-trip")
+	}
+	if committedByRound[4] {
+		t.Error("round-4 in-flight vertex must not be marked committed across the round-trip")
+	}
+}
+
 // TestSnapshot_TotalSupplyRoundtrip confirms total_supply survives a snapshot
 // round-trip and is covered by the checksum (tampering it fails verification).
 func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {

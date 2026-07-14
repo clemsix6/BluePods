@@ -1,6 +1,10 @@
 package consensus
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"BluePods/internal/storage"
+)
 
 // The regime state a sync snapshot must carry so a joiner landing AFTER the first
 // epoch boundary is not left with zero epoch state (which would make HoldersForEpoch
@@ -20,6 +24,14 @@ func (d *DAG) ExportRegimeState() (cursor uint64, blob []byte) {
 	d.commitMu.Lock()
 	defer d.commitMu.Unlock()
 
+	return d.lastCommitted, d.encodeRegimeState()
+}
+
+// encodeRegimeState serializes the regime state a sync snapshot carries: the epoch
+// counter, the strict latch, the three holder snapshots, the eligibility sets, and
+// the epoch settlement accumulators. The caller must hold commitMu so the encoded
+// bytes pair with a consistent commit cursor.
+func (d *DAG) encodeRegimeState() []byte {
 	buf := binary.BigEndian.AppendUint64(nil, d.currentEpoch)
 	buf = append(buf, boolByte(d.strictLatched))
 	buf = binary.BigEndian.AppendUint64(buf, d.strictStartRound)
@@ -35,7 +47,41 @@ func (d *DAG) ExportRegimeState() (cursor uint64, blob []byte) {
 	buf = appendMemberBlob(buf, d.prevEligibleHolders)
 	buf = appendMemberBlob(buf, d.nextEligibleHolders)
 
-	return d.lastCommitted, buf
+	return buf
+}
+
+// ConsistentCut is a single atomic read of the committed frontier for a snapshot:
+// the commit cursor, the encoded regime state, the vertices in the requested round
+// range tagged with their committed flags, and the object tracker entries — all
+// captured under one commitMu hold so they pair with the same committed history.
+// DBSnapshot is a storage snapshot taken inside that hold, from which the caller
+// collects object and signature state at the identical cut; the caller MUST Close
+// it. This closes the I2/I3 torn-read window where the cursor was read atomically
+// but the vertices, tracker, and objects were collected afterwards, unlocked.
+type ConsistentCut struct {
+	Cursor         uint64               // Cursor is the raw next-to-decide commit cursor
+	Regime         []byte               // Regime is the encoded epoch/latch/accumulator state
+	Vertices       []VertexEntry        // Vertices are the exported vertices with committed flags
+	TrackerEntries []ObjectTrackerEntry // TrackerEntries are the object versions/replication/fees
+	DBSnapshot     *storage.Snapshot    // DBSnapshot is the consistent object/signature view; caller closes it
+}
+
+// ExportConsistentCut captures the whole snapshot cut under one commitMu hold: the
+// commit cursor, the regime blob, the committed-flagged vertices in [fromRound,
+// toRound], the tracker entries, and a storage snapshot for object/signature
+// collection. Holding commitMu excludes the commit loop, so every field reflects
+// the same committed frontier.
+func (d *DAG) ExportConsistentCut(fromRound, toRound uint64) ConsistentCut {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	return ConsistentCut{
+		Cursor:         d.lastCommitted,
+		Regime:         d.encodeRegimeState(),
+		Vertices:       d.store.ExportVertices(fromRound, toRound),
+		TrackerEntries: d.tracker.Export(),
+		DBSnapshot:     d.store.db.Snapshot(),
+	}
 }
 
 // WithSyncedRegimeState installs sync-carried regime state at construction. It runs

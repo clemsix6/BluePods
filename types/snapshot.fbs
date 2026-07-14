@@ -19,6 +19,13 @@ table SnapshotVertex {
 
     // data is the serialized vertex (FlatBuffers Vertex).
     data:[ubyte];
+
+    // committed reports whether this vertex was already folded into a commit
+    // batch at the snapshot's consistent cut. It carries the committed frontier at
+    // vertex grain: a joiner marks exactly these committed, so uncommitted
+    // same-round siblings of a decided anchor are not dropped (they ride a later
+    // batch, as on the source).
+    committed:bool;
 }
 
 // ObjectVersion tracks the current version and replication of an object.

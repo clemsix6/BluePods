@@ -13,6 +13,7 @@ import (
 // mockSnapshotProvider implements SnapshotProvider for testing.
 type mockSnapshotProvider struct {
 	round uint64
+	db    *storage.Storage // db backs the consistent-cut storage snapshot
 }
 
 func (m *mockSnapshotProvider) Round() uint64 {
@@ -20,14 +21,6 @@ func (m *mockSnapshotProvider) Round() uint64 {
 }
 
 func (m *mockSnapshotProvider) ValidatorsInfo() []*consensus.ValidatorInfo {
-	return nil
-}
-
-func (m *mockSnapshotProvider) ExportVertices(fromRound, toRound uint64) []consensus.VertexEntry {
-	return nil
-}
-
-func (m *mockSnapshotProvider) ExportTrackerEntries() []consensus.ObjectTrackerEntry {
 	return nil
 }
 
@@ -39,8 +32,14 @@ func (m *mockSnapshotProvider) IssuanceRateMicro() uint64 {
 	return 0
 }
 
-func (m *mockSnapshotProvider) ExportRegimeState() (uint64, []byte) {
-	return m.round, nil
+// ExportConsistentCut returns a cut whose cursor is the mock round and whose
+// storage snapshot is taken from the manager's backing db, so CreateSnapshot can
+// collect (empty) object state from a real consistent view.
+func (m *mockSnapshotProvider) ExportConsistentCut(fromRound, toRound uint64) consensus.ConsistentCut {
+	return consensus.ConsistentCut{
+		Cursor:     m.round,
+		DBSnapshot: m.db.Snapshot(),
+	}
 }
 
 func createTestStorageForManager(t *testing.T) (*storage.Storage, func()) {
@@ -69,7 +68,7 @@ func TestSnapshotManager_CreatesInitialSnapshot(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
 
-	provider := &mockSnapshotProvider{round: 10}
+	provider := &mockSnapshotProvider{round: 10, db: db}
 	manager := NewSnapshotManager(db, provider)
 
 	manager.Start()
@@ -92,7 +91,7 @@ func TestSnapshotManager_UpdatesOnNewRound(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
 
-	provider := &mockSnapshotProvider{round: 5}
+	provider := &mockSnapshotProvider{round: 5, db: db}
 
 	// Use shorter interval for testing
 	manager := NewSnapshotManager(db, provider)
@@ -125,7 +124,7 @@ func TestSnapshotManager_SkipsIfNoNewCommits(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
 
-	provider := &mockSnapshotProvider{round: 10}
+	provider := &mockSnapshotProvider{round: 10, db: db}
 
 	manager := NewSnapshotManager(db, provider)
 	manager.interval = 50 * time.Millisecond
@@ -156,7 +155,7 @@ func TestSnapshotManager_StopsCleanly(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
 
-	provider := &mockSnapshotProvider{round: 0}
+	provider := &mockSnapshotProvider{round: 0, db: db}
 	manager := NewSnapshotManager(db, provider)
 
 	manager.Start()
@@ -180,7 +179,7 @@ func TestSnapshotManager_LatestBeforeStart(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
 
-	provider := &mockSnapshotProvider{round: 0}
+	provider := &mockSnapshotProvider{round: 0, db: db}
 	manager := NewSnapshotManager(db, provider)
 
 	// Don't start the manager
