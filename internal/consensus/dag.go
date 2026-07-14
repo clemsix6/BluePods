@@ -77,6 +77,8 @@ type DAG struct {
 	vertexFetcher VertexFetcher // vertexFetcher requests missing ancestry from peers (nil = recovery disabled)
 	stallAnchor   Hash          // stallAnchor is the anchor the commit cursor is currently blocked on
 	stallTicks    int           // stallTicks counts consecutive commit ticks stalled on stallAnchor
+	waitRound     uint64        // waitRound is the round the commit cursor is currently WAITing on
+	waitTicks     int           // waitTicks counts consecutive commit ticks the cursor has WAITed on waitRound
 
 	// Pending vertices buffer for out-of-order arrival
 	pendingMu       sync.Mutex

@@ -58,7 +58,7 @@ func (d *DAG) commitNextRound() bool {
 	status := d.anchorStatus(round)
 
 	if status.kind == anchorWait {
-		d.clearStall()
+		d.onWaitStall(round)
 		return false
 	}
 
@@ -81,7 +81,6 @@ func (d *DAG) commitNextRound() bool {
 // pending buffer (a passive retry queue) a chance to deliver. It keeps re-requesting
 // each stalled tick thereafter; the fetcher's in-flight dedup bounds that to one
 // outstanding request per hash, so it is a retry, not a storm. Runs under commitMu.
-// I6 (deferred, out of scope): a gap on an UNDECIDED round has no trigger here.
 func (d *DAG) onCausalStall(anchor Hash) {
 	if d.stallAnchor != anchor {
 		d.stallAnchor = anchor
@@ -95,12 +94,59 @@ func (d *DAG) onCausalStall(anchor Hash) {
 	}
 }
 
-// clearStall resets the stall accounting when the cursor advances or the round is
-// not yet decidable, so the next stall starts its two-tick count fresh. Runs under
+// onWaitStall records that the commit cursor has WAITed at the same UNDECIDED round
+// for another tick and, after two consecutive stalls, fetches the missing causal
+// frontier above that round. Without this, a WAIT has no fetch trigger (the former
+// I6 hole): a synced joiner that jumped past the in-flight frontier on import lacks
+// historical vertices in the rounds between its floor and its join round, forward
+// gossip never redelivers them, and the relaxed regime never blames the absent
+// designated producer — so the cursor WAITs forever. Fetching delivers the missing
+// vertices so the UNCHANGED verdict rule can decide (commit or skip). A WAIT is not a
+// decided-anchor causal stall, so the causal-stall accounting is reset here. Runs
+// under commitMu.
+func (d *DAG) onWaitStall(round uint64) {
+	d.stallAnchor = Hash{}
+	d.stallTicks = 0
+
+	if d.waitRound != round {
+		d.waitRound = round
+		d.waitTicks = 1
+		return
+	}
+
+	d.waitTicks++
+	if d.waitTicks >= 2 {
+		d.requestMissingFrontier(round)
+	}
+}
+
+// clearStall resets both the causal-stall and the WAIT-stall accounting when the
+// cursor advances, so the next stall starts its two-tick count fresh. Runs under
 // commitMu.
 func (d *DAG) clearStall() {
 	d.stallAnchor = Hash{}
 	d.stallTicks = 0
+	d.waitRound = 0
+	d.waitTicks = 0
+}
+
+// requestMissingFrontier hands the absent causal frontier above the wedged round to
+// the vertex fetcher. It is a no-op when no fetcher is wired (nil-safe) or nothing is
+// missing. Like requestMissingAncestors it is asynchronous and in-flight
+// deduplicated, so it retries safely each stalled tick; unlike it, it seeds the walk
+// from the whole forward frontier the node holds rather than a single decided anchor,
+// which is what an UNDECIDED wedge needs. Runs under commitMu.
+func (d *DAG) requestMissingFrontier(round uint64) {
+	if d.vertexFetcher == nil {
+		return
+	}
+
+	missing := d.store.missingFrontierAbove(round)
+	if len(missing) == 0 {
+		return
+	}
+
+	d.vertexFetcher.FetchVertices(missing)
 }
 
 // requestMissingAncestors hands the anchor's absent causal frontier to the vertex

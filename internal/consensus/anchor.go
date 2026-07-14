@@ -157,6 +157,54 @@ func (s *store) belowCommitFloor(round uint64) bool {
 	return s.commitFloorSet && round <= s.commitFloor
 }
 
+// missingFrontierAbove returns the hashes of every vertex referenced by the stored,
+// not-yet-committed vertices at rounds >= fromRound that is absent locally, bounded
+// by the commit floor. Unlike missingAncestors, which walks a single DECIDED anchor,
+// it seeds the walk from the WHOLE forward frontier the node holds, so a commit
+// cursor wedged on an UNDECIDED round — where no decided anchor exists to seed the
+// walk — can still surface the historical vertices it is missing. A synced joiner
+// that jumped past the in-flight frontier on import lacks vertices in the rounds
+// between its floor and its join round, which forward gossip never redelivers; this
+// is the frontier it must fetch to make progress. The order is arrival-derived and
+// not relied upon: the fetcher deduplicates and the walk re-runs each stalled tick.
+func (s *store) missingFrontierAbove(fromRound uint64) []Hash {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[Hash]bool)
+	var queue []Hash
+
+	for round, hashes := range s.byRound {
+		if round >= fromRound {
+			queue = append(queue, hashes...)
+		}
+	}
+
+	var missing []Hash
+
+	for len(queue) > 0 {
+		hash := queue[0]
+		queue = queue[1:]
+
+		if seen[hash] || s.committedVertices[hash] {
+			continue
+		}
+		seen[hash] = true
+
+		vertex := s.get(hash)
+		if vertex == nil {
+			missing = append(missing, hash)
+			continue
+		}
+
+		if round := vertex.Round(); !s.belowCommitFloor(round) {
+			queue = appendParentHashes(queue, vertex)
+		}
+	}
+
+	return missing
+}
+
 // appendParentHashes appends the hashes of a vertex's parent links to queue.
 func appendParentHashes(queue []Hash, vertex *types.Vertex) []Hash {
 	var link types.VertexLink
