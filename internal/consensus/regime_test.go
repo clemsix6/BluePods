@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // keysOf returns the pubkeys of a slice of test validators.
@@ -412,6 +413,70 @@ func TestExportRegimeStateAtomicCursorEpoch_I3(t *testing.T) {
 		t.Fatalf("atomic export desynced: cursor %d epoch %d",
 			atomicCursor, binary.BigEndian.Uint64(atomicBlob[:8]))
 	}
+}
+
+// TestExportConsistentCutValidatorsAtCursor is the joiner-fork regression found by
+// the TestSimProgressiveJoining battery: the snapshot's validator set must come from
+// the SAME commitMu hold as the commit cursor. The snapshot manager once read
+// ValidatorsInfo() BEFORE taking the cut; ExportConsistentCut can block on commitMu
+// behind a commit burst, and when that burst commits a register_validator the torn
+// pair (pre-burst validators, post-burst cursor) misses a validator whose
+// registration round the cursor already passed. A joiner booted from that snapshot
+// never re-decides the round (it is flagged committed) and can never learn the
+// validator — its committed projection forks forever (frozen at 5+self=6 in the
+// sim). The cut's own (Cursor, Validators) pair must carry every validator
+// registered below its cursor.
+func TestExportConsistentCutValidatorsAtCursor(t *testing.T) {
+	vals, vs := newTestValidatorSet(4)
+	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, vals[0].privKey, nil)
+	t.Cleanup(func() { dag.Close() })
+	setEqualStake(dag, vals, 25)
+
+	const regRound = 7
+	joiner := Hash{0x77, 0x01}
+
+	// Block the export behind a simulated commit burst: the burst holds commitMu,
+	// commits a registration at regRound, and advances the cursor past it before
+	// releasing — exactly what checkCommits does in one hold while the snapshot
+	// manager's cut waits on the lock.
+	dag.commitMu.Lock()
+
+	cutCh := make(chan ConsistentCut, 1)
+	go func() {
+		cutCh <- dag.ExportConsistentCut(100)
+	}()
+
+	// Give the export goroutine time to perform any (buggy) pre-hold reads and
+	// block on commitMu, then land the burst and release. If the goroutine has not
+	// blocked yet the test can only pass trivially, never fail spuriously.
+	time.Sleep(100 * time.Millisecond)
+	dag.validators.Add(joiner, "127.0.0.1:9999", [48]byte{})
+	dag.lastCommitted = regRound + 1
+	dag.commitMu.Unlock()
+
+	cut := <-cutCh
+	defer cut.DBSnapshot.Close()
+
+	if cut.Cursor <= regRound {
+		t.Fatalf("cut cursor %d did not pass the registration round %d", cut.Cursor, regRound)
+	}
+
+	// The cut's pair must carry the validator its cursor has passed. A cut whose
+	// validators were read before the hold would miss it here.
+	if !containsValidator(cut.Validators, joiner) {
+		t.Fatal("cut validators miss a validator registered below the cut cursor: a joiner booted from this snapshot forks its validator set forever")
+	}
+}
+
+// containsValidator reports whether the validator infos include the given pubkey.
+func containsValidator(infos []*ValidatorInfo, pubkey Hash) bool {
+	for _, v := range infos {
+		if v.Pubkey == pubkey {
+			return true
+		}
+	}
+
+	return false
 }
 
 // TestFreezeGenesisHoldersCanonicalEncoding is the Finding 2 regression: freezing the

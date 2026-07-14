@@ -656,7 +656,8 @@ func (c *Cluster) logNodeStates() {
 
 		status := QueryStatusSafe(node.addr)
 		if status != nil {
-			c.t.Logf("Node %d: round=%d validators=%d", i, status.Round, status.Validators)
+			c.t.Logf("Node %d: round=%d lastCommitted=%d validators=%d",
+				i, status.Round, status.LastCommitted, status.Validators)
 		} else {
 			c.t.Logf("Node %d: running=%v, no status response", i, node.IsRunning())
 		}

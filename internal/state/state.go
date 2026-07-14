@@ -67,6 +67,14 @@ func (s *State) ExportDomains() []DomainEntry {
 	return s.domains.export()
 }
 
+// ExportDomainsFrom returns all domain entries read from the given consistent
+// storage view. A sync snapshot exports domains through the view captured at its
+// commit cut, so a domain registered after the cut can never reference an object
+// missing from the cut's exported state.
+func (s *State) ExportDomainsFrom(snap *storage.Snapshot) []DomainEntry {
+	return exportDomainEntries(snap)
+}
+
 // ImportDomains loads domain entries from snapshot data.
 func (s *State) ImportDomains(entries []DomainEntry) {
 	s.domains.importBatch(entries)

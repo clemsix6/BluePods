@@ -56,35 +56,57 @@ func (d *DAG) encodeRegimeState() []byte {
 }
 
 // ConsistentCut is a single atomic read of the committed frontier for a snapshot:
-// the commit cursor, the encoded regime state, the vertices in the requested round
-// range tagged with their committed flags, and the object tracker entries — all
-// captured under one commitMu hold so they pair with the same committed history.
-// DBSnapshot is a storage snapshot taken inside that hold, from which the caller
-// collects object and signature state at the identical cut; the caller MUST Close
-// it. This closes the I2/I3 torn-read window where the cursor was read atomically
-// but the vertices, tracker, and objects were collected afterwards, unlocked.
+// the commit cursor, the encoded regime state, the vertices in the export window
+// tagged with their committed flags, the object tracker entries, the validator
+// set, and the supply and issuance counters — all captured under one commitMu hold
+// so they pair with the same committed history. The validator set MUST come from
+// this hold: read before it, a registration committed while the cut blocked on
+// commitMu leaves the cursor past the registration round with the validator
+// absent, and a joiner booted from that snapshot can never learn the validator
+// (the round is flagged committed and never re-decided) — its committed
+// projection forks forever. DBSnapshot is a storage snapshot taken inside the
+// hold, from which the caller collects object, signature, and domain state at the
+// identical cut; the caller MUST Close it.
 type ConsistentCut struct {
 	Cursor         uint64               // Cursor is the raw next-to-decide commit cursor
+	Round          uint64               // Round is the current (latest) round at the cut, the vertex window's upper bound
 	Regime         []byte               // Regime is the encoded epoch/latch/accumulator state
 	Vertices       []VertexEntry        // Vertices are the exported vertices with committed flags
 	TrackerEntries []ObjectTrackerEntry // TrackerEntries are the object versions/replication/fees
-	DBSnapshot     *storage.Snapshot    // DBSnapshot is the consistent object/signature view; caller closes it
+	Validators     []*ValidatorInfo     // Validators is the validator set at the cut (deep copies)
+	Supply         uint64               // Supply is the protocol total supply at the cut
+	IssuanceRate   uint64               // IssuanceRate is the thermostat's per-epoch rate in millionths at the cut
+	DBSnapshot     *storage.Snapshot    // DBSnapshot is the consistent object/signature/domain view; caller closes it
 }
 
 // ExportConsistentCut captures the whole snapshot cut under one commitMu hold: the
-// commit cursor, the regime blob, the committed-flagged vertices in [fromRound,
-// toRound], the tracker entries, and a storage snapshot for object/signature
+// commit cursor, the regime blob, the committed-flagged vertices of the last
+// historyRounds rounds, the tracker entries, the validator set, the supply and
+// issuance counters, and a storage snapshot for object/signature/domain
 // collection. Holding commitMu excludes the commit loop, so every field reflects
-// the same committed frontier.
-func (d *DAG) ExportConsistentCut(fromRound, toRound uint64) ConsistentCut {
+// the same committed frontier. The vertex window's upper bound is read INSIDE the
+// hold too: a bound read before it could be outrun by a commit burst the cut
+// blocked behind, leaving committed vertices just below the cursor out of the
+// export.
+func (d *DAG) ExportConsistentCut(historyRounds uint64) ConsistentCut {
 	d.commitMu.Lock()
 	defer d.commitMu.Unlock()
 
+	toRound := d.round.Load()
+	fromRound := uint64(0)
+	if toRound > historyRounds {
+		fromRound = toRound - historyRounds
+	}
+
 	return ConsistentCut{
 		Cursor:         d.lastCommitted,
+		Round:          toRound,
 		Regime:         d.encodeRegimeState(),
 		Vertices:       d.store.ExportVertices(fromRound, toRound),
 		TrackerEntries: d.tracker.Export(),
+		Validators:     d.validators.All(),
+		Supply:         d.TotalSupply(),
+		IssuanceRate:   d.issuanceRateMicro,
 		DBSnapshot:     d.store.db.Snapshot(),
 	}
 }

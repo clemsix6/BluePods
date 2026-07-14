@@ -20,24 +20,13 @@ func (m *mockSnapshotProvider) Round() uint64 {
 	return m.round
 }
 
-func (m *mockSnapshotProvider) ValidatorsInfo() []*consensus.ValidatorInfo {
-	return nil
-}
-
-func (m *mockSnapshotProvider) TotalSupply() uint64 {
-	return 0
-}
-
-func (m *mockSnapshotProvider) IssuanceRateMicro() uint64 {
-	return 0
-}
-
-// ExportConsistentCut returns a cut whose cursor is the mock round and whose
-// storage snapshot is taken from the manager's backing db, so CreateSnapshot can
-// collect (empty) object state from a real consistent view.
-func (m *mockSnapshotProvider) ExportConsistentCut(fromRound, toRound uint64) consensus.ConsistentCut {
+// ExportConsistentCut returns a cut whose cursor and round are the mock round and
+// whose storage snapshot is taken from the manager's backing db, so CreateSnapshot
+// can collect (empty) object state from a real consistent view.
+func (m *mockSnapshotProvider) ExportConsistentCut(historyRounds uint64) consensus.ConsistentCut {
 	return consensus.ConsistentCut{
 		Cursor:     m.round,
+		Round:      m.round,
 		DBSnapshot: m.db.Snapshot(),
 	}
 }
