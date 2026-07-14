@@ -136,16 +136,20 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 		d.transitionEpoch(round)
 		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
 		d.regimeDirty = false
+		d.producedDirty = false
 		return
 	}
 
 	// A committed registration this round may have refrozen the genesis snapshot or
-	// fired the strict latch. Persist that regime change atomically WITH the cursor
-	// (during the genesis epoch, off a boundary) so a restart restores a consistent
-	// (cursor, regime) pair and never wedges on a stale epoch-0 holder set.
-	if d.regimeDirty {
+	// fired the strict latch, and a member's FIRST committed vertex grows the live
+	// produced set. Persist either change atomically WITH the cursor so a restart
+	// restores a consistent (cursor, regime, produced) triple: a stale produced set
+	// would make the next freeze derive a different eligible set than the rest of
+	// the network.
+	if d.regimeDirty || d.producedDirty {
 		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
 		d.regimeDirty = false
+		d.producedDirty = false
 		return
 	}
 
@@ -240,6 +244,10 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 		d.creditLiveness(v, credited)
 		d.epochFees += d.processTransactions(v, commitRound, verdicts).Epoch
 		d.store.markVertexCommitted(h)
+
+		// The vertex is now committed history: its producer enters the live produced
+		// set, in the same strictly cursor-ordered position on every node.
+		d.recordProducedMember(extractProducer(v))
 	}
 }
 

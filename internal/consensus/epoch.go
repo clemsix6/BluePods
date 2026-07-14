@@ -66,6 +66,21 @@ func (d *DAG) transitionEpoch(round uint64) {
 	// epoch inherits this epoch's frozen holders as the agreed forward proxy.
 	d.nextEpochHolders = d.epochHolders
 
+	// Mirror the three holder moves for designation eligibility: retain the outgoing
+	// eligible set for the grace slot, freeze the new one from the produced set at
+	// this boundary (a member with no committed vertex here stays ineligible for the
+	// WHOLE incoming epoch), and reuse it as the forward proxy. The genesis fallback
+	// mirrors snapshotOf: an epoch-0 tail that never froze eligibility retains the
+	// produced set as observed now.
+	if d.eligibleHolders != nil {
+		d.prevEligibleHolders = d.eligibleHolders
+	} else {
+		d.prevEligibleHolders = d.snapshotProduced()
+	}
+
+	d.eligibleHolders = d.snapshotProduced()
+	d.nextEligibleHolders = d.eligibleHolders
+
 	d.clearEpochState()
 
 	d.currentEpoch++

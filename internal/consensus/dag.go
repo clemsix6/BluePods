@@ -113,6 +113,14 @@ type DAG struct {
 	committedMembers map[Hash]bool // committedMembers are validators admitted by COMMITTED registrations or genesis, never by an optimistic self-add
 	regimeDirty      bool          // regimeDirty flags that the latch or genesis snapshot changed and must be persisted with the cursor
 
+	// Anchor-designation eligibility (eligible.go): the live produced set and the
+	// eligible sets frozen with the holder snapshots. Guarded by commitMu.
+	producedMembers     map[Hash]bool // producedMembers are members with at least one vertex in committed history
+	producedDirty       bool          // producedDirty flags that the produced set changed and must be persisted with the cursor
+	eligibleHolders     map[Hash]bool // eligibleHolders is the designation-eligible subset frozen with epochHolders
+	prevEligibleHolders map[Hash]bool // prevEligibleHolders is the eligible subset frozen with prevEpochHolders
+	nextEligibleHolders map[Hash]bool // nextEligibleHolders is the eligible subset frozen with nextEpochHolders
+
 	// Epoch: frozen validator set for Rendezvous hashing.
 	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
 	currentEpoch      uint64             // currentEpoch is the current epoch number

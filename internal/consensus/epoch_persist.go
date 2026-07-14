@@ -17,6 +17,11 @@ var (
 	prevEpochHoldersKey = metaKey("prevEpochHolders") // prevEpochHoldersKey holds the grace-window previous snapshot
 	nextEpochHoldersKey = metaKey("nextEpochHolders") // nextEpochHoldersKey holds the one-epoch-ahead forward proxy
 	strictStartRoundKey = metaKey("strictStartRound") // strictStartRoundKey holds the strict-regime latch; its presence means latched
+
+	producedMembersKey  = metaKey("producedMembers")     // producedMembersKey holds the live produced set (members with a committed vertex)
+	eligibleHoldersKey  = metaKey("eligibleHolders")     // eligibleHoldersKey holds the eligible set frozen with the current snapshot
+	prevEligibleKey     = metaKey("prevEligibleHolders") // prevEligibleKey holds the eligible set frozen with the previous snapshot
+	nextEligibleKey     = metaKey("nextEligibleHolders") // nextEligibleKey holds the eligible set frozen with the forward proxy
 )
 
 // blsKeyLen is the byte length of a validator's BLS public key.
@@ -43,6 +48,10 @@ func (d *DAG) epochStateKVs() []storage.KeyValue {
 		{Key: epochHoldersKey, Value: encodeHolderSnapshot(d.epochHolders)},
 		{Key: prevEpochHoldersKey, Value: encodeHolderSnapshot(d.prevEpochHolders)},
 		{Key: nextEpochHoldersKey, Value: encodeHolderSnapshot(d.nextEpochHolders)},
+		{Key: producedMembersKey, Value: encodeMemberSet(d.producedMembers)},
+		{Key: eligibleHoldersKey, Value: encodeMemberSet(d.eligibleHolders)},
+		{Key: prevEligibleKey, Value: encodeMemberSet(d.prevEligibleHolders)},
+		{Key: nextEligibleKey, Value: encodeMemberSet(d.nextEligibleHolders)},
 	}
 
 	if d.strictLatched {
@@ -74,6 +83,14 @@ func (d *DAG) restoreEpochState() {
 	d.epochHolders = d.loadHolderSnapshot(epochHoldersKey)
 	d.prevEpochHolders = d.loadHolderSnapshot(prevEpochHoldersKey)
 	d.nextEpochHolders = d.loadHolderSnapshot(nextEpochHoldersKey)
+
+	// Restore the produced set and the frozen eligible sets beside the snapshots
+	// they were frozen with, so designation eligibility survives a restart and the
+	// next freeze derives from the same produced history as the rest of the network.
+	d.producedMembers = decodeMemberSet(d.store.loadMetaBytes(producedMembersKey))
+	d.eligibleHolders = decodeMemberSet(d.store.loadMetaBytes(eligibleHoldersKey))
+	d.prevEligibleHolders = decodeMemberSet(d.store.loadMetaBytes(prevEligibleKey))
+	d.nextEligibleHolders = decodeMemberSet(d.store.loadMetaBytes(nextEligibleKey))
 
 	// Rebuild the committed member set from the restored genesis snapshot so a node
 	// restarted mid-bootstrap keeps refreezing from the full committed committee.

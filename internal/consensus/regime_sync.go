@@ -27,6 +27,14 @@ func (d *DAG) ExportRegimeState() (cursor uint64, blob []byte) {
 	buf = appendHolderBlob(buf, d.prevEpochHolders)
 	buf = appendHolderBlob(buf, d.nextEpochHolders)
 
+	// Designation eligibility travels with the snapshots it was frozen with, plus
+	// the live produced set, so the joiner's later freezes observe the same
+	// committed production as the source.
+	buf = appendMemberBlob(buf, d.producedMembers)
+	buf = appendMemberBlob(buf, d.eligibleHolders)
+	buf = appendMemberBlob(buf, d.prevEligibleHolders)
+	buf = appendMemberBlob(buf, d.nextEligibleHolders)
+
 	return d.lastCommitted, buf
 }
 
@@ -59,7 +67,12 @@ func (d *DAG) applyRegimeState(blob []byte) {
 	rest := blob[17:]
 	d.epochHolders, rest = readHolderBlob(rest)
 	d.prevEpochHolders, rest = readHolderBlob(rest)
-	d.nextEpochHolders, _ = readHolderBlob(rest)
+	d.nextEpochHolders, rest = readHolderBlob(rest)
+
+	d.producedMembers, rest = readMemberBlob(rest)
+	d.eligibleHolders, rest = readMemberBlob(rest)
+	d.prevEligibleHolders, rest = readMemberBlob(rest)
+	d.nextEligibleHolders, _ = readMemberBlob(rest)
 
 	d.restoreCommittedMembers()
 }
@@ -71,6 +84,32 @@ func appendHolderBlob(buf []byte, set *ValidatorSet) []byte {
 	buf = binary.BigEndian.AppendUint32(buf, uint32(len(encoded)))
 
 	return append(buf, encoded...)
+}
+
+// appendMemberBlob appends a length-prefixed encoded member set to buf. A nil set
+// encodes as a count-0 record, which readMemberBlob restores back to nil.
+func appendMemberBlob(buf []byte, set map[Hash]bool) []byte {
+	encoded := encodeMemberSet(set)
+	buf = binary.BigEndian.AppendUint32(buf, uint32(len(encoded)))
+
+	return append(buf, encoded...)
+}
+
+// readMemberBlob reads one length-prefixed member set and returns it with the
+// remaining bytes. An absent, truncated, or count-0 record restores as nil, which
+// designation reads as "no eligibility frozen" (full-snapshot fallback).
+func readMemberBlob(data []byte) (map[Hash]bool, []byte) {
+	if len(data) < 4 {
+		return nil, nil
+	}
+
+	n := binary.BigEndian.Uint32(data)
+	data = data[4:]
+	if uint32(len(data)) < n {
+		return nil, nil
+	}
+
+	return decodeMemberSet(data[:n]), data[n:]
 }
 
 // readHolderBlob reads one length-prefixed holder snapshot and returns it with the

@@ -17,15 +17,21 @@ var anchorDomain = []byte("bluepods/anchor/v1")
 // anchorProducerFor returns the designated anchor producer for a round, chosen
 // deterministically from the epoch holder snapshot so every node derives the same
 // pivot without communication. The snapshot is selected by commitEpochForRound so
-// production and commit weigh the same membership across an epoch boundary. It
-// returns ok=false when no holder snapshot resolves or the set is empty.
+// production and commit weigh the same membership across an epoch boundary. The
+// rotation is restricted to the snapshot's ELIGIBLE members — those with at least
+// one committed vertex at the snapshot's freeze — falling back to the full
+// snapshot while none is eligible, so a member is never designated before it has
+// demonstrably produced (the registration-to-production gap wedge). It returns
+// ok=false when no holder snapshot resolves or the set is empty.
 func (d *DAG) anchorProducerFor(round uint64) (Hash, bool) {
-	holders, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
+	epoch := d.commitEpochForRound(round)
+
+	holders, ok := d.HoldersForEpoch(epoch)
 	if !ok || holders.Len() == 0 {
 		return Hash{}, false
 	}
 
-	keys := holders.SortedKeys()
+	keys := eligibleKeys(holders, d.eligibleForEpoch(epoch))
 
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], round)

@@ -52,6 +52,13 @@ func (d *DAG) refreezeGenesisRegime(atRound uint64) {
 	}
 
 	d.epochHolders = d.freezeGenesisHolders()
+
+	// Freeze designation eligibility WITH the snapshot: the members holding a
+	// committed vertex at this committed point. A member registered before it
+	// produces is frozen ineligible and becomes designatable at the next freeze
+	// that observes its first committed vertex.
+	d.eligibleHolders = d.snapshotProduced()
+
 	d.regimeDirty = true
 
 	if d.minValidators > 0 && len(d.committedMembers) >= d.minValidators {
