@@ -1826,7 +1826,6 @@ func TestRewardCrediting(t *testing.T) {
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 	dag.epochFees = 1000
 
 	dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
@@ -1892,7 +1891,6 @@ func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
 	dag.validators.SetRewardCoin(low, lowCoin)
 	dag.epochRoundsProduced[top] = 1
 	dag.epochRoundsProduced[low] = 1
-	dag.epochTotalRounds = 1
 	dag.epochFees = 101
 
 	dag.distributeEpochRewards(0)
@@ -1942,7 +1940,6 @@ func TestRewardConservation(t *testing.T) {
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 	dag.epochFees = 1234
 
 	// Pre-boundary value held in coins + stake + delegation positions.
@@ -2018,7 +2015,6 @@ func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
 	// Bonded far below the 25% band → the rate should rise.
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 
 	rateBefore := dag.issuanceRateMicro // 18 (genesis)
 	supplyBefore := store.TotalSupply()
@@ -2051,7 +2047,6 @@ func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
 
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[pk] = 3
-	dag.epochTotalRounds = 3
 	dag.epochFees = 0 // no fees this epoch
 
 	supplyBefore := store.TotalSupply()
@@ -2073,7 +2068,6 @@ func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
 	dag.validators.SetSelfStake(pk, 10_000)
 	// No rounds produced this epoch → totalRewardWeight == 0.
 	dag.epochRoundsProduced = make(map[Hash]uint64)
-	dag.epochTotalRounds = 0
 
 	rateBefore := dag.issuanceRateMicro
 	supplyBefore := store.TotalSupply()
@@ -2113,7 +2107,6 @@ func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
 
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 
 	supplyBefore := store.TotalSupply()
 	dag.transitionEpoch(10)

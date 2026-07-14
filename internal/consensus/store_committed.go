@@ -3,6 +3,7 @@ package consensus
 import (
 	"encoding/binary"
 
+	"BluePods/internal/logger"
 	"BluePods/internal/storage"
 )
 
@@ -43,7 +44,9 @@ func (s *store) markVertexCommitted(hash Hash) {
 // s.mu.
 func (s *store) markVertexCommittedLocked(hash Hash) {
 	s.committedVertices[hash] = true
-	_ = s.db.Set(makeCommittedKey(hash), []byte{1})
+	if err := s.db.Set(makeCommittedKey(hash), []byte{1}); err != nil {
+		logger.Error("persist committed flag", "error", err)
+	}
 }
 
 // loadCommittedFlags rebuilds the in-memory committed set from storage at boot.
@@ -85,7 +88,9 @@ func (s *store) loadCommitFloor() {
 func (s *store) saveCommitFloor(round uint64) {
 	data := make([]byte, 8)
 	binary.BigEndian.PutUint64(data, round)
-	_ = s.db.Set(commitFloorKey, data)
+	if err := s.db.Set(commitFloorKey, data); err != nil {
+		logger.Error("persist commit floor", "error", err)
+	}
 }
 
 // loadCommitCursor restores the persisted commit cursor at boot. The bool is false
@@ -110,7 +115,9 @@ func (s *store) saveCommitCursorBatch(round uint64, extra []storage.KeyValue) {
 	binary.BigEndian.PutUint64(data, round)
 
 	pairs := append([]storage.KeyValue{{Key: commitCursorKey, Value: data}}, extra...)
-	_ = s.db.SetBatch(pairs)
+	if err := s.db.SetBatch(pairs); err != nil {
+		logger.Error("persist commit cursor batch", "error", err)
+	}
 }
 
 // makeCommittedKey creates the storage key for a vertex's committed flag.

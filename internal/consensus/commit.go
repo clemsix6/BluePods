@@ -141,6 +141,9 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 		return
 	}
 
+	// TODO: the frontier walk re-runs over the whole forward frontier on every stalled
+	// tick with no backoff (the tracked I6 delivery-gap / BFS-cost follow-up); bound
+	// the re-walk cost once the fetch protocol grows a backoff.
 	missing := d.store.missingFrontierAbove(round)
 	if len(missing) == 0 {
 		return
@@ -281,8 +284,6 @@ type producerRound struct {
 // one parallel pass whose per-ATX verdicts feed the sequential apply in the identical
 // order, so the set of accepted ATXs is unchanged.
 func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
-	d.epochTotalRounds++
-
 	verdicts := d.verifyRoundProofs(commitRound, batch)
 	credited := make(map[producerRound]bool)
 

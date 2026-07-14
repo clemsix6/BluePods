@@ -166,7 +166,6 @@ type DAG struct {
 	// Epoch rewards: accumulated fees and round tracking per validator.
 	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
 	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
-	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
 
 	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
 	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at

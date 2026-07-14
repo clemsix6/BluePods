@@ -299,7 +299,9 @@ func TestEligibilitySurvivesRestart(t *testing.T) {
 
 	// A post-restart refreeze observes the laggard's pre-restart production: the
 	// restored produced set must carry it. (Re-seed the live set first: the frozen
-	// snapshot persists membership, the live set is rebuilt by the node at boot.)
+	// snapshot persists membership, but a restart-in-place does NOT rebuild the live
+	// validator set, so this test restores it explicitly — the same gap
+	// freezeGenesisHolders contains by falling back to the snapshot record.)
 	dag2.commitMu.Lock()
 	for i := 0; i < 4; i++ {
 		dag2.validators.AddWithStake(vals[i].pubKey, "", [48]byte{}, 25, 0, false)

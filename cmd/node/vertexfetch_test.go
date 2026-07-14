@@ -291,3 +291,27 @@ func TestVertexFetch_RealWiring_DiscardsHashMismatchAndRetries(t *testing.T) {
 		t.Fatal("the liar's mismatched vertex was ingested; it must be discarded")
 	}
 }
+
+// TestVertexHashIs_MalformedPayloadNeverPanics is the I3 guard: a Byzantine peer
+// answering Found=true with a truncated or garbage payload must be discarded, never
+// crash the node. vertexHashIs must return false for every malformed buffer, catching
+// any FlatBuffers parse panic instead of propagating it.
+func TestVertexHashIs_MalformedPayloadNeverPanics(t *testing.T) {
+	var want consensus.Hash
+	want[0] = 0xAB
+
+	cases := [][]byte{
+		nil,
+		{},
+		{0x01},
+		{0x01, 0x02, 0x03},
+		{0xFF, 0xFF, 0xFF, 0xFF},             // 4 bytes: a bogus root offset
+		{0x08, 0x00, 0x00, 0x00, 0x00, 0x00}, // offset points past the buffer
+	}
+
+	for i, data := range cases {
+		if vertexHashIs(data, want) {
+			t.Fatalf("case %d: malformed payload matched the wanted hash", i)
+		}
+	}
+}

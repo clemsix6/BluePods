@@ -74,7 +74,7 @@ func TestRestartOrderMatchesTwin_ByRoundRebuild(t *testing.T) {
 	const maxRound = 4 // rounds cut+1..maxRound arrive after the reopen.
 
 	spine := buildTaggedSpine(t, seededVals, maxRound)
-	pre := roundIndices(0, cut+1, n)          // rounds 0..cut
+	pre := roundIndices(0, cut+1, n)           // rounds 0..cut
 	post := roundIndices(cut+1, maxRound+1, n) // rounds cut+1..maxRound
 
 	// Uninterrupted twin: same phased feed, never restarted.
@@ -143,7 +143,7 @@ func TestRestartResumesPastEpochBoundary(t *testing.T) {
 	// Rounds 0..9 cross boundaries at 4 (epoch 1) and 8 (epoch 2); round 10 certifies
 	// round 9 after the reopen.
 	spine := buildTaggedSpine(t, vals, 10)
-	preRounds := roundIndices(0, 10, n) // rounds 0..9
+	preRounds := roundIndices(0, 10, n)  // rounds 0..9
 	postRound := roundIndices(10, 11, n) // round 10
 
 	dir, err := os.MkdirTemp("", "consensus_restart_epoch_*")

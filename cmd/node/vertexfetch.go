@@ -125,7 +125,22 @@ func (f *meshVertexFetcher) requestVertexFrom(peer *network.Peer, req []byte, wa
 // The fetcher discards a response that does not, so a peer cannot answer a request
 // for one hash with a different vertex. AddVertex then re-verifies the producer
 // signature over that hash, so a forged hash field is rejected downstream.
-func vertexHashIs(data []byte, want consensus.Hash) bool {
+//
+// A Byzantine peer may answer Found=true with a truncated or malformed payload; the
+// length guard rejects the obvious cases and the deferred recover contains any
+// FlatBuffers parse panic on a crafted buffer, discarding the response (ok stays
+// false) so the node tries the next peer instead of crashing (I3).
+func vertexHashIs(data []byte, want consensus.Hash) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+
+	if len(data) < 4 {
+		return false
+	}
+
 	v := types.GetRootAsVertex(data, 0)
 
 	hb := v.HashBytes()

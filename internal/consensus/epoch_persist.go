@@ -18,10 +18,10 @@ var (
 	nextEpochHoldersKey = metaKey("nextEpochHolders") // nextEpochHoldersKey holds the one-epoch-ahead forward proxy
 	strictStartRoundKey = metaKey("strictStartRound") // strictStartRoundKey holds the strict-regime latch; its presence means latched
 
-	producedMembersKey  = metaKey("producedMembers")     // producedMembersKey holds the live produced set (members with a committed vertex)
-	eligibleHoldersKey  = metaKey("eligibleHolders")     // eligibleHoldersKey holds the eligible set frozen with the current snapshot
-	prevEligibleKey     = metaKey("prevEligibleHolders") // prevEligibleKey holds the eligible set frozen with the previous snapshot
-	nextEligibleKey     = metaKey("nextEligibleHolders") // nextEligibleKey holds the eligible set frozen with the forward proxy
+	producedMembersKey = metaKey("producedMembers")     // producedMembersKey holds the live produced set (members with a committed vertex)
+	eligibleHoldersKey = metaKey("eligibleHolders")     // eligibleHoldersKey holds the eligible set frozen with the current snapshot
+	prevEligibleKey    = metaKey("prevEligibleHolders") // prevEligibleKey holds the eligible set frozen with the previous snapshot
+	nextEligibleKey    = metaKey("nextEligibleHolders") // nextEligibleKey holds the eligible set frozen with the forward proxy
 )
 
 // blsKeyLen is the byte length of a validator's BLS public key.

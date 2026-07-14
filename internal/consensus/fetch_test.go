@@ -187,11 +187,12 @@ func TestMissingAncestors_ReturnsAbsentFrontier(t *testing.T) {
 	}
 
 	// The anchor itself is present, so once its parent is present too the frontier is
-	// empty (nothing left to fetch).
+	// empty (nothing left to fetch). The payload is filed under the referenced hash
+	// `missing`, NOT under pData's own hash: missingAncestors decides presence by store
+	// key alone, so a byte-accurate payload is unnecessary — only the key matters.
 	parent := newTestValidator()
-	pData, pHash := buildRoundVertex(t, parent, 0, nil)
-	_ = pHash
-	st.add(pData, missing, 0, parent.pubKey) // store under the referenced (absent) hash
+	pData, _ := buildRoundVertex(t, parent, 0, nil)
+	st.add(pData, missing, 0, parent.pubKey)
 
 	if got := st.missingAncestors(anchor); len(got) != 0 {
 		t.Fatalf("missingAncestors = %v, want empty once the ancestor is present", got)
@@ -300,8 +301,9 @@ func TestFetch_DeliveredAncestorCommitsIdenticalBatch(t *testing.T) {
 	ingest(dagStarved, spine, order)
 	dagStarved.checkCommits() // stalls at round 2 on the missing ancestor
 
-	// Deliver the missing ancestor, exactly as a successful fetch's AddVertex would land
-	// it in the store, then let the commit loop pick it up.
+	// Deliver the missing ancestor by inserting it straight into the store, modeling the
+	// END STATE a fetched vertex reaches AFTER AddVertex validates it (store.add is not
+	// AddVertex: it skips validation and processing). Then let the commit loop pick it up.
 	dagStarved.store.add(omitted.data, omitted.hash, omitted.round, omitted.producer)
 	dagStarved.checkCommits()
 	recoveredLog := drainCommitted(dagStarved)

@@ -100,6 +100,16 @@ func (d *DAG) freezeGenesisHolders() *ValidatorSet {
 	// therefore its encoded blob bytes — is identical on every node, not Go map order.
 	for _, pubkey := range sortedMemberKeys(d.committedMembers) {
 		v := d.validators.Get(pubkey)
+
+		// A crash-restart-in-place cannot rebuild the live validator set, so a member
+		// restored into committedMembers (from the persisted genesis snapshot) may be
+		// absent from d.validators. Fall back to its record in the snapshot being
+		// refrozen — itself a pure function of committed history — rather than dropping
+		// the member and shrinking the committee, which would fork the frozen set.
+		if v == nil && d.epochHolders != nil {
+			v = d.epochHolders.Get(pubkey)
+		}
+
 		if v == nil {
 			continue
 		}

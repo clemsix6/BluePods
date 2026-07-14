@@ -101,8 +101,8 @@ func (d *DAG) transitionEpoch(round uint64) {
 // rewardWeight returns a validator's epoch reward weight: effective_stake ×
 // liveness, where liveness is the validator's rounds produced this epoch (one
 // vertex per round, so equivocation cannot double it). A jailed or zero-stake
-// validator, or one that produced no rounds, has zero weight. Uses safeMul. The
-// common epochTotalRounds denominator cancels in the share, so it is omitted.
+// validator, or one that produced no rounds, has zero weight. Uses safeMul. Shares
+// are this weight over the total weight, so no epoch-wide round denominator is needed.
 func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
 	return safeMul(EffectiveStake(v), d.epochRoundsProduced[v.Pubkey])
 }
@@ -385,7 +385,6 @@ func (d *DAG) clearEpochState() {
 	d.epochAdditions = nil
 	d.epochFees = 0
 	d.epochRoundsProduced = make(map[Hash]uint64)
-	d.epochTotalRounds = 0
 }
 
 // InitEpochHolders is a no-op: the genesis epoch's holder snapshot is not taken

@@ -276,6 +276,9 @@ func (vs *ValidatorSet) Unjail(pubkey Hash) bool {
 // AddWithStake adds a validator carrying its self-stake, delegated total, and
 // jail flag. It is used by the epoch holder snapshot rebuild so stake survives
 // the snapshot. If the validator already exists, its stake fields are updated.
+// Unlike Add, it fires NO onAdd callback: it reconstructs frozen/restored state
+// (holder snapshots, synced sets), not a live admission that should trigger side
+// effects such as mesh connection or transition checks.
 func (vs *ValidatorSet) AddWithStake(pubkey Hash, quicAddr string, blsPubkey [48]byte, selfStake, delegated uint64, jailed bool) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
