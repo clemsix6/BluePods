@@ -409,6 +409,7 @@ func TestCommitRoundProcessing(t *testing.T) {
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries the whole capped stake and commits.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the single-validator genesis committee for the anchor path
 
 	dag.SubmitTx(atxBytes)
 
@@ -421,12 +422,12 @@ func TestCommitRoundProcessing(t *testing.T) {
 	}
 }
 
-// TestCommitRound_EquivocationCreditedOnce verifies a producer that places two
-// distinct vertices in the same round is credited liveness ONCE. The store dedups
-// only by vertex hash, so two distinct vertices both reach commitRound; without
-// per-round dedup this would double-credit the producer's effective_stake x
-// liveness reward share.
-func TestCommitRound_EquivocationCreditedOnce(t *testing.T) {
+// TestApplyBatch_EquivocationCreditedOnce verifies a producer that places two
+// distinct vertices in the same round of one batch is credited liveness ONCE. The
+// store dedups only by vertex hash, so both distinct vertices enter the batch;
+// without per-(producer, round) dedup this would double-credit the producer's
+// effective_stake x liveness reward share.
+func TestApplyBatch_EquivocationCreditedOnce(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(1)
 
@@ -436,40 +437,27 @@ func TestCommitRound_EquivocationCreditedOnce(t *testing.T) {
 	// Two distinct vertices from the SAME producer in the SAME round: distinct
 	// parents give them distinct hashes, so the store keeps both.
 	const round = 7
-	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x01}})
-	storeRoundVertexWithParents(t, dag, validators[0], round, []Hash{{0x02}})
+	h1 := addDagVertex(t, dag, validators[0], round, []Hash{{0x01}})
+	h2 := addDagVertex(t, dag, validators[0], round, []Hash{{0x02}})
 
 	if got := len(dag.store.getByRound(round)); got != 2 {
 		t.Fatalf("setup: expected 2 distinct vertices in round, got %d", got)
 	}
 
-	dag.commitRound(round)
+	dag.applyBatch(round, []Hash{h1, h2})
 
 	if got := dag.epochRoundsProduced[validators[0].pubKey]; got != 1 {
 		t.Fatalf("equivocating producer credited %d rounds, want 1", got)
 	}
 }
 
-// storeRoundVertexWithParents builds a signed vertex for the validator at the
-// round with the given parents (so the hash varies) and inserts it directly into
-// the DAG store, bypassing parent validation.
-func storeRoundVertexWithParents(t *testing.T, dag *DAG, v testValidator, round uint64, parents []Hash) {
-	t.Helper()
-
-	data := buildTestVertex(t, v, round, parents, 1)
-	vertex := types.GetRootAsVertex(data, 0)
-
-	var hash Hash
-	copy(hash[:], vertex.HashBytes())
-
-	dag.store.add(data, hash, round, v.pubKey)
-}
-
-// TestIsRoundCommitted_StakeWeighted verifies the commit quorum is stake-weighted:
-// a round whose only producer carries a minority of capped stake does NOT commit,
-// while the supermajority-stake producer does. Uses two validators at 90%/10%
-// with a loose voting cap so the 90% producer's weight is not floored away.
-func TestIsRoundCommitted_StakeWeighted(t *testing.T) {
+// TestDirectAnchorVerdict_StakeWeighted verifies the commit-side certification
+// quorum is stake-weighted: a designated producer's vertex cited at round N+1 by
+// only a minority-stake validator does NOT certify, while a single supermajority
+// citer does. Replaces the old isRoundCommitted stake-weighting test; the anchor
+// rule now owns the commit quorum. Uses two validators at 90%/10% with a loose
+// voting cap so the 90% weight is not floored away.
+func TestDirectAnchorVerdict_StakeWeighted(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(2)
 
@@ -477,27 +465,29 @@ func TestIsRoundCommitted_StakeWeighted(t *testing.T) {
 	// below the 2/3 threshold; this isolates the stake-weighting behavior.
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithVotingCapMille(900))
 	defer dag.Close()
-	disableTxAuth(dag)
 
 	dag.validators.SetSelfStake(validators[0].pubKey, 90) // big
 	dag.validators.SetSelfStake(validators[1].pubKey, 10) // small
+	freezeGenesis(dag)                                    // freeze the epoch-0 committee for the anchor path
 
-	// Case 1: only the SMALL (10%) producer at round+2 → no stake quorum, even
-	// though by COUNT one producer could look like progress. This also fails under
-	// count quorum (QuorumSize=2), so it is the stake-side check below that matters.
+	// Case 1: the designated producer's round-N vertex is cited at round N+1 only by
+	// the SMALL (10%) validator → below the 2/3 stake quorum, so it does NOT certify.
 	const r1 = 5
-	storeRoundVertex(t, dag, validators[1], r1+2)
-	if dag.isRoundCommitted(r1) {
-		t.Fatal("round committed on minority-stake producer (10%), expected NOT committed")
+	p1 := designatedProducer(t, dag, validators, r1)
+	v1 := addDagVertex(t, dag, p1, r1, nil)
+	addDagVertex(t, dag, validators[1], r1+1, []Hash{v1})
+	if verdict, _ := dag.directAnchorVerdict(r1); verdict == verdictCertified {
+		t.Fatal("certified on a minority-stake (10%) citer, expected not certified")
 	}
 
-	// Case 2: only the BIG (90%) producer at round+2 → stake quorum reached with a
-	// SINGLE producer. Under the old count rule (QuorumSize=2) one producer would
-	// NOT commit, so this case only passes once the quorum is stake-weighted.
+	// Case 2: the designated producer's vertex is cited at round N+1 by the BIG (90%)
+	// validator → supermajority stake, so it certifies with a single citer.
 	const r2 = 8
-	storeRoundVertex(t, dag, validators[0], r2+2)
-	if !dag.isRoundCommitted(r2) {
-		t.Fatal("round NOT committed with single supermajority-stake producer (90%), expected committed")
+	p2 := designatedProducer(t, dag, validators, r2)
+	v2 := addDagVertex(t, dag, p2, r2, nil)
+	addDagVertex(t, dag, validators[0], r2+1, []Hash{v2})
+	if verdict, _ := dag.directAnchorVerdict(r2); verdict != verdictCertified {
+		t.Fatal("not certified with a single supermajority-stake (90%) citer, expected certified")
 	}
 }
 
@@ -567,6 +557,7 @@ func TestCommittedTxOutput(t *testing.T) {
 	// Commit quorum is stake-weighted; seed the founder's self-stake as genesis
 	// does so the single validator carries full stake quorum and self-commits.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the single-validator genesis committee for the anchor path
 
 	dag.SubmitTx(atxBytes)
 

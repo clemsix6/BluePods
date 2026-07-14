@@ -87,8 +87,20 @@ func (rcv *SnapshotVertex) MutateData(j int, n byte) bool {
 	return false
 }
 
+func (rcv *SnapshotVertex) Committed() bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.GetBool(o + rcv._tab.Pos)
+	}
+	return false
+}
+
+func (rcv *SnapshotVertex) MutateCommitted(n bool) bool {
+	return rcv._tab.MutateBoolSlot(8, n)
+}
+
 func SnapshotVertexStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(3)
 }
 func SnapshotVertexAddRound(builder *flatbuffers.Builder, round uint64) {
 	builder.PrependUint64Slot(0, round, 0)
@@ -98,6 +110,9 @@ func SnapshotVertexAddData(builder *flatbuffers.Builder, data flatbuffers.UOffse
 }
 func SnapshotVertexStartDataVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
+}
+func SnapshotVertexAddCommitted(builder *flatbuffers.Builder, committed bool) {
+	builder.PrependBoolSlot(2, committed, false)
 }
 func SnapshotVertexEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

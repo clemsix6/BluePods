@@ -1,7 +1,9 @@
 package consensus
 
 import (
+	"bytes"
 	"encoding/binary"
+	"sort"
 	"sync"
 
 	"BluePods/internal/storage"
@@ -23,18 +25,56 @@ type store struct {
 	mu          sync.RWMutex
 	byRound     map[uint64][]Hash // vertex hashes per round
 	latestRound uint64            // highest round seen
+
+	// committedVertices is the set of vertex hashes already folded into a commit
+	// batch, loaded from storage at boot so a restart never re-applies them.
+	committedVertices map[Hash]bool
+	// commitFloor is the snapshot round at or below which vertices are treated as
+	// already committed; it guards a freshly synced node against re-applying its
+	// imported history.
+	commitFloor uint64
+	// commitFloorSet reports whether a commit floor has been established via a
+	// snapshot import; without it, the zero floor would wrongly exclude round 0.
+	commitFloorSet bool
 }
 
 // newStore creates a vertex store backed by the given storage.
 func newStore(db *storage.Storage) *store {
 	s := &store{
-		db:      db,
-		byRound: make(map[uint64][]Hash),
+		db:                db,
+		byRound:           make(map[uint64][]Hash),
+		committedVertices: make(map[Hash]bool),
 	}
 
 	s.loadLatestRound()
+	s.loadByRound()
+	s.loadCommittedFlags()
+	s.loadCommitFloor()
 
 	return s
+}
+
+// loadByRound rebuilds the in-memory byRound index from the persisted round-index
+// entries (r:<round>:<hash>) at boot. Without it a restart leaves byRound empty for
+// every pre-crash round: a re-gossiped vertex is rejected by add as already stored
+// and never re-indexed, so getByRoundProducer reports the round's producers absent
+// and the commit loop spuriously blames or skips them, forking the committed order
+// from a peer that never crashed. Every persisted round is rebuilt, including rounds
+// above the commit cursor, so undecided rounds resolve identically after a restart.
+// One prefix scan over the round index at boot, the same order as loadCommittedFlags.
+func (s *store) loadByRound() {
+	_ = s.db.IteratePrefix(prefixRound, func(key, _ []byte) error {
+		if len(key) != len(prefixRound)+8+32 {
+			return nil
+		}
+
+		round := binary.BigEndian.Uint64(key[len(prefixRound) : len(prefixRound)+8])
+		var hash Hash
+		copy(hash[:], key[len(prefixRound)+8:])
+
+		s.byRound[round] = append(s.byRound[round], hash)
+		return nil
+	})
 }
 
 // add stores a vertex. Returns false if already exists.
@@ -98,6 +138,56 @@ func (s *store) getByRound(round uint64) []Hash {
 	return result
 }
 
+// getByRoundProducer returns every locally-held vertex hash produced by producer
+// at round, sorted ascending by hash bytes. The order is derived from the hashes
+// alone, so two nodes that ingested an equivocator's vertices in different arrival
+// orders return the identical slice. It deliberately returns ALL of an
+// equivocator's vertices rather than picking a local winner: a locally-chosen
+// candidate is view-dependent and would fork the committed log. Arbitration among
+// them is by vote in the commit rule, never here. The bool is false when the
+// producer holds no vertex at the round.
+func (s *store) getByRoundProducer(round uint64, producer Hash) ([]Hash, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matches []Hash
+	for _, hash := range s.byRound[round] {
+		if s.producerAt(round, hash) == producer {
+			matches = append(matches, hash)
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return bytes.Compare(matches[i][:], matches[j][:]) < 0
+	})
+
+	return matches, len(matches) > 0
+}
+
+// producerAt reads the producer recorded for a vertex in the round index. It
+// returns the zero hash when the round-index entry is missing or malformed.
+func (s *store) producerAt(round uint64, hash Hash) Hash {
+	var producer Hash
+
+	data, err := s.db.Get(makeRoundKey(round, hash))
+	if err != nil || len(data) != 32 {
+		return producer
+	}
+
+	copy(producer[:], data)
+	return producer
+}
+
+// highestRound returns the greatest round for which any vertex is stored. It
+// bounds the anchor rule's forward scan so an undecided round yields WAIT rather
+// than scanning unboundedly.
+func (s *store) highestRound() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.latestRound
+}
+
 // countByRound returns the number of vertices in a round.
 func (s *store) countByRound(round uint64) int {
 	s.mu.RLock()
@@ -139,6 +229,27 @@ func (s *store) saveLatestRound(round uint64) {
 	_ = s.db.Set(key, data)
 }
 
+// loadMetaUint64 reads a big-endian uint64 metadata value. ok is false when the key
+// is absent or malformed, so the caller keeps its default.
+func (s *store) loadMetaUint64(key []byte) (uint64, bool) {
+	data, err := s.db.Get(key)
+	if err != nil || len(data) < 8 {
+		return 0, false
+	}
+
+	return binary.BigEndian.Uint64(data), true
+}
+
+// loadMetaBytes reads a raw metadata value, or nil when it is absent.
+func (s *store) loadMetaBytes(key []byte) []byte {
+	data, err := s.db.Get(key)
+	if err != nil {
+		return nil
+	}
+
+	return data
+}
+
 // makeVertexKey creates a storage key for vertex data.
 func makeVertexKey(hash Hash) []byte {
 	key := make([]byte, len(prefixVertex)+32)
@@ -158,12 +269,15 @@ func makeRoundKey(round uint64, hash Hash) []byte {
 
 // VertexEntry represents a vertex with its round for snapshot serialization.
 type VertexEntry struct {
-	Round uint64
-	Data  []byte
+	Round     uint64 // Round is the vertex's DAG round
+	Data      []byte // Data is the serialized vertex (FlatBuffers Vertex)
+	Committed bool   // Committed reports whether the vertex was already folded into a commit batch at the export cut
 }
 
-// ExportVertices returns all vertices from the given round range.
-// Used for snapshot creation.
+// ExportVertices returns all vertices from the given round range, each tagged with
+// whether it was already folded into a commit batch. The committed flag is read
+// from committedVertices under the same lock as byRound, so it pairs with the
+// exported vertices at vertex grain (C-1). Used for snapshot creation.
 func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -176,8 +290,9 @@ func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 			data := s.getRaw(hash)
 			if data != nil {
 				entries = append(entries, VertexEntry{
-					Round: round,
-					Data:  data,
+					Round:     round,
+					Data:      data,
+					Committed: s.committedVertices[hash],
 				})
 			}
 		}
@@ -186,51 +301,69 @@ func (s *store) ExportVertices(fromRound, toRound uint64) []VertexEntry {
 	return entries
 }
 
-// ImportVertices loads vertices from snapshot data and rebuilds the index.
-// Returns the highest round imported.
+// ImportVertices loads vertices from snapshot data and rebuilds the index. A vertex
+// is marked committed EXACTLY when its entry carries the committed flag (the
+// source's committed frontier at vertex grain), never by a round threshold: an
+// uncommitted same-round sibling of a decided anchor must stay uncommitted so it
+// rides a later batch, as it does on the source (C-1). The commit floor is set one
+// below the lowest imported round, so it bounds the causal walk strictly below the
+// imported window without ever standing in for the committed marker. Returns the
+// highest round imported.
 func (s *store) ImportVertices(entries []VertexEntry) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var maxRound uint64
+	var maxRound, minRound uint64
+	minSet := false
 
 	for _, entry := range entries {
-		// Parse vertex to get hash and producer
-		vertex := types.GetRootAsVertex(entry.Data, 0)
-		hashBytes := vertex.HashBytes()
-		producerBytes := vertex.ProducerBytes()
-
-		var hash, producer Hash
-		copy(hash[:], hashBytes)
-		copy(producer[:], producerBytes)
-
-		// Check if already exists
-		if s.hasLocked(hash) {
-			continue
+		if !minSet || entry.Round < minRound {
+			minRound = entry.Round
+			minSet = true
 		}
 
-		// Store vertex data
-		vertexKey := makeVertexKey(hash)
-		_ = s.db.Set(vertexKey, entry.Data)
-
-		// Store round index entry
-		roundKey := makeRoundKey(entry.Round, hash)
-		_ = s.db.Set(roundKey, producer[:])
-
-		// Update in-memory index
-		s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
-
-		// Track max round
-		if entry.Round > maxRound {
+		if s.importVertexLocked(entry) && entry.Round > maxRound {
 			maxRound = entry.Round
 		}
 	}
 
-	// Update latest round if needed
+	// Bound the walk strictly below the imported window (minRound). Pre-window rounds
+	// were not imported and their vertices are already-applied history the committed
+	// flags stop the walk at; the floor is only the backstop below them. Round 0 has
+	// nothing beneath it, so no floor is set when the window reaches the origin.
+	if minSet && minRound > 0 {
+		s.setCommitFloorLocked(minRound - 1)
+	}
+
 	if maxRound > s.latestRound {
 		s.latestRound = maxRound
 		s.saveLatestRound(maxRound)
 	}
 
 	return maxRound
+}
+
+// importVertexLocked persists one snapshot vertex and its round-index entry,
+// marking it committed only when the entry's committed flag is set. It returns
+// false when the vertex already exists. The caller must hold s.mu.
+func (s *store) importVertexLocked(entry VertexEntry) bool {
+	vertex := types.GetRootAsVertex(entry.Data, 0)
+
+	var hash, producer Hash
+	copy(hash[:], vertex.HashBytes())
+	copy(producer[:], vertex.ProducerBytes())
+
+	if s.hasLocked(hash) {
+		return false
+	}
+
+	_ = s.db.Set(makeVertexKey(hash), entry.Data)
+	_ = s.db.Set(makeRoundKey(entry.Round, hash), producer[:])
+	s.byRound[entry.Round] = append(s.byRound[entry.Round], hash)
+
+	if entry.Committed {
+		s.markVertexCommittedLocked(hash)
+	}
+
+	return true
 }

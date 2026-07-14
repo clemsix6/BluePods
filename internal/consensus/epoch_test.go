@@ -460,16 +460,25 @@ func TestInitEpochHolders(t *testing.T) {
 
 	dag.InitEpochHolders()
 
-	// The genesis epoch keeps no frozen snapshot: epochHolders stays nil so that
-	// the still-forming set is never frozen at a partial, per-node-divergent
-	// membership. HoldersForEpoch must then resolve epoch 0 to the live set.
+	// InitEpochHolders is a no-op: the genesis epoch keeps no snapshot from the live
+	// (still-forming, per-node-divergent) set. Until the genesis snapshot is frozen
+	// from committed registrations, epoch 0 is UNRESOLVED — HoldersForEpoch returns
+	// false so the anchor path waits, never falling back to the live set.
 	if dag.epochHolders != nil {
 		t.Fatal("epochHolders should remain nil in the genesis epoch")
 	}
 
+	if _, ok := dag.HoldersForEpoch(0); ok {
+		t.Fatal("genesis epoch must NOT resolve to the live set before the snapshot is frozen")
+	}
+
+	// Once the genesis snapshot is frozen from the committed committee, epoch 0
+	// resolves to that frozen snapshot.
+	freezeGenesis(dag)
+
 	holders, ok := dag.HoldersForEpoch(0)
 	if !ok {
-		t.Fatal("genesis epoch holders should resolve to the live set")
+		t.Fatal("genesis epoch holders should resolve to the frozen genesis snapshot")
 	}
 
 	if holders.Len() != 4 {
@@ -1694,6 +1703,7 @@ func TestEpochTransition_ViaCommitPath(t *testing.T) {
 	// genesis does. With a single staked validator it carries the whole capped
 	// stake and reaches quorum on its own.
 	dag.validators.SetSelfStake(validators[0].pubKey, 100)
+	freezeGenesis(dag) // freeze the genesis committee so the anchor path resolves epoch 0
 
 	// With 1 staked validator, round R is committed when its stake is a 2/3
 	// majority of the holder snapshot and there is a vertex at round R+2.
@@ -1816,7 +1826,6 @@ func TestRewardCrediting(t *testing.T) {
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 	dag.epochFees = 1000
 
 	dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
@@ -1882,7 +1891,6 @@ func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
 	dag.validators.SetRewardCoin(low, lowCoin)
 	dag.epochRoundsProduced[top] = 1
 	dag.epochRoundsProduced[low] = 1
-	dag.epochTotalRounds = 1
 	dag.epochFees = 101
 
 	dag.distributeEpochRewards(0)
@@ -1932,7 +1940,6 @@ func TestRewardConservation(t *testing.T) {
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 	dag.epochFees = 1234
 
 	// Pre-boundary value held in coins + stake + delegation positions.
@@ -2008,7 +2015,6 @@ func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
 	// Bonded far below the 25% band → the rate should rise.
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 
 	rateBefore := dag.issuanceRateMicro // 18 (genesis)
 	supplyBefore := store.TotalSupply()
@@ -2041,7 +2047,6 @@ func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
 
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[pk] = 3
-	dag.epochTotalRounds = 3
 	dag.epochFees = 0 // no fees this epoch
 
 	supplyBefore := store.TotalSupply()
@@ -2063,7 +2068,6 @@ func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
 	dag.validators.SetSelfStake(pk, 10_000)
 	// No rounds produced this epoch → totalRewardWeight == 0.
 	dag.epochRoundsProduced = make(map[Hash]uint64)
-	dag.epochTotalRounds = 0
 
 	rateBefore := dag.issuanceRateMicro
 	supplyBefore := store.TotalSupply()
@@ -2103,7 +2107,6 @@ func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
 
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[pk] = 5
-	dag.epochTotalRounds = 5
 
 	supplyBefore := store.TotalSupply()
 	dag.transitionEpoch(10)

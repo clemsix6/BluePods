@@ -58,6 +58,29 @@ func (d *DAG) transitionEpoch(round uint64) {
 	}
 
 	d.snapshotEpochHolders()
+
+	// Freeze a one-epoch-ahead snapshot so the anchor rule's forward scan can weigh
+	// round-N+1 producers that fall in the next epoch when resolving a split at this
+	// epoch's tail, before that epoch's own boundary has transitioned. Absent the
+	// next epoch's real membership (churn is applied at its own boundary), the next
+	// epoch inherits this epoch's frozen holders as the agreed forward proxy.
+	d.nextEpochHolders = d.epochHolders
+
+	// Mirror the three holder moves for designation eligibility: retain the outgoing
+	// eligible set for the grace slot, freeze the new one from the produced set at
+	// this boundary (a member with no committed vertex here stays ineligible for the
+	// WHOLE incoming epoch), and reuse it as the forward proxy. The genesis fallback
+	// mirrors snapshotOf: an epoch-0 tail that never froze eligibility retains the
+	// produced set as observed now.
+	if d.eligibleHolders != nil {
+		d.prevEligibleHolders = d.eligibleHolders
+	} else {
+		d.prevEligibleHolders = d.snapshotProduced()
+	}
+
+	d.eligibleHolders = d.snapshotProduced()
+	d.nextEligibleHolders = d.eligibleHolders
+
 	d.clearEpochState()
 
 	d.currentEpoch++
@@ -78,8 +101,8 @@ func (d *DAG) transitionEpoch(round uint64) {
 // rewardWeight returns a validator's epoch reward weight: effective_stake ×
 // liveness, where liveness is the validator's rounds produced this epoch (one
 // vertex per round, so equivocation cannot double it). A jailed or zero-stake
-// validator, or one that produced no rounds, has zero weight. Uses safeMul. The
-// common epochTotalRounds denominator cancels in the share, so it is omitted.
+// validator, or one that produced no rounds, has zero weight. Uses safeMul. Shares
+// are this weight over the total weight, so no epoch-wide round denominator is needed.
 func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
 	return safeMul(EffectiveStake(v), d.epochRoundsProduced[v.Pubkey])
 }
@@ -260,7 +283,7 @@ func (d *DAG) applyPendingRemovals() {
 	// Sort by pubkey for deterministic order across all validators.
 	// Without sorting, Go map iteration is randomized and different
 	// validators would remove different sets when churn is limited.
-	sorted := sortedRemovals(d.pendingRemovals)
+	sorted := sortedMemberKeys(d.pendingRemovals)
 
 	applied := 0
 
@@ -279,10 +302,12 @@ func (d *DAG) applyPendingRemovals() {
 	}
 }
 
-// sortedRemovals extracts pending removal keys and sorts them by pubkey bytes.
-func sortedRemovals(pending map[Hash]bool) []Hash {
-	keys := make([]Hash, 0, len(pending))
-	for k := range pending {
+// sortedMemberKeys extracts the keys of a hash set and sorts them by pubkey bytes
+// ascending, giving a deterministic iteration order across all nodes regardless of
+// Go's randomized map order.
+func sortedMemberKeys(set map[Hash]bool) []Hash {
+	keys := make([]Hash, 0, len(set))
+	for k := range set {
 		keys = append(keys, k)
 	}
 
@@ -360,21 +385,19 @@ func (d *DAG) clearEpochState() {
 	d.epochAdditions = nil
 	d.epochFees = 0
 	d.epochRoundsProduced = make(map[Hash]uint64)
-	d.epochTotalRounds = 0
 }
 
-// InitEpochHolders is a no-op during the genesis epoch on purpose.
+// InitEpochHolders is a no-op: the genesis epoch's holder snapshot is not taken
+// here.
 //
-// At process startup the validator set is still forming: the bootstrap knows only
-// itself, and each joining node knows only the validators it has synced so far.
-// A snapshot taken here would freeze that partial, per-node-divergent set as the
-// epoch-0 holder set, and attestation verification would then recompute holders
-// against it while the client daemon collected against the converged live set,
-// so quorum proofs would never match. Leaving epochHolders nil makes
-// HoldersForEpoch fall back to the live validator set for the genesis epoch,
-// which converges to the same set the daemon syncs. The first real frozen
-// snapshot is taken at the first epoch boundary by transitionEpoch, where the
-// set is already stable.
+// The epoch-0 holder set is the frozen GENESIS snapshot, built from committed
+// registrations only (genesis seeding plus committed register_validator
+// transactions) and refrozen as that committed set grows, then fixed at the strict
+// latch until the first epoch boundary. Freezing it here from the live validator
+// set would capture a partial, per-node-divergent set (an optimistic self-add is
+// not yet committed), so the freeze is driven by the commit path instead. Until it
+// is frozen, HoldersForEpoch reports epoch 0 unresolved and the commit loop waits;
+// it never reads the live, mutating set on the anchor path.
 func (d *DAG) InitEpochHolders() {}
 
 // commitEpochForRound returns the epoch whose holder snapshot an ATX committed
@@ -406,17 +429,36 @@ func (d *DAG) CommitEpochForRound(round uint64) uint64 {
 
 // HoldersForEpoch returns the holder snapshot for the given epoch, selecting the
 // current snapshot for currentEpoch and the retained previous snapshot for
-// currentEpoch-1. It returns false for any other epoch (too old or in the future).
+// currentEpoch-1. It NEVER falls back to the live, mutating validator set on the
+// anchor path: a missing snapshot returns false so the commit loop WAITs. During
+// the genesis epoch the current snapshot is the frozen genesis holder set (frozen
+// from committed registrations at the strict latch, refrozen as the committed set
+// grows before it); until it is frozen, epoch 0 is unresolved and the loop waits.
 func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 	if epoch == d.currentEpoch {
 		if d.epochHolders != nil {
 			return d.epochHolders, true
 		}
-		return d.validators, true
+		return nil, false
 	}
 
 	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
 		return d.prevEpochHolders, true
+	}
+
+	// One epoch ahead: resolve to the frozen forward proxy so the anchor rule can
+	// cross an epoch tail. The proxy is frozen at the first transition; during the
+	// genesis epoch (currentEpoch 0, no proxy yet) the round-N+1 citers of the epoch-0
+	// tail fall in epoch 1, so resolve them to the frozen GENESIS committee (not the
+	// live set). Without this the first epoch boundary is undecidable and the commit
+	// loop wedges on it before any transition can freeze a proxy.
+	if epoch == d.currentEpoch+1 {
+		if d.nextEpochHolders != nil {
+			return d.nextEpochHolders, true
+		}
+		if d.currentEpoch == 0 && d.epochHolders != nil {
+			return d.epochHolders, true
+		}
 	}
 
 	return nil, false

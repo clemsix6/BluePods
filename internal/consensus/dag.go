@@ -70,6 +70,16 @@ type DAG struct {
 	commitMu      sync.Mutex
 	lastCommitted uint64 // lastCommitted is the next round to commit
 
+	// Missing-ancestor recovery: when a decided anchor's causal batch is blocked on
+	// an absent ancestor for two consecutive commit ticks, the missing ancestry is
+	// requested from mesh peers through vertexFetcher. All three fields are guarded by
+	// commitMu (the whole commit path holds it).
+	vertexFetcher VertexFetcher // vertexFetcher requests missing ancestry from peers (nil = recovery disabled)
+	stallAnchor   Hash          // stallAnchor is the anchor the commit cursor is currently blocked on
+	stallTicks    int           // stallTicks counts consecutive commit ticks stalled on stallAnchor
+	waitRound     uint64        // waitRound is the round the commit cursor is currently WAITing on
+	waitTicks     int           // waitTicks counts consecutive commit ticks the cursor has WAITed on waitRound
+
 	// Pending vertices buffer for out-of-order arrival
 	pendingMu       sync.Mutex
 	pendingVertices map[Hash][]byte // hash -> vertex data waiting for parents
@@ -97,11 +107,28 @@ type DAG struct {
 	transitionRound    atomic.Int64 // round when minValidators was reached (-1 = not yet)
 	fullQuorumAchieved atomic.Bool  // fullQuorumAchieved is set when BFT quorum is first observed
 
+	// Regime latch (regime.go): the strict-regime boundary, a pure function of
+	// committed history. Round R runs the relaxed bootstrap certificate iff the
+	// latch is unset or R < strictStartRound. Guarded by commitMu.
+	strictLatched    bool          // strictLatched reports whether the strict latch has fired
+	strictStartRound uint64        // strictStartRound is the first strict-regime round (valid iff strictLatched)
+	committedMembers map[Hash]bool // committedMembers are validators admitted by COMMITTED registrations or genesis, never by an optimistic self-add
+	regimeDirty      bool          // regimeDirty flags that the latch or genesis snapshot changed and must be persisted with the cursor
+
+	// Anchor-designation eligibility (eligible.go): the live produced set and the
+	// eligible sets frozen with the holder snapshots. Guarded by commitMu.
+	producedMembers     map[Hash]bool // producedMembers are members with at least one vertex in committed history
+	producedDirty       bool          // producedDirty flags that the produced set changed and must be persisted with the cursor
+	eligibleHolders     map[Hash]bool // eligibleHolders is the designation-eligible subset frozen with epochHolders
+	prevEligibleHolders map[Hash]bool // prevEligibleHolders is the eligible subset frozen with prevEpochHolders
+	nextEligibleHolders map[Hash]bool // nextEligibleHolders is the eligible subset frozen with nextEpochHolders
+
 	// Epoch: frozen validator set for Rendezvous hashing.
 	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
 	currentEpoch      uint64             // currentEpoch is the current epoch number
 	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
 	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	nextEpochHolders  *ValidatorSet      // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
 	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
 	epochAdditions    []Hash             // epochAdditions are validators added this epoch
 	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
@@ -139,7 +166,6 @@ type DAG struct {
 	// Epoch rewards: accumulated fees and round tracking per validator.
 	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
 	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
-	epochTotalRounds    uint64          // epochTotalRounds is total committed rounds this epoch
 
 	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
 	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
@@ -330,6 +356,21 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	}
 	d.transitionRound.Store(-1) // not yet in transition
 
+	// Resume the commit cursor from persisted state so a restart never re-derives an
+	// already decided round. A snapshot option (WithLastCommittedRound) applies below
+	// and takes precedence for a freshly synced node.
+	if cursor, ok := d.store.loadCommitCursor(); ok {
+		d.lastCommitted = cursor
+	}
+
+	// Restore currentEpoch and the holder snapshots BEFORE any commit decision (the
+	// commitLoop below is the first caller of anchorStatus/HoldersForEpoch), so a
+	// restart past the first epoch boundary resolves anchors and quorums against the
+	// same holder set it decided under instead of wedging or falling back to the
+	// genesis live set. A fresh (never-restarted) node has no persisted epoch state,
+	// so this is a no-op; the sync options below install their own state as before.
+	d.restoreEpochState()
+
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -488,6 +529,47 @@ func (d *DAG) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool) {
 	d.isHolder = fn
 }
 
+// VertexFetcher requests vertices that are missing locally from mesh peers. The
+// commit loop calls it when a decided anchor's causal history is not fully present.
+// Implementations MUST be asynchronous and non-blocking: FetchVertices is invoked
+// under the commit lock and must never perform network I/O inline.
+type VertexFetcher interface {
+	// FetchVertices requests the given vertex hashes from peers. It must return
+	// immediately; a fetched vertex re-enters through AddVertex and is picked up by
+	// the commit loop on a later tick.
+	FetchVertices(hashes []Hash)
+}
+
+// SetVertexFetcher installs the fetcher the commit loop uses to recover a decided
+// anchor's missing ancestry. It is nil-safe: with no fetcher set the recovery
+// trigger is a no-op and the node relies on gossip and the pending buffer alone.
+// EVERY node construction path must call this — a fetcher left unset ships
+// missing-ancestor recovery as dead code, and a joiner whose ancestry is never
+// gossiped stalls. Called at construction, before heavy commit activity.
+func (d *DAG) SetVertexFetcher(f VertexFetcher) {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	d.vertexFetcher = f
+}
+
+// VertexFetcherWired reports whether a vertex fetcher has been installed. It lets
+// each node construction path be tested to actually wire missing-ancestor recovery,
+// guarding the exact regression that once shipped it as dead code.
+func (d *DAG) VertexFetcherWired() bool {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	return d.vertexFetcher != nil
+}
+
+// VertexBytes returns the raw serialized bytes of a locally-held vertex by hash, or
+// nil when it is absent. It backs the mesh vertex-fetch handler, which serves the
+// single requested vertex and enumerates nothing else.
+func (d *DAG) VertexBytes(hash Hash) []byte {
+	return d.store.getRaw(hash)
+}
+
 // TrackObject registers a created object in the tracker.
 // Called by the state layer when a new object is created during execution.
 func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64) {
@@ -543,6 +625,13 @@ func (d *DAG) SeedGenesis(is genesis.InitialState) {
 
 	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
 	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
+
+	// The founder is a committed genesis member: record it and freeze the genesis
+	// holder snapshot so the anchor path resolves epoch 0 without ever reading the
+	// live set. Under commitMu because the commit loop is already running.
+	d.commitMu.Lock()
+	d.recordCommittedMember(is.Pubkey, d.lastCommitted)
+	d.commitMu.Unlock()
 }
 
 // ValidatorSet returns the underlying validator set.
@@ -706,16 +795,15 @@ func (d *DAG) tryProduceVertex() {
 		return
 	}
 
-	// Non-bootstrap nodes wait until minValidators threshold is reached.
-	// This prevents chain divergence during network initialization.
-	if !d.isBootstrap && d.minValidators > 0 && d.validators.Len() < d.minValidators {
-		logger.Debug("cannot produce: waiting for min validators",
-			"current", d.validators.Len(),
-			"required", d.minValidators)
-		return
-	}
-
-	// Security: only registered validators can produce vertices
+	// Security and liveness gate: a node produces once it is itself a registered
+	// validator (its self-add or a committed registration put it in the set) — never
+	// waiting for the full minValidators set. Under the deterministic anchor rule a
+	// committed validator is the designated anchor producer for a share of rounds; if a
+	// registered validator withheld production until it saw the whole set, its
+	// designated relaxed rounds could never certify and the commit cursor would wedge
+	// before the set ever reached minValidators (a bootstrap deadlock). The committed
+	// log stays deterministic regardless of who produces, so early production cannot
+	// fork it.
 	if !d.validators.Contains(d.pubKey) {
 		logger.Debug("cannot produce: not in validator set",
 			"pubkey", hex.EncodeToString(d.pubKey[:8]),
@@ -944,13 +1032,16 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 		return false
 	}
 
+	// Production-local quorum check: unlike the anchor path this may weigh against
+	// the live set when no snapshot resolves, because it only gates whether THIS node
+	// produces a vertex — it never decides the committed log, so it cannot fork it.
 	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round))
 	if !ok {
 		set = d.validators
 	}
 
-	cappedSum, total := d.cappedStakeOf(set, producers)
-	if quorumReached(cappedSum, total) {
+	cappedSum, cappedTotal := d.cappedStakeOf(set, producers)
+	if quorumReached(cappedSum, cappedTotal) {
 		return true
 	}
 
@@ -958,7 +1049,7 @@ func (d *DAG) hasQuorumFromRound(round uint64) bool {
 		"round", round,
 		"validatorProducers", len(producers),
 		"cappedSum", cappedSum,
-		"total", total,
+		"cappedTotal", cappedTotal,
 	)
 
 	return false
@@ -1099,15 +1190,6 @@ func (d *DAG) isUnknownProducerError(err error) bool {
 
 	errStr := err.Error()
 	return len(errStr) > 17 && errStr[:17] == "unknown producer:"
-}
-
-// hasPendingVertex checks if a vertex with the given hash is in the pending buffer.
-func (d *DAG) hasPendingVertex(hash Hash) bool {
-	d.pendingMu.Lock()
-	defer d.pendingMu.Unlock()
-
-	_, exists := d.pendingVertices[hash]
-	return exists
 }
 
 // bufferPendingVertex adds a vertex to the pending buffer.

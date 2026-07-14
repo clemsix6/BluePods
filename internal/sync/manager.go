@@ -20,29 +20,24 @@ type SnapshotProvider interface {
 	// Round returns the current (latest) round number.
 	Round() uint64
 
-	// LastCommittedRound returns the last committed round number.
-	LastCommittedRound() uint64
-
-	// ValidatorsInfo returns all validators with their network addresses.
-	ValidatorsInfo() []*consensus.ValidatorInfo
-
-	// ExportVertices returns vertices from the specified round range.
-	ExportVertices(fromRound, toRound uint64) []consensus.VertexEntry
-
-	// ExportTrackerEntries returns all tracked objects with versions and replication.
-	ExportTrackerEntries() []consensus.ObjectTrackerEntry
-
-	// TotalSupply returns the protocol-maintained total token supply.
-	TotalSupply() uint64
-
-	// IssuanceRateMicro returns the thermostat's current per-epoch issuance rate
-	// in millionths, persisted because the loop steps from the previous value.
-	IssuanceRateMicro() uint64
+	// ExportConsistentCut captures the commit cursor, the opaque regime state, the
+	// committed-flagged vertices of the last historyRounds rounds, the tracker
+	// entries, the validator set, the supply and issuance counters, and a storage
+	// snapshot for object/signature/domain collection — all under ONE commit hold.
+	// Pairing every field with the same committed frontier is load-bearing: read
+	// outside the hold, the validator set can miss a registration whose round the
+	// cut's cursor already passed, and a joiner booted from that snapshot forks its
+	// validator set forever (it never re-decides a committed round). The same
+	// applies to a joiner dropping an uncommitted anchor sibling (C-1) or landing
+	// an epoch ahead on a torn cursor/epoch read (I2/I3). The caller Closes
+	// DBSnapshot.
+	ExportConsistentCut(historyRounds uint64) consensus.ConsistentCut
 }
 
-// DomainExporter exports domain entries for snapshot inclusion.
+// DomainExporter exports domain entries for snapshot inclusion, reading them from
+// the cut's consistent storage view so they pair with the exported objects.
 type DomainExporter interface {
-	ExportDomains() []state.DomainEntry
+	ExportDomainsFrom(snap *storage.Snapshot) []state.DomainEntry
 }
 
 // SnapshotManager creates periodic snapshots of the committed state.
@@ -118,6 +113,17 @@ func (m *SnapshotManager) loop() {
 	}
 }
 
+// lastDecidedRound converts the consensus next-to-decide cursor into the last
+// DECIDED round the importer expects: cursor-1, or 0 when nothing has been decided.
+// This keeps the exported cursor semantic aligned with WithLastCommittedRound (I4).
+func lastDecidedRound(cursor uint64) uint64 {
+	if cursor == 0 {
+		return 0
+	}
+
+	return cursor - 1
+}
+
 // vertexHistoryRounds is how many rounds of vertices to include in snapshot.
 // This should be large enough to cover the buffer period plus some safety margin.
 // Too small causes chain divergence when new nodes miss intermediate rounds.
@@ -125,41 +131,42 @@ const vertexHistoryRounds = 100
 
 // createSnapshot creates a new snapshot and stores it.
 func (m *SnapshotManager) createSnapshot() {
-	commitRound := m.provider.LastCommittedRound()
-	currentRound := m.provider.Round()
-
-	// Skip if no new rounds since last snapshot
+	// Skip if no new rounds since last snapshot. Round() here only gates
+	// regeneration; every exported field comes from the cut below.
 	m.mu.RLock()
 	lastRound := m.round
 	m.mu.RUnlock()
 
-	if currentRound == lastRound && m.current != nil {
+	if m.provider.Round() == lastRound && m.current != nil {
 		return
 	}
 
-	// Get current validators with addresses
-	validators := m.provider.ValidatorsInfo()
+	// Capture EVERYTHING as ONE consistent cut (I2/I3): cursor, regime state,
+	// committed-flagged vertices, tracker entries, validator set, supply, issuance,
+	// and a storage snapshot for objects/signatures/domains. The commit loop holds
+	// the same commitMu while it advances the cursor, marks vertices committed,
+	// grows the validator set, and writes state, so this hold pins them all to one
+	// committed frontier. Nothing exported may be read outside the cut: a validator
+	// set read before it misses registrations the cut's cursor already passed (the
+	// cut blocks behind a commit burst) and forks every joiner served that
+	// snapshot. Export the LAST-DECIDED round (cursor-1): the importer's
+	// WithLastCommittedRound(round) sets lastCommitted = round+1, so exporting the
+	// raw cursor would skip a round on join (I4).
+	cut := m.provider.ExportConsistentCut(vertexHistoryRounds)
+	defer cut.DBSnapshot.Close()
+	commitRound := lastDecidedRound(cut.Cursor)
+	currentRound := cut.Round
 
-	// Get vertices up to current round (not just committed).
-	// This ensures new nodes receive all vertices including non-committed ones,
-	// preventing gaps that would block them from joining at the correct round.
-	fromRound := uint64(0)
-	if currentRound > vertexHistoryRounds {
-		fromRound = currentRound - vertexHistoryRounds
-	}
-	vertices := m.provider.ExportVertices(fromRound, currentRound)
-
-	// Get tracker entries
-	trackerEntries := m.provider.ExportTrackerEntries()
-
-	// Get domain entries
+	// Domains are decoded from the cut's storage view, so a domain registered
+	// after the cut never dangles over an object missing from the cut's state.
 	var domainEntries []state.DomainEntry
 	if m.domains != nil {
-		domainEntries = m.domains.ExportDomains()
+		domainEntries = m.domains.ExportDomainsFrom(cut.DBSnapshot)
 	}
 
-	// Create snapshot with commitRound for state consistency
-	data, err := CreateSnapshot(m.db, commitRound, validators, vertices, trackerEntries, domainEntries, m.provider.TotalSupply(), m.provider.IssuanceRateMicro())
+	// Collect objects/signatures from the cut's storage snapshot, so they pair with
+	// the same committed frontier as the cursor and the committed vertex flags.
+	data, err := CreateSnapshot(cut.DBSnapshot, commitRound, cut.Validators, cut.Vertices, cut.TrackerEntries, domainEntries, cut.Supply, cut.IssuanceRate, cut.Regime)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return
@@ -181,9 +188,9 @@ func (m *SnapshotManager) createSnapshot() {
 	logger.Debug("snapshot created",
 		"commitRound", commitRound,
 		"currentRound", currentRound,
-		"validators", len(validators),
-		"vertices", len(vertices),
-		"trackerEntries", len(trackerEntries),
+		"validators", len(cut.Validators),
+		"vertices", len(cut.Vertices),
+		"trackerEntries", len(cut.TrackerEntries),
 		"size", len(data),
 		"compressed", len(compressed),
 	)

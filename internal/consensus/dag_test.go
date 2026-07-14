@@ -69,6 +69,25 @@ func newTestValidatorSet(n int) ([]testValidator, *ValidatorSet) {
 	return validators, NewValidatorSet(pubkeys)
 }
 
+// freezeGenesis freezes the epoch-0 genesis holder snapshot from the current
+// validator set, treating every current validator as a committed member. It is the
+// test stand-in for the committed-registration freeze the production commit path
+// performs (SeedGenesis + handleRegisterValidator): a unit test constructs the DAG
+// with its whole committee up front, so all of them are "committed" here and no
+// optimistic self-add exists to exclude. Call it after stakes are set so the frozen
+// snapshot carries the intended weights.
+func freezeGenesis(dag *DAG) {
+	dag.commitMu.Lock()
+	defer dag.commitMu.Unlock()
+
+	dag.committedMembers = make(map[Hash]bool)
+	for _, v := range dag.validators.All() {
+		dag.committedMembers[v.Pubkey] = true
+	}
+
+	dag.epochHolders = dag.freezeGenesisHolders()
+}
+
 func TestNewDAG(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)

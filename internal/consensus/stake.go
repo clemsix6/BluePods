@@ -54,26 +54,30 @@ func quorumReached(cappedSum, total uint64) bool {
 }
 
 // cappedStakeOf sums the capped voting weight of the given producers within a
-// holder set and returns the set's uncapped total stake. The cap and equal-share
-// floor are computed against the set's uncapped total and size, so the same
-// snapshot yields the same weights on every node. Jailed validators contribute
-// zero (via EffectiveStake).
-func (d *DAG) cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, total uint64) {
+// holder set and returns the set's CAPPED total voting weight (the sum of every
+// member's capped weight), NOT the raw stake total. Both the producers' sum and
+// the total are capped against the set's uncapped total and size, so the 2/3
+// quorum test divides a capped numerator by a capped denominator: under stake
+// concentration a whale is capped in BOTH terms, which keeps the strict quorum
+// reachable (a raw-total denominator makes it unreachable). Jailed validators
+// contribute zero (via EffectiveStake).
+func (d *DAG) cappedStakeOf(set *ValidatorSet, producers map[Hash]bool) (cappedSum, cappedTotal uint64) {
 	all := set.All()
 	setSize := len(all)
 
+	var rawTotal uint64
 	for _, v := range all {
-		total = safeAdd(total, EffectiveStake(v))
+		rawTotal = safeAdd(rawTotal, EffectiveStake(v))
 	}
 
 	for _, v := range all {
-		if !producers[v.Pubkey] {
-			continue
+		weight := cappedWeight(EffectiveStake(v), rawTotal, d.votingCapMille, setSize)
+		cappedTotal = safeAdd(cappedTotal, weight)
+
+		if producers[v.Pubkey] {
+			cappedSum = safeAdd(cappedSum, weight)
 		}
-
-		weight := cappedWeight(EffectiveStake(v), total, d.votingCapMille, setSize)
-		cappedSum = safeAdd(cappedSum, weight)
 	}
 
-	return cappedSum, total
+	return cappedSum, cappedTotal
 }

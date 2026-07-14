@@ -67,6 +67,14 @@ const (
 	// MsgTagGetTxStatusResp carries a transaction's status.
 	MsgTagGetTxStatusResp = 0x14
 
+	// MsgTagGetVertex requests a single DAG vertex by hash. It is a mesh-tier
+	// request the commit loop uses to recover a decided anchor's missing ancestry
+	// from peers when gossip and the pending buffer did not deliver it.
+	MsgTagGetVertex = 0x15
+
+	// MsgTagGetVertexResp carries the requested vertex bytes, or a not-found flag.
+	MsgTagGetVertexResp = 0x16
+
 	// minClientTag is the lowest tag value reserved for client messages.
 	minClientTag = MsgTagSubmitTx
 )
@@ -105,6 +113,7 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagFaucet:        {},
 	MsgTagDomainResolve: {},
 	MsgTagGetTxStatus:   {},
+	MsgTagGetVertex:     {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
@@ -652,4 +661,68 @@ func DecodeGetTxStatusResp(data []byte) (*GetTxStatusResponse, error) {
 	}
 
 	return &GetTxStatusResponse{State: data[1], Reason: data[2]}, nil
+}
+
+// GetVertexRequest requests a single DAG vertex by hash.
+type GetVertexRequest struct {
+	Hash [32]byte // Hash is the requested vertex's hash
+}
+
+// EncodeGetVertex encodes a vertex-fetch request.
+// Format: [1B tag] [32B hash].
+func EncodeGetVertex(req *GetVertexRequest) []byte {
+	buf := make([]byte, 33)
+	buf[0] = MsgTagGetVertex
+	copy(buf[1:33], req.Hash[:])
+
+	return buf
+}
+
+// DecodeGetVertex decodes a vertex-fetch request.
+func DecodeGetVertex(data []byte) (*GetVertexRequest, error) {
+	if len(data) < 33 || data[0] != MsgTagGetVertex {
+		return nil, fmt.Errorf("not a get-vertex message")
+	}
+
+	req := &GetVertexRequest{}
+	copy(req.Hash[:], data[1:33])
+
+	return req, nil
+}
+
+// GetVertexResponse carries a vertex payload or a not-found flag.
+type GetVertexResponse struct {
+	Found bool   // Found reports whether the vertex was located
+	Data  []byte // Data is the serialized Vertex FlatBuffer when Found
+}
+
+// EncodeGetVertexResp encodes a vertex-fetch response.
+// Format: [1B tag] [1B found] [data].
+func EncodeGetVertexResp(resp *GetVertexResponse) []byte {
+	buf := make([]byte, 2+len(resp.Data))
+	buf[0] = MsgTagGetVertexResp
+
+	if resp.Found {
+		buf[1] = 1
+	}
+
+	copy(buf[2:], resp.Data)
+
+	return buf
+}
+
+// DecodeGetVertexResp decodes a vertex-fetch response.
+func DecodeGetVertexResp(data []byte) (*GetVertexResponse, error) {
+	if len(data) < 2 || data[0] != MsgTagGetVertexResp {
+		return nil, fmt.Errorf("not a get-vertex response")
+	}
+
+	resp := &GetVertexResponse{Found: data[1] == 1}
+
+	if len(data) > 2 {
+		resp.Data = make([]byte, len(data)-2)
+		copy(resp.Data, data[2:])
+	}
+
+	return resp, nil
 }

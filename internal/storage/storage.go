@@ -151,6 +151,68 @@ func (s *Storage) IteratePrefix(prefix []byte, fn func(key, value []byte) error)
 	return iter.Error()
 }
 
+// Snapshot is a consistent read-only view of the database at the instant it was
+// created. Reads and iterations observe exactly the keys present then, unaffected
+// by later writes, so a caller can capture a cut under a lock and release the lock
+// before the (possibly long) scan. Close releases the underlying resources.
+type Snapshot struct {
+	snap *pebble.Snapshot // snap is the underlying Pebble snapshot
+}
+
+// Snapshot returns a consistent read-only view of the database at the moment of
+// the call. The caller MUST Close it to release the pinned sstables.
+func (s *Storage) Snapshot() *Snapshot {
+	return &Snapshot{snap: s.db.NewSnapshot()}
+}
+
+// Iterate calls fn for each key-value pair in the snapshot, in lexicographic key
+// order. If fn returns an error, iteration stops and the error is returned.
+func (s *Snapshot) Iterate(fn func(key, value []byte) error) error {
+	iter, err := s.snap.NewIter(nil)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	return iterateWith(iter, fn)
+}
+
+// IteratePrefix calls fn for each key-value pair in the snapshot with the given
+// prefix, using Pebble's iterator bounds for an efficient prefix scan.
+func (s *Snapshot) IteratePrefix(prefix []byte, fn func(key, value []byte) error) error {
+	iter, err := s.snap.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: prefixUpperBound(prefix),
+	})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	return iterateWith(iter, fn)
+}
+
+// Close releases the snapshot's pinned resources.
+func (s *Snapshot) Close() error {
+	return s.snap.Close()
+}
+
+// iterateWith drives a Pebble iterator, calling fn for each live pair in order.
+func iterateWith(iter *pebble.Iterator, fn func(key, value []byte) error) error {
+	for iter.First(); iter.Valid(); iter.Next() {
+		value, err := iter.ValueAndErr()
+		if err != nil {
+			return err
+		}
+
+		if err := fn(iter.Key(), value); err != nil {
+			return err
+		}
+	}
+
+	return iter.Error()
+}
+
 // prefixUpperBound computes the exclusive upper bound for a prefix scan.
 // Increments the last byte; returns nil if prefix is all 0xFF (full range).
 func prefixUpperBound(prefix []byte) []byte {

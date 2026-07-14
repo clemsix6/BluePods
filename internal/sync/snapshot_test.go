@@ -66,7 +66,7 @@ func TestCreateSnapshot_EmptyStorage(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestCreateSnapshot_WithObjects(t *testing.T) {
 		t.Fatalf("store obj2: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 42, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestCreateSnapshot_IgnoresConsensusData(t *testing.T) {
 		t.Fatalf("store meta: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestApplySnapshot_EmptySnapshot(t *testing.T) {
 	defer cleanup()
 
 	// Create empty snapshot
-	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 5, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestApplySnapshot_WithObjects(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 100, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestChecksumVerification_Valid(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -294,13 +294,51 @@ func TestChecksumVerification_Valid(t *testing.T) {
 	}
 }
 
+// TestSnapshot_VertexCommittedFlagRoundtrip is the C-1 wire assertion: the
+// per-vertex committed flag survives a CreateSnapshot -> ExtractVertices round-trip
+// unchanged, so a joiner marks exactly the vertices the source had committed. If the
+// flag were dropped, a joiner would either re-apply committed history or (as the
+// round-grain cut did) mark uncommitted anchor siblings committed without effects.
+func TestSnapshot_VertexCommittedFlagRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	vertices := []consensus.VertexEntry{
+		{Round: 3, Data: []byte("committed-vertex"), Committed: true},
+		{Round: 4, Data: []byte("inflight-vertex"), Committed: false},
+	}
+
+	data, err := CreateSnapshot(db, 3, nil, vertices, nil, nil, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snap := types.GetRootAsSnapshot(data, 0)
+	got := ExtractVertices(snap)
+	if len(got) != 2 {
+		t.Fatalf("extracted %d vertices, want 2", len(got))
+	}
+
+	committedByRound := map[uint64]bool{}
+	for _, v := range got {
+		committedByRound[v.Round] = v.Committed
+	}
+
+	if !committedByRound[3] {
+		t.Error("round-3 vertex lost its committed flag across the round-trip")
+	}
+	if committedByRound[4] {
+		t.Error("round-4 in-flight vertex must not be marked committed across the round-trip")
+	}
+}
+
 // TestSnapshot_TotalSupplyRoundtrip confirms total_supply survives a snapshot
 // round-trip and is covered by the checksum (tampering it fails verification).
 func TestSnapshot_TotalSupplyRoundtrip(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 7, nil, nil, nil, nil, 12345, 0)
+	data, err := CreateSnapshot(db, 7, nil, nil, nil, nil, 12345, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -338,7 +376,7 @@ func TestSnapshot_IssuanceRateRoundtrip(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
 
-	data, err := CreateSnapshot(db, 9, nil, nil, nil, nil, 0, 18)
+	data, err := CreateSnapshot(db, 9, nil, nil, nil, nil, 0, 18, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -368,6 +406,45 @@ func TestSnapshot_IssuanceRateRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSnapshot_EpochStateRoundtrip confirms the consensus regime state (the opaque
+// epoch_state blob) survives a snapshot round-trip and is covered by the checksum, so
+// a joiner past the first boundary imports it rather than wedging.
+func TestSnapshot_EpochStateRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	regime := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04}
+
+	data, err := CreateSnapshot(db, 9, nil, nil, nil, nil, 0, 0, regime)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+
+	snapshot, err := ApplySnapshot(db2, data)
+	if err != nil {
+		t.Fatalf("ApplySnapshot: %v", err)
+	}
+
+	if got := ExtractRegimeState(snapshot); !bytes.Equal(got, regime) {
+		t.Fatalf("restored epoch_state: got %x, want %x", got, regime)
+	}
+
+	// Tamper the epoch_state bytes in place; the checksum must catch it.
+	tampered := make([]byte, len(data))
+	copy(tampered, data)
+	tamperedSnap := types.GetRootAsSnapshot(tampered, 0)
+	if !tamperedSnap.MutateEpochState(0, 0xFF) {
+		t.Fatal("MutateEpochState failed")
+	}
+
+	if _, err := ApplySnapshot(db2, tampered); err == nil {
+		t.Fatal("ApplySnapshot must fail when epoch_state is tampered (not checksum-covered)")
+	}
+}
+
 // TestSnapshot_ValidatorStakeRoundtrip confirms that two validators with
 // distinct self-stake, delegated total, and jail flag survive an encode/decode
 // round-trip with both records intact (a single-validator test would not catch
@@ -391,7 +468,7 @@ func TestSnapshot_ValidatorStakeRoundtrip(t *testing.T) {
 	}
 	v2.Pubkey[0] = 2
 
-	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -440,7 +517,7 @@ func TestSnapshot_RewardCoinRoundtrip(t *testing.T) {
 	v2.Pubkey[0] = 2
 	// v2 leaves RewardCoin unset (zero) to cover the absent-designation case.
 
-	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 100, []*consensus.ValidatorInfo{v1, v2}, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -476,7 +553,7 @@ func TestChecksumVerification_Corrupted(t *testing.T) {
 		t.Fatalf("store obj: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -511,7 +588,7 @@ func TestFullRoundtrip_CreateCompressDecompressApply(t *testing.T) {
 	}
 
 	// Create snapshot
-	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 999, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -579,8 +656,8 @@ func TestDeterministicChecksum(t *testing.T) {
 	db2.Set(id2[:], obj2)
 	db2.Set(id1[:], obj1)
 
-	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil, 0, 0)
-	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil, 0, 0)
+	data1, _ := CreateSnapshot(db1, 42, nil, nil, nil, nil, 0, 0, nil)
+	data2, _ := CreateSnapshot(db2, 42, nil, nil, nil, nil, 0, 0, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)
@@ -604,7 +681,7 @@ func TestCreateSnapshot_WithValidators(t *testing.T) {
 	v2.Pubkey[0] = 2
 	validators := []*consensus.ValidatorInfo{v1, v2}
 
-	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 100, validators, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -638,12 +715,12 @@ func TestSnapshotReplicationAffectsChecksum(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil, 0, 0)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, trackerA, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil, 0, 0)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, trackerB, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -670,7 +747,7 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 		{ID: consensus.Hash{1}, Version: 1, Replication: 5},
 	}
 
-	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0)
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -710,7 +787,7 @@ func TestSnapshot_WithDomains(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0)
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -748,12 +825,12 @@ func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
 		{Name: "beta.pod", ObjectID: [32]byte{0xBB}},
 	}
 
-	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0)
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot A: %v", err)
 	}
 
-	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0)
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot B: %v", err)
 	}
@@ -783,7 +860,7 @@ func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
 		t.Fatalf("store domain: %v", err)
 	}
 
-	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0)
+	data, err := CreateSnapshot(db, 0, nil, nil, nil, nil, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
@@ -805,8 +882,8 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 	v2 := &consensus.ValidatorInfo{}
 	v2.Pubkey[0] = 2
 
-	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil, 0, 0)
-	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil, 0, 0)
+	data1, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v1}, nil, nil, nil, 0, 0, nil)
+	data2, _ := CreateSnapshot(db, 0, []*consensus.ValidatorInfo{v2}, nil, nil, nil, 0, 0, nil)
 
 	snap1 := types.GetRootAsSnapshot(data1, 0)
 	snap2 := types.GetRootAsSnapshot(data2, 0)

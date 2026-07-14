@@ -56,11 +56,24 @@ func (d *domainStore) delete(name string) {
 	_ = d.db.Delete(key)
 }
 
+// prefixIterator is the read surface domain export needs: prefix iteration. Both
+// the live *storage.Storage and a consistent *storage.Snapshot satisfy it, so a
+// sync snapshot can export domains from the same cut as objects.
+type prefixIterator interface {
+	// IteratePrefix visits every key-value pair with the given prefix.
+	IteratePrefix(prefix []byte, fn func(key, value []byte) error) error
+}
+
 // export returns all domain entries for snapshot serialization.
 func (d *domainStore) export() []DomainEntry {
+	return exportDomainEntries(d.db)
+}
+
+// exportDomainEntries decodes every domain entry readable from src.
+func exportDomainEntries(src prefixIterator) []DomainEntry {
 	var entries []DomainEntry
 
-	_ = d.db.IteratePrefix(domainKeyPrefix, func(key, value []byte) error {
+	_ = src.IteratePrefix(domainKeyPrefix, func(key, value []byte) error {
 		if len(value) != 32 {
 			return nil
 		}

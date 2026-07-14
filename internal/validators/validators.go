@@ -1,6 +1,10 @@
 package validators
 
-import "sync"
+import (
+	"bytes"
+	"sort"
+	"sync"
+)
 
 // Hash is a 32-byte identifier for vertices and validators.
 type Hash [32]byte
@@ -272,6 +276,9 @@ func (vs *ValidatorSet) Unjail(pubkey Hash) bool {
 // AddWithStake adds a validator carrying its self-stake, delegated total, and
 // jail flag. It is used by the epoch holder snapshot rebuild so stake survives
 // the snapshot. If the validator already exists, its stake fields are updated.
+// Unlike Add, it fires NO onAdd callback: it reconstructs frozen/restored state
+// (holder snapshots, synced sets), not a live admission that should trigger side
+// effects such as mesh connection or transition checks.
 func (vs *ValidatorSet) AddWithStake(pubkey Hash, quicAddr string, blsPubkey [48]byte, selfStake, delegated uint64, jailed bool) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -314,6 +321,25 @@ func (vs *ValidatorSet) All() []*ValidatorInfo {
 	}
 
 	return result
+}
+
+// SortedKeys returns the validators' pubkeys sorted in ascending byte order.
+// The order is derived from the keys alone, so it is identical on every node
+// regardless of the order validators were added, which makes it a stable basis
+// for deterministic selection (such as anchor designation).
+func (vs *ValidatorSet) SortedKeys() []Hash {
+	vs.mu.RLock()
+	keys := make([]Hash, len(vs.validators))
+	for i, v := range vs.validators {
+		keys[i] = v.Pubkey
+	}
+	vs.mu.RUnlock()
+
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i][:], keys[j][:]) < 0
+	})
+
+	return keys
 }
 
 // Index returns the index of a validator in the set, or -1 if not found.

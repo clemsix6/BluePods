@@ -23,6 +23,7 @@ type snapshotResult struct {
 	trackerEntries     []consensus.ObjectTrackerEntry // trackerEntries is the set of object tracker entries
 	domainEntries      []state.DomainEntry            // domainEntries is the set of domain mappings from the snapshot
 	issuanceRateMicro  uint64                         // issuanceRateMicro is the restored thermostat rate, applied via a DAG construction Option
+	regimeState        []byte                         // regimeState is the consensus epoch/latch state, applied via WithSyncedRegimeState so a joiner past the first boundary resolves epochs
 }
 
 // runValidator runs the node as a new validator: sync then participate.
@@ -216,6 +217,7 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		trackerEntries:     sync.ExtractTrackerEntries(snapshot),
 		domainEntries:      sync.ExtractDomains(snapshot),
 		issuanceRateMicro:  snapshot.IssuanceRateMicro(),
+		regimeState:        sync.ExtractRegimeState(snapshot),
 	}
 
 	// Import domain entries into state
@@ -248,6 +250,7 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		consensus.WithListenerMode(),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
 		consensus.WithIssuanceRate(result.issuanceRateMicro),
+		consensus.WithSyncedRegimeState(result.regimeState),
 	}
 
 	if n.cfg.EpochLength > 0 {
@@ -265,6 +268,10 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		opts...,
 	)
 
+	// Wire missing-ancestor recovery (synced-listener construction site). A listener
+	// commits the ordered log too, so it needs active recovery for liveness.
+	n.dag.SetVertexFetcher(n.newVertexFetcher())
+
 	n.setupValidatorCallback()
 
 	return nil
@@ -281,6 +288,7 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		consensus.WithMinValidators(n.cfg.MinValidators),
 		consensus.WithImportData(result.vertices, result.trackerEntries),
 		consensus.WithIssuanceRate(result.issuanceRateMicro),
+		consensus.WithSyncedRegimeState(result.regimeState),
 	}
 
 	if n.cfg.GossipFanout > 0 {
@@ -299,6 +307,9 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 		n.state,
 		opts...,
 	)
+
+	// Wire missing-ancestor recovery (synced-validator construction site).
+	n.dag.SetVertexFetcher(n.newVertexFetcher())
 
 	logger.Info("DAG created for validator mode",
 		"validators", n.dag.ValidatorsInfo(),
@@ -322,12 +333,19 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 		"count", len(validators),
 	)
 
-	// Add each validator with their full info (pubkey + QUIC address + BLS key)
+	// Add each validator with their full info: pubkey, QUIC address, BLS key AND
+	// stake. The stake must be carried, not dropped: the genesis holder snapshot is
+	// refrozen from this live set whenever a registration commits during the genesis
+	// epoch (freezeGenesisHolders reads d.validators), so a stake-less founder here
+	// would refreeze a zero-stake committee — its capped stake total collapses to zero
+	// and the joiner can never reach the production or strict-commit quorum, wedging
+	// the relaxed bootstrap on a committed member that can never produce.
 	for _, v := range validators {
-		vs.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
+		vs.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
 			"quic", v.QUICAddr,
+			"selfStake", v.SelfStake,
 		)
 	}
 

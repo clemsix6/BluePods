@@ -75,10 +75,12 @@ func TestQuorumReached(t *testing.T) {
 		t.Fatal("total==0 must NOT be quorum")
 	}
 
-	// cappedStakeOf: two validators 90/10, 10% cap, equal-share floor = total/2.
-	// total=100, capMille=100 → fraction ceiling 10; equal share 50; floor wins.
-	// So each clamps to 50: v0(90)->50, v1(10)->10. cappedSum over both = 60,
-	// uncapped total = 100.
+	// cappedStakeOf: two validators 90/10, 10% cap, equal-share floor = rawTotal/2.
+	// rawTotal=100, capMille=100 → fraction ceiling 10; equal share 50; floor wins.
+	// So each clamps to 50: v0(90)->50, v1(10)->10. cappedSum over both = 60, and the
+	// returned total is the CAPPED total (50+10=60), NOT the raw total: the quorum
+	// test divides a capped numerator by a capped denominator, which keeps the strict
+	// quorum reachable under stake concentration.
 	validators, vs := newTestValidatorSet(2)
 	vs.SetSelfStake(validators[0].pubKey, 90)
 	vs.SetSelfStake(validators[1].pubKey, 10)
@@ -87,19 +89,19 @@ func TestQuorumReached(t *testing.T) {
 	defer dag.Close()
 
 	bothPresent := map[Hash]bool{validators[0].pubKey: true, validators[1].pubKey: true}
-	cappedSum, total := dag.cappedStakeOf(vs, bothPresent)
-	if total != 100 {
-		t.Fatalf("uncapped total = %d, want 100", total)
+	cappedSum, cappedTotal := dag.cappedStakeOf(vs, bothPresent)
+	if cappedTotal != 60 {
+		t.Fatalf("capped total = %d, want 60 (50+10)", cappedTotal)
 	}
 	if cappedSum != 60 {
 		t.Fatalf("cappedSum (both present) = %d, want 60 (50+10)", cappedSum)
 	}
 
-	// Only the small producer present: its capped weight is 10, total still 100.
+	// Only the small producer present: its capped weight is 10, capped total still 60.
 	onlySmall := map[Hash]bool{validators[1].pubKey: true}
-	cappedSum, total = dag.cappedStakeOf(vs, onlySmall)
-	if cappedSum != 10 || total != 100 {
-		t.Fatalf("cappedStakeOf(only small) = (%d, %d), want (10, 100)", cappedSum, total)
+	cappedSum, cappedTotal = dag.cappedStakeOf(vs, onlySmall)
+	if cappedSum != 10 || cappedTotal != 60 {
+		t.Fatalf("cappedStakeOf(only small) = (%d, %d), want (10, 60)", cappedSum, cappedTotal)
 	}
 }
 

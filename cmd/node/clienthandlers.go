@@ -51,6 +51,8 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleDomainResolve(data)
 	case network.MsgTagGetTxStatus:
 		return n.handleGetTxStatus(data)
+	case network.MsgTagGetVertex:
+		return n.handleGetVertex(data)
 	default:
 		return nil, fmt.Errorf("unhandled client message tag: 0x%02x", tag)
 	}

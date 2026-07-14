@@ -97,6 +97,10 @@ func (n *Node) initConsensus() error {
 		opts...,
 	)
 
+	// Wire missing-ancestor recovery (bootstrap construction site). Every construction
+	// path must do this, or a decided anchor whose ancestry never gossips stalls.
+	n.dag.SetVertexFetcher(n.newVertexFetcher())
+
 	n.setupValidatorCallback()
 	n.initAggregation(validators)
 	n.seedGenesisState()

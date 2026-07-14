@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"sort"
 	"testing"
 	"time"
 )
@@ -32,8 +33,78 @@ func TestSimProgressiveJoining(t *testing.T) {
 	t.Log("Waiting for all 10 nodes to converge...")
 	cluster.WaitForValidators(10, 120*time.Second)
 
-	// Phase 4: verify round convergence across all nodes
+	// Phase 4: the C-1 guard. Every joiner's committed projection (its exact validator
+	// set and epoch state) must equal an original node's. A joiner that dropped a
+	// committed transaction on its mid-load join forks this state permanently; the
+	// count-only WaitForValidators above cannot see a fork that keeps the count right.
+	assertCommittedProjectionAgrees(t, cluster)
+
+	// Phase 5: verify round convergence across all nodes
 	verifyRoundConvergence(t, cluster, 20)
+}
+
+// assertCommittedProjectionAgrees checks that every node reconstructs the identical
+// committed state a live node holds: the exact validator pubkey set (derived purely
+// from committed register_validator history — the tracker-level projection a mid-load
+// joiner must not fork), the epoch counter, and the frozen holder-snapshot size. It
+// is the purpose-built assertion the C-1 fix demands: with the round-grain commit cut,
+// a joiner marked an anchor's uncommitted same-round siblings committed without their
+// effects and dropped those transactions, forking its validator set forever.
+func assertCommittedProjectionAgrees(t *testing.T, cluster *Cluster) {
+	t.Helper()
+
+	ref := cluster.Node(0).Addr()
+	wantVals := sortedPubkeys(QueryValidators(t, ref))
+	wantStatus := QueryStatus(t, ref)
+
+	for i := 1; i < cluster.Size(); i++ {
+		addr := cluster.Node(i).Addr()
+
+		gotVals := sortedPubkeys(QueryValidators(t, addr))
+		if !equalStringSlices(wantVals, gotVals) {
+			t.Errorf("node %d validator set forks node 0's committed history:\n node0=%v\n node%d=%v",
+				i, wantVals, i, gotVals)
+		}
+
+		got := QueryStatus(t, addr)
+		if got.Epoch != wantStatus.Epoch {
+			t.Errorf("node %d epoch=%d, want %d (node 0)", i, got.Epoch, wantStatus.Epoch)
+		}
+		if got.EpochHolders != wantStatus.EpochHolders {
+			t.Errorf("node %d epochHolders=%d, want %d (node 0)", i, got.EpochHolders, wantStatus.EpochHolders)
+		}
+	}
+
+	t.Logf("Committed projection agrees across all %d nodes: %d validators, epoch %d",
+		cluster.Size(), len(wantVals), wantStatus.Epoch)
+}
+
+// sortedPubkeys returns the validators' hex pubkeys sorted, for order-independent
+// set comparison across nodes.
+func sortedPubkeys(vals []validatorResponse) []string {
+	keys := make([]string, len(vals))
+	for i, v := range vals {
+		keys[i] = v.Pubkey
+	}
+
+	sort.Strings(keys)
+
+	return keys
+}
+
+// equalStringSlices reports whether two string slices are element-wise equal.
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 // TestSimBatchJoining simulates deployment-style drip-feed startup.
