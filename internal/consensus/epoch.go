@@ -42,7 +42,7 @@ func (d *DAG) transitionEpoch(round uint64) {
 	// outgoing validators still get their share.
 	distributable := d.totalRewardWeight() > 0
 	issuance := d.runThermostat(distributable)
-	d.distributeEpochRewards(issuance)
+	leftover := d.distributeEpochRewards(issuance)
 
 	d.applyPendingRemovals()
 
@@ -83,6 +83,11 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	d.clearEpochState()
 
+	// clearEpochState just zeroed epochFees; re-seed it with whatever the pool
+	// could not credit anywhere, so an uncreditable reward share carries into the
+	// next epoch's pool instead of silently vanishing from accounted supply.
+	d.epochFees = leftover
+
 	d.currentEpoch++
 
 	logger.Info("epoch transition",
@@ -113,15 +118,20 @@ func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
 // its own portion is auto-restaked and credited liquid (creditValidatorReward).
 // The integer-division remainder goes to the deterministic top-weight validator so
 // the whole pool lands in coins/stake (sum credited == pool, no orphaned tokens).
-func (d *DAG) distributeEpochRewards(issuance uint64) {
+// It returns the leftover amount that could not be credited anywhere (no fee
+// system wired, no reward weight to distribute to, or an uncreditable remainder
+// recipient), so the caller carries it into the next epoch's pool instead of
+// losing it: the epoch reward pool must never silently vanish.
+func (d *DAG) distributeEpochRewards(issuance uint64) (leftover uint64) {
+	pool := safeAdd(d.epochFees, issuance)
+
 	if d.feeParams == nil || d.coinStore == nil {
-		return
+		return pool // nowhere to credit it: carry the whole pool forward
 	}
 
-	pool := safeAdd(d.epochFees, issuance)
 	totalWeight := d.totalRewardWeight()
 	if pool == 0 || totalWeight == 0 {
-		return
+		return pool // no reward weight: carry the whole pool forward (harmless if 0)
 	}
 
 	vals := d.validators.All()
@@ -133,7 +143,9 @@ func (d *DAG) distributeEpochRewards(issuance uint64) {
 		distributed += d.creditShare(v, share)
 	}
 
-	d.creditRemainder(top, pool-distributed)
+	distributed += d.creditRemainder(top, pool-distributed)
+
+	return pool - distributed
 }
 
 // creditShare credits one validator's epoch share: it splits the share with the
@@ -237,22 +249,27 @@ func (d *DAG) creditValidatorReward(v *ValidatorInfo, amount uint64) uint64 {
 }
 
 // creditRemainder credits the undistributed remainder to the top-weight
-// validator's reward coin so the full pool lands in coins. It is a no-op when the
-// remainder is zero or the recipient designates no reward coin.
-func (d *DAG) creditRemainder(top Hash, remainder uint64) {
+// validator's reward coin so the full pool lands in coins. It returns the
+// credited amount: the whole remainder when credited, 0 when the remainder is
+// zero or the recipient designates no reward coin — the caller carries an
+// uncredited remainder forward into the next epoch's pool rather than losing it.
+func (d *DAG) creditRemainder(top Hash, remainder uint64) uint64 {
 	if remainder == 0 {
-		return
+		return 0
 	}
 
 	info := d.validators.Get(top)
 	if info == nil || info.RewardCoin == (Hash{}) {
 		logger.Warn("remainder undistributable; no reward coin on top validator", "remainder", remainder)
-		return
+		return 0
 	}
 
 	if err := creditCoin(d.coinStore, info.RewardCoin, remainder); err != nil {
 		logger.Warn("remainder credit failed", "error", err)
+		return 0
 	}
+
+	return remainder
 }
 
 // delegatorShares enumerates the delegation positions targeting a validator as

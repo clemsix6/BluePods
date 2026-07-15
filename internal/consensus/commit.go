@@ -628,15 +628,17 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	}
 
 	// Deduct consumed+storage from gas_coin in one debit.
-	_, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
+	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
 	if err != nil {
 		logger.Warn("fee deduction failed", "error", err)
 		return FeeSplit{}, false
 	}
 
-	// If insufficient funds: fees partially deducted, tx rejected.
+	// If insufficient funds: the coin was drained of whatever it held, and that
+	// taken amount left the coin, so it is pooled like any consumed fee instead of
+	// vanishing from the accounted supply. The tx itself is still rejected.
 	if !fullyCovered {
-		return FeeSplit{Total: fee}, false
+		return FeeSplit{Total: fee, Epoch: deducted}, false
 	}
 
 	// Pool only the consumed portion; the storage deposit stays locked in the object.
