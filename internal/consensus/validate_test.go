@@ -11,7 +11,7 @@ import (
 )
 
 // =============================================================================
-// Vertex Validation Tests (ATP 2.2-2.6)
+// Vertex Validation Tests
 // =============================================================================
 
 // TestValidateSignature_InvalidSig verifies corrupt signature is rejected.
@@ -150,7 +150,7 @@ func TestValidateParentsQuorum_MinimumKnownParent(t *testing.T) {
 }
 
 // =============================================================================
-// Fee Summary Validation Tests (ATP 7.1-7.9)
+// Fee Summary Validation Tests
 // =============================================================================
 
 // TestValidateFeeSummary_Correct verifies correct fee summary passes.

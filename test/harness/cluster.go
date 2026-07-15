@@ -115,7 +115,7 @@ func NewCluster(t *testing.T, size int, opts ...Option) *Cluster {
 }
 
 // resolveOptions applies opts over size-dependent defaults, matching the
-// tuning test/integration/helpers.go used for large clusters.
+// tuning the old integration suite used for large clusters.
 func resolveOptions(size int, opts []Option) clusterOpts {
 	o := clusterOpts{initialMint: defaultInitialMint}
 	for _, opt := range opts {

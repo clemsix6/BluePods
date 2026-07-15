@@ -12,7 +12,7 @@ import (
 )
 
 // =============================================================================
-// Borsh Encoding Tests (ATP 15.2-15.4)
+// Borsh Encoding Tests
 // =============================================================================
 
 // TestEncodeSplitArgs verifies split args encode to 40 bytes: u64 LE amount + 32-byte owner.
@@ -173,7 +173,7 @@ func TestComputeNewObjectID_Deterministic(t *testing.T) {
 }
 
 // =============================================================================
-// BuildSignedTx Tests (ATP 15.2, 15.7)
+// BuildSignedTx Tests
 // =============================================================================
 
 // TestBuildSignedTx_Valid verifies the returned bytes parse as a Transaction with valid hash and signature.

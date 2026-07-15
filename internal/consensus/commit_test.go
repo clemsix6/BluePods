@@ -1549,7 +1549,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 }
 
 // =============================================================================
-// Min Gas Boundary Tests (ATP 5.8-5.9)
+// Min Gas Boundary Tests
 // =============================================================================
 
 // TestDeductFees_MinGasExact verifies max_gas = MinGas (100) proceeds.
@@ -1621,7 +1621,7 @@ func TestDeductFees_MinGasAbove(t *testing.T) {
 }
 
 // =============================================================================
-// BLS Proof Skip Tests (ATP 26.3-26.4)
+// BLS Proof Skip Tests
 // =============================================================================
 
 // TestExecuteTx_ZeroProofs_SkipsVerifier verifies ATX with 0 proofs skips BLS verification.
