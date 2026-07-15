@@ -50,10 +50,11 @@ scenario's teardown convergence check is red on this entry:
 `TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`,
 `TestScenarioEpochs`, `TestScenarioObjects`, `TestScenarioJoining`,
 `TestScenarioStress`, and the adversarial corpus:
-`TestScenarioCrash`, `TestScenarioAnchorCrash`, `TestScenarioJoinLoad`
-(each red ONLY here — their in-scenario liveness, resync, and zero-rollback
-assertions are green, with the divergent-checksums-at-one-round sweep as the
-signature, stable across two runs each).
+`TestScenarioCrash`, `TestScenarioAnchorCrash`, `TestScenarioJoinLoad`,
+`TestScenarioPartition` (all three sub-scenarios)
+(each red ONLY here — their in-scenario liveness, resync, plateau, heal and
+zero-rollback assertions are green, with the divergent-checksums-at-one-round
+sweep as the signature, stable across two runs each).
 
 ### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
 
@@ -70,8 +71,12 @@ as bug 1; distinguished from cause A by manifesting specifically at and after
 an epoch transition, rather than immediately on second-validator
 registration.
 
-**Reproduced by:** (pending a scenario that crosses an epoch boundary on a
-multi-validator cluster with invariants enabled.)
+**Reproduced by:** `TestScenarioPartition` (all sub-scenarios cross
+reward-bearing epoch boundaries before partitioning; the teardown sweeps
+repeatedly show most non-founder checksums agreeing while the founder's
+diverges, for example symmetric at round 330: founder `7a0a7b7e` against
+`16512932` on all four non-founders — the founder's reward coin is the
+genesis reserve coin, a singleton whose content is fingerprinted).
 
 ### 3. A validator without a reward coin defers its liquid reward indefinitely
 
@@ -184,3 +189,38 @@ registrations) and `TestScenarioEpochs` (`supply_identity_across_boundary`:
 distributions). Also latent in every multi-node scenario's teardown supply
 check, currently masked by the convergence failure of entry 1 aborting the
 invariant pass first.
+
+### 9. Network-wide commit wedge after two validators crash right after an epoch boundary
+
+**Subsystem:** `internal/consensus` commit path — the anchor decision /
+indirect resolution machinery around the crash window (`anchorStatus`,
+`resolveIndirect`, and whatever vertex-recovery path should backfill a dead
+producer's last vertices).
+
+On a 10-node, 50-round-epoch, equal-stake cluster, SIGKILLing two
+non-founder validators immediately after an epoch boundary can wedge the
+COMMIT CURSOR of every surviving node permanently, while round production
+races on unhindered. Survivor stake is ~80 percent of the total, so the 2/3
+quorum arithmetic guarantees liveness on paper; the wedge is in the
+decision/recovery machinery, not the arithmetic. This is a liveness bug,
+not a safety one: zero rollback holds throughout (no contradicted anchors,
+strictly increasing per segment).
+
+**Evidence:** `TestScenarioEpochCrash` kills nodes 8 and 9 right after
+`epoch.transitioned` epoch 6 (boundary round 300) fires on node 0. In the
+wedged runs, EVERY surviving node freezes at `lastCommitted` 307-309 (the
+kill lands around round 305) while the production round races past 680:
+final status on all 8 survivors reads `round=683-684, epoch=6,
+lastCommitted=309` with 7 of 8 fingerprints byte-identical at committed
+round 309. Every `consensus.round.advanced` event after the wedge carries
+`designated` all-zero (`anchorProducerFor` failing for far-ahead rounds
+whose epoch snapshot cannot exist yet), and only 2 `consensus.round.skipped`
+events fire in the entire run, so the skip path never clears the wedged
+rounds. Reproduced twice consecutively on the current code; one earlier run
+escaped the wedge and completed (restart, epoch reconvergence, uniform
+commit all green), so the trigger is timing-dependent within the
+kill-at-boundary window.
+
+**Reproduced by:** `TestScenarioEpochCrash`, red in-scenario at the
+post-kill boundary wait in the wedged runs (the dominant outcome), and red
+only at teardown convergence (entries 1/2) in runs that escape the wedge.
