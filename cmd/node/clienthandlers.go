@@ -53,6 +53,10 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleGetTxStatus(data)
 	case network.MsgTagGetVertex:
 		return n.handleGetVertex(data)
+	case network.MsgTagStateFingerprint:
+		return n.handleStateFingerprint()
+	case network.MsgTagTestControl:
+		return n.handleTestControl(data)
 	default:
 		return nil, fmt.Errorf("unhandled client message tag: 0x%02x", tag)
 	}

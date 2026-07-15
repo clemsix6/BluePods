@@ -76,6 +76,11 @@ type Config struct {
 	// LogFormat selects the log handler: "text" (human readable) or "json"
 	// (slog.JSONHandler at Debug level, the format the scenario harness consumes).
 	LogFormat string
+
+	// TestHooks enables the test-only QUIC surface (state-fingerprint and
+	// partition-control messages). Production binaries never set this; without
+	// it both messages return a typed refusal and change nothing.
+	TestHooks bool
 }
 
 // parseFlags parses command-line flags into Config. It returns an error when a
@@ -101,6 +106,7 @@ func parseFlags() (*Config, error) {
 	flag.IntVar(&cfg.TransitionBuffer, "transition-buffer", 0, "Buffer rounds after grace period (0 = default 10)")
 	flag.BoolVar(&cfg.LogMode, "log", false, "Force line logs instead of the dashboard, even on a terminal")
 	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log output format: text or json (json disables the dashboard)")
+	flag.BoolVar(&cfg.TestHooks, "test-hooks", false, "Enable the test-only QUIC surface (state fingerprint, partition control)")
 	flag.Parse()
 
 	if err := cfg.validateLogFormat(); err != nil {

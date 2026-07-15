@@ -192,6 +192,46 @@ func (t *QUICTransport) GetTxStatus(hash [32]byte) (*network.GetTxStatusResponse
 	return network.DecodeGetTxStatusResp(resp)
 }
 
+// Fingerprint fetches the node's convergence fingerprint over QUIC. It errors
+// on a node started without --test-hooks (the refusal in the response).
+func (t *QUICTransport) Fingerprint() (*network.FingerprintResponse, error) {
+	resp, err := t.roundTrip(network.EncodeStateFingerprint())
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint:\n%w", err)
+	}
+
+	parsed, err := network.DecodeStateFingerprintResp(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if parsed.Err != "" {
+		return nil, fmt.Errorf("fingerprint refused: %s", parsed.Err)
+	}
+
+	return parsed, nil
+}
+
+// TestControl sends a test-only network-control operation over QUIC. It
+// errors on a node started without --test-hooks (the refusal in the response).
+func (t *QUICTransport) TestControl(req *network.TestControlRequest) error {
+	resp, err := t.roundTrip(network.EncodeTestControl(req))
+	if err != nil {
+		return fmt.Errorf("test control:\n%w", err)
+	}
+
+	parsed, err := network.DecodeTestControlResp(resp)
+	if err != nil {
+		return err
+	}
+
+	if parsed.Err != "" {
+		return fmt.Errorf("test control refused: %s", parsed.Err)
+	}
+
+	return nil
+}
+
 // roundTrip dials the node, sends one length-prefixed request, and returns the
 // length-prefixed response.
 func (t *QUICTransport) roundTrip(request []byte) ([]byte, error) {

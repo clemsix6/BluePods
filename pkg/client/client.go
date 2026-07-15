@@ -186,6 +186,31 @@ func (c *Client) GetTxStatus(hash [32]byte) (*network.GetTxStatusResponse, error
 	return c.transport.GetTxStatus(hash)
 }
 
+// Fingerprint returns the node's convergence fingerprint (last committed
+// round, checksum, and supply terms). It requires the node to have been
+// started with --test-hooks; otherwise it errors with the node's refusal.
+func (c *Client) Fingerprint() (*network.FingerprintResponse, error) {
+	return c.transport.Fingerprint()
+}
+
+// SetPartition replaces the node's blocklist with blocked, dropping mesh
+// traffic to and from every one of them until cleared. It requires the node
+// to have been started with --test-hooks; otherwise it errors with the
+// node's refusal.
+func (c *Client) SetPartition(blocked [][32]byte) error {
+	return c.transport.TestControl(&network.TestControlRequest{
+		Op:      network.TestControlOpSetPartition,
+		Pubkeys: blocked,
+	})
+}
+
+// ClearPartition empties the node's blocklist, restoring normal traffic to
+// and from every peer. It requires the node to have been started with
+// --test-hooks; otherwise it errors with the node's refusal.
+func (c *Client) ClearPartition() error {
+	return c.transport.TestControl(&network.TestControlRequest{Op: network.TestControlOpClearPartition})
+}
+
 // ParseObject parses an Object FlatBuffer into an ObjectInfo. It is exported for
 // callers (such as the integration tests) that fetch raw object bytes over the
 // QUIC transport and need to decode them.
