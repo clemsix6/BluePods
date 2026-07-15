@@ -350,3 +350,39 @@ func TestCheckCommits_EmitsRoundAdvanced_OncePerRound(t *testing.T) {
 		t.Errorf("4th event round = %v, want 4", recs[3]["round"])
 	}
 }
+
+// TestWithLastCommittedRound_SeedsLastAnnouncedRound verifies a DAG resumed
+// from a restored commit cursor (WithLastCommittedRound, simulating a synced
+// or restarted node) does not retroactively flood consensus.round.advanced
+// for rounds already reached before the restore (I1): once production
+// catches up past the restored round, only the genuinely new rounds are
+// announced.
+func TestWithLastCommittedRound_SeedsLastAnnouncedRound(t *testing.T) {
+	vals, vs := newTestValidatorSet(4)
+	const restoredRound = 50
+
+	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, vals[0].privKey, nil,
+		WithLastCommittedRound(restoredRound))
+	t.Cleanup(func() { dag.Close() })
+	setEqualStake(dag, vals, 25)
+
+	// Jump production ahead, as a synced or restarted node's round quickly does
+	// once vertices start arriving again.
+	dag.updateRound(restoredRound + 2)
+
+	buf := captureEvents(t)
+	dag.checkCommits()
+
+	recs := eventsNamed(t, buf, events.EvRoundAdvanced)
+	for _, rec := range recs {
+		if round, ok := rec["round"].(float64); ok && uint64(round) <= restoredRound {
+			t.Fatalf("got a retroactive %s for round %v (restored cursor at %d)",
+				events.EvRoundAdvanced, rec["round"], restoredRound)
+		}
+	}
+
+	if len(recs) != 2 {
+		t.Fatalf("want 2 %s events (rounds %d..%d), got %d: %v",
+			events.EvRoundAdvanced, restoredRound+1, restoredRound+2, len(recs), recs)
+	}
+}

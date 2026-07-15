@@ -314,3 +314,34 @@ func TestApplyRegisteredDomains_EmitsDomainRegistered(t *testing.T) {
 		t.Errorf("tx = %v, want %s", rec["tx"], hex.EncodeToString(txHash[:]))
 	}
 }
+
+// TestApplyRegisteredDomains_RebindEmitsDomainUpdated verifies that applying a
+// RegisteredDomain for a name already bound in the domain store emits
+// DomainUpdated instead of DomainRegistered.
+func TestApplyRegisteredDomains_RebindEmitsDomainUpdated(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	firstTx := Hash{0x11, 0x22}
+	domains := []testDomain{{name: "rebound.pod", objectIndex: 0}}
+	first := buildPodOutputWithDomainsRaw(0, 10, domains)
+	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(first, 0), firstTx)
+
+	buf := captureEvents(t)
+
+	secondTx := Hash{0x33, 0x44}
+	second := buildPodOutputWithDomainsRaw(0, 10, domains)
+	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(second, 0), secondTx)
+
+	if recs := eventsNamed(t, buf, events.EvDomainRegistered); len(recs) != 0 {
+		t.Fatalf("rebind must not emit %s, got %d", events.EvDomainRegistered, len(recs))
+	}
+
+	recs := eventsNamed(t, buf, events.EvDomainUpdated)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 %s event, got %d", events.EvDomainUpdated, len(recs))
+	}
+	if recs[0]["name"] != "rebound.pod" {
+		t.Errorf("name = %v, want rebound.pod", recs[0]["name"])
+	}
+}

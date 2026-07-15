@@ -180,7 +180,11 @@ func (m *SnapshotManager) createSnapshot() {
 	snap := types.GetRootAsSnapshot(data, 0)
 	var checksum [32]byte
 	copy(checksum[:], snap.ChecksumBytes())
-	events.SnapshotCreated(currentRound, checksum)
+	// Emit commitRound, not currentRound: SnapshotApplied on the importing side
+	// reports snapshot.LastCommittedRound(), the same commitRound convention
+	// embedded in the snapshot below, and the two events must agree on what
+	// "round" means for the same snapshot.
+	events.SnapshotCreated(commitRound, checksum)
 
 	// Compress snapshot
 	compressed, err := CompressSnapshot(data)

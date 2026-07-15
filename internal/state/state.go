@@ -393,6 +393,9 @@ func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transac
 
 // applyRegisteredDomains stores domain name → ObjectID mappings from pod output.
 // Each RegisteredDomain references either an object_index (into created objects) or a direct object_id.
+// Emits DomainUpdated when the name was already bound (rebound to a possibly
+// different object) and DomainRegistered for a first-time binding, so the event
+// stream reports which case actually happened.
 func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [32]byte) {
 	var dom types.RegisteredDomain
 
@@ -403,9 +406,15 @@ func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [3
 
 		name := string(dom.Name())
 		objectID := s.resolveDomainObjectID(&dom, txHash)
+		existed := s.domains.exists(name)
+
 		s.domains.set(name, objectID)
 
-		events.DomainRegistered(name, objectID, txHash)
+		if existed {
+			events.DomainUpdated(name, objectID, txHash)
+		} else {
+			events.DomainRegistered(name, objectID, txHash)
+		}
 	}
 }
 

@@ -69,6 +69,20 @@ func (d *DAG) announceRoundAdvances() {
 	}
 }
 
+// lastDecidedRound converts a commit cursor (lastCommitted's "next round to
+// decide" convention) into the last DECIDED round: cursor-1, or 0 when
+// nothing has been decided yet. Used to seed lastAnnouncedRound wherever the
+// cursor is restored (I1), mirroring internal/sync's identically-named,
+// identically-shaped helper for the same convention (the two packages keep
+// separate copies rather than share an unexported symbol across packages).
+func lastDecidedRound(cursor uint64) uint64 {
+	if cursor == 0 {
+		return 0
+	}
+
+	return cursor - 1
+}
+
 // commitNextRound decides the round at the commit cursor and advances past it. It
 // returns true when the cursor advanced (so the loop continues) and false to stop:
 // on WAIT (not yet decidable) or on a COMMIT whose anchor ancestry is still in

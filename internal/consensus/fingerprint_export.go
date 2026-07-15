@@ -38,7 +38,7 @@ func (d *DAG) ExportFingerprintCut() FingerprintCut {
 	defer d.commitMu.Unlock()
 
 	return FingerprintCut{
-		Round:             d.lastCommitted,
+		Round:             lastDecidedRound(d.lastCommitted),
 		TrackerEntries:    d.tracker.Export(),
 		Validators:        d.validators.All(),
 		PendingRemovals:   sortedMemberKeys(d.pendingRemovals),

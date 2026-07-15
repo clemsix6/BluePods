@@ -187,10 +187,14 @@ type Option func(*DAG)
 
 // WithLastCommittedRound sets the initial lastCommittedRound.
 // Used when initializing from a snapshot. Sets lastCommitted to round+1
-// because lastCommitted means "next round to commit".
+// because lastCommitted means "next round to commit". lastAnnouncedRound is
+// seeded from the same cursor so the synced node's first commit tick does not
+// retroactively flood consensus.round.advanced for every round the source
+// node already reached before the snapshot was taken (I1).
 func WithLastCommittedRound(round uint64) Option {
 	return func(d *DAG) {
 		d.lastCommitted = round + 1
+		d.lastAnnouncedRound = lastDecidedRound(d.lastCommitted)
 	}
 }
 
@@ -360,9 +364,13 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 
 	// Resume the commit cursor from persisted state so a restart never re-derives an
 	// already decided round. A snapshot option (WithLastCommittedRound) applies below
-	// and takes precedence for a freshly synced node.
+	// and takes precedence for a freshly synced node. lastAnnouncedRound is restored
+	// alongside it so a bare restart's first commit tick does not retroactively
+	// flood consensus.round.advanced for every round already reached before the
+	// crash (I1).
 	if cursor, ok := d.store.loadCommitCursor(); ok {
 		d.lastCommitted = cursor
+		d.lastAnnouncedRound = lastDecidedRound(d.lastCommitted)
 	}
 
 	// Restore currentEpoch and the holder snapshots BEFORE any commit decision (the
@@ -668,6 +676,11 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 // run on every bootstrap start, restart included: nothing else restores the
 // live validator set in bootstrap mode, and skipping it on restart would leave
 // the founder with zero live self-stake and a broken total_bonded.
+//
+// Known limitation (test/BUGS.md entry 10): SetSelfStake/SetRewardCoin
+// overwrite rather than merge, so a restart re-seeds these fields to their
+// GENESIS values even if the founder's live self-stake or reward coin has
+// since diverged from genesis.
 func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)

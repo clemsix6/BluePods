@@ -40,7 +40,7 @@ func classifyRejection(err error) string {
 	case errors.Is(err, errFeeSummary):
 		return "fee_summary"
 	default:
-		return "fee_summary" // defensive fallback; unreachable — every terminal validateVertex error wraps one of the above
+		return "unknown" // defensive fallback; unreachable in practice — a forgotten case must surface as "unknown", never masquerade as a real reason such as "fee_summary"
 	}
 }
 

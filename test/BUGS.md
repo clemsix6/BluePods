@@ -224,3 +224,23 @@ kill-at-boundary window.
 **Reproduced by:** `TestScenarioEpochCrash`, red in-scenario at the
 post-kill boundary wait in the wedged runs (the dominant outcome), and red
 only at teardown convergence (entries 1/2) in runs that escape the wedge.
+
+### 10. Bootstrap restart reverts founder self-stake and reward coin to genesis values while coin debits persist
+
+**Subsystem:** `cmd/node/init.go` (genesis seeding on startup), suspected
+together with a missing validator-set persistence path;
+`internal/consensus/dag.go` `SeedGenesisValidator`.
+
+`SeedGenesisValidator` runs on every bootstrap start, restart included
+(unlike `SeedGenesisLedger`, which is genesis-only), and its
+`SetSelfStake`/`SetRewardCoin` calls overwrite rather than merge. A bootstrap
+node that restarts over its own data directory therefore re-seeds the
+founder's self-stake and reward coin designation back to their GENESIS
+values, even if the founder's live self-stake or reward coin has since
+diverged (through bonding, delegation, or reward crediting) — while any coin
+debits already applied against the old values persist in the durable ledger.
+The two are not kept consistent across a restart.
+
+Latent today: no current scenario mutates the founder's stake or reward coin
+before restarting the bootstrap node, so nothing in the corpus exercises
+this path yet.

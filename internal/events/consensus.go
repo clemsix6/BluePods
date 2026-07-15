@@ -20,8 +20,9 @@ func VertexRejected(vertex [32]byte, reason string) {
 	emit(EvVertexRejected, hexAttr("vertex", vertex), slog.String("reason", reason))
 }
 
-// RoundAdvanced marks the local commit cursor advancing to round, carrying the
-// round's designated anchor producer so scenarios can target it.
+// RoundAdvanced marks the production round observed from the commit loop (NOT
+// the commit cursor) advancing to round, carrying the round's designated
+// anchor producer so scenarios can target it.
 func RoundAdvanced(round uint64, designated [32]byte) {
 	emit(EvRoundAdvanced, slog.Uint64("round", round), hexAttr("designated", designated))
 }

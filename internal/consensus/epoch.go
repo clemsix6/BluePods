@@ -48,8 +48,10 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	// Capture epochAdditions BEFORE clearEpochState wipes it, and the pubkeys
 	// applyPendingRemovals actually removed (churn-deferred ones are excluded),
-	// so the epoch.transitioned event below reports the real churn.
-	added := append([]Hash(nil), d.epochAdditions...)
+	// so the epoch.transitioned event below reports the real churn. added runs
+	// through the same churn filter snapshotEpochHolders applies, so the event
+	// never announces an addition that churn actually excluded from membership.
+	added := d.churnLimitedAdditions()
 	removed := d.applyPendingRemovals()
 
 	// Retain the outgoing epoch's snapshot for the grace window so an ATX
@@ -364,18 +366,8 @@ func (d *DAG) snapshotEpochHolders() {
 	validators := d.validators.All()
 	d.epochHolders = NewValidatorSet(nil)
 
-	// If churn is unlimited or additions fit within limit, include all
-	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
-		for _, v := range validators {
-			d.epochHolders.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
-		}
-		return
-	}
-
-	// Churn limited: only include maxChurnPerEpoch new additions.
-	allowed := sortedAdditions(d.epochAdditions, d.maxChurnPerEpoch)
-	allowedSet := make(map[Hash]bool, len(allowed))
-	for _, h := range allowed {
+	allowedSet := make(map[Hash]bool)
+	for _, h := range d.churnLimitedAdditions() {
 		allowedSet[h] = true
 	}
 
@@ -386,11 +378,25 @@ func (d *DAG) snapshotEpochHolders() {
 	}
 
 	for _, v := range validators {
-		// Include validator if it was NOT a new addition, or if it's in the allowed set
+		// Include validator if it was NOT a new addition, or if churn allowed it in.
 		if !additionSet[v.Pubkey] || allowedSet[v.Pubkey] {
 			d.epochHolders.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
 		}
 	}
+}
+
+// churnLimitedAdditions returns this epoch's additions actually admitted:
+// every addition when churn is unlimited or under cap, otherwise the
+// churn-limited subset sortedAdditions selects. snapshotEpochHolders (the
+// actual membership filter) and the epoch.transitioned event's "added"
+// attribute must agree on this set, or the event announces an addition churn
+// silently excluded from membership.
+func (d *DAG) churnLimitedAdditions() []Hash {
+	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
+		return append([]Hash(nil), d.epochAdditions...)
+	}
+
+	return sortedAdditions(d.epochAdditions, d.maxChurnPerEpoch)
 }
 
 // snapshotOf returns a frozen copy of a validator set's full membership.

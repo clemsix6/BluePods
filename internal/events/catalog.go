@@ -24,7 +24,8 @@ const (
 	EvVertexReceived = "consensus.vertex.received"
 	// EvVertexRejected marks a vertex terminally rejected during validation.
 	EvVertexRejected = "consensus.vertex.rejected"
-	// EvRoundAdvanced marks the local commit cursor advancing.
+	// EvRoundAdvanced marks the production round observed from the commit loop
+	// (NOT the commit cursor) advancing.
 	EvRoundAdvanced = "consensus.round.advanced"
 	// EvAnchorCommitted marks an anchor decided at a round.
 	EvAnchorCommitted = "consensus.anchor.committed"

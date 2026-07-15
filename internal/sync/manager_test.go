@@ -207,8 +207,10 @@ func eventsNamed(t *testing.T, buf *bytes.Buffer, name string) []map[string]any 
 }
 
 // TestSnapshotManager_EmitsSnapshotCreated verifies createSnapshot emits
-// sync.snapshot.created carrying the round and the checksum embedded in the
-// serialized snapshot.
+// sync.snapshot.created carrying the checksum embedded in the serialized
+// snapshot, and the same commitRound (lastDecidedRound of the cursor)
+// convention SnapshotApplied reports on the importing side — not the
+// provider's production round (cut.Round), which the mock sets one higher.
 func TestSnapshotManager_EmitsSnapshotCreated(t *testing.T) {
 	db, cleanup := createTestStorageForManager(t)
 	defer cleanup()
@@ -225,8 +227,8 @@ func TestSnapshotManager_EmitsSnapshotCreated(t *testing.T) {
 		t.Fatalf("want 1 %s event, got %d", events.EvSnapshotCreated, len(recs))
 	}
 
-	if recs[0]["round"] != float64(7) {
-		t.Errorf("round = %v, want 7", recs[0]["round"])
+	if recs[0]["round"] != float64(6) {
+		t.Errorf("round = %v, want 6 (commitRound, cursor 7's last-decided round)", recs[0]["round"])
 	}
 
 	checksum, ok := recs[0]["checksum"].(string)
