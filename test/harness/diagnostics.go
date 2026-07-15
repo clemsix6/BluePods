@@ -3,8 +3,6 @@ package harness
 import (
 	"path/filepath"
 	"testing"
-
-	"BluePods/pkg/client"
 )
 
 // dumpTailSize is how many of a node's most recent events Dump prints.
@@ -53,7 +51,7 @@ func (c *Cluster) dumpTailEvents(t *testing.T, n *Node) {
 }
 
 // dumpStatus prints a node's live consensus status, if it can still be
-// reached. It builds its own client rather than going through
+// reached. It builds its own client through newClientFor rather than
 // Cluster.clientFor, which fails the test on error — Dump must never abort,
 // since it runs on failure paths where reaching the node may itself fail.
 func (c *Cluster) dumpStatus(t *testing.T, n *Node) {
@@ -64,7 +62,7 @@ func (c *Cluster) dumpStatus(t *testing.T, n *Node) {
 		return
 	}
 
-	cli, err := client.NewClient(n.QUICAddr, c.systemPodID)
+	cli, err := c.newClientFor(n)
 	if err != nil {
 		t.Logf("node %d: status unavailable: %v", n.Index, err)
 		return

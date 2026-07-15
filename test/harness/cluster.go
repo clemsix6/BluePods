@@ -315,16 +315,24 @@ func (c *Cluster) Client(i int) *client.Client {
 	return c.clientFor(c.Node(i))
 }
 
-// clientFor creates a client.Client connected to n.
+// clientFor creates a client.Client connected to n, failing the test on
+// error. Callers that must keep going or degrade gracefully when a node is
+// unreachable (fingerprint polling, diagnostics) use newClientFor instead.
 func (c *Cluster) clientFor(n *Node) *client.Client {
 	c.t.Helper()
 
-	cli, err := client.NewClient(n.QUICAddr, c.systemPodID)
+	cli, err := c.newClientFor(n)
 	if err != nil {
 		c.t.Fatalf("client for node %d: %v", n.Index, err)
 	}
 
 	return cli
+}
+
+// newClientFor creates a client.Client connected to n without failing the
+// test on error.
+func (c *Cluster) newClientFor(n *Node) (*client.Client, error) {
+	return client.NewClient(n.QUICAddr, c.systemPodID)
 }
 
 // Daemon creates a daemon.Daemon connected to node i.
