@@ -5,9 +5,11 @@ import (
 	"time"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/state"
 	"BluePods/internal/storage"
+	"BluePods/internal/types"
 )
 
 const (
@@ -171,6 +173,14 @@ func (m *SnapshotManager) createSnapshot() {
 		logger.Error("create snapshot", "error", err)
 		return
 	}
+
+	// CreateSnapshot's returned flatbuffer already embeds a checksum field
+	// (computed by the same function verifyChecksum reads back on apply), so
+	// parse it out here instead of recomputing it.
+	snap := types.GetRootAsSnapshot(data, 0)
+	var checksum [32]byte
+	copy(checksum[:], snap.ChecksumBytes())
+	events.SnapshotCreated(currentRound, checksum)
 
 	// Compress snapshot
 	compressed, err := CompressSnapshot(data)

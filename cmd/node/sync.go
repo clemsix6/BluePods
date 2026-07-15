@@ -194,6 +194,7 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	}
 
 	logger.Info("sync complete", "round", n.dag.Round())
+	events.SyncCompleted(n.dag.Round())
 
 	return nil
 }
@@ -241,6 +242,10 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		"trackerEntries", len(result.trackerEntries),
 		"domains", len(result.domainEntries),
 	)
+
+	var checksum [32]byte
+	copy(checksum[:], snapshot.ChecksumBytes())
+	events.SnapshotApplied(result.lastCommittedRound, checksum, snapshot.ObjectsLength())
 
 	return result, nil
 }

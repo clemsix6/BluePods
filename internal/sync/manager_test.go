@@ -1,12 +1,17 @@
 package sync
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/storage"
 )
 
@@ -161,6 +166,72 @@ func TestSnapshotManager_StopsCleanly(t *testing.T) {
 		// OK
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop() timed out")
+	}
+}
+
+// captureEvents swaps the default slog logger for a JSON handler writing into a
+// fresh buffer, restoring the previous default on test cleanup.
+func captureEvents(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	return &buf
+}
+
+// eventsNamed decodes one JSON object per captured line and returns those whose
+// reserved events.Key attribute equals name, in emission order.
+func eventsNamed(t *testing.T, buf *bytes.Buffer, name string) []map[string]any {
+	t.Helper()
+
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("captured line is not JSON: %v (line=%q)", err, line)
+		}
+
+		if rec[events.Key] == name {
+			out = append(out, rec)
+		}
+	}
+
+	return out
+}
+
+// TestSnapshotManager_EmitsSnapshotCreated verifies createSnapshot emits
+// sync.snapshot.created carrying the round and the checksum embedded in the
+// serialized snapshot.
+func TestSnapshotManager_EmitsSnapshotCreated(t *testing.T) {
+	db, cleanup := createTestStorageForManager(t)
+	defer cleanup()
+
+	provider := &mockSnapshotProvider{round: 7, db: db}
+	manager := NewSnapshotManager(db, provider)
+
+	buf := captureEvents(t)
+
+	manager.createSnapshot()
+
+	recs := eventsNamed(t, buf, events.EvSnapshotCreated)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 %s event, got %d", events.EvSnapshotCreated, len(recs))
+	}
+
+	if recs[0]["round"] != float64(7) {
+		t.Errorf("round = %v, want 7", recs[0]["round"])
+	}
+
+	checksum, ok := recs[0]["checksum"].(string)
+	if !ok || len(checksum) != 64 {
+		t.Errorf("checksum = %v, want 64-char hex string", recs[0]["checksum"])
 	}
 }
 

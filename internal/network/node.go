@@ -13,6 +13,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 )
 
@@ -448,6 +449,7 @@ func (n *Node) setupPeer(conn *quic.Conn, addr string) (*Peer, error) {
 	n.peersMu.Unlock()
 
 	logger.Info("peer added", "pubkey", keyHex[:16], "total", peerCount)
+	events.PeerConnected(keyHex)
 
 	n.knownAddrsMu.Lock()
 	n.knownAddrs[keyHex] = addr
@@ -472,6 +474,7 @@ func (n *Node) handlePeerDisconnect(p *Peer) {
 	n.peersMu.Unlock()
 
 	logger.Info("peer disconnected", "pubkey", keyHex[:16], "remaining", peerCount)
+	events.PeerDisconnected(keyHex)
 
 	n.callOnDisconnect(p)
 

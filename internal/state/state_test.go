@@ -491,7 +491,7 @@ func TestApplyUpdatedObjects(t *testing.T) {
 	objID := Hash{0x60}
 	output := buildPodOutputWithUpdated(objID, 3, []byte("new content"))
 
-	s.applyUpdatedObjects(output)
+	s.applyUpdatedObjects(output, Hash{0x61})
 
 	stored := s.GetObject(objID)
 	if stored == nil {
