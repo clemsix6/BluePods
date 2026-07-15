@@ -99,6 +99,28 @@ func (j *Journal) NewSegment() {
 	j.mu.Unlock()
 }
 
+// currentSegment returns the segment new events are currently tagged with.
+// It is internal bookkeeping for the harness's own orchestration (Cluster.Restart
+// targets the segment about to open, rather than risk matching a stale
+// pre-restart event of the same name).
+func (j *Journal) currentSegment() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return j.seg
+}
+
+// all returns every event recorded so far, across all segments, in append
+// order, regardless of name. It is internal to the harness (Cluster.Dump
+// uses it for diagnostics); scenario code goes through Events for a specific
+// name.
+func (j *Journal) all() []Event {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	return append([]Event{}, j.events...)
+}
+
 // Events returns matching events across all segments, in append order.
 func (j *Journal) Events(name string, preds ...Pred) []Event {
 	j.mu.Lock()
@@ -141,6 +163,40 @@ func (j *Journal) Wait(ctx context.Context, name string, preds ...Pred) (Event, 
 			continue
 		case <-ctx.Done():
 			return Event{}, fmt.Errorf("wait for event %q:\n%w", name, ctx.Err())
+		}
+	}
+}
+
+// waitCount blocks until at least min events named name (matching preds) are
+// recorded, or ctx ends, returning the last one that satisfied the count.
+// Unlike Wait, which returns on ANY match including one already recorded
+// before the call, waitCount confirms an operation the caller just performed
+// actually landed, for events that carry no attribute distinguishing one
+// occurrence from the next (for example net.partition.applied/cleared) and
+// so may otherwise be satisfied by a stale, pre-existing occurrence.
+func (j *Journal) waitCount(ctx context.Context, name string, min int, preds ...Pred) (Event, error) {
+	for {
+		j.mu.Lock()
+		var last Event
+		count := 0
+		for _, e := range j.events {
+			if e.Name == name && matchAll(e, preds) {
+				count++
+				last = e
+			}
+		}
+		if count >= min {
+			j.mu.Unlock()
+			return last, nil
+		}
+		notify := j.notify
+		j.mu.Unlock()
+
+		select {
+		case <-notify:
+			continue
+		case <-ctx.Done():
+			return Event{}, fmt.Errorf("wait for %d %q events (have %d):\n%w", min, name, count, ctx.Err())
 		}
 	}
 }
