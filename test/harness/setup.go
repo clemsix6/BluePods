@@ -90,9 +90,7 @@ func (c *Cluster) bondValidator(i int, stake uint64) {
 
 	cli := c.clientFor(n)
 
-	if err := w.RefreshCoin(cli, coinID); err != nil {
-		c.t.Fatalf("refresh stake coin for node %d: %v", i, err)
-	}
+	c.refreshCoinWithRetry(i, cli, w, coinID)
 
 	// blsPubkey is nil: the validator already carries its real BLS key from
 	// its own self-registration at startup, and validators.Add only fills an
@@ -108,6 +106,26 @@ func (c *Cluster) bondValidator(i int, stake uint64) {
 		c.t.Fatalf("bond for node %d: %v", i, err)
 	}
 	c.waitBondCommittedAll(bondHash)
+}
+
+// refreshCoinWithRetry refreshes the stake coin, retrying within
+// stakeSetupTimeout: on a large cluster the last bonds run at peak vertex
+// load, where a single QUIC read can transiently exceed its own request
+// deadline even though the coin is committed everywhere. One transient
+// timeout must not kill the whole scenario's setup.
+func (c *Cluster) refreshCoinWithRetry(i int, cli *client.Client, w *client.Wallet, coinID [32]byte) {
+	c.t.Helper()
+
+	deadline := time.Now().Add(stakeSetupTimeout)
+
+	var err error
+	for time.Now().Before(deadline) {
+		if err = w.RefreshCoin(cli, coinID); err == nil {
+			return
+		}
+	}
+
+	c.t.Fatalf("refresh stake coin for node %d: %v", i, err)
 }
 
 // loadNodeWallet builds a Wallet from node n's own Ed25519 key file, so the
