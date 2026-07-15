@@ -47,7 +47,9 @@ example round 278: `12746c30 / c0ecae56 / 6c5ec5eb / 2bb1bb20 / 853ec5d3`).
 **Reproduced by:** `TestClusterBasics` (`test/harness`, pre-existing);
 `TestScenarioBootstrap` is green (single node), and every multi-node
 scenario's teardown convergence check is red on this entry:
-`TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`.
+`TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`,
+`TestScenarioEpochs`, `TestScenarioObjects`, `TestScenarioJoining`,
+`TestScenarioStress`.
 
 ### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
 
@@ -172,6 +174,9 @@ A single-node cluster (no tx-path registration) holds the identity exactly
 (including the Task 3 partial-coverage fix) is not the leak.
 
 **Reproduced by:** `TestScenarioFees` (`underfunded_gas_coin_pools_partial`
-asserts the per-node supply identity and stays red on it). Also latent in
-every multi-node scenario's teardown supply check, currently masked by the
-convergence failure of entry 1 aborting the invariant pass first.
+asserts the per-node supply identity and stays red on it: +4000 with 4
+registrations) and `TestScenarioEpochs` (`supply_identity_across_boundary`:
++9000 with 9 registrations, stable across epoch boundaries and reward
+distributions). Also latent in every multi-node scenario's teardown supply
+check, currently masked by the convergence failure of entry 1 aborting the
+invariant pass first.
