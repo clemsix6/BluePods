@@ -2,8 +2,10 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/hex"
 	"sort"
 
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/validators"
 )
@@ -44,7 +46,11 @@ func (d *DAG) transitionEpoch(round uint64) {
 	issuance := d.runThermostat(distributable)
 	leftover := d.distributeEpochRewards(issuance)
 
-	d.applyPendingRemovals()
+	// Capture epochAdditions BEFORE clearEpochState wipes it, and the pubkeys
+	// applyPendingRemovals actually removed (churn-deferred ones are excluded),
+	// so the epoch.transitioned event below reports the real churn.
+	added := append([]Hash(nil), d.epochAdditions...)
+	removed := d.applyPendingRemovals()
 
 	// Retain the outgoing epoch's snapshot for the grace window so an ATX
 	// collected late in the previous epoch still verifies shortly after the
@@ -98,9 +104,20 @@ func (d *DAG) transitionEpoch(round uint64) {
 		"epochHolders", d.epochHolders.Len(),
 	)
 
+	events.EpochTransitioned(d.currentEpoch, hexSlice(added), hexSlice(removed))
+
 	if d.onEpochTransition != nil {
 		d.onEpochTransition(d.currentEpoch)
 	}
+}
+
+// hexSlice hex-encodes a slice of hashes for event attributes.
+func hexSlice(hashes []Hash) []string {
+	out := make([]string, len(hashes))
+	for i, h := range hashes {
+		out[i] = hex.EncodeToString(h[:])
+	}
+	return out
 }
 
 // rewardWeight returns a validator's epoch reward weight: effective_stake ×
@@ -144,6 +161,8 @@ func (d *DAG) distributeEpochRewards(issuance uint64) (leftover uint64) {
 	}
 
 	distributed += d.creditRemainder(top, pool-distributed)
+
+	events.RewardsDistributed(d.currentEpoch, pool, len(vals))
 
 	return pool - distributed
 }
@@ -289,12 +308,13 @@ func (d *DAG) delegatorShares(validator Hash) []delegatorShare {
 	return dels
 }
 
-// applyPendingRemovals removes validators from the active set.
-// Respects maxChurnPerEpoch: excess removals are deferred to the next epoch.
-// Removals are sorted by pubkey for deterministic ordering across all validators.
-func (d *DAG) applyPendingRemovals() {
+// applyPendingRemovals removes validators from the active set and returns the
+// pubkeys actually removed (respecting maxChurnPerEpoch; deferred removals are
+// not included). Removals are sorted by pubkey for deterministic ordering
+// across all validators.
+func (d *DAG) applyPendingRemovals() []Hash {
 	if len(d.pendingRemovals) == 0 {
-		return
+		return nil
 	}
 
 	// Sort by pubkey for deterministic order across all validators.
@@ -302,21 +322,23 @@ func (d *DAG) applyPendingRemovals() {
 	// validators would remove different sets when churn is limited.
 	sorted := sortedMemberKeys(d.pendingRemovals)
 
-	applied := 0
+	var removed []Hash
 
 	for _, pubkey := range sorted {
-		if d.maxChurnPerEpoch > 0 && applied >= d.maxChurnPerEpoch {
+		if d.maxChurnPerEpoch > 0 && len(removed) >= d.maxChurnPerEpoch {
 			break // defer remaining to next epoch
 		}
 
 		d.validators.Remove(pubkey)
 		delete(d.pendingRemovals, pubkey)
-		applied++
+		removed = append(removed, pubkey)
 
 		logger.Info("validator removed at epoch boundary",
 			"pubkey_prefix", pubkey[:4],
 		)
 	}
+
+	return removed
 }
 
 // sortedMemberKeys extracts the keys of a hash set and sorts them by pubkey bytes

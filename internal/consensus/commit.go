@@ -8,6 +8,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
@@ -68,6 +69,10 @@ func (d *DAG) commitNextRound() bool {
 		// mesh peers for the missing ancestry.
 		d.onCausalStall(status.anchor)
 		return false
+	}
+
+	if status.kind == anchorSkip {
+		events.RoundSkipped(round)
 	}
 
 	d.clearStall()
@@ -224,7 +229,20 @@ func (d *DAG) commitAnchorBatch(round uint64, anchor Hash) bool {
 	d.applyBatch(round, batch)
 	d.markQuorumIfDirect(round)
 
+	events.AnchorCommitted(round, anchor, d.anchorProducer(anchor), len(batch))
+
 	return true
+}
+
+// anchorProducer returns the producer of a stored vertex, or the zero hash if
+// it is not present locally (defensive; the anchor is expected to be stored
+// whenever commitAnchorBatch runs, since causalBatch already resolved it).
+func (d *DAG) anchorProducer(hash Hash) Hash {
+	v := d.store.get(hash)
+	if v == nil {
+		return Hash{}
+	}
+	return extractProducer(v)
 }
 
 // markQuorumIfDirect latches fullQuorumAchieved when a STRICT-regime round is
@@ -294,7 +312,7 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 		}
 
 		d.creditLiveness(v, credited)
-		d.epochFees += d.processTransactions(v, commitRound, verdicts).Epoch
+		d.epochFees += d.processTransactions(v, h, commitRound, verdicts).Epoch
 		d.store.markVertexCommitted(h)
 
 		// The vertex is now committed history: its producer enters the live produced
@@ -401,9 +419,11 @@ func (d *DAG) collectRoundProofs(hashes []Hash) []*types.AttestedTransaction {
 	return atxs
 }
 
-// processTransactions handles committed transactions from a vertex.
+// processTransactions handles committed transactions from a vertex. h is the
+// vertex's own hash, threaded through to executeTx so every tx.committed event
+// it emits carries the vertex that carried the transaction.
 // Returns the accumulated fee summary for the vertex.
-func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64, verdicts *proofVerdicts) FeeSplit {
+func (d *DAG) processTransactions(v *types.Vertex, h Hash, commitRound uint64, verdicts *proofVerdicts) FeeSplit {
 	var atx types.AttestedTransaction
 	var vertexFees FeeSplit
 
@@ -414,7 +434,7 @@ func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64, verdicts 
 			continue
 		}
 
-		txFees := d.executeTx(&atx, commitRound, producer, verdicts)
+		txFees := d.executeTx(&atx, commitRound, producer, verdicts, h)
 		vertexFees.Total += txFees.Total
 		vertexFees.Burned += txFees.Burned
 		vertexFees.Epoch += txFees.Epoch
@@ -429,11 +449,23 @@ func (d *DAG) processTransactions(v *types.Vertex, commitRound uint64, verdicts 
 // verdicts carries the round's parallel proof-verification result; it is nil
 // only when executeTx is driven outside the round commit loop (such as direct
 // unit tests), in which case proofs are verified inline.
-func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, producer Hash, verdicts *proofVerdicts) FeeSplit {
+//
+// vertexHash is the hash of the vertex that carried atx, threaded through by
+// processTransactions so every tx.committed event names its carrying vertex.
+func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, producer Hash, verdicts *proofVerdicts, vertexHash Hash) FeeSplit {
 	tx := atx.Transaction(nil)
 	if tx == nil {
 		logger.Warn("tx is nil, skipping")
 		return FeeSplit{}
+	}
+
+	// Defensive copy of the tx hash for every events.TxCommitted/TxExecuted call
+	// below: computed once here so every terminal outcome (including the
+	// duplicate-skip branch, which has no txCommitHash-derived local of its own)
+	// can report it without re-deriving it.
+	var txHash Hash
+	if hashBytes := tx.HashBytes(); len(hashBytes) == 32 {
+		copy(txHash[:], hashBytes)
 	}
 
 	funcName := string(tx.FunctionName())
@@ -450,6 +482,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if err := d.proofVerdict(atx, commitRound, verdicts); err != nil {
 		logger.Warn("ATX proof verification failed", "func", funcName, "error", err)
 		d.emitTransaction(tx, false, FailAuth)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "proof_failed")
 		return FeeSplit{}
 	}
 
@@ -465,6 +498,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if err := d.verifyTxAuth(tx); err != nil {
 		logger.Warn("tx authenticity verification failed", "func", funcName, "error", err)
 		d.emitTransaction(tx, false, FailAuth)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "authenticity_failed")
 		return FeeSplit{}
 	}
 
@@ -475,6 +509,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if !d.sponsoredTxStillValid(tx, commitRound) {
 		logger.Warn("sponsored tx expired or unbounded", "func", funcName)
 		d.emitTransaction(tx, false, FailExpired)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "expired_sponsorship")
 		return FeeSplit{}
 	}
 
@@ -484,19 +519,21 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// object creation, fees, and validator changes are never applied twice. The
 	// hash covers the mutable refs (with versions), so a legitimate retry against a
 	// newer version has a different hash and is not blocked.
-	if txHash, ok := txCommitHash(tx); ok {
-		if d.tracker.wasCommitted(txHash) {
+	if txCommit, ok := txCommitHash(tx); ok {
+		if d.tracker.wasCommitted(txCommit) {
 			logger.Debug("duplicate tx skipped", "func", funcName)
+			events.TxCommitted(txHash, vertexHash, commitRound, false, "duplicate")
 			return FeeSplit{}
 		}
 
-		d.tracker.markCommitted(txHash)
+		d.tracker.markCommitted(txCommit)
 	}
 
 	// Check and update versions atomically
 	if !d.tracker.checkAndUpdate(tx) {
 		logger.Debug("version conflict", "func", funcName)
 		d.emitTransaction(tx, false, FailVersion)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "version_conflict")
 		return FeeSplit{}
 	}
 
@@ -507,6 +544,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if !proceed {
 		logger.Debug("fee deduction rejected", "func", funcName)
 		d.emitTransaction(tx, false, FailFee)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "fee_rejected")
 		return feeSplit
 	}
 
@@ -514,6 +552,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if !d.validateMutableRefOwnership(tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
 		d.emitTransaction(tx, false, FailOwner)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "ownership")
 		return feeSplit
 	}
 
@@ -531,6 +570,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
 		d.emitTransaction(tx, true, FailNone)
+		events.TxCommitted(txHash, vertexHash, commitRound, true, "")
 		return feeSplit
 	}
 
@@ -544,6 +584,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		if err != nil {
 			logger.Error("executor error", "func", funcName, "error", err)
 		}
+
+		errorCode := ""
+		if err != nil {
+			errorCode = err.Error()
+		}
+		events.TxExecuted(txHash, success, errorCode)
 	} else {
 		success = true // no executor = skip execution
 	}
@@ -555,6 +601,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		reason = FailRevert
 	}
 	d.emitTransaction(tx, success, reason)
+
+	commitReason := ""
+	if !success {
+		commitReason = "execution_error"
+	}
+	events.TxCommitted(txHash, vertexHash, commitRound, success, commitReason)
 
 	return feeSplit
 }
@@ -633,6 +685,9 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		logger.Warn("fee deduction failed", "error", err)
 		return FeeSplit{}, false
 	}
+
+	txHash, _ := txCommitHash(tx)
+	events.FeesDeducted(txHash, gasCoinID, deducted, fullyCovered)
 
 	// If insufficient funds: the coin was drained of whatever it held, and that
 	// taken amount left the coin, so it is pooled like any consumed fee instead of
@@ -996,6 +1051,7 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	}
 
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
+	events.ValidatorRegistered(pubkey, quicAddr)
 
 	// Admit the validator to the committed member set and refresh the genesis regime.
 	// This is the committed-only path (never an optimistic self-add), so the frozen
@@ -1080,6 +1136,7 @@ func (d *DAG) handleDeregisterValidator(tx *types.Transaction, commitRound uint6
 	copy(pubkey[:], sender)
 
 	d.pendingRemovals[pubkey] = true
+	events.ValidatorDeregistered(pubkey)
 
 	logger.Info("validator deregistration pending",
 		"pubkey_prefix", pubkey[:4],
@@ -1115,6 +1172,7 @@ func (d *DAG) handleBond(tx *types.Transaction) bool {
 	}
 
 	d.validators.SetSelfStake(sender, newStake)
+	events.StakeBonded(sender, coinID, amount)
 	return true
 }
 
@@ -1149,6 +1207,7 @@ func (d *DAG) handleUnbond(tx *types.Transaction) bool {
 	}
 
 	d.validators.SetSelfStake(sender, current.SelfStake-amount)
+	events.StakeUnbonded(sender, coinID, amount)
 	return true
 }
 
@@ -1175,6 +1234,9 @@ func (d *DAG) handleDelegate(tx *types.Transaction) bool {
 
 	d.coinStore.SetObject(buildDelegationObject(delegator, validator, amount))
 	d.validators.AddDelegated(validator, amount)
+
+	posID := DelegationID(delegator, validator)
+	events.StakeDelegated(validator, posID, amount)
 	return true
 }
 
@@ -1202,6 +1264,7 @@ func (d *DAG) handleUndelegate(tx *types.Transaction) bool {
 
 	d.coinStore.DeleteObject(posID)
 	d.validators.SubDelegated(validator, amount)
+	events.StakeUndelegated(validator, posID, amount)
 	return true
 }
 

@@ -215,7 +215,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0, Hash{}, nil)
+	dag.executeTx(atx, 0, Hash{}, nil, Hash{})
 
 	// Tx should fail, version should NOT have been incremented
 	if v := dag.tracker.getVersion(objID); v != 3 {
@@ -239,7 +239,7 @@ func TestExecuteTxVersionSuccess(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0, Hash{}, nil)
+	dag.executeTx(atx, 0, Hash{}, nil, Hash{})
 
 	// Version should be incremented
 	if v := dag.tracker.getVersion(objID); v != 1 {
@@ -709,7 +709,7 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 		t.Fatal("new validator should not be in set before register")
 	}
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	// Validator should now be in the set
 	if !dag.validators.Contains(newVal.pubKey) {
@@ -742,7 +742,7 @@ func TestHandleRegisterValidator_RewardCoinFromArgs(t *testing.T) {
 	atxBytes := buildRegisterATXWithReward(t, newVal.pubKey, testSystemPod, "quic://r:1", [48]byte{0xAA}, rewardCoin)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	info := dag.validators.Get(newVal.pubKey)
 	if info == nil {
@@ -769,7 +769,7 @@ func TestHandleRegisterValidator_NoRewardCoinLeavesZero(t *testing.T) {
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2", [48]byte{0xAA})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	info := dag.validators.Get(newVal.pubKey)
 	if info == nil {
@@ -796,7 +796,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("register on wrong pod should be ignored")
@@ -819,7 +819,7 @@ func TestHandleRegisterValidator_WrongFunction(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("wrong function name should not register validator")
@@ -840,7 +840,7 @@ func TestHandleRegisterValidator_InvalidSender(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if dag.validators.Len() != initialCount {
 		t.Fatal("invalid sender should not register validator")
@@ -863,13 +863,13 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 
 	// Register once
 	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
-	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5, Hash{}, nil)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5, Hash{}, nil, Hash{})
 
 	countAfterFirst := dag.validators.Len()
 
 	// Register again with same pubkey
 	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
-	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6, Hash{}, nil)
+	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6, Hash{}, nil, Hash{})
 
 	if dag.validators.Len() != countAfterFirst {
 		t.Fatal("duplicate register should not change validator count")
@@ -895,7 +895,7 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if len(dag.epochAdditions) != 1 {
 		t.Fatalf("expected 1 epoch addition, got %d", len(dag.epochAdditions))
@@ -931,7 +931,7 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 10, Hash{}, nil)
+	dag.executeTx(atx, 10, Hash{}, nil, Hash{})
 
 	// Transition should now be set
 	if dag.transitionRound.Load() < 0 {
@@ -965,7 +965,7 @@ func TestHandleDeregisterValidator_ViaExecuteTx(t *testing.T) {
 		t.Fatal("validator[2] should be in active set before deregister")
 	}
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	// Validator should still be active (removal is deferred to epoch)
 	if !dag.validators.Contains(validators[2].pubKey) {
@@ -993,7 +993,7 @@ func TestHandleDeregisterValidator_WrongPod(t *testing.T) {
 	atxBytes := buildDeregisterATX(t, validators[2].pubKey, wrongPod)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if len(dag.pendingRemovals) != 0 {
 		t.Fatal("deregister on wrong pod should be ignored")
@@ -1015,7 +1015,7 @@ func TestHandleDeregisterValidator_WrongFunction(t *testing.T) {
 	atxBytes := buildSystemPodATX(t, validators[2].pubKey, testSystemPod, "wrong_function")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	if len(dag.pendingRemovals) != 0 {
 		t.Fatal("wrong function name should be ignored")
@@ -1038,7 +1038,7 @@ func TestDeregisterThenEpoch_FullPath(t *testing.T) {
 	// Step 1: Submit deregister tx
 	atxBytes := buildDeregisterATX(t, validators[3].pubKey, testSystemPod)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
-	dag.executeTx(atx, 5, Hash{}, nil)
+	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
 
 	// Verify: still active, in pending
 	if !dag.validators.Contains(validators[3].pubKey) {
@@ -1102,7 +1102,7 @@ func TestDeductFees_WrongOwner(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	// Fee should be zero (tx rejected before deduction)
 	if feeSplit.Total != 0 {
@@ -1139,7 +1139,7 @@ func TestDeductFees_NotSingleton(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total != 0 {
 		t.Errorf("expected zero fees for non-singleton gas coin, got total=%d", feeSplit.Total)
@@ -1167,7 +1167,7 @@ func TestDeductFees_CoinNotFound(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total != 0 {
 		t.Errorf("expected zero fees for missing coin, got total=%d", feeSplit.Total)
@@ -1196,7 +1196,7 @@ func TestDeductFees_MinGasViolation(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 50, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total != 0 {
 		t.Errorf("expected zero fees for min_gas violation, got total=%d", feeSplit.Total)
@@ -1233,7 +1233,7 @@ func TestDeductFees_InsufficientFunds(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	// Balance should be drained to 0
 	balance, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
@@ -1270,7 +1270,7 @@ func TestDeductFees_Success(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total == 0 {
 		t.Fatal("expected non-zero fee total")
@@ -1365,7 +1365,7 @@ func TestDeductFees_FeesDisabled(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total != 0 {
 		t.Errorf("expected zero fees when fee system disabled, got %d", feeSplit.Total)
@@ -1398,7 +1398,7 @@ func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
 	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	select {
 	case committed := <-dag.Committed():
@@ -1433,7 +1433,7 @@ func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
 	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	select {
 	case committed := <-dag.Committed():
@@ -1466,7 +1466,7 @@ func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
 	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	select {
 	case committed := <-dag.Committed():
@@ -1494,7 +1494,7 @@ func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
 	atxBytes := buildOwnershipTestATX(t, Hash{0x01}, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	select {
 	case committed := <-dag.Committed():
@@ -1536,7 +1536,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 	atxBytes := buildOwnershipTestATX(t, sender, refs)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	select {
 	case committed := <-dag.Committed():
@@ -1574,7 +1574,7 @@ func TestDeductFees_MinGasExact(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 100, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total == 0 {
 		t.Error("expected non-zero fee for max_gas=MinGas")
@@ -1608,7 +1608,7 @@ func TestDeductFees_MinGasAbove(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 101, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total == 0 {
 		t.Error("expected non-zero fee for max_gas=MinGas+1")
@@ -1644,7 +1644,7 @@ func TestExecuteTx_ZeroProofs_SkipsVerifier(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0, Hash{}, nil)
+	dag.executeTx(atx, 0, Hash{}, nil, Hash{})
 	// If we reach here without fatal, the verifier was correctly skipped
 }
 
@@ -1662,7 +1662,7 @@ func TestExecuteTx_NilVerifier(t *testing.T) {
 	atxBytes := buildTestATX(t, "test_func", nil, nil, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	dag.executeTx(atx, 0, Hash{}, nil)
+	dag.executeTx(atx, 0, Hash{}, nil, Hash{})
 
 	// Tx should succeed: emitted to committed channel
 	select {

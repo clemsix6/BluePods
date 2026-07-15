@@ -94,7 +94,7 @@ func TestExecuteTx_RejectsForged(t *testing.T) {
 	atxBytes := wrapTxInATX(t, forged)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
-	feeSplit := dag.executeTx(atx, 0, validators[0].pubKey, nil)
+	feeSplit := dag.executeTx(atx, 0, validators[0].pubKey, nil, Hash{})
 
 	if feeSplit.Total != 0 {
 		t.Errorf("forged tx produced fees: total=%d", feeSplit.Total)
