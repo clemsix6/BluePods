@@ -186,9 +186,17 @@ A single-node cluster (no tx-path registration) holds the identity exactly
 asserts the per-node supply identity and stays red on it: +4000 with 4
 registrations) and `TestScenarioEpochs` (`supply_identity_across_boundary`:
 +9000 with 9 registrations, stable across epoch boundaries and reward
-distributions). Also latent in every multi-node scenario's teardown supply
-check, currently masked by the convergence failure of entry 1 aborting the
-invariant pass first.
+distributions).
+
+Also reproduced at teardown of `TestScenarioConsensusBasics` (5-node
+cluster, 4 non-founder registrations), now that `CheckInvariants` runs the
+supply check even when the convergence check (entry 1) disagrees rather than
+aborting the invariant pass on it: `node 4:
+coinsTotal(499999968790)+totalBonded(500000000000)+deposits(15600)+feesInFlight(19610)=1000000004000
+!= totalSupply(1000000000000)` — the exact predicted +4000 for 4
+registrations. Before that harness fix this teardown check was reachable in
+every multi-node scenario but always masked by entry 1's convergence
+`t.Fatalf` aborting the invariant pass first.
 
 ### 9. Network-wide commit wedge after two validators crash right after an epoch boundary
 
