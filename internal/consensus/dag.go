@@ -626,6 +626,12 @@ func (d *DAG) SeedGenesis(is genesis.InitialState) {
 	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
 	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
 
+	// Seed the founder's reward coin to its own genesis coin: without a
+	// designation the founder's liquid epoch reward share has nowhere to land and
+	// silently vanishes at every boundary with a non-zero pool (Task 3 only stops
+	// the leak when nobody ever registers a coin; genesis must seed one).
+	d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
+
 	// The founder is a committed genesis member: record it and freeze the genesis
 	// holder snapshot so the anchor path resolves epoch 0 without ever reading the
 	// live set. Under commitMu because the commit loop is already running.

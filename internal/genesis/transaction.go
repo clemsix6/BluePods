@@ -93,9 +93,11 @@ func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, qu
 
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
 // Used by validators joining the network — the receiving node wraps it in ATX.
-// Validators register only a QUIC address.
-func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte) []byte {
-	args := encodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey)
+// rewardCoin optionally designates the coin the validator's liquid epoch reward
+// is credited to; a zero value encodes no designation (setRewardCoinFromArgs
+// then falls back to the tx's owned gas coin, if any).
+func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) []byte {
+	args := EncodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey, rewardCoin)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
