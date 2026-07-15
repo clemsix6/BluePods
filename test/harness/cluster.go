@@ -56,6 +56,9 @@ type Cluster struct {
 
 	mu    sync.Mutex // mu guards nodes (Spawn appends to it)
 	nodes []*Node    // nodes is every node started so far, indexed by position
+
+	clientsMu sync.Mutex             // clientsMu guards clients
+	clients   map[int]*client.Client // clients caches one client.Client per node index, keyed by Node.Index
 }
 
 // NewCluster builds the node binary once, starts size real node processes
@@ -181,21 +184,35 @@ func (c *Cluster) startValidatorsSequential(size int, bootstrapAddr string) {
 
 // startValidatorsParallel starts every validator concurrently, then waits
 // for all of them, for clusters large enough that sequential startup would
-// be too slow.
+// be too slow. The spawned goroutines report failures over a channel and
+// never call c.t.Fatalf themselves: FailNow (which Fatalf calls) must run on
+// the goroutine running the test, never one the test spawns.
 func (c *Cluster) startValidatorsParallel(size int, bootstrapAddr string) {
 	c.t.Helper()
 
 	c.nodes = append(c.nodes, make([]*Node, size-1)...)
 
-	var wg sync.WaitGroup
+	type result struct {
+		idx int
+		n   *Node
+		err error
+	}
+
+	results := make(chan result, size-1)
 	for i := 1; i < size; i++ {
-		wg.Add(1)
 		go func(idx int) {
-			defer wg.Done()
-			c.nodes[idx] = c.startOne(idx, false, bootstrapAddr)
+			n, err := c.startOneErr(idx, false, bootstrapAddr)
+			results <- result{idx: idx, n: n, err: err}
 		}(i)
 	}
-	wg.Wait()
+
+	for i := 1; i < size; i++ {
+		r := <-results
+		if r.err != nil {
+			c.t.Fatalf("start node %d: %v", r.idx, r.err)
+		}
+		c.nodes[r.idx] = r.n
+	}
 
 	for i := 1; i < size; i++ {
 		c.waitNodeReady(c.nodes[i])
@@ -203,13 +220,25 @@ func (c *Cluster) startValidatorsParallel(size int, bootstrapAddr string) {
 }
 
 // startOne allocates a port, creates a node under the cluster's directory,
-// and starts it with the cluster's tuning.
+// and starts it with the cluster's tuning, failing the test on error.
 func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr string) *Node {
 	c.t.Helper()
 
+	n, err := c.startOneErr(index, isBootstrap, bootstrapAddr)
+	if err != nil {
+		c.t.Fatalf("%v", err)
+	}
+
+	return n
+}
+
+// startOneErr is startOne's non-fatal core: it never touches *testing.T, so
+// it is safe to call from a goroutine startValidatorsParallel spawns (only
+// the test's own goroutine may call t.Fatalf/FailNow).
+func (c *Cluster) startOneErr(index int, isBootstrap bool, bootstrapAddr string) (*Node, error) {
 	port, err := allocatePort()
 	if err != nil {
-		c.t.Fatalf("allocate port for node %d: %v", index, err)
+		return nil, fmt.Errorf("allocate port for node %d:\n%w", index, err)
 	}
 
 	dir := filepath.Join(c.dir, fmt.Sprintf("node-%d", index))
@@ -217,7 +246,7 @@ func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr string) *N
 
 	n, err := newNode(index, dir, c.binaryPath, quicAddr)
 	if err != nil {
-		c.t.Fatalf("create node %d: %v", index, err)
+		return nil, fmt.Errorf("create node %d:\n%w", index, err)
 	}
 
 	args := NodeArgs{
@@ -235,10 +264,10 @@ func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr string) *N
 	}
 
 	if err := n.Start(args); err != nil {
-		c.t.Fatalf("start node %d: %v", index, err)
+		return nil, fmt.Errorf("start node %d:\n%w", index, err)
 	}
 
-	return n
+	return n, nil
 }
 
 // waitNodeReady blocks until n reports node.ready, dumping diagnostics and
@@ -329,10 +358,33 @@ func (c *Cluster) clientFor(n *Node) *client.Client {
 	return cli
 }
 
-// newClientFor creates a client.Client connected to n without failing the
-// test on error.
+// newClientFor returns a client.Client connected to n without failing the
+// test on error, creating and caching one the first time n is asked for.
+// NewClient pays a connect-and-status round trip; QUICTransport dials fresh
+// per RPC rather than holding a persistent connection, and a node's
+// QUICAddr never changes across restarts, so one cached client per node
+// index is safe to reuse for the cluster's lifetime — sparing repeated
+// callers (fingerprint polling chief among them) that round trip on every
+// call.
 func (c *Cluster) newClientFor(n *Node) (*client.Client, error) {
-	return client.NewClient(n.QUICAddr, c.systemPodID)
+	c.clientsMu.Lock()
+	defer c.clientsMu.Unlock()
+
+	if cli, ok := c.clients[n.Index]; ok {
+		return cli, nil
+	}
+
+	cli, err := client.NewClient(n.QUICAddr, c.systemPodID)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.clients == nil {
+		c.clients = make(map[int]*client.Client)
+	}
+	c.clients[n.Index] = cli
+
+	return cli, nil
 }
 
 // Daemon creates a daemon.Daemon connected to node i.

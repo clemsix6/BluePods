@@ -22,16 +22,24 @@ const (
 )
 
 // CheckInvariants runs the cardinal checks over all alive nodes: schema
-// drift, convergence, zero rollback, and supply conservation. It is
+// drift, zero rollback, convergence, and supply conservation. It is
 // registered by NewCluster in t.Cleanup (running BEFORE node teardown)
 // unless WithoutInvariants was given.
+//
+// Rollback runs BEFORE convergence deliberately: it needs no fingerprints, and
+// convergence failing must never keep it (or the supply check after it) from
+// running. checkConvergence itself reports a disagreement with t.Errorf, not
+// t.Fatalf — Fatal's runtime.Goexit would unwind straight through this
+// function, skipping checkSupplyT below it — and always returns the last
+// completed fingerprint sweep, even after a timeout, so checkSupplyT still
+// runs against whatever sweep is available.
 func (c *Cluster) CheckInvariants(t *testing.T) {
 	t.Helper()
 
 	c.checkSchemaDrift(t)
+	c.checkRollbackT(t)
 
 	fps := c.checkConvergence(t)
-	c.checkRollbackT(t)
 	c.checkSupplyT(t, fps)
 }
 
@@ -54,32 +62,56 @@ func (c *Cluster) checkSchemaDrift(t *testing.T) {
 
 // checkConvergence polls Client(i).Fingerprint() on every alive node every
 // convergencePoll until one sweep observes identical checksums AND identical
-// committed rounds across all of them, or fails the test after
-// convergenceTimeout. Requiring the same round, not just the same checksum,
-// matters: a node wedged at an idle tail can otherwise present a checksum
-// that trivially matches a converged peer, which is exactly the shape of a
-// broken heal. It returns the agreeing sweep, reused by the supply check so
-// both read the same consistent snapshot.
+// committed rounds across all of them, or reports (via t.Errorf, not
+// t.Fatalf) a disagreement after convergenceTimeout. Requiring the same
+// round, not just the same checksum, matters: a node wedged at an idle tail
+// can otherwise present a checksum that trivially matches a converged peer,
+// which is exactly the shape of a broken heal. It always returns the last
+// completed sweep (nil if every sweep errored), agreeing or not, so the
+// supply check after it still runs against whatever fingerprints were
+// actually collected — using t.Fatalf here would Goexit out of CheckInvariants
+// and skip that check entirely.
 func (c *Cluster) checkConvergence(t *testing.T) map[int]network.FingerprintResponse {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), convergenceTimeout)
 	defer cancel()
 
-	ticker := time.NewTicker(convergencePoll)
+	fps, err := pollConvergence(ctx, convergenceTimeout, convergencePoll, c.sweepFingerprints)
+	if err != nil {
+		c.Dump(t)
+		t.Errorf("%v", err)
+	}
+
+	return fps
+}
+
+// pollConvergence repeatedly calls sweep every poll until it reports
+// agreement or ctx ends, returning the last completed sweep (nil if every
+// sweep errored) either way. timeout is only for the error message (ctx has
+// already expired by the time it is formatted, so its own deadline cannot be
+// read back). Factored out of checkConvergence as a pure function of its
+// inputs so it can be driven by a fake sweep and a short ctx/timeout in
+// tests, without waiting on the real convergenceTimeout.
+func pollConvergence(
+	ctx context.Context,
+	timeout, poll time.Duration,
+	sweep func() (map[int]network.FingerprintResponse, bool, error),
+) (map[int]network.FingerprintResponse, error) {
+	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
 	var lastFPs map[int]network.FingerprintResponse
 	var lastErr error
 
 	for {
-		fps, agree, err := c.sweepFingerprints()
+		fps, agree, err := sweep()
 		if err != nil {
 			lastErr = err
 		} else {
 			lastFPs = fps
 			if agree {
-				return fps
+				return fps, nil
 			}
 		}
 
@@ -87,10 +119,8 @@ func (c *Cluster) checkConvergence(t *testing.T) map[int]network.FingerprintResp
 		case <-ticker.C:
 			continue
 		case <-ctx.Done():
-			c.Dump(t)
-			t.Fatalf("convergence: nodes did not reach an identical (round, fingerprint) within %v (last error=%v, sweep=%s)",
-				convergenceTimeout, lastErr, describeFingerprints(lastFPs))
-			return nil
+			return lastFPs, fmt.Errorf("convergence: nodes did not reach an identical (round, fingerprint) within %v (last error=%v, sweep=%s)",
+				timeout, lastErr, describeFingerprints(lastFPs))
 		}
 	}
 }

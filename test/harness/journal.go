@@ -144,17 +144,30 @@ func (j *Journal) ParseError() error {
 	return j.err
 }
 
+// find returns the first recorded event matching name and preds, and whether
+// one exists.
+func (j *Journal) find(name string, preds []Pred) (Event, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	for _, e := range j.events {
+		if e.Name == name && matchAll(e, preds) {
+			return e, true
+		}
+	}
+
+	return Event{}, false
+}
+
 // Wait blocks until an event matching name and preds is recorded (including
 // one already recorded before the call) or ctx ends.
 func (j *Journal) Wait(ctx context.Context, name string, preds ...Pred) (Event, error) {
 	for {
-		j.mu.Lock()
-		for _, e := range j.events {
-			if e.Name == name && matchAll(e, preds) {
-				j.mu.Unlock()
-				return e, nil
-			}
+		if e, ok := j.find(name, preds); ok {
+			return e, nil
 		}
+
+		j.mu.Lock()
 		notify := j.notify
 		j.mu.Unlock()
 
@@ -162,6 +175,14 @@ func (j *Journal) Wait(ctx context.Context, name string, preds ...Pred) (Event, 
 		case <-notify:
 			continue
 		case <-ctx.Done():
+			// notify closing and ctx ending can become ready in the same instant;
+			// select picks between ready cases pseudo-randomly. Recheck once before
+			// reporting a timeout, so an event that landed exactly at the deadline is
+			// not missed (this is the exit-vs-event race).
+			if e, ok := j.find(name, preds); ok {
+				return e, nil
+			}
+
 			return Event{}, fmt.Errorf("wait for event %q:\n%w", name, ctx.Err())
 		}
 	}

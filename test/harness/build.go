@@ -33,7 +33,10 @@ func nodeBinary() (string, error) {
 			return
 		}
 
-		path := filepath.Join(dir, "node-bin")
+		// The PID keeps concurrent test binaries' builds from sharing one output
+		// path: without it, one process executing the binary while another is
+		// mid-write (or has built a different revision) races on the same file.
+		path := filepath.Join(dir, fmt.Sprintf("node-bin-%d", os.Getpid()))
 
 		cmd := exec.Command("go", "build", "-o", path, "./cmd/node")
 		cmd.Dir = root

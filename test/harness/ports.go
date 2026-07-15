@@ -3,23 +3,40 @@ package harness
 import (
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 )
 
 // portBase is the first port ever handed out. Every node reserves a stride of
 // portStride ports so concurrent scenario processes stay in disjoint ranges
 // even before any probing happens.
+//
+// pidSpread bounds how many stride-steps a process's PID folds into its
+// starting offset (portBaseForProcess): two test binaries running
+// concurrently (for example two packages under `go test ./...`) then start
+// probing from different windows instead of the same base, cutting down how
+// often probeUDP's bind-then-release race actually collides between them.
+// This is a cheap mitigation, not a lock: two processes can still land on the
+// same PID-derived offset (mod pidSpread) and race, same as before.
 const (
 	portBase   = 21000
 	portStride = 4
+	pidSpread  = 2000
 )
 
-// portCursor is the process-wide next-stride cursor. Starting at portBase-stride
-// lets the first Add(portStride) return portBase.
+// portCursor is the process-wide next-stride cursor. Starting at
+// portBaseForProcess()-stride lets the first Add(portStride) return
+// portBaseForProcess().
 var portCursor atomic.Int32
 
 func init() {
-	portCursor.Store(portBase - portStride)
+	portCursor.Store(int32(portBaseForProcess() - portStride))
+}
+
+// portBaseForProcess folds this OS process's PID into portBase, spreading
+// concurrent test binaries into different starting windows.
+func portBaseForProcess() int {
+	return portBase + (os.Getpid()%pidSpread)*portStride
 }
 
 // allocatePort reserves the next port stride and returns its first port,

@@ -37,6 +37,10 @@ const reserveHeadroom = 1_000_000_000
 // stakeSetupTimeout bounds each non-founder's faucet-then-bond round trip.
 const stakeSetupTimeout = 30 * time.Second
 
+// refreshCoinRetryInterval paces refreshCoinWithRetry's retries, instead of
+// hammering the node with a tight, delay-free retry loop.
+const refreshCoinRetryInterval = 200 * time.Millisecond
+
 // setupStakes bonds an equal stake behind every non-founder validator so
 // consensus weight is distributed across the cluster: the founder already
 // holds InitialMint/10 in genesis self-stake (cmd/node's genesis config), so
@@ -138,14 +142,20 @@ func (c *Cluster) refreshCoinWithRetry(i int, cli *client.Client, w *client.Wall
 
 	deadline := time.Now().Add(stakeSetupTimeout)
 
+	ticker := time.NewTicker(refreshCoinRetryInterval)
+	defer ticker.Stop()
+
 	var err error
-	for time.Now().Before(deadline) {
+	for {
 		if err = w.RefreshCoin(cli, coinID); err == nil {
 			return
 		}
+		if !time.Now().Before(deadline) {
+			c.t.Fatalf("refresh stake coin for node %d: %v", i, err)
+			return
+		}
+		<-ticker.C
 	}
-
-	c.t.Fatalf("refresh stake coin for node %d: %v", i, err)
 }
 
 // loadNodeWallet builds a Wallet from node n's own Ed25519 key file, so the

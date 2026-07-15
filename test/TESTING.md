@@ -194,6 +194,7 @@ what to do when the checker is right to fail.
 | `harness.NewCluster(t, size, opts...) *Cluster` | Builds and starts a cluster, registers teardown |
 | `(*Cluster) Node(i) *Node` / `Nodes() []*Node` / `Alive() []*Node` | Access started nodes |
 | `(*Cluster) Client(i) *client.Client` / `Daemon(i) *daemon.Daemon` | Client/daemon connected to node `i` |
+| `(*Cluster) SystemPod() [32]byte` | System pod ID every client and daemon in the cluster is configured with |
 | `(*Cluster) Kill(i)` / `Restart(i)` / `Spawn() *Node` | Node lifecycle |
 | `(*Cluster) Partition(a, b []int)` / `Heal()` | Network partitioning |
 | `(*Cluster) WaitAll(ctx, name, preds...) error` | Wait for an event on every alive node |
@@ -267,10 +268,15 @@ must be called out in the commit that does it.
 | `net.partition.applied` | blocked |
 | `net.partition.cleared` | (none) |
 
-`tx.committed`'s `reason` attribute (present only when `success` is false)
-is one of a fixed set: `version_conflict`, `fee_rejected`, `ownership`,
-`proof_failed`, `authenticity_failed`, `duplicate`, `expired_sponsorship`,
-`execution_error`.
+`tx.committed`'s `reason` attribute is always present: an empty string on
+success, and one of a fixed set when `success` is false: `version_conflict`,
+`fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
+`duplicate`, `expired_sponsorship`, `execution_error`.
+
+`consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
+`bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,
+`fee_summary`, or `unknown` (a defensive fallback for a validation failure
+path that does not map to any of the above; should not occur in practice).
 
 Attribute values use stable encodings: hashes and object/validator IDs as
 lowercase hex, rounds and versions as integers, reasons as short snake_case

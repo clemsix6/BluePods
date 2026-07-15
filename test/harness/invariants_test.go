@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -88,6 +89,76 @@ func TestCheckRollbackAllowsIdenticalRedecision(t *testing.T) {
 
 	if err := checkRollback([]*Node{n0, n1}); err != nil {
 		t.Fatalf("identical re-decision should not violate rollback: %v", err)
+	}
+}
+
+// TestPollConvergenceReturnsImmediatelyOnAgreement asserts a sweep that
+// already agrees on its first call returns right away with no error, without
+// waiting for a poll tick.
+func TestPollConvergenceReturnsImmediatelyOnAgreement(t *testing.T) {
+	want := map[int]network.FingerprintResponse{0: {Round: 3}, 1: {Round: 3}}
+	calls := 0
+	sweep := func() (map[int]network.FingerprintResponse, bool, error) {
+		calls++
+		return want, true, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	fps, err := pollConvergence(ctx, time.Second, time.Hour, sweep)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("want exactly 1 sweep call, got %d", calls)
+	}
+	if len(fps) != len(want) {
+		t.Fatalf("fps = %v, want %v", fps, want)
+	}
+}
+
+// TestPollConvergenceReturnsLastSweepOnTimeout asserts that when sweep never
+// agrees, pollConvergence reports an error AND still returns the last
+// completed (disagreeing) sweep once ctx ends — the supply check downstream
+// needs that sweep even though convergence itself failed (I2/harness
+// soundness: this must never look like a Fatal that skips the rest of
+// CheckInvariants).
+func TestPollConvergenceReturnsLastSweepOnTimeout(t *testing.T) {
+	disagreeing := map[int]network.FingerprintResponse{0: {Round: 1}, 1: {Round: 2}}
+	sweep := func() (map[int]network.FingerprintResponse, bool, error) {
+		return disagreeing, false, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	fps, err := pollConvergence(ctx, 50*time.Millisecond, 10*time.Millisecond, sweep)
+	if err == nil {
+		t.Fatal("expected a convergence timeout error")
+	}
+	if len(fps) != len(disagreeing) {
+		t.Fatalf("want the last completed (disagreeing) sweep returned, got %v", fps)
+	}
+}
+
+// TestPollConvergenceReturnsNilOnAllErrors asserts that when every sweep call
+// errors (no fingerprint ever collected), pollConvergence reports an error and
+// a nil sweep rather than a stale or fabricated one.
+func TestPollConvergenceReturnsNilOnAllErrors(t *testing.T) {
+	sweep := func() (map[int]network.FingerprintResponse, bool, error) {
+		return nil, false, errors.New("connect refused")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	fps, err := pollConvergence(ctx, 30*time.Millisecond, 10*time.Millisecond, sweep)
+	if err == nil {
+		t.Fatal("expected a convergence timeout error")
+	}
+	if fps != nil {
+		t.Fatalf("want a nil sweep when every sweep call errored, got %v", fps)
 	}
 }
 
