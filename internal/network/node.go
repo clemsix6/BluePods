@@ -55,6 +55,8 @@ type Node struct {
 
 	dedup *Dedup // dedup tracks seen messages to prevent duplicate processing
 
+	blocklist *blocklist // blocklist drops mesh traffic to/from test-partitioned peers
+
 	onConnect    func(*Peer)                         // onConnect is called when a peer connects
 	onMessage    func(*Peer, []byte)                 // onMessage is called when a message is received
 	onDisconnect func(*Peer)                         // onDisconnect is called when a peer disconnects
@@ -140,6 +142,7 @@ func NewNode(cfg Config) (*Node, error) {
 		knownAddrs:     make(map[string]string),
 		reconnectDelay: reconnectDelay,
 		dedup:          NewDedup(),
+		blocklist:      newBlocklist(),
 		clientGate:     newClientGate(),
 		ctx:            ctx,
 		cancel:         cancel,
