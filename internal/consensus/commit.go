@@ -1328,6 +1328,7 @@ func (d *DAG) strictDebit(coinID [32]byte, amount uint64) bool {
 	}
 
 	d.coinStore.SetObject(writeCoinBalance(data, balance-amount))
+	d.coinStore.SubCoins(amount)
 	return true
 }
 

@@ -467,6 +467,15 @@ func (d *DAG) TotalSupply() uint64 {
 	return d.coinStore.TotalSupply()
 }
 
+// CoinsTotal returns the protocol-maintained sum of coin balances from the coin
+// store. Returns 0 when no coin store is wired (the fee system is disabled).
+func (d *DAG) CoinsTotal() uint64 {
+	if d.coinStore == nil {
+		return 0
+	}
+	return d.coinStore.CoinsTotal()
+}
+
 // FullQuorumAchieved returns true if BFT quorum has been observed.
 func (d *DAG) FullQuorumAchieved() bool {
 	return d.fullQuorumAchieved.Load()
@@ -619,6 +628,11 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 func (d *DAG) SeedGenesis(is genesis.InitialState) {
 	d.coinStore.SetObject(is.Coin)
 	d.coinStore.SetTotalSupply(is.Supply)
+
+	// coins_total starts at the seeded coin's balance, NOT is.Supply: the
+	// founder's self-stake is locked OUT of the coin by BuildInitialState, so it
+	// is bonded (counted as total_bonded), not sitting in a coin balance.
+	d.coinStore.SetCoinsTotal(is.Supply - is.SelfStake)
 
 	var bls [48]byte
 	copy(bls[:], is.BLS)

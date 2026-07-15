@@ -28,6 +28,19 @@ type CoinStore interface {
 	AddSupply(amount uint64)
 	// SubSupply decreases the total supply (deletion burn, future slashing).
 	SubSupply(amount uint64)
+
+	// CoinsTotal returns the protocol-maintained sum of every coin's balance.
+	// Coins carry no type tag, so this cannot be recomputed by scanning objects;
+	// it is maintained incrementally at every protocol coin flow instead.
+	CoinsTotal() uint64
+	// SetCoinsTotal overwrites coins_total (genesis seeding, snapshot restore).
+	SetCoinsTotal(total uint64)
+	// AddCoins increases coins_total (a credit into a coin: unbond, undelegate,
+	// rewards, remainder, refunds).
+	AddCoins(amount uint64)
+	// SubCoins decreases coins_total (a debit out of a coin: fees/deposits, bond,
+	// delegate).
+	SubCoins(amount uint64)
 }
 
 // DelegationEnumerator returns the delegation positions targeting a validator.
@@ -129,13 +142,16 @@ func deductCoinFee(store CoinStore, coinID [32]byte, fee uint64) (deducted uint6
 	if balance >= fee {
 		newData := writeCoinBalance(data, balance-fee)
 		store.SetObject(newData)
+		store.SubCoins(fee)
 
 		return fee, true, nil
 	}
 
-	// Insufficient: take remaining balance
+	// Insufficient: take remaining balance. It still left the coin, so coins_total
+	// falls by exactly what was taken, matching the pooled amount (Task 3).
 	newData := writeCoinBalance(data, 0)
 	store.SetObject(newData)
+	store.SubCoins(balance)
 
 	return balance, false, nil
 }
@@ -165,6 +181,7 @@ func creditCoin(store CoinStore, coinID [32]byte, amount uint64) error {
 
 	newData := writeCoinBalance(data, newBalance)
 	store.SetObject(newData)
+	store.AddCoins(amount)
 
 	return nil
 }

@@ -245,7 +245,7 @@ func (rcv *Snapshot) MutateTotalSupply(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(22, n)
 }
 
-func (rcv *Snapshot) IssuanceRateMicro() uint64 {
+func (rcv *Snapshot) CoinsTotal() uint64 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
 	if o != 0 {
 		return rcv._tab.GetUint64(o + rcv._tab.Pos)
@@ -253,12 +253,24 @@ func (rcv *Snapshot) IssuanceRateMicro() uint64 {
 	return 0
 }
 
-func (rcv *Snapshot) MutateIssuanceRateMicro(n uint64) bool {
+func (rcv *Snapshot) MutateCoinsTotal(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(24, n)
 }
 
-func (rcv *Snapshot) EpochState(j int) byte {
+func (rcv *Snapshot) IssuanceRateMicro() uint64 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Snapshot) MutateIssuanceRateMicro(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(26, n)
+}
+
+func (rcv *Snapshot) EpochState(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(28))
 	if o != 0 {
 		a := rcv._tab.Vector(o)
 		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
@@ -267,7 +279,7 @@ func (rcv *Snapshot) EpochState(j int) byte {
 }
 
 func (rcv *Snapshot) EpochStateLength() int {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(28))
 	if o != 0 {
 		return rcv._tab.VectorLen(o)
 	}
@@ -275,7 +287,7 @@ func (rcv *Snapshot) EpochStateLength() int {
 }
 
 func (rcv *Snapshot) EpochStateBytes() []byte {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(28))
 	if o != 0 {
 		return rcv._tab.ByteVector(o + rcv._tab.Pos)
 	}
@@ -283,7 +295,7 @@ func (rcv *Snapshot) EpochStateBytes() []byte {
 }
 
 func (rcv *Snapshot) MutateEpochState(j int, n byte) bool {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(28))
 	if o != 0 {
 		a := rcv._tab.Vector(o)
 		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
@@ -292,7 +304,7 @@ func (rcv *Snapshot) MutateEpochState(j int, n byte) bool {
 }
 
 func SnapshotStart(builder *flatbuffers.Builder) {
-	builder.StartObject(12)
+	builder.StartObject(13)
 }
 func SnapshotAddVersion(builder *flatbuffers.Builder, version uint32) {
 	builder.PrependUint32Slot(0, version, 0)
@@ -345,11 +357,14 @@ func SnapshotStartSignaturesVector(builder *flatbuffers.Builder, numElems int) f
 func SnapshotAddTotalSupply(builder *flatbuffers.Builder, totalSupply uint64) {
 	builder.PrependUint64Slot(9, totalSupply, 0)
 }
+func SnapshotAddCoinsTotal(builder *flatbuffers.Builder, coinsTotal uint64) {
+	builder.PrependUint64Slot(10, coinsTotal, 0)
+}
 func SnapshotAddIssuanceRateMicro(builder *flatbuffers.Builder, issuanceRateMicro uint64) {
-	builder.PrependUint64Slot(10, issuanceRateMicro, 0)
+	builder.PrependUint64Slot(11, issuanceRateMicro, 0)
 }
 func SnapshotAddEpochState(builder *flatbuffers.Builder, epochState flatbuffers.UOffsetT) {
-	builder.PrependUOffsetTSlot(11, flatbuffers.UOffsetT(epochState), 0)
+	builder.PrependUOffsetTSlot(12, flatbuffers.UOffsetT(epochState), 0)
 }
 func SnapshotStartEpochStateVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)

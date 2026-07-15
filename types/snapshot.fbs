@@ -98,6 +98,11 @@ table Snapshot {
     // total_supply is the protocol-maintained total token supply at this state.
     total_supply:uint64;
 
+    // coins_total is the protocol-maintained sum of every coin's balance at this
+    // state. Coins carry no type tag, so this cannot be recomputed by scanning
+    // objects; it travels with the snapshot like total_supply.
+    coins_total:uint64;
+
     // issuance_rate_micro is the thermostat's per-epoch issuance rate in
     // millionths. It is stateful (the loop steps from the previous value), so it
     // is persisted and checksum-covered rather than re-derived.

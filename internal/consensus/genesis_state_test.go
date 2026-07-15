@@ -66,6 +66,13 @@ func TestSeedGenesis_SeedsCoinAndValidator(t *testing.T) {
 		t.Errorf("seeded total supply: got %d, want %d", got, is.Supply)
 	}
 
+	// coins_total is seeded to the coin's own balance, NOT the total supply: the
+	// founder's self-stake is locked out of the coin, so it is bonded, not in a
+	// coin balance.
+	if got := store.CoinsTotal(); got != balance {
+		t.Errorf("seeded coins_total: got %d, want %d (the coin's balance)", got, balance)
+	}
+
 	// At genesis the invariant holds: coin + self-stake + deposits(0) == supply.
 	if balance+is.SelfStake != store.TotalSupply() {
 		t.Errorf("genesis invariant: coin %d + stake %d != supply %d",

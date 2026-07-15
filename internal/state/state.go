@@ -39,6 +39,13 @@ type State struct {
 	// Supply accounting.
 	supplyMu    sync.Mutex // supplyMu guards totalSupply and its persistence
 	totalSupply uint64     // totalSupply is the protocol-maintained total token supply
+
+	// Coin accounting: the sum of every coin's balance, maintained alongside
+	// totalSupply at each protocol touchpoint that moves value into or out of
+	// coins (coins carry no type tag, so this cannot be recomputed by scanning
+	// objects).
+	coinsTotalMu sync.Mutex // coinsTotalMu guards coinsTotal and its persistence
+	coinsTotal   uint64     // coinsTotal is the protocol-maintained sum of coin balances
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -52,6 +59,7 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 	}
 
 	s.loadSupply()
+	s.loadCoinsTotal()
 
 	return s
 }
@@ -657,6 +665,9 @@ func (s *State) settleDeletionDeposit(objFees uint64, gasCoinID Hash, hasGasCoin
 		return
 	}
 
+	// The refund landed in the gas coin's balance: coins_total rises by exactly
+	// the refunded amount, mirroring the supply burn below.
+	s.AddCoins(refund)
 	s.SubSupply(burned)
 }
 

@@ -166,7 +166,7 @@ func (m *SnapshotManager) createSnapshot() {
 
 	// Collect objects/signatures from the cut's storage snapshot, so they pair with
 	// the same committed frontier as the cursor and the committed vertex flags.
-	data, err := CreateSnapshot(cut.DBSnapshot, commitRound, cut.Validators, cut.Vertices, cut.TrackerEntries, domainEntries, cut.Supply, cut.IssuanceRate, cut.Regime)
+	data, err := CreateSnapshot(cut.DBSnapshot, commitRound, cut.Validators, cut.Vertices, cut.TrackerEntries, domainEntries, cut.Supply, cut.CoinsTotal, cut.IssuanceRate, cut.Regime)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return
