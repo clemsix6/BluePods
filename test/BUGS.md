@@ -46,8 +46,8 @@ example round 278: `12746c30 / c0ecae56 / 6c5ec5eb / 2bb1bb20 / 853ec5d3`).
 
 **Reproduced by:** `TestClusterBasics` (`test/harness`, pre-existing);
 `TestScenarioBootstrap` is green (single node), and every multi-node
-scenario's teardown convergence check is red on this entry, starting with
-`TestScenarioConsensusBasics`.
+scenario's teardown convergence check is red on this entry:
+`TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`.
 
 ### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
 
@@ -139,4 +139,39 @@ exactly the 3 holders accepting and the 2 non-holders rejecting.
 Reproducible on rerun.
 
 **Reproduced by:** `TestScenarioConsensusBasics` (`object_create_transfer`),
-which stays red on its uniform-verdict assertion.
+which stays red on its uniform-verdict assertion. `TestScenarioAggregation`
+asserts the attested path through holder reads instead, so the ATX path's
+state-level value stays covered without duplicating this red.
+
+### 8. Validator registration stamps a storage deposit no coin ever pays: supply inflates per registration
+
+**Subsystem:** the register_validator commit flow — `internal/consensus/commit.go`
+`deductFees` (registration is fee-exempt) together with the deposit stamping
+for its created object (`internal/state` `applyCreatedObjects` /
+`computeStorageDeposit`), and the system pod's `register_validator` creating
+a replication-0 object.
+
+A validator joining through the register_validator transaction creates a
+replication-0 object owned by the validator, and the state layer stamps its
+storage deposit (1000 at the default fee params) into the object tracker.
+But register_validator is exempt from fee deduction (a joining validator has
+no coin yet), so no coin is ever debited for that deposit: the locked-deposit
+term grows with nothing leaving `coins_total`. The protocol supply identity
+`coins_total + total_bonded + deposits + fees_in_flight == total_supply`
+inflates by exactly one storage deposit per registered validator, on every
+node, permanently.
+
+**Evidence:** on a 2-node cluster with stake setup disabled (registration is
+the ONLY operation), both nodes report `deposits=1000, fees=0, coins and
+bonded unchanged, delta=+1000`, with the journal showing the registration's
+`state.object.created` (replication 0, owned by the joining validator) and
+`fees.deposit.locked amount=1000` and NO `fees.deducted`. On a 5-node
+cluster (4 non-founder registrations) the identity is off by exactly +4000.
+A single-node cluster (no tx-path registration) holds the identity exactly
+(delta 0) through faucet, split, and underfunded-split — so fee pooling
+(including the Task 3 partial-coverage fix) is not the leak.
+
+**Reproduced by:** `TestScenarioFees` (`underfunded_gas_coin_pools_partial`
+asserts the per-node supply identity and stays red on it). Also latent in
+every multi-node scenario's teardown supply check, currently masked by the
+convergence failure of entry 1 aborting the invariant pass first.
