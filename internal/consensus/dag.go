@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/storage"
@@ -67,8 +68,9 @@ type DAG struct {
 	committed chan CommittedTx
 
 	// Commit tracking
-	commitMu      sync.Mutex
-	lastCommitted uint64 // lastCommitted is the next round to commit
+	commitMu           sync.Mutex
+	lastCommitted      uint64 // lastCommitted is the next round to commit
+	lastAnnouncedRound uint64 // lastAnnouncedRound is the last round events.RoundAdvanced fired for; guarded by commitMu (only checkCommits touches it, to keep anchorProducerFor's reads race-free)
 
 	// Missing-ancestor recovery: when a decided anchor's causal batch is blocked on
 	// an absent ancestor for two consecutive commit ticks, the missing ancestry is
@@ -414,6 +416,7 @@ func (d *DAG) AddVertex(data []byte) bool {
 		}
 
 		logger.Debug("vertex rejected", "round", vertex.Round(), "error", err)
+		events.VertexRejected(hash, classifyRejection(err))
 		return false
 	}
 
@@ -423,6 +426,8 @@ func (d *DAG) AddVertex(data []byte) bool {
 	if !d.store.add(data, hash, round, producer) {
 		return false // already exists
 	}
+
+	events.VertexReceived(hash, producer, round)
 
 	d.onVertexAdded(round)
 
@@ -890,6 +895,7 @@ func (d *DAG) tryProduceVertex() {
 		copy(logHash[:], hashBytes)
 	}
 	logger.Info("produced vertex", "round", round, "txs", len(txs), "hash", hex.EncodeToString(logHash[:8]), "parents", len(parents))
+	events.VertexProduced(logHash, round, len(txs))
 
 	// Disable sync mode after first successful vertex production.
 	d.disableSyncMode()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 )
 
@@ -35,6 +36,10 @@ func run() error {
 	}
 
 	logger.SetNode(hex.EncodeToString(cfg.PrivateKey.Public().(ed25519.PublicKey))[:8])
+
+	var pubkeyHash [32]byte
+	copy(pubkeyHash[:], cfg.PrivateKey.Public().(ed25519.PublicKey))
+	events.NodeStarted(pubkeyHash, cfg.QUICAddress)
 
 	node, err := NewNode(cfg)
 	if err != nil {

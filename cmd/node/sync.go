@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/state"
@@ -86,6 +87,7 @@ func (n *Node) runValidator() error {
 	n.snapManager.Start()
 
 	logger.Info("validator mode active", "round", n.dag.Round())
+	events.NodeReady(n.dag.Round())
 
 	return n.serve()
 }

@@ -47,6 +47,26 @@ func (d *DAG) checkCommits() {
 
 	for d.commitNextRound() {
 	}
+
+	d.announceRoundAdvances()
+}
+
+// announceRoundAdvances emits consensus.round.advanced for every round between
+// the last announced round and the current production round (d.Round(), the
+// atomic round cursor — NOT the commit cursor), carrying each round's
+// designated anchor producer. Must run under commitMu: anchorProducerFor reads
+// commitMu-guarded epoch/eligibility state, so calling it from anywhere that
+// does not hold commitMu (such as updateRound, called from network goroutines)
+// would race.
+func (d *DAG) announceRoundAdvances() {
+	current := d.Round()
+	for r := d.lastAnnouncedRound + 1; r <= current; r++ {
+		designated, _ := d.anchorProducerFor(r)
+		events.RoundAdvanced(r, designated)
+	}
+	if current > d.lastAnnouncedRound {
+		d.lastAnnouncedRound = current
+	}
 }
 
 // commitNextRound decides the round at the commit cursor and advances past it. It
