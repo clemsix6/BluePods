@@ -622,10 +622,25 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 }
 
 // SeedGenesis seeds the initial ledger state directly: the genesis coin object
-// into the coin store and the founding validator (with its bonded self-stake)
-// into the validator set. Genesis is state, not transactions. Must be called
-// AFTER SetFeeSystem (so coinStore is wired) and before the node produces.
+// and supply counters (SeedGenesisLedger) plus the founding validator with its
+// bonded self-stake and reward coin (SeedGenesisValidator). Genesis is state,
+// not transactions. Must be called AFTER SetFeeSystem (so coinStore is wired)
+// and before the node produces.
+//
+// A bootstrap node restarting over its own data directory must NOT call this:
+// re-running the ledger seed would overwrite the reserve coin and supply
+// counters back to their genesis values, discarding everything committed
+// since. It calls SeedGenesisValidator alone instead — see that method's
+// docstring.
 func (d *DAG) SeedGenesis(is genesis.InitialState) {
+	d.SeedGenesisLedger(is)
+	d.SeedGenesisValidator(is)
+}
+
+// SeedGenesisLedger seeds the genesis coin object into the coin store and the
+// supply/coins_total counters. It must run exactly once per chain: a caller
+// detecting a restart (the genesis coin already exists) must skip it.
+func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	d.coinStore.SetObject(is.Coin)
 	d.coinStore.SetTotalSupply(is.Supply)
 
@@ -633,22 +648,30 @@ func (d *DAG) SeedGenesis(is genesis.InitialState) {
 	// founder's self-stake is locked OUT of the coin by BuildInitialState, so it
 	// is bonded (counted as total_bonded), not sitting in a coin balance.
 	d.coinStore.SetCoinsTotal(is.Supply - is.SelfStake)
+}
 
+// SeedGenesisValidator seeds the founding validator into the validator set:
+// its network address, its bonded self-stake, and its reward coin (its own
+// genesis coin — without a designation the founder's liquid epoch reward share
+// has nowhere to land and silently vanishes at every boundary with a non-zero
+// pool). It then admits the founder to the committed member set and freezes
+// the genesis holder snapshot so the anchor path resolves epoch 0 without ever
+// reading the live set.
+//
+// Every step here is idempotent (Add/SetSelfStake/SetRewardCoin overwrite,
+// recordCommittedMember is a set-add), so unlike SeedGenesisLedger this MUST
+// run on every bootstrap start, restart included: nothing else restores the
+// live validator set in bootstrap mode, and skipping it on restart would leave
+// the founder with zero live self-stake and a broken total_bonded.
+func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)
 
 	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
 	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
-
-	// Seed the founder's reward coin to its own genesis coin: without a
-	// designation the founder's liquid epoch reward share has nowhere to land and
-	// silently vanishes at every boundary with a non-zero pool (Task 3 only stops
-	// the leak when nobody ever registers a coin; genesis must seed one).
 	d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
 
-	// The founder is a committed genesis member: record it and freeze the genesis
-	// holder snapshot so the anchor path resolves epoch 0 without ever reading the
-	// live set. Under commitMu because the commit loop is already running.
+	// Under commitMu because the commit loop is already running.
 	d.commitMu.Lock()
 	d.recordCommittedMember(is.Pubkey, d.lastCommitted)
 	d.commitMu.Unlock()
