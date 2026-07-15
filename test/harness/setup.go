@@ -26,6 +26,14 @@ const bondFeeMargin = 10_000
 // cluster large enough for the reserve-fitted stake computation to bind.
 const faucetFeeAllowance = 10_000
 
+// reserveHeadroom is the slice of the genesis reserve the stake setup leaves
+// unspent so the scenario itself can faucet traffic afterwards. Without it,
+// the reserve-fitted stake computation drains the reserve to change and
+// every post-setup faucet fails execution. It is orders of magnitude above
+// any scenario's traffic needs and three orders below the default mint's
+// reserve, so stake weights stay effectively equal.
+const reserveHeadroom = 1_000_000_000
+
 // stakeSetupTimeout bounds each non-founder's faucet-then-bond round trip.
 const stakeSetupTimeout = 30 * time.Second
 
@@ -56,25 +64,26 @@ func (c *Cluster) setupStakes() {
 }
 
 // defaultStakeTarget aims for a stake equal to the founder's genesis
-// self-stake (initialMint/10). The genesis reserve available to the faucet
-// is initialMint-initialMint/10 (0.9 x initialMint). Each non-founder draws
-// its stake plus bondFeeMargin (the fauceted amount) plus faucetFeeAllowance
-// (the reserve-side protocol charges of the faucet itself). If matching the
+// self-stake (initialMint/10). The budget available to the setup faucets is
+// the genesis reserve (0.9 x initialMint) minus reserveHeadroom (kept for
+// the scenario's own traffic). Each non-founder draws its stake plus
+// bondFeeMargin (the fauceted amount) plus faucetFeeAllowance (the
+// reserve-side protocol charges of the faucet itself). If matching the
 // founder exactly would overdraw that budget — the boundary sits at 9
 // non-founders, and any larger cluster — the per-node stake is shrunk so the
-// total draw fits the reserve by construction: still equal across every
+// total draw fits the budget by construction: still equal across every
 // non-founder, just no longer exactly equal to the founder.
 func defaultStakeTarget(initialMint uint64, nonFounders int) uint64 {
 	founderStake := initialMint / 10
-	reserve := initialMint - founderStake
+	budget := initialMint - founderStake - reserveHeadroom
 
 	perNodeOverhead := uint64(bondFeeMargin + faucetFeeAllowance)
 
 	target := founderStake
 	draw := uint64(nonFounders) * (target + perNodeOverhead)
 
-	if draw > reserve {
-		target = reserve/uint64(nonFounders) - perNodeOverhead
+	if draw > budget {
+		target = budget/uint64(nonFounders) - perNodeOverhead
 	}
 
 	return target
