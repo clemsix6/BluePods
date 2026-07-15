@@ -63,7 +63,7 @@ type Node struct {
 // NewNode creates and initializes a new node.
 func NewNode(cfg *Config) (*Node, error) {
 	n := &Node{cfg: cfg, stats: newStats(), txIndex: newTxStatusIndex()}
-	n.useTUI = !cfg.LogMode && term.IsTerminal(int(os.Stdout.Fd()))
+	n.useTUI = !cfg.LogMode && cfg.LogFormat != "json" && term.IsTerminal(int(os.Stdout.Fd()))
 
 	// Listener mode needs storage for snapshot and network
 	if cfg.Listener {

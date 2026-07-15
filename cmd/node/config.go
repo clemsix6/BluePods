@@ -72,10 +72,15 @@ type Config struct {
 
 	// LogMode forces line logs even on a terminal (no dashboard).
 	LogMode bool
+
+	// LogFormat selects the log handler: "text" (human readable) or "json"
+	// (slog.JSONHandler at Debug level, the format the scenario harness consumes).
+	LogFormat string
 }
 
-// parseFlags parses command-line flags into Config.
-func parseFlags() *Config {
+// parseFlags parses command-line flags into Config. It returns an error when a
+// flag value fails validation (currently: --log-format).
+func parseFlags() (*Config, error) {
 	cfg := &Config{}
 
 	flag.StringVar(&cfg.DataPath, "data", "./data", "Data directory path")
@@ -95,9 +100,24 @@ func parseFlags() *Config {
 	flag.IntVar(&cfg.TransitionGrace, "transition-grace", 0, "Grace rounds after minValidators reached (0 = default 20)")
 	flag.IntVar(&cfg.TransitionBuffer, "transition-buffer", 0, "Buffer rounds after grace period (0 = default 10)")
 	flag.BoolVar(&cfg.LogMode, "log", false, "Force line logs instead of the dashboard, even on a terminal")
+	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log output format: text or json (json disables the dashboard)")
 	flag.Parse()
 
-	return cfg
+	if err := cfg.validateLogFormat(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// validateLogFormat rejects any --log-format value other than text or json.
+func (c *Config) validateLogFormat() error {
+	switch c.LogFormat {
+	case "text", "json":
+		return nil
+	default:
+		return fmt.Errorf("invalid --log-format %q: want text or json", c.LogFormat)
+	}
 }
 
 // loadOrGenerateKey loads the private key from file or generates a new one.
