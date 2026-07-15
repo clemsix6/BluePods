@@ -17,6 +17,15 @@ import (
 // with headroom to spare.
 const bondFeeMargin = 10_000
 
+// faucetFeeAllowance is the reserve-side budget for one setup faucet's own
+// protocol charges: the faucet transaction's fee and the created coin's
+// storage deposit are debited from the GENESIS RESERVE coin (2000 total at
+// the default fee params), on top of the fauceted amount. Sizing the stake
+// target without this allowance drains the reserve to the exact fauceted
+// total and the LAST faucet fails execution, deterministically, on any
+// cluster large enough for the reserve-fitted stake computation to bind.
+const faucetFeeAllowance = 10_000
+
 // stakeSetupTimeout bounds each non-founder's faucet-then-bond round trip.
 const stakeSetupTimeout = 30 * time.Second
 
@@ -48,22 +57,24 @@ func (c *Cluster) setupStakes() {
 
 // defaultStakeTarget aims for a stake equal to the founder's genesis
 // self-stake (initialMint/10). The genesis reserve available to the faucet
-// is initialMint-initialMint/10 (0.9 x initialMint): equal stakes fit
-// exactly up to 9 non-founders. If matching the founder exactly, plus every
-// non-founder's bondFeeMargin, would overdraw the reserve — the tight
-// boundary at 9 non-founders, and any larger cluster — the per-node stake is
-// shrunk so the total draw fits the reserve exactly, by construction: still
-// equal across every non-founder, just no longer exactly equal to the
-// founder.
+// is initialMint-initialMint/10 (0.9 x initialMint). Each non-founder draws
+// its stake plus bondFeeMargin (the fauceted amount) plus faucetFeeAllowance
+// (the reserve-side protocol charges of the faucet itself). If matching the
+// founder exactly would overdraw that budget — the boundary sits at 9
+// non-founders, and any larger cluster — the per-node stake is shrunk so the
+// total draw fits the reserve by construction: still equal across every
+// non-founder, just no longer exactly equal to the founder.
 func defaultStakeTarget(initialMint uint64, nonFounders int) uint64 {
 	founderStake := initialMint / 10
 	reserve := initialMint - founderStake
 
+	perNodeOverhead := uint64(bondFeeMargin + faucetFeeAllowance)
+
 	target := founderStake
-	draw := uint64(nonFounders) * (target + bondFeeMargin)
+	draw := uint64(nonFounders) * (target + perNodeOverhead)
 
 	if draw > reserve {
-		target = reserve/uint64(nonFounders) - bondFeeMargin
+		target = reserve/uint64(nonFounders) - perNodeOverhead
 	}
 
 	return target
@@ -105,7 +116,7 @@ func (c *Cluster) bondValidator(i int, stake uint64) {
 	if err != nil {
 		c.t.Fatalf("bond for node %d: %v", i, err)
 	}
-	c.waitBondCommittedAll(bondHash)
+	c.waitTxCommittedAll(bondHash)
 }
 
 // refreshCoinWithRetry refreshes the stake coin, retrying within
@@ -144,27 +155,13 @@ func (c *Cluster) loadNodeWallet(n *Node) *client.Wallet {
 	return client.NewWalletFromKey(ed25519.PrivateKey(data))
 }
 
-// waitTxCommittedAll blocks until every alive node's journal records
-// tx.committed for hash, regardless of success, bounded by
-// stakeSetupTimeout. Waiting on every node (not just the one that submitted
-// it) matters: consensus replicates the commit, but each node logs it on its
-// own schedule, so a caller that only watched one node could race ahead of
-// the others and observe a stale event count immediately after.
+// waitTxCommittedAll blocks until every alive node's journal records a
+// SUCCESSFUL tx.committed for hash, bounded by stakeSetupTimeout. Requiring
+// success matters twice over: a setup transaction that commits-but-fails
+// must kill the setup HERE with the transaction named, not surface later as
+// a mystifying read timeout; and waiting on every node (not just the
+// submitter) keeps the caller from racing ahead of the slower nodes.
 func (c *Cluster) waitTxCommittedAll(hash [32]byte) {
-	c.t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), stakeSetupTimeout)
-	defer cancel()
-
-	if err := c.WaitAll(ctx, "tx.committed", Attr("tx", hex.EncodeToString(hash[:]))); err != nil {
-		c.Dump(c.t)
-		c.t.Fatalf("wait tx.committed(%x) on every node: %v", hash[:4], err)
-	}
-}
-
-// waitBondCommittedAll blocks until every alive node's journal records a
-// successful tx.committed for hash, bounded by stakeSetupTimeout.
-func (c *Cluster) waitBondCommittedAll(hash [32]byte) {
 	c.t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), stakeSetupTimeout)
@@ -173,6 +170,6 @@ func (c *Cluster) waitBondCommittedAll(hash [32]byte) {
 	preds := []Pred{Attr("tx", hex.EncodeToString(hash[:])), Attr("success", true)}
 	if err := c.WaitAll(ctx, "tx.committed", preds...); err != nil {
 		c.Dump(c.t)
-		c.t.Fatalf("wait successful bond tx.committed(%x) on every node: %v", hash[:4], err)
+		c.t.Fatalf("wait successful tx.committed(%x) on every node: %v", hash[:4], err)
 	}
 }
