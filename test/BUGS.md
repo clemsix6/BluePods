@@ -49,7 +49,11 @@ example round 278: `12746c30 / c0ecae56 / 6c5ec5eb / 2bb1bb20 / 853ec5d3`).
 scenario's teardown convergence check is red on this entry:
 `TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`,
 `TestScenarioEpochs`, `TestScenarioObjects`, `TestScenarioJoining`,
-`TestScenarioStress`.
+`TestScenarioStress`, and the adversarial corpus:
+`TestScenarioCrash`, `TestScenarioAnchorCrash`, `TestScenarioJoinLoad`
+(each red ONLY here — their in-scenario liveness, resync, and zero-rollback
+assertions are green, with the divergent-checksums-at-one-round sweep as the
+signature, stable across two runs each).
 
 ### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,5 +218,145 @@ func requireSupplyIdentity(t *testing.T, c *harness.Cluster) {
 			t.Fatalf("node %d: supply identity broken: coins(%d)+bonded(%d)+deposits(%d)+fees(%d)=%d != supply(%d)",
 				n.Index, fp.CoinsTotal, fp.TotalBonded, fp.Deposits, fp.FeesInFlight, sum, fp.TotalSupply)
 		}
+	}
+}
+
+// trafficResult reports how a background traffic loop (startTraffic) ended:
+// how many splits committed successfully, and the first hard error if it
+// stopped for a reason other than its own context ending (a clean stop
+// reports a nil error regardless of how many commits landed).
+type trafficResult struct {
+	committed int
+	err       error
+}
+
+// startTraffic drives a background stream of small, sequential splits from
+// a funded wallet through cli, confirming each commit on watcher, until ctx
+// ends. It returns immediately: the returned counter is updated after every
+// successful commit (poll it with waitProgress instead of sleeping), and the
+// final result arrives on the returned channel once the goroutine exits.
+// Like driveSplits (scenario_stress_test.go), the goroutine never calls
+// testing.T methods itself: only the caller, after reading the result, may
+// fail the test.
+func startTraffic(ctx context.Context, cli *client.Client, watcher *harness.Node, w *client.Wallet, coin [32]byte) (*atomic.Int64, <-chan trafficResult) {
+	var progress atomic.Int64
+	out := make(chan trafficResult, 1)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				out <- trafficResult{committed: int(progress.Load())}
+				return
+			default:
+			}
+
+			_, hash, err := w.Split(cli, coin, 500, client.NewWallet().Pubkey())
+			if err != nil {
+				out <- trafficResult{int(progress.Load()), err}
+				return
+			}
+
+			waitCtx, cancel := context.WithTimeout(context.Background(), stepTimeout)
+			_, err = watcher.WaitEvent(waitCtx, "tx.committed", harness.Attr("tx", hexID(hash)), harness.Attr("success", true))
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					out <- trafficResult{committed: int(progress.Load())}
+					return
+				}
+				out <- trafficResult{int(progress.Load()), err}
+				return
+			}
+			progress.Add(1)
+
+			if err := w.RefreshCoin(cli, coin); err != nil {
+				out <- trafficResult{int(progress.Load()), err}
+				return
+			}
+		}
+	}()
+
+	return &progress, out
+}
+
+// waitProgress blocks until progress reaches at least min, bounded by ctx: a
+// count-based poll for a background traffic loop's commits, never a sleep.
+func waitProgress(ctx context.Context, t *testing.T, progress *atomic.Int64, min int64) {
+	t.Helper()
+
+	ticker := time.NewTicker(eventPollInterval)
+	defer ticker.Stop()
+
+	for {
+		if progress.Load() >= min {
+			return
+		}
+
+		select {
+		case <-ticker.C:
+			continue
+		case <-ctx.Done():
+			t.Fatalf("background traffic never reached %d commits (have %d)", min, progress.Load())
+			return
+		}
+	}
+}
+
+// requireZeroRollback re-derives the harness's own zero-rollback invariant
+// directly from every node's journal (dead or alive, across every
+// process-run segment), independent of CheckInvariants' teardown chain. That
+// chain runs convergence first, and a timeout there calls t.Fatalf inside a
+// t.Cleanup: FailNow's runtime.Goexit unwinds the whole cleanup goroutine, so
+// the rollback check registered after it never runs — exactly what happens
+// on every multi-node scenario, since teardown convergence is expected red
+// per test/BUGS.md entries 1/2. Zero rollback is the property this
+// adversarial corpus exists to stress, so every scenario that kills,
+// restarts, or partitions a node re-proves it here, in-scenario, regardless
+// of convergence's fate.
+func requireZeroRollback(t *testing.T, c *harness.Cluster) {
+	t.Helper()
+
+	anchorsByRound := make(map[uint64]string)
+
+	for _, n := range c.Nodes() {
+		if n == nil {
+			continue
+		}
+		requireNodeZeroRollback(t, n, anchorsByRound)
+	}
+}
+
+// requireNodeZeroRollback walks one node's consensus.anchor.committed
+// events: within each process-run segment, rounds must strictly increase (a
+// crash may legitimately re-decide the last pre-crash round after restart,
+// but must decide it IDENTICALLY); across every node and segment, a round
+// committed twice must carry the same anchor hash in anchorsByRound.
+func requireNodeZeroRollback(t *testing.T, n *harness.Node, anchorsByRound map[uint64]string) {
+	t.Helper()
+
+	lastRoundBySeg := make(map[int]uint64)
+	haveLastBySeg := make(map[int]bool)
+
+	for _, e := range n.Journal().Events("consensus.anchor.committed") {
+		round, ok := e.Attrs["round"].(float64)
+		if !ok {
+			t.Fatalf("node %d: anchor.committed without a numeric round: %v", n.Index, e.Attrs)
+		}
+		r := uint64(round)
+		anchor, _ := e.Attrs["anchor"].(string)
+
+		if haveLastBySeg[e.Seg] && r <= lastRoundBySeg[e.Seg] {
+			t.Fatalf("ZERO ROLLBACK VIOLATION: node %d segment %d: anchor round %d did not strictly increase past %d",
+				n.Index, e.Seg, r, lastRoundBySeg[e.Seg])
+		}
+		lastRoundBySeg[e.Seg] = r
+		haveLastBySeg[e.Seg] = true
+
+		if existing, ok := anchorsByRound[r]; ok && existing != anchor {
+			t.Fatalf("ZERO ROLLBACK VIOLATION: round %d committed with two different anchors, %s and %s (contradiction observed on node %d)",
+				r, existing, anchor, n.Index)
+		}
+		anchorsByRound[r] = anchor
 	}
 }
