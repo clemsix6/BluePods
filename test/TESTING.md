@@ -58,6 +58,7 @@ runs the corpus. The current corpus:
 | functional | `TestScenarioObjects` | 12 |
 | functional | `TestScenarioAggregation` | 5 |
 | functional | `TestScenarioSponsored` | 5 |
+| functional | `TestScenarioStake` | 5 |
 | functional | `TestScenarioJoining` | 5+ |
 | functional | `TestScenarioStress` | 12 |
 | adversarial | `TestScenarioCrash` | 5 |

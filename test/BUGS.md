@@ -264,3 +264,36 @@ The two are not kept consistent across a restart.
 Latent today: no current scenario mutates the founder's stake or reward coin
 before restarting the bootstrap node, so nothing in the corpus exercises
 this path yet.
+
+### 11. Inter-node GetObject omits LocalOnly, so a globally-absent object cascades to a client timeout instead of a prompt not-found
+
+**Subsystem:** `cmd/node/clienthandlers.go` `fetchObjectFromHolder` /
+`requestObjectFrom`.
+
+`fetchObjectFromHolder`'s own doc comment states it "asks each holder for the
+object locally (the remote handler returns not-found rather than re-routing),
+preventing cascades," but `requestObjectFrom` builds the inter-node request as
+`network.GetObjectRequest{ObjectID: id}`, never setting `LocalOnly: true`. A
+holder that also lacks the object therefore does not answer not-found
+directly: it re-enters `handleGetObject` on the non-local path and itself
+calls `fetchObjectFromHolder`, probing every other validator (including the
+original requester) the same way. For an object no node holds (for example a
+deleted singleton), this fans out into a multi-hop cascade across the mesh
+instead of the single round-trip per holder the comment promises, and a
+client's own `GetObject` (routed, non-local) blows past its 8-second QUIC
+request timeout waiting for the cascade to unwind, surfacing as "deadline
+exceeded" rather than a prompt not-found.
+
+**Evidence:** `TestScenarioStake/undelegate_returns_principal` deletes a
+delegation position (`handleUndelegate` calls `coinStore.DeleteObject`, a
+singleton every one of the 5 validators held and now none do) and then calls
+`cli.GetObject` on it to confirm it is gone. Reproduced on two consecutive
+runs: the call fails with `get object:\nget object:\ndeadline exceeded` after
+8.06s and 9.92s respectively, both comfortably past `quicRequestTimeout`
+(8s, `pkg/client/quic.go`) and consistent with a multi-hop cascade rather than
+one bounded remote probe.
+
+**Reproduced by:** `TestScenarioStake` (`undelegate_returns_principal`), red
+in the scenario body, not just at teardown. No prior scenario had exercised
+`GetObject` (non-local) against an object absent from every node, so this
+path was previously untested.
