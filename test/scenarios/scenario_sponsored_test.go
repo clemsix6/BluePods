@@ -4,8 +4,6 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/zeebo/blake3"
-
 	"BluePods/internal/genesis"
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
@@ -13,12 +11,6 @@ import (
 
 // sponsoredScenarioSize is the validator count for TestScenarioSponsored.
 const sponsoredScenarioSize = 5
-
-// sponsoredClientMaxGas mirrors pkg/client's unexported clientMaxGas default:
-// SubmitSponsored/SignSponsoredOp hardcode it into the canonical body they
-// build and sign, so computeSponsoredHash must use the same value to
-// reproduce the exact bytes both parties hashed.
-const sponsoredClientMaxGas = uint64(1000)
 
 // TestScenarioSponsored drives a 5-node cluster through sponsored
 // transactions: a sender who owns the operated coin but has a distinct
@@ -80,9 +72,9 @@ func testSponsoredSuccess(t *testing.T, c *harness.Cluster, cli *client.Client, 
 	const farFutureEpoch = uint64(1_000_000)
 
 	signed := sender.SignSponsoredOp(op, sponsor.Pubkey(), gasCoin, farFutureEpoch)
-	hash := computeSponsoredHash(sender.Pubkey(), sponsor.Pubkey(), op, gasCoin, farFutureEpoch)
 
-	requireNoErr(t, sponsor.SubmitSponsored(cli, signed))
+	hash, err := sponsor.SubmitSponsored(cli, signed)
+	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
 
 	ev, err := node0.WaitEvent(stepCtx(t), "fees.deducted",
@@ -142,9 +134,9 @@ func testExpiredSponsorshipRejected(t *testing.T, c *harness.Cluster, cli *clien
 	const expiredValidUntil = uint64(0)
 
 	signed := sender.SignSponsoredOp(op, sponsor.Pubkey(), gasCoin, expiredValidUntil)
-	hash := computeSponsoredHash(sender.Pubkey(), sponsor.Pubkey(), op, gasCoin, expiredValidUntil)
 
-	requireNoErr(t, sponsor.SubmitSponsored(cli, signed))
+	hash, err := sponsor.SubmitSponsored(cli, signed)
+	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, false, "expired_sponsorship")
 
 	requireUnchangedOwner(t, cli, coinID, sender.Pubkey())
@@ -169,19 +161,4 @@ func sponsoredTransferArgs(newOwner [32]byte) []byte {
 	copy(args, newOwner[:])
 
 	return args
-}
-
-// computeSponsoredHash re-derives the canonical sponsored body hash that both
-// the sender and the sponsor sign (pkg/client/sponsored.go's unexported
-// sponsoredBody), since SubmitSponsored does not return the hash to its
-// caller. This is the same hash tx.committed reports for the submitted
-// transaction, so a scenario can wait on it.
-func computeSponsoredHash(sender, sponsorPubkey [32]byte, op client.SponsoredOp, gasCoin [32]byte, validUntil uint64) [32]byte {
-	sponsor := genesis.Sponsorship{FeePayer: sponsorPubkey[:], ValidUntil: validUntil}
-
-	body := genesis.BuildUnsignedTxBytesSponsored(
-		sender[:], op.Pod, op.FuncName, op.Args, op.CreatedReps, 0, sponsoredClientMaxGas, gasCoin[:], op.MutableRefs, op.ReadRefs, sponsor,
-	)
-
-	return blake3.Sum256(body)
 }
