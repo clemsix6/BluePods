@@ -210,6 +210,20 @@ coinsTotal(499999979000)+totalBonded(500000000000)+deposits(12000)+feesInFlight(
 the leak is independent of the sponsored-transaction path exercised by that
 scenario's own (green) sub-tests.
 
+Also reproduced at teardown of `TestScenarioChurn` (2-node base cluster grown
+by three `Spawn()`s, `WithMaxChurn(1)`, four non-founder registrations total:
+the base cluster's own non-founder plus the three spawned nodes): `node 0:
+coinsTotal(900000000000)+totalBonded(100000000000)+deposits(4000)+feesInFlight(0)=1000000004000
+!= totalSupply(1000000000000)` — the exact predicted +4000 for 4
+registrations, independent of churn limiting (registrations that a boundary's
+churn cap defers still create their replication-0 object and stamp its
+deposit at commit time, before admission to `epochHolders` is even decided).
+Both of that scenario's in-scenario subtests (`additions_capped_per_boundary`,
+`all_eventually_join`) are green; teardown convergence was also green on this
+run (unlike the sibling entry 1, whose race window closes well before this
+scenario's next check, since each registration here is separated from the
+next by a full epoch boundary).
+
 ### 9. Network-wide commit wedge after two validators crash right after an epoch boundary
 
 **Subsystem:** `internal/consensus` commit path — the anchor decision /
