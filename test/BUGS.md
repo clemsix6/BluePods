@@ -49,12 +49,16 @@ example round 278: `12746c30 / c0ecae56 / 6c5ec5eb / 2bb1bb20 / 853ec5d3`).
 scenario's teardown convergence check is red on this entry:
 `TestScenarioConsensusBasics`, `TestScenarioFees`, `TestScenarioAggregation`,
 `TestScenarioEpochs`, `TestScenarioObjects`, `TestScenarioJoining`,
-`TestScenarioStress`, and the adversarial corpus:
+`TestScenarioStress`, `TestScenarioSponsored`, and the adversarial corpus:
 `TestScenarioCrash`, `TestScenarioAnchorCrash`, `TestScenarioJoinLoad`,
 `TestScenarioPartition` (all three sub-scenarios)
 (each red ONLY here — their in-scenario liveness, resync, plateau, heal and
 zero-rollback assertions are green, with the divergent-checksums-at-one-round
-sweep as the signature, stable across two runs each).
+sweep as the signature, stable across two runs each). `TestScenarioSponsored`
+(5-node, 4 non-founder registrations) shows the same signature: five distinct
+checksums at identical committed round 215
+(`023c8d62 / e5f5869f / 83b8df70 / c4a2a09a / c83b03be`), with both its
+sponsored-transaction sub-tests green.
 
 ### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
 
@@ -197,6 +201,14 @@ coinsTotal(499999968790)+totalBonded(500000000000)+deposits(15600)+feesInFlight(
 registrations. Before that harness fix this teardown check was reachable in
 every multi-node scenario but always masked by entry 1's convergence
 `t.Fatalf` aborting the invariant pass first.
+
+Also reproduced at teardown of `TestScenarioSponsored` (5-node cluster, 4
+non-founder registrations, no explicit `requireSupplyIdentity` call in the
+scenario itself): `node 4:
+coinsTotal(499999979000)+totalBonded(500000000000)+deposits(12000)+feesInFlight(13000)=1000000004000
+!= totalSupply(1000000000000)` — again the exact predicted +4000, confirming
+the leak is independent of the sponsored-transaction path exercised by that
+scenario's own (green) sub-tests.
 
 ### 9. Network-wide commit wedge after two validators crash right after an epoch boundary
 
