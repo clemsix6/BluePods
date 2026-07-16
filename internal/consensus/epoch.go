@@ -2,8 +2,10 @@ package consensus
 
 import (
 	"bytes"
+	"encoding/hex"
 	"sort"
 
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/validators"
 )
@@ -42,9 +44,15 @@ func (d *DAG) transitionEpoch(round uint64) {
 	// outgoing validators still get their share.
 	distributable := d.totalRewardWeight() > 0
 	issuance := d.runThermostat(distributable)
-	d.distributeEpochRewards(issuance)
+	leftover := d.distributeEpochRewards(issuance)
 
-	d.applyPendingRemovals()
+	// Capture epochAdditions BEFORE clearEpochState wipes it, and the pubkeys
+	// applyPendingRemovals actually removed (churn-deferred ones are excluded),
+	// so the epoch.transitioned event below reports the real churn. added runs
+	// through the same churn filter snapshotEpochHolders applies, so the event
+	// never announces an addition that churn actually excluded from membership.
+	added := d.churnLimitedAdditions()
+	removed := d.applyPendingRemovals()
 
 	// Retain the outgoing epoch's snapshot for the grace window so an ATX
 	// collected late in the previous epoch still verifies shortly after the
@@ -83,6 +91,11 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	d.clearEpochState()
 
+	// clearEpochState just zeroed epochFees; re-seed it with whatever the pool
+	// could not credit anywhere, so an uncreditable reward share carries into the
+	// next epoch's pool instead of silently vanishing from accounted supply.
+	d.epochFees = leftover
+
 	d.currentEpoch++
 
 	logger.Info("epoch transition",
@@ -93,9 +106,20 @@ func (d *DAG) transitionEpoch(round uint64) {
 		"epochHolders", d.epochHolders.Len(),
 	)
 
+	events.EpochTransitioned(d.currentEpoch, hexSlice(added), hexSlice(removed))
+
 	if d.onEpochTransition != nil {
 		d.onEpochTransition(d.currentEpoch)
 	}
+}
+
+// hexSlice hex-encodes a slice of hashes for event attributes.
+func hexSlice(hashes []Hash) []string {
+	out := make([]string, len(hashes))
+	for i, h := range hashes {
+		out[i] = hex.EncodeToString(h[:])
+	}
+	return out
 }
 
 // rewardWeight returns a validator's epoch reward weight: effective_stake ×
@@ -113,15 +137,20 @@ func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
 // its own portion is auto-restaked and credited liquid (creditValidatorReward).
 // The integer-division remainder goes to the deterministic top-weight validator so
 // the whole pool lands in coins/stake (sum credited == pool, no orphaned tokens).
-func (d *DAG) distributeEpochRewards(issuance uint64) {
+// It returns the leftover amount that could not be credited anywhere (no fee
+// system wired, no reward weight to distribute to, or an uncreditable remainder
+// recipient), so the caller carries it into the next epoch's pool instead of
+// losing it: the epoch reward pool must never silently vanish.
+func (d *DAG) distributeEpochRewards(issuance uint64) (leftover uint64) {
+	pool := safeAdd(d.epochFees, issuance)
+
 	if d.feeParams == nil || d.coinStore == nil {
-		return
+		return pool // nowhere to credit it: carry the whole pool forward
 	}
 
-	pool := safeAdd(d.epochFees, issuance)
 	totalWeight := d.totalRewardWeight()
 	if pool == 0 || totalWeight == 0 {
-		return
+		return pool // no reward weight: carry the whole pool forward (harmless if 0)
 	}
 
 	vals := d.validators.All()
@@ -133,7 +162,11 @@ func (d *DAG) distributeEpochRewards(issuance uint64) {
 		distributed += d.creditShare(v, share)
 	}
 
-	d.creditRemainder(top, pool-distributed)
+	distributed += d.creditRemainder(top, pool-distributed)
+
+	events.RewardsDistributed(d.currentEpoch, pool, len(vals))
+
+	return pool - distributed
 }
 
 // creditShare credits one validator's epoch share: it splits the share with the
@@ -237,22 +270,27 @@ func (d *DAG) creditValidatorReward(v *ValidatorInfo, amount uint64) uint64 {
 }
 
 // creditRemainder credits the undistributed remainder to the top-weight
-// validator's reward coin so the full pool lands in coins. It is a no-op when the
-// remainder is zero or the recipient designates no reward coin.
-func (d *DAG) creditRemainder(top Hash, remainder uint64) {
+// validator's reward coin so the full pool lands in coins. It returns the
+// credited amount: the whole remainder when credited, 0 when the remainder is
+// zero or the recipient designates no reward coin — the caller carries an
+// uncredited remainder forward into the next epoch's pool rather than losing it.
+func (d *DAG) creditRemainder(top Hash, remainder uint64) uint64 {
 	if remainder == 0 {
-		return
+		return 0
 	}
 
 	info := d.validators.Get(top)
 	if info == nil || info.RewardCoin == (Hash{}) {
 		logger.Warn("remainder undistributable; no reward coin on top validator", "remainder", remainder)
-		return
+		return 0
 	}
 
 	if err := creditCoin(d.coinStore, info.RewardCoin, remainder); err != nil {
 		logger.Warn("remainder credit failed", "error", err)
+		return 0
 	}
+
+	return remainder
 }
 
 // delegatorShares enumerates the delegation positions targeting a validator as
@@ -272,12 +310,13 @@ func (d *DAG) delegatorShares(validator Hash) []delegatorShare {
 	return dels
 }
 
-// applyPendingRemovals removes validators from the active set.
-// Respects maxChurnPerEpoch: excess removals are deferred to the next epoch.
-// Removals are sorted by pubkey for deterministic ordering across all validators.
-func (d *DAG) applyPendingRemovals() {
+// applyPendingRemovals removes validators from the active set and returns the
+// pubkeys actually removed (respecting maxChurnPerEpoch; deferred removals are
+// not included). Removals are sorted by pubkey for deterministic ordering
+// across all validators.
+func (d *DAG) applyPendingRemovals() []Hash {
 	if len(d.pendingRemovals) == 0 {
-		return
+		return nil
 	}
 
 	// Sort by pubkey for deterministic order across all validators.
@@ -285,21 +324,23 @@ func (d *DAG) applyPendingRemovals() {
 	// validators would remove different sets when churn is limited.
 	sorted := sortedMemberKeys(d.pendingRemovals)
 
-	applied := 0
+	var removed []Hash
 
 	for _, pubkey := range sorted {
-		if d.maxChurnPerEpoch > 0 && applied >= d.maxChurnPerEpoch {
+		if d.maxChurnPerEpoch > 0 && len(removed) >= d.maxChurnPerEpoch {
 			break // defer remaining to next epoch
 		}
 
 		d.validators.Remove(pubkey)
 		delete(d.pendingRemovals, pubkey)
-		applied++
+		removed = append(removed, pubkey)
 
 		logger.Info("validator removed at epoch boundary",
 			"pubkey_prefix", pubkey[:4],
 		)
 	}
+
+	return removed
 }
 
 // sortedMemberKeys extracts the keys of a hash set and sorts them by pubkey bytes
@@ -325,18 +366,8 @@ func (d *DAG) snapshotEpochHolders() {
 	validators := d.validators.All()
 	d.epochHolders = NewValidatorSet(nil)
 
-	// If churn is unlimited or additions fit within limit, include all
-	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
-		for _, v := range validators {
-			d.epochHolders.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
-		}
-		return
-	}
-
-	// Churn limited: only include maxChurnPerEpoch new additions.
-	allowed := sortedAdditions(d.epochAdditions, d.maxChurnPerEpoch)
-	allowedSet := make(map[Hash]bool, len(allowed))
-	for _, h := range allowed {
+	allowedSet := make(map[Hash]bool)
+	for _, h := range d.churnLimitedAdditions() {
 		allowedSet[h] = true
 	}
 
@@ -347,11 +378,25 @@ func (d *DAG) snapshotEpochHolders() {
 	}
 
 	for _, v := range validators {
-		// Include validator if it was NOT a new addition, or if it's in the allowed set
+		// Include validator if it was NOT a new addition, or if churn allowed it in.
 		if !additionSet[v.Pubkey] || allowedSet[v.Pubkey] {
 			d.epochHolders.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
 		}
 	}
+}
+
+// churnLimitedAdditions returns this epoch's additions actually admitted:
+// every addition when churn is unlimited or under cap, otherwise the
+// churn-limited subset sortedAdditions selects. snapshotEpochHolders (the
+// actual membership filter) and the epoch.transitioned event's "added"
+// attribute must agree on this set, or the event announces an addition churn
+// silently excluded from membership.
+func (d *DAG) churnLimitedAdditions() []Hash {
+	if d.maxChurnPerEpoch == 0 || len(d.epochAdditions) <= d.maxChurnPerEpoch {
+		return append([]Hash(nil), d.epochAdditions...)
+	}
+
+	return sortedAdditions(d.epochAdditions, d.maxChurnPerEpoch)
 }
 
 // snapshotOf returns a frozen copy of a validator set's full membership.

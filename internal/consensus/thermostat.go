@@ -1,5 +1,7 @@
 package consensus
 
+import "BluePods/internal/events"
+
 // thermostatParams holds the adaptive issuance control loop's parameters, all in
 // integer units so the loop is exact and deterministic. The rate is denominated
 // in epoch events (no clock); the annual figures the parameters approximate hold
@@ -76,6 +78,9 @@ func (d *DAG) runThermostat(distributable bool) uint64 {
 
 	issuance := issuanceFor(d.issuanceRateMicro, preMint)
 	d.coinStore.AddSupply(issuance)
+	if issuance > 0 {
+		events.SupplyIssued(d.currentEpoch, issuance, d.issuanceRateMicro)
+	}
 
 	return issuance
 }

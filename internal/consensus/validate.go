@@ -3,11 +3,46 @@ package consensus
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
 )
+
+// Sentinel errors for the terminal (non-buffer) validateVertex failure paths.
+// classifyRejection maps each to its consensus.vertex.rejected reason code via
+// errors.Is, rather than fragile error-string prefix matching (which is used
+// only for the two BUFFER cases: isMissingParentError/isUnknownProducerError).
+var (
+	errBadSignature = errors.New("bad_signature")
+	errWrongEpoch   = errors.New("wrong_epoch")
+	errParentRound  = errors.New("parent_round")
+	errParentQuorum = errors.New("parent_quorum")
+	errFeeSummary   = errors.New("fee_summary")
+)
+
+// classifyRejection maps a terminal validateVertex error to its
+// consensus.vertex.rejected reason code. It must only be called on an error
+// that is NOT a buffer case (isMissingParentError/isUnknownProducerError were
+// already checked and returned false) — every remaining validateVertex error
+// path wraps exactly one of the sentinels below.
+func classifyRejection(err error) string {
+	switch {
+	case errors.Is(err, errBadSignature):
+		return "bad_signature"
+	case errors.Is(err, errWrongEpoch):
+		return "wrong_epoch"
+	case errors.Is(err, errParentRound):
+		return "parent_round"
+	case errors.Is(err, errParentQuorum):
+		return "parent_quorum"
+	case errors.Is(err, errFeeSummary):
+		return "fee_summary"
+	default:
+		return "unknown" // defensive fallback; unreachable in practice — a forgotten case must surface as "unknown", never masquerade as a real reason such as "fee_summary"
+	}
+}
 
 // validateVertex performs full validation of a vertex before accepting it.
 // This is the single entry point for all vertex validation (external and local).
@@ -54,7 +89,7 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 // validateEpoch checks the vertex epoch matches current epoch.
 func (d *DAG) validateEpoch(v *types.Vertex) error {
 	if v.Epoch() != d.epoch {
-		return fmt.Errorf("epoch mismatch: expected %d, got %d", d.epoch, v.Epoch())
+		return fmt.Errorf("epoch mismatch: expected %d, got %d:\n%w", d.epoch, v.Epoch(), errWrongEpoch)
 	}
 	return nil
 }
@@ -82,21 +117,21 @@ func (d *DAG) validateProducer(v *types.Vertex) error {
 func (d *DAG) validateSignature(v *types.Vertex) error {
 	sig := v.SignatureBytes()
 	if len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("invalid signature size: %d", len(sig))
+		return fmt.Errorf("invalid signature size: %d:\n%w", len(sig), errBadSignature)
 	}
 
 	pubkey := v.ProducerBytes()
 	if len(pubkey) != ed25519.PublicKeySize {
-		return fmt.Errorf("invalid pubkey size: %d", len(pubkey))
+		return fmt.Errorf("invalid pubkey size: %d:\n%w", len(pubkey), errBadSignature)
 	}
 
 	hashBytes := v.HashBytes()
 	if len(hashBytes) != 32 {
-		return fmt.Errorf("invalid hash size: %d", len(hashBytes))
+		return fmt.Errorf("invalid hash size: %d:\n%w", len(hashBytes), errBadSignature)
 	}
 
 	if !ed25519.Verify(pubkey, hashBytes, sig) {
-		return fmt.Errorf("invalid signature")
+		return fmt.Errorf("invalid signature:\n%w", errBadSignature)
 	}
 
 	return nil
@@ -112,13 +147,13 @@ func (d *DAG) validateParents(v *types.Vertex) error {
 
 	parentCount := v.ParentsLength()
 	if parentCount == 0 {
-		return fmt.Errorf("no parents for round %d", round)
+		return fmt.Errorf("no parents for round %d:\n%w", round, errParentRound)
 	}
 
 	var link types.VertexLink
 	for i := 0; i < parentCount; i++ {
 		if !v.Parents(&link, i) {
-			return fmt.Errorf("failed to read parent %d", i)
+			return fmt.Errorf("failed to read parent %d:\n%w", i, errParentRound)
 		}
 
 		if err := d.validateParentLink(&link, round); err != nil {
@@ -164,7 +199,7 @@ func (d *DAG) validateParentLink(link *types.VertexLink, round uint64) error {
 	}
 
 	if parent.Round() != round-1 {
-		return fmt.Errorf("parent round mismatch: expected %d, got %d", round-1, parent.Round())
+		return fmt.Errorf("parent round mismatch: expected %d, got %d:\n%w", round-1, parent.Round(), errParentRound)
 	}
 
 	return nil
@@ -209,7 +244,7 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 	}
 
 	if knownParents == 0 {
-		return fmt.Errorf("no known parent producers for round %d", round)
+		return fmt.Errorf("no known parent producers for round %d:\n%w", round, errParentQuorum)
 	}
 
 	return nil
@@ -230,7 +265,7 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 		if v.TransactionsLength() == 0 {
 			return nil
 		}
-		return fmt.Errorf("missing fee_summary with %d transactions", v.TransactionsLength())
+		return fmt.Errorf("missing fee_summary with %d transactions:\n%w", v.TransactionsLength(), errFeeSummary)
 	}
 
 	// Recalculate from transaction headers
@@ -258,16 +293,16 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 	}
 
 	if declared.TotalFees() != totalFees {
-		return fmt.Errorf("fee_summary.total_fees mismatch: declared %d, computed %d",
-			declared.TotalFees(), totalFees)
+		return fmt.Errorf("fee_summary.total_fees mismatch: declared %d, computed %d:\n%w",
+			declared.TotalFees(), totalFees, errFeeSummary)
 	}
 	if declared.TotalBurned() != totalBurned {
-		return fmt.Errorf("fee_summary.total_burned mismatch: declared %d, computed %d",
-			declared.TotalBurned(), totalBurned)
+		return fmt.Errorf("fee_summary.total_burned mismatch: declared %d, computed %d:\n%w",
+			declared.TotalBurned(), totalBurned, errFeeSummary)
 	}
 	if declared.TotalEpoch() != totalEpoch {
-		return fmt.Errorf("fee_summary.total_epoch mismatch: declared %d, computed %d",
-			declared.TotalEpoch(), totalEpoch)
+		return fmt.Errorf("fee_summary.total_epoch mismatch: declared %d, computed %d:\n%w",
+			declared.TotalEpoch(), totalEpoch, errFeeSummary)
 	}
 
 	return nil

@@ -7,7 +7,7 @@ Before working on this project, read the two documentation pillars:
 - **`docs/VISION.md`** for why the project exists: the decentralized-cloud goal, the non-negotiable properties (zero rollback, global atomic composability), the accepted tradeoff, and the positioning against ICP, Sui, Solana, and Ethereum.
 - **`docs/WHITEPAPER.md`** for how it works: object model, consensus, attestation, execution sharding, fees, validators, network, and security.
 
-The acceptance test plan is `docs/ATP.md`. The integration test guide is `test/integration/TESTING.md`.
+The test environment guide is `test/TESTING.md`.
 
 ## Documentation Conventions
 
@@ -27,7 +27,7 @@ The node is written in Go; pods are written in Rust and compiled to WebAssembly.
 - `types/` — generated FlatBuffers types shared across the node.
 - `pods/` — the Rust side: `pod-sdk` (dispatcher, Context, serialization) and `pod-system` (the system pod).
 - `wasm-gas/` — Rust tool that instruments a pod's WASM with gas metering (at the root, not under `pods/`).
-- `test/integration/` — BDD-style multi-node integration tests.
+- `test/` — the scenario harness (`harness/`), the scenario corpus (`scenarios/`), and the environment's documents of record, `TESTING.md` and `BUGS.md`.
 - `docs/superpowers/specs/` and `docs/superpowers/plans/` — the specs and plans of the development workflow below.
 
 @~/Skills/general.md
@@ -45,3 +45,7 @@ The node is written in Go; pods are written in Rust and compiled to WebAssembly.
   hours of dense work in one context. Implementers commit as soon as unit tests
   pass; slow integration sims run AFTER the commit (a failure becomes a
   follow-up fix commit).
+- Every new state mutation gets an `internal/events` constructor, every new
+  feature extends or adds a scenario in `test/scenarios/`, and renaming or
+  removing an event or attribute is a breaking change to call out in the
+  commit that does it (see `test/TESTING.md`).

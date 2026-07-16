@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/storage"
@@ -67,8 +68,9 @@ type DAG struct {
 	committed chan CommittedTx
 
 	// Commit tracking
-	commitMu      sync.Mutex
-	lastCommitted uint64 // lastCommitted is the next round to commit
+	commitMu           sync.Mutex
+	lastCommitted      uint64 // lastCommitted is the next round to commit
+	lastAnnouncedRound uint64 // lastAnnouncedRound is the last round events.RoundAdvanced fired for; guarded by commitMu (only checkCommits touches it, to keep anchorProducerFor's reads race-free)
 
 	// Missing-ancestor recovery: when a decided anchor's causal batch is blocked on
 	// an absent ancestor for two consecutive commit ticks, the missing ancestry is
@@ -185,10 +187,14 @@ type Option func(*DAG)
 
 // WithLastCommittedRound sets the initial lastCommittedRound.
 // Used when initializing from a snapshot. Sets lastCommitted to round+1
-// because lastCommitted means "next round to commit".
+// because lastCommitted means "next round to commit". lastAnnouncedRound is
+// seeded from the same cursor so the synced node's first commit tick does not
+// retroactively flood consensus.round.advanced for every round the source
+// node already reached before the snapshot was taken (I1).
 func WithLastCommittedRound(round uint64) Option {
 	return func(d *DAG) {
 		d.lastCommitted = round + 1
+		d.lastAnnouncedRound = lastDecidedRound(d.lastCommitted)
 	}
 }
 
@@ -358,9 +364,13 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 
 	// Resume the commit cursor from persisted state so a restart never re-derives an
 	// already decided round. A snapshot option (WithLastCommittedRound) applies below
-	// and takes precedence for a freshly synced node.
+	// and takes precedence for a freshly synced node. lastAnnouncedRound is restored
+	// alongside it so a bare restart's first commit tick does not retroactively
+	// flood consensus.round.advanced for every round already reached before the
+	// crash (I1).
 	if cursor, ok := d.store.loadCommitCursor(); ok {
 		d.lastCommitted = cursor
+		d.lastAnnouncedRound = lastDecidedRound(d.lastCommitted)
 	}
 
 	// Restore currentEpoch and the holder snapshots BEFORE any commit decision (the
@@ -414,6 +424,7 @@ func (d *DAG) AddVertex(data []byte) bool {
 		}
 
 		logger.Debug("vertex rejected", "round", vertex.Round(), "error", err)
+		events.VertexRejected(hash, classifyRejection(err))
 		return false
 	}
 
@@ -423,6 +434,8 @@ func (d *DAG) AddVertex(data []byte) bool {
 	if !d.store.add(data, hash, round, producer) {
 		return false // already exists
 	}
+
+	events.VertexReceived(hash, producer, round)
 
 	d.onVertexAdded(round)
 
@@ -465,6 +478,15 @@ func (d *DAG) TotalSupply() uint64 {
 		return 0
 	}
 	return d.coinStore.TotalSupply()
+}
+
+// CoinsTotal returns the protocol-maintained sum of coin balances from the coin
+// store. Returns 0 when no coin store is wired (the fee system is disabled).
+func (d *DAG) CoinsTotal() uint64 {
+	if d.coinStore == nil {
+		return 0
+	}
+	return d.coinStore.CoinsTotal()
 }
 
 // FullQuorumAchieved returns true if BFT quorum has been observed.
@@ -613,22 +635,61 @@ func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFun
 }
 
 // SeedGenesis seeds the initial ledger state directly: the genesis coin object
-// into the coin store and the founding validator (with its bonded self-stake)
-// into the validator set. Genesis is state, not transactions. Must be called
-// AFTER SetFeeSystem (so coinStore is wired) and before the node produces.
+// and supply counters (SeedGenesisLedger) plus the founding validator with its
+// bonded self-stake and reward coin (SeedGenesisValidator). Genesis is state,
+// not transactions. Must be called AFTER SetFeeSystem (so coinStore is wired)
+// and before the node produces.
+//
+// A bootstrap node restarting over its own data directory must NOT call this:
+// re-running the ledger seed would overwrite the reserve coin and supply
+// counters back to their genesis values, discarding everything committed
+// since. It calls SeedGenesisValidator alone instead — see that method's
+// docstring.
 func (d *DAG) SeedGenesis(is genesis.InitialState) {
+	d.SeedGenesisLedger(is)
+	d.SeedGenesisValidator(is)
+}
+
+// SeedGenesisLedger seeds the genesis coin object into the coin store and the
+// supply/coins_total counters. It must run exactly once per chain: a caller
+// detecting a restart (the genesis coin already exists) must skip it.
+func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	d.coinStore.SetObject(is.Coin)
 	d.coinStore.SetTotalSupply(is.Supply)
 
+	// coins_total starts at the seeded coin's balance, NOT is.Supply: the
+	// founder's self-stake is locked OUT of the coin by BuildInitialState, so it
+	// is bonded (counted as total_bonded), not sitting in a coin balance.
+	d.coinStore.SetCoinsTotal(is.Supply - is.SelfStake)
+}
+
+// SeedGenesisValidator seeds the founding validator into the validator set:
+// its network address, its bonded self-stake, and its reward coin (its own
+// genesis coin — without a designation the founder's liquid epoch reward share
+// has nowhere to land and silently vanishes at every boundary with a non-zero
+// pool). It then admits the founder to the committed member set and freezes
+// the genesis holder snapshot so the anchor path resolves epoch 0 without ever
+// reading the live set.
+//
+// Every step here is idempotent (Add/SetSelfStake/SetRewardCoin overwrite,
+// recordCommittedMember is a set-add), so unlike SeedGenesisLedger this MUST
+// run on every bootstrap start, restart included: nothing else restores the
+// live validator set in bootstrap mode, and skipping it on restart would leave
+// the founder with zero live self-stake and a broken total_bonded.
+//
+// Known limitation (test/BUGS.md entry 10): SetSelfStake/SetRewardCoin
+// overwrite rather than merge, so a restart re-seeds these fields to their
+// GENESIS values even if the founder's live self-stake or reward coin has
+// since diverged from genesis.
+func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)
 
 	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
 	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
+	d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
 
-	// The founder is a committed genesis member: record it and freeze the genesis
-	// holder snapshot so the anchor path resolves epoch 0 without ever reading the
-	// live set. Under commitMu because the commit loop is already running.
+	// Under commitMu because the commit loop is already running.
 	d.commitMu.Lock()
 	d.recordCommittedMember(is.Pubkey, d.lastCommitted)
 	d.commitMu.Unlock()
@@ -847,6 +908,7 @@ func (d *DAG) tryProduceVertex() {
 		copy(logHash[:], hashBytes)
 	}
 	logger.Info("produced vertex", "round", round, "txs", len(txs), "hash", hex.EncodeToString(logHash[:8]), "parents", len(parents))
+	events.VertexProduced(logHash, round, len(txs))
 
 	// Disable sync mode after first successful vertex production.
 	d.disableSyncMode()

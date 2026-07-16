@@ -5,9 +5,11 @@ import (
 	"time"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/state"
 	"BluePods/internal/storage"
+	"BluePods/internal/types"
 )
 
 const (
@@ -166,11 +168,23 @@ func (m *SnapshotManager) createSnapshot() {
 
 	// Collect objects/signatures from the cut's storage snapshot, so they pair with
 	// the same committed frontier as the cursor and the committed vertex flags.
-	data, err := CreateSnapshot(cut.DBSnapshot, commitRound, cut.Validators, cut.Vertices, cut.TrackerEntries, domainEntries, cut.Supply, cut.IssuanceRate, cut.Regime)
+	data, err := CreateSnapshot(cut.DBSnapshot, commitRound, cut.Validators, cut.Vertices, cut.TrackerEntries, domainEntries, cut.Supply, cut.CoinsTotal, cut.IssuanceRate, cut.Regime)
 	if err != nil {
 		logger.Error("create snapshot", "error", err)
 		return
 	}
+
+	// CreateSnapshot's returned flatbuffer already embeds a checksum field
+	// (computed by the same function verifyChecksum reads back on apply), so
+	// parse it out here instead of recomputing it.
+	snap := types.GetRootAsSnapshot(data, 0)
+	var checksum [32]byte
+	copy(checksum[:], snap.ChecksumBytes())
+	// Emit commitRound, not currentRound: SnapshotApplied on the importing side
+	// reports snapshot.LastCommittedRound(), the same commitRound convention
+	// embedded in the snapshot below, and the two events must agree on what
+	// "round" means for the same snapshot.
+	events.SnapshotCreated(commitRound, checksum)
 
 	// Compress snapshot
 	compressed, err := CompressSnapshot(data)

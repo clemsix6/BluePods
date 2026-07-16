@@ -150,6 +150,37 @@ func (w *Wallet) DeregisterValidator(c *Client) error {
 	return nil
 }
 
+// Bond stakes amount from a singleton coin the wallet owns behind this
+// wallet's validator identity. The coin is both the staked coin (first
+// mutable_ref) and the gas coin. Returns the tx hash.
+func (w *Wallet) Bond(c *Client, coinID [32]byte, coinVersion uint64, amount uint64) ([32]byte, error) {
+	txBytes, txHash := w.buildCoinTx(c.systemPod, "bond", encodeStakeArgs(amount), nil, coinID, coinVersion)
+
+	if err := c.submit(txBytes); err != nil {
+		return [32]byte{}, fmt.Errorf("submit bond tx:\n%w", err)
+	}
+
+	return txHash, nil
+}
+
+// RegisterValidator (re-)registers this wallet's key as a validator, optionally
+// designating a reward coin (zero value = no designation). Raw, gas-free tx.
+func (w *Wallet) RegisterValidator(c *Client, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) error {
+	txBytes := w.buildRegisterValidatorTx(c.systemPod, quicAddr, blsPubkey, rewardCoin)
+
+	if err := c.submit(txBytes); err != nil {
+		return fmt.Errorf("submit register_validator tx:\n%w", err)
+	}
+
+	return nil
+}
+
+// buildRegisterValidatorTx builds this wallet's signed register_validator
+// transaction, optionally designating a reward coin.
+func (w *Wallet) buildRegisterValidatorTx(pod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) []byte {
+	return genesis.BuildRegisterValidatorRawTx(w.privKey, pod, quicAddr, blsPubkey, rewardCoin)
+}
+
 // buildMutableRef creates a single-element ObjectRefData slice for a mutable object.
 func buildMutableRef(id [32]byte, version uint64) []genesis.ObjectRefData {
 	return []genesis.ObjectRefData{{ID: id, Version: version}}
@@ -181,6 +212,15 @@ func encodeSetObjectArgs(objectID [32]byte, content []byte) []byte {
 	copy(buf[:32], objectID[:])
 	binary.LittleEndian.PutUint32(buf[32:], uint32(len(content)))
 	copy(buf[36:], content)
+
+	return buf
+}
+
+// encodeStakeArgs encodes bond/unbond function arguments in Borsh format.
+// Format: u64 amount (LE).
+func encodeStakeArgs(amount uint64) []byte {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, amount)
 
 	return buf
 }

@@ -174,6 +174,15 @@ func (n *Node) genesisConfig() genesis.Config {
 
 // seedGenesisState seeds the initial ledger state on the bootstrap node. It must
 // run after initAggregation wires SetFeeSystem so the coin store is available.
+//
+// The ledger (the reserve coin, total_supply, coins_total) is seeded only once:
+// a bootstrap node restarting over its own data directory must not re-seed it,
+// or it overwrites every balance change committed since genesis. The guard is
+// the genesis coin's presence in state. The founder's validator entry
+// (self-stake, reward coin, committed membership) is idempotent and MUST still
+// be (re-)installed on every start including a restart — nothing else restores
+// the live validator set in bootstrap mode, and skipping it would leave the
+// restarted founder with zero live self-stake and a broken total_bonded.
 func (n *Node) seedGenesisState() {
 	if !n.cfg.Bootstrap {
 		return
@@ -181,6 +190,14 @@ func (n *Node) seedGenesisState() {
 
 	owner := deriveOwner(n.cfg.PrivateKey)
 	is := genesis.BuildInitialState(n.genesisConfig(), owner)
+
+	if n.state.GetObject(genesis.GenesisCoinID(owner)) != nil {
+		n.dag.SeedGenesisValidator(is)
+		logger.Info("genesis ledger already seeded; skipped re-seed on restart",
+			"supply", n.state.TotalSupply(),
+		)
+		return
+	}
 
 	n.dag.SeedGenesis(is)
 

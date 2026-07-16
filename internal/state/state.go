@@ -8,6 +8,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/podvm"
@@ -39,6 +40,13 @@ type State struct {
 	// Supply accounting.
 	supplyMu    sync.Mutex // supplyMu guards totalSupply and its persistence
 	totalSupply uint64     // totalSupply is the protocol-maintained total token supply
+
+	// Coin accounting: the sum of every coin's balance, maintained alongside
+	// totalSupply at each protocol touchpoint that moves value into or out of
+	// coins (coins carry no type tag, so this cannot be recomputed by scanning
+	// objects).
+	coinsTotalMu sync.Mutex // coinsTotalMu guards coinsTotal and its persistence
+	coinsTotal   uint64     // coinsTotal is the protocol-maintained sum of coin balances
 }
 
 // New creates a new State with the given storage and podvm pool.
@@ -52,6 +60,7 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 	}
 
 	s.loadSupply()
+	s.loadCoinsTotal()
 
 	return s
 }
@@ -329,7 +338,7 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 		return fmt.Errorf("output validation failed:\n%w", err)
 	}
 
-	s.applyUpdatedObjects(output)
+	s.applyUpdatedObjects(output, txHash)
 	s.applyCreatedObjects(output, txHash)
 	s.applyDeletedObjects(output, tx)
 	s.applyRegisteredDomains(output, txHash)
@@ -384,6 +393,9 @@ func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transac
 
 // applyRegisteredDomains stores domain name → ObjectID mappings from pod output.
 // Each RegisteredDomain references either an object_index (into created objects) or a direct object_id.
+// Emits DomainUpdated when the name was already bound (rebound to a possibly
+// different object) and DomainRegistered for a first-time binding, so the event
+// stream reports which case actually happened.
 func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [32]byte) {
 	var dom types.RegisteredDomain
 
@@ -394,7 +406,15 @@ func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [3
 
 		name := string(dom.Name())
 		objectID := s.resolveDomainObjectID(&dom, txHash)
+		existed := s.domains.exists(name)
+
 		s.domains.set(name, objectID)
+
+		if existed {
+			events.DomainUpdated(name, objectID, txHash)
+		} else {
+			events.DomainRegistered(name, objectID, txHash)
+		}
 	}
 }
 
@@ -415,7 +435,7 @@ func (s *State) resolveDomainObjectID(dom *types.RegisteredDomain, txHash [32]by
 // applyUpdatedObjects stores updated objects with incremented versions.
 // The version must be incremented to stay consistent with the consensus version tracker,
 // which increments versions for all mutable objects after each successful execution.
-func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput) {
+func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
 	var obj types.Object
 
 	for i := 0; i < output.UpdatedObjectsLength(); i++ {
@@ -425,11 +445,14 @@ func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput) {
 
 		data := rebuildObjectIncrementVersion(&obj)
 		id := extractObjectID(data)
+		newVersion := obj.Version() + 1
 		s.objects.set(id, data)
+
+		events.ObjectUpdated(id, txHash, newVersion)
 
 		// Eagerly sign the version actually persisted (old version + 1).
 		// There is no holder filter on updates, so guard it explicitly.
-		s.eagerlySign(id, obj.ContentBytes(), obj.Version()+1, obj.Replication())
+		s.eagerlySign(id, obj.ContentBytes(), newVersion, obj.Replication())
 	}
 }
 
@@ -491,6 +514,19 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 		// Notify tracker (all validators track all objects regardless of holding)
 		if s.onObjectCreated != nil {
 			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees)
+		}
+
+		// state.object.created and fees.deposit.locked describe the tracker-level
+		// mutation and protocol deposit, not the local storage write below, so they
+		// fire for every created object regardless of whether this node holds it
+		// (all validators track all objects).
+		var owner Hash
+		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
+			copy(owner[:], ownerBytes)
+		}
+		events.ObjectCreated(id, txHash, obj.Version(), obj.Replication(), owner)
+		if fees > 0 {
+			events.DepositLocked(id, fees)
 		}
 
 		// Storage sharding: skip objects this node doesn't hold
@@ -582,6 +618,8 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
 
+	txHash := extractTxHash(tx)
+
 	// Extract sender for ownership check
 	var sender Hash
 	if senderBytes := tx.SenderBytes(); len(senderBytes) == 32 {
@@ -626,26 +664,29 @@ func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Tr
 		// accounted: part refunded to a coin (stays in supply) and the remainder
 		// burned (leaves supply). It must never silently vanish, or total_supply
 		// would overstate the coins backing it.
-		s.settleDeletionDeposit(obj.Fees(), gasCoinID, hasGasCoin)
+		refund := s.settleDeletionDeposit(id, gasCoinID, obj.Fees(), hasGasCoin)
 
 		s.objects.delete(id)
+		events.ObjectDeleted(id, txHash, refund)
 	}
 }
 
-// settleDeletionDeposit fully accounts a deleted object's locked storage deposit:
-// it refunds storageRefundBPS to the gas_coin and burns the remainder. The burn
-// is gated on the refund actually landing (creditGasCoin succeeding), so a failed
-// refund never reduces supply while the refund vanishes. When there is no gas
-// coin to receive the refund (or refunds are disabled), the WHOLE deposit is
-// burned rather than silently leaked, keeping total_supply conserved.
-func (s *State) settleDeletionDeposit(objFees uint64, gasCoinID Hash, hasGasCoin bool) {
+// settleDeletionDeposit fully accounts a deleted object's locked storage
+// deposit: it refunds storageRefundBPS to the gas_coin and burns the
+// remainder, or burns the whole deposit when there is no recipient. It
+// returns the amount actually refunded (0 when nothing was credited). Every
+// burn emits supply.burned; a landed refund also emits fees.deposit.refunded.
+// The burn is gated on the refund actually landing (creditGasCoin succeeding),
+// so a failed refund never reduces supply while the refund vanishes.
+func (s *State) settleDeletionDeposit(id, gasCoinID Hash, objFees uint64, hasGasCoin bool) uint64 {
 	if objFees == 0 {
-		return
+		return 0
 	}
 
 	if !hasGasCoin || s.storageRefundBPS == 0 {
 		s.SubSupply(objFees) // no recipient: burn the full locked deposit
-		return
+		events.SupplyBurned(objFees, "deletion")
+		return 0
 	}
 
 	refund := objFees * s.storageRefundBPS / 10000
@@ -654,10 +695,19 @@ func (s *State) settleDeletionDeposit(objFees uint64, gasCoinID Hash, hasGasCoin
 	// Only the refund leaves supply (into a coin); gate the burn on it landing.
 	if !s.creditGasCoin(gasCoinID, refund) {
 		s.SubSupply(objFees) // refund failed: burn the full deposit, none leaks
-		return
+		events.SupplyBurned(objFees, "deletion")
+		return 0
 	}
 
+	// The refund landed in the gas coin's balance: coins_total rises by exactly
+	// the refunded amount, mirroring the supply burn below.
+	s.AddCoins(refund)
 	s.SubSupply(burned)
+
+	events.DepositRefunded(id, gasCoinID, refund)
+	events.SupplyBurned(burned, "deletion")
+
+	return refund
 }
 
 // computeStorageDeposit calculates the storage deposit for a new object.

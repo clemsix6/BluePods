@@ -9,6 +9,7 @@ import (
 	"github.com/zeebo/blake3"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
@@ -53,6 +54,10 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleGetTxStatus(data)
 	case network.MsgTagGetVertex:
 		return n.handleGetVertex(data)
+	case network.MsgTagStateFingerprint:
+		return n.handleStateFingerprint()
+	case network.MsgTagTestControl:
+		return n.handleTestControl(data)
 	default:
 		return nil, fmt.Errorf("unhandled client message tag: 0x%02x", tag)
 	}
@@ -75,8 +80,9 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 		return submitErr("consensus not available"), nil
 	}
 
-	atx, hash, err := n.ingestSubmission(req.Body)
+	atx, hash, kind, err := n.ingestSubmission(req.Body)
 	if err != nil {
+		events.IngressTxRejected("invalid_submission", err.Error())
 		return submitErr(err.Error()), nil
 	}
 
@@ -87,6 +93,10 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 	n.dag.SubmitTx(atx)
 	n.GossipTx(atx)
 
+	var hashArr [32]byte
+	copy(hashArr[:], hash)
+	events.IngressTxReceived(hashArr, kind)
+
 	return network.EncodeSubmitTxResp(&network.SubmitTxResponse{Hash: hash}), nil
 }
 
@@ -94,12 +104,16 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 // distinguishes a raw transaction from a full ATX by structure: a body that
 // validates as a raw Transaction (hash and signature check out) is a raw
 // singleton-only intent and is wrapped; otherwise it is treated as a full ATX.
-func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, err error) {
+// kind reports which path was taken ("raw" or "attested"), for the ingress
+// event the caller emits.
+func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, kind string, err error) {
 	if validation.ValidateTx(body) == nil {
-		return n.ingestRawTx(body)
+		atx, hash, err = n.ingestRawTx(body)
+		return atx, hash, "raw", err
 	}
 
-	return ingestATX(body)
+	atx, hash, err = ingestATX(body)
+	return atx, hash, "attested", err
 }
 
 // ingestRawTx wraps a validated raw transaction into a trivial ATX after
@@ -385,6 +399,10 @@ func (n *Node) handleFaucet(data []byte) ([]byte, error) {
 
 	n.dag.SubmitTx(txBytes)
 	n.GossipTx(txBytes)
+
+	var hashArr [32]byte
+	copy(hashArr[:], txHash)
+	events.IngressTxReceived(hashArr, "faucet")
 
 	logger.Info("faucet split", "amount", req.Amount)
 

@@ -38,10 +38,16 @@ func (p *Peer) Address() string {
 	return p.address
 }
 
-// Send sends a message to the peer using a new unidirectional stream.
+// Send sends a message to the peer using a new unidirectional stream. A
+// blocked peer is silently dropped (returns nil): from the application's
+// perspective a partitioned peer looks unreachable, not erroring.
 func (p *Peer) Send(data []byte) error {
 	if p.closed.Load() {
 		return fmt.Errorf("peer is closed")
+	}
+
+	if p.node.isBlocked(p.publicKey) {
+		return nil
 	}
 
 	p.mu.Lock()
@@ -70,10 +76,15 @@ func (p *Peer) Close() error {
 }
 
 // Request sends data and waits for response via bidirectional stream.
-// Uses the provided context for timeout/cancellation.
+// Uses the provided context for timeout/cancellation. A blocked peer errors
+// immediately rather than opening a stream that will never be served.
 func (p *Peer) Request(ctx context.Context, data []byte) ([]byte, error) {
 	if p.closed.Load() {
 		return nil, fmt.Errorf("peer is closed")
+	}
+
+	if p.node.isBlocked(p.publicKey) {
+		return nil, fmt.Errorf("peer blocked")
 	}
 
 	stream, err := p.conn.OpenStreamSync(ctx)
@@ -143,9 +154,15 @@ func (p *Peer) acceptBidiStreams(ctx context.Context) {
 	}
 }
 
-// handleBidiStream handles a bidirectional request/response stream.
+// handleBidiStream handles a bidirectional request/response stream. A blocked
+// peer is dropped without reading or responding: the requester simply sees no
+// response and times out, matching how an unreachable peer behaves.
 func (p *Peer) handleBidiStream(stream *quic.Stream) {
 	defer stream.Close()
+
+	if p.node.isBlocked(p.publicKey) {
+		return
+	}
 
 	// Read request
 	data, err := readMessage(stream)
@@ -172,6 +189,14 @@ func (p *Peer) handleUniStream(stream *quic.ReceiveStream) {
 	}
 
 	logger.Debug("uni data received", "peer", p.address, "bytes", len(data))
+
+	// Blocked-peer drop MUST run before the dedup check: marking a blocked
+	// message as seen would poison the dedup cache, so identical traffic sent
+	// again after the block is lifted would be silently dropped as a
+	// duplicate instead of delivered.
+	if p.node.isBlocked(p.publicKey) {
+		return
+	}
 
 	// Check for duplicate message
 	if !p.node.dedup.Check(data) {

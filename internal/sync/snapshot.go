@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 12
+	snapshotVersion = 13
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -57,9 +57,10 @@ type keyIterator interface {
 // It iterates over all objects in src, excluding consensus data. src is a
 // consistent read view (a storage snapshot taken inside the commit cut), so the
 // objects and signatures pair with the same committed frontier as the cursor and
-// vertices. totalSupply is the protocol supply counter and issuanceRateMicro the
-// thermostat's per-epoch rate; both are persisted and checksum-covered.
-func CreateSnapshot(src keyIterator, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) ([]byte, error) {
+// vertices. totalSupply and coinsTotal are the protocol supply counters and
+// issuanceRateMicro the thermostat's per-epoch rate; all are persisted and
+// checksum-covered.
+func CreateSnapshot(src keyIterator, lastCommittedRound uint64, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, totalSupply, coinsTotal, issuanceRateMicro uint64, epochState []byte) ([]byte, error) {
 	objects, err := collectObjects(src)
 	if err != nil {
 		return nil, fmt.Errorf("collect objects:\n%w", err)
@@ -70,7 +71,7 @@ func CreateSnapshot(src keyIterator, lastCommittedRound uint64, validators []*co
 		return nil, fmt.Errorf("collect signatures:\n%w", err)
 	}
 
-	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro, epochState)
+	data := buildSnapshot(lastCommittedRound, objects, validators, vertices, trackerEntries, domainEntries, signatures, totalSupply, coinsTotal, issuanceRateMicro, epochState)
 
 	return data, nil
 }
@@ -170,7 +171,7 @@ func isConsensusKey(key []byte) bool {
 }
 
 // buildSnapshot creates the FlatBuffers snapshot with checksum.
-func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) []byte {
+func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, vertices []consensus.VertexEntry, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, coinsTotal, issuanceRateMicro uint64, epochState []byte) []byte {
 	// Sort objects by ID for deterministic checksum
 	sortObjects(objects)
 
@@ -181,7 +182,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	sortSignatures(signatures)
 
 	// Compute checksum over canonical data (includes tracker entries and domain entries)
-	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures, totalSupply, issuanceRateMicro, epochState)
+	checksum := computeChecksumWithInfo(snapshotVersion, lastCommittedRound, objects, validators, trackerEntries, domainEntries, signatures, totalSupply, coinsTotal, issuanceRateMicro, epochState)
 
 	// Build FlatBuffers
 	builder := flatbuffers.NewBuilder(1024)
@@ -301,6 +302,7 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	types.SnapshotAddDomains(builder, domainsVector)
 	types.SnapshotAddSignatures(builder, signaturesVector)
 	types.SnapshotAddTotalSupply(builder, totalSupply)
+	types.SnapshotAddCoinsTotal(builder, coinsTotal)
 	types.SnapshotAddIssuanceRateMicro(builder, issuanceRateMicro)
 	types.SnapshotAddEpochState(builder, epochStateOffset)
 	offset := types.SnapshotEnd(builder)
@@ -427,8 +429,8 @@ func sortObjects(objects []objectEntry) {
 }
 
 // computeChecksumWithInfo computes a blake3 checksum over canonical snapshot data.
-// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures + total_supply (8 bytes) + issuance_rate_micro (8 bytes)
-func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, issuanceRateMicro uint64, epochState []byte) [32]byte {
+// Format: version (4 bytes) + round (8 bytes) + encoded validators + objects + tracker entries + domain entries + signatures + total_supply (8 bytes) + coins_total (8 bytes) + issuance_rate_micro (8 bytes)
+func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry, validators []*consensus.ValidatorInfo, trackerEntries []consensus.ObjectTrackerEntry, domainEntries []state.DomainEntry, signatures []sigEntry, totalSupply, coinsTotal, issuanceRateMicro uint64, epochState []byte) [32]byte {
 	hasher := blake3.New()
 
 	// Write version
@@ -495,6 +497,10 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 
 	// Write total supply
 	binary.BigEndian.PutUint64(buf[:], totalSupply)
+	hasher.Write(buf[:])
+
+	// Write coins_total (the sum of coin balances)
+	binary.BigEndian.PutUint64(buf[:], coinsTotal)
 	hasher.Write(buf[:])
 
 	// Write issuance rate (per-epoch, millionths)
@@ -696,7 +702,7 @@ func verifyChecksum(data []byte, snapshot *types.Snapshot) error {
 	// Sort and compute checksum
 	sortObjects(objects)
 	sortValidatorInfos(validators)
-	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures, snapshot.TotalSupply(), snapshot.IssuanceRateMicro(), snapshot.EpochStateBytes())
+	computed := computeChecksumWithInfo(snapshot.Version(), snapshot.LastCommittedRound(), objects, validators, trackerEntries, domainEntries, signatures, snapshot.TotalSupply(), snapshot.CoinsTotal(), snapshot.IssuanceRateMicro(), snapshot.EpochStateBytes())
 
 	// Compare
 	if !bytes.Equal(computed[:], storedChecksum) {

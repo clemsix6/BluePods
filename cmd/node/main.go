@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 )
 
@@ -20,13 +21,25 @@ func main() {
 
 // run is the main entry point with error handling.
 func run() error {
-	cfg := parseFlags()
+	cfg, err := parseFlags()
+	if err != nil {
+		return fmt.Errorf("parse flags:\n%w", err)
+	}
 
-	var err error
+	if cfg.LogFormat == "json" {
+		logger.UseJSON(os.Stdout)
+	}
+
 	cfg.PrivateKey, err = loadOrGenerateKey(cfg.KeyPath)
 	if err != nil {
 		return fmt.Errorf("load key:\n%w", err)
 	}
+
+	logger.SetNode(hex.EncodeToString(cfg.PrivateKey.Public().(ed25519.PublicKey))[:8])
+
+	var pubkeyHash [32]byte
+	copy(pubkeyHash[:], cfg.PrivateKey.Public().(ed25519.PublicKey))
+	events.NodeStarted(pubkeyHash, cfg.QUICAddress)
 
 	node, err := NewNode(cfg)
 	if err != nil {

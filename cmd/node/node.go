@@ -15,6 +15,7 @@ import (
 	"BluePods/cmd/node/tui"
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/podvm"
@@ -63,7 +64,7 @@ type Node struct {
 // NewNode creates and initializes a new node.
 func NewNode(cfg *Config) (*Node, error) {
 	n := &Node{cfg: cfg, stats: newStats(), txIndex: newTxStatusIndex()}
-	n.useTUI = !cfg.LogMode && term.IsTerminal(int(os.Stdout.Fd()))
+	n.useTUI = !cfg.LogMode && cfg.LogFormat != "json" && term.IsTerminal(int(os.Stdout.Fd()))
 
 	// Listener mode needs storage for snapshot and network
 	if cfg.Listener {
@@ -147,6 +148,8 @@ func (n *Node) runBootstrap() error {
 
 	go n.processCommitted()
 
+	events.NodeReady(n.dag.LastCommittedRound())
+
 	return n.serve()
 }
 
@@ -175,6 +178,7 @@ func (n *Node) waitForShutdown() error {
 
 	sig := <-sigCh
 	logger.Info("shutting down", "signal", sig.String())
+	events.NodeStopping(sig.String())
 
 	return n.Close()
 }

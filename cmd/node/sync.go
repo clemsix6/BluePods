@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/state"
@@ -86,6 +87,7 @@ func (n *Node) runValidator() error {
 	n.snapManager.Start()
 
 	logger.Info("validator mode active", "round", n.dag.Round())
+	events.NodeReady(n.dag.Round())
 
 	return n.serve()
 }
@@ -192,6 +194,7 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	}
 
 	logger.Info("sync complete", "round", n.dag.Round())
+	events.SyncCompleted(n.dag.Round())
 
 	return nil
 }
@@ -225,9 +228,11 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		n.state.ImportDomains(result.domainEntries)
 	}
 
-	// Restore the protocol supply counter. ApplySnapshot(db) has no *state.State,
-	// so the restore lives here where the state handle is available.
+	// Restore the protocol supply and coins_total counters. ApplySnapshot(db) has
+	// no *state.State, so the restore lives here where the state handle is
+	// available.
 	n.state.SetTotalSupply(snapshot.TotalSupply())
+	n.state.SetCoinsTotal(snapshot.CoinsTotal())
 
 	logger.Info("snapshot applied",
 		"round", result.lastCommittedRound,
@@ -237,6 +242,10 @@ func (n *Node) requestAndApplySnapshot(peer *network.Peer) (*snapshotResult, err
 		"trackerEntries", len(result.trackerEntries),
 		"domains", len(result.domainEntries),
 	)
+
+	var checksum [32]byte
+	copy(checksum[:], snapshot.ChecksumBytes())
+	events.SnapshotApplied(result.lastCommittedRound, checksum, snapshot.ObjectsLength())
 
 	return result, nil
 }

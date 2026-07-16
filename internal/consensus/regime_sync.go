@@ -75,6 +75,7 @@ type ConsistentCut struct {
 	TrackerEntries []ObjectTrackerEntry // TrackerEntries are the object versions/replication/fees
 	Validators     []*ValidatorInfo     // Validators is the validator set at the cut (deep copies)
 	Supply         uint64               // Supply is the protocol total supply at the cut
+	CoinsTotal     uint64               // CoinsTotal is the protocol sum of coin balances at the cut
 	IssuanceRate   uint64               // IssuanceRate is the thermostat's per-epoch rate in millionths at the cut
 	DBSnapshot     *storage.Snapshot    // DBSnapshot is the consistent object/signature/domain view; caller closes it
 }
@@ -106,6 +107,7 @@ func (d *DAG) ExportConsistentCut(historyRounds uint64) ConsistentCut {
 		TrackerEntries: d.tracker.Export(),
 		Validators:     d.validators.All(),
 		Supply:         d.TotalSupply(),
+		CoinsTotal:     d.CoinsTotal(),
 		IssuanceRate:   d.issuanceRateMicro,
 		DBSnapshot:     d.store.db.Snapshot(),
 	}

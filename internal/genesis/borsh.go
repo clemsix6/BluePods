@@ -32,6 +32,25 @@ func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
 	return buf
 }
 
+// EncodeRegisterValidatorArgs encodes register_validator arguments in Borsh
+// format, optionally designating a reward coin. A zero rewardCoin omits the
+// trailing field entirely, mirroring DecodeRegisterValidatorRewardCoin's
+// ok=false absence case, so a caller with no designation produces the same
+// bytes as the older two-field encoding.
+func EncodeRegisterValidatorArgs(quicAddr, blsPubkey []byte, rewardCoin [32]byte) []byte {
+	buf := encodeRegisterValidatorArgs(quicAddr, blsPubkey)
+	if rewardCoin == ([32]byte{}) {
+		return buf
+	}
+
+	lenBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(rewardCoin)))
+	buf = append(buf, lenBuf...)
+	buf = append(buf, rewardCoin[:]...)
+
+	return buf
+}
+
 // DecodeRegisterValidatorArgs decodes register_validator arguments from Borsh format.
 // Returns quicAddr and blsPubkey.
 // Returns empty/nil values if data is malformed.

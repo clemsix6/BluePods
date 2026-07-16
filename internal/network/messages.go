@@ -75,6 +75,22 @@ const (
 	// MsgTagGetVertexResp carries the requested vertex bytes, or a not-found flag.
 	MsgTagGetVertexResp = 0x16
 
+	// MsgTagStateFingerprint requests the node's convergence fingerprint (test
+	// hooks only; see internal/sync.ComputeFingerprint). Refused with a typed
+	// error when the node was not started with --test-hooks.
+	MsgTagStateFingerprint = 0x17
+
+	// MsgTagStateFingerprintResp carries the fingerprint response.
+	MsgTagStateFingerprintResp = 0x18
+
+	// MsgTagTestControl carries a test-only network-control operation (partition
+	// set/clear). Refused with a typed error when the node was not started with
+	// --test-hooks.
+	MsgTagTestControl = 0x19
+
+	// MsgTagTestControlResp is the response to a test-control operation.
+	MsgTagTestControlResp = 0x1A
+
 	// minClientTag is the lowest tag value reserved for client messages.
 	minClientTag = MsgTagSubmitTx
 )
@@ -105,15 +121,17 @@ func DecodeGossipTx(data []byte) (body []byte, ok bool) {
 // that range, so a range test would misroute it. Only request tags appear here;
 // response tags are never received as inbound requests.
 var clientRequestTags = map[byte]struct{}{
-	MsgTagSubmitTx:      {},
-	MsgTagGetObject:     {},
-	MsgTagGetValidators: {},
-	MsgTagStatus:        {},
-	MsgTagHealth:        {},
-	MsgTagFaucet:        {},
-	MsgTagDomainResolve: {},
-	MsgTagGetTxStatus:   {},
-	MsgTagGetVertex:     {},
+	MsgTagSubmitTx:         {},
+	MsgTagGetObject:        {},
+	MsgTagGetValidators:    {},
+	MsgTagStatus:           {},
+	MsgTagHealth:           {},
+	MsgTagFaucet:           {},
+	MsgTagDomainResolve:    {},
+	MsgTagGetTxStatus:      {},
+	MsgTagGetVertex:        {},
+	MsgTagStateFingerprint: {},
+	MsgTagTestControl:      {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
