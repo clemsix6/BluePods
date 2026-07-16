@@ -343,3 +343,54 @@ one bounded remote probe.
 in the scenario body, not just at teardown. No prior scenario had exercised
 `GetObject` (non-local) against an object absent from every node, so this
 path was previously untested.
+
+### 12. A failed pod execution debits the fee's storage component from the coin but credits it nowhere: a deflationary supply leak
+
+**Subsystem:** `internal/consensus/commit.go` `deductFees` / `calculateTxFeeSplit`
+(the storage/consumed fee split) together with `internal/state/state.go`
+`applyCreatedObjects` (the only place that credits a storage deposit).
+
+A transaction that declares `created_objects_replication` (any
+created-object-bearing call: `split`, `create_object`) has its full fee —
+consumed plus storage — computed from that DECLARED header field and debited
+from the gas coin unconditionally, before execution, regardless of whether
+execution actually succeeds. When the debit is fully covered, `deductFees`
+pools only the "consumed" portion into the epoch reward pool
+(`SplitFee(consumed, ...)`); the storage portion is deliberately excluded
+because it is meant to become a locked deposit against the object the pod
+creates, credited via `applyCreatedObjects`'s `events.DepositLocked` /
+`onObjectCreated` callback. But `state.Execute` only reaches
+`processOutput`/`applyCreatedObjects` on a SUCCESSFUL pod execution — an
+error from `s.pods.Execute` returns before either runs. So when execution
+fails (for example `split`'s `ERR_INSUFFICIENT_BALANCE`) after fees were
+already deducted, the storage portion has already left the gas coin but is
+credited NEITHER to the epoch fee pool NOR to the deposit tracker: it simply
+vanishes from every term of the protocol supply identity
+`coins_total + total_bonded + deposits + fees_in_flight == total_supply`,
+breaking it in the DEFLATIONARY direction — the mirror image of entry 8's
+inflationary registration-deposit leak.
+
+**Evidence:** on a 5-node cluster, `TestScenarioFees`'s
+`split_exceeds_balance_is_execution_error` funds a coin with 100,000, splits
+the full 100,000 (guaranteeing `ERR_INSUFFICIENT_BALANCE` once the fee has
+already reduced the balance), and takes a `Fingerprint` immediately before
+and after the commit: `coinsTotal` drops by exactly 2000 (the split's full
+consumed+storage fee, confirmed fully covered via `fees.deducted`), while
+`deposits + fees_in_flight` together rise by only 1000 (the consumed
+portion) — a 1000-unit shortfall, exactly the storage component
+(`StorageDeposit(0, 5, 1000) = 1000`) that never lands anywhere. Reproduced
+identically on two consecutive runs (`coin lost 2000, deposits+fees_in_flight
+only gained 1000` both times). Consistent with entry 8's independently
+derived per-registration mechanism: this same cluster's next subtest
+(`underfunded_gas_coin_pools_partial`, red on entry 8 alone before this
+scenario had an execution-failing step) now reports a supply-identity delta
+of +3000 instead of the +4000 documented in entry 8's own evidence for this
+file — exactly entry 8's +4000 (four non-founder registrations) minus this
+entry's -1000 (one failed created-object transaction), the two leaks
+superimposed on the same ledger.
+
+**Reproduced by:** `TestScenarioFees` (`split_exceeds_balance_is_execution_error`,
+red in the scenario body via a direct before/after `Fingerprint` delta check,
+not just at teardown). No prior scenario had exercised the `execution_error`
+path for a transaction that declares created objects, so this leak was
+previously unreachable by the corpus.

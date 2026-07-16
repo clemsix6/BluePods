@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"BluePods/internal/network"
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
 )
@@ -82,6 +83,31 @@ func requireCommittedReason(ctx context.Context, t *testing.T, n *harness.Node, 
 	requireNoErr(t, err)
 
 	return ev
+}
+
+// requireTxStatusMatchesCommit fetches cli's GetTxStatus for hash and
+// confronts it against an already-observed tx.committed verdict: the
+// read-path state (network.TxState) must agree with the event-path outcome.
+// GetTxStatus's Reason is a coarser code (internal/consensus's FailReason)
+// than tx.committed's reason string — for example both proof_failed and
+// authenticity_failed collapse to the same FailAuth code — so this confronts
+// the axis the two representations actually share (finalized vs failed)
+// rather than re-deriving a reason string from the code.
+func requireTxStatusMatchesCommit(t *testing.T, cli *client.Client, hash [32]byte, wantSuccess bool) {
+	t.Helper()
+
+	status, err := cli.GetTxStatus(hash)
+	requireNoErr(t, err)
+
+	wantState := network.TxStateFailed
+	if wantSuccess {
+		wantState = network.TxStateFinalized
+	}
+
+	if status.State != wantState {
+		t.Fatalf("GetTxStatus(%x) state: got %d, want %d (success=%v, reason=%d)",
+			hash[:4], status.State, wantState, wantSuccess, status.Reason)
+	}
 }
 
 // waitCommittedAll blocks until every alive node in c records tx.committed
