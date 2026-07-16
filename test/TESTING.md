@@ -66,6 +66,7 @@ runs the corpus. The current corpus:
 | adversarial | `TestScenarioJoinLoad` | 5+1 |
 | adversarial | `TestScenarioPartition` | 5 |
 | adversarial | `TestScenarioEpochCrash` | 10 |
+| adversarial | `TestScenarioColdRestart` | 5 |
 
 ## Writing a scenario
 

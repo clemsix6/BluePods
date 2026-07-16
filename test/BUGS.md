@@ -261,9 +261,55 @@ diverged (through bonding, delegation, or reward crediting) — while any coin
 debits already applied against the old values persist in the durable ledger.
 The two are not kept consistent across a restart.
 
-Latent today: no current scenario mutates the founder's stake or reward coin
-before restarting the bootstrap node, so nothing in the corpus exercises
-this path yet.
+**Status: REPRODUCED** (was latent; see below).
+
+**Evidence:** `TestScenarioColdRestart` funds the founder itself and has it
+`Bond` 7,000,000 on top of its genesis self-stake (100,000,000,000 at this
+cluster's default mint), stops the whole 5-node cluster gracefully, brings
+the bootstrap node back first in bootstrap mode over its own data directory,
+then resyncs the other four against it. Node 0's own fingerprint, taken
+immediately before extinction and again once the cluster is back and past
+its pre-extinction committed round, shows:
+
+```
+totalBonded: pre=500,007,000,000  post=100,000,000,000  (delta -400,007,000,000)
+coinsTotal:  pre=499,992,977,000  post=499,992,977,000   (delta 0)
+```
+
+`coinsTotal` is exactly conserved (the coin debited to fund the bond never
+comes back — "coin debits persist," confirmed) while `totalBonded` does not
+land at "genesis minus the founder's 7,000,000 bond" as the entry's original
+text would suggest — it collapses all the way down to the founder's bare
+genesis self-stake, 100,000,000,000, as if no other validator had ever
+bonded anything. This confirms the entry's own "suspected ... missing
+validator-set persistence path" co-factor is real and NOT founder-specific:
+`buildValidatorSet` (`cmd/node/init.go`) starts every process run — restart
+included, bootstrap or not — from an in-memory validator set containing
+nothing but the local identity (`consensus.NewValidatorSet(nil)` for a
+non-bootstrap restart, a single-entry set for a bootstrap one), and nothing
+outside `SeedGenesisValidator` (founder-only, genesis values only) restores
+anyone else into it. The other four validators' bonds are recovered only to
+the extent their own restart/re-registration and node 0's sync snapshot
+happen to reconstruct them, which this run's teardown shows landing
+inconsistently: the five nodes reported five different validator COUNTS
+(1/2/3/3/3) shortly after the cold restart, and the teardown supply-identity
+check failed with a ~4*10^11 gap (`node 0:
+coinsTotal(499992973000)+totalBonded(100000000000)+deposits(15000)+feesInFlight(16000)
+=599993004000 != totalSupply(1000000000000)`) — far larger than entry 8's
+usual few-thousand leak, and consistent with this same validator-set-loss
+mechanism rather than a new defect.
+
+**Reproduced by:** `TestScenarioColdRestart`, red in the body
+(`founder_stake_preserved`, the intended live reproduction, not a test
+defect) and at teardown (convergence, per entry 1's mechanism repeating as
+four non-founders re-register against a cold-started bootstrap; supply
+identity, dominated by this entry's cluster-wide validator-stake loss rather
+than entry 8's smaller leak). No prior scenario ever restarted the bootstrap
+node, so this path was previously untested, as noted below.
+
+Latent before this: no prior scenario mutated the founder's stake or reward
+coin before restarting the bootstrap node, so nothing in the corpus
+exercised this path.
 
 ### 11. Inter-node GetObject omits LocalOnly, so a globally-absent object cascades to a client timeout instead of a prompt not-found
 
