@@ -1069,6 +1069,50 @@ relaxed cluster; the node-side latch limitation is filed as issue #8.
   meaningful and the post-heal catch-up path gets its first real
   exercise.
 
+### Batch R13 — post-heal recovery: frontier re-broadcast, range catch-up, grace retry (Opus)
+
+The first-ever strict-regime partition runs surfaced two real node bugs
+and one scenario flake (closure corpus: 15/17).
+
+**Commit 1 — symmetric heal deadlock (node).** After a symmetric freeze
+each side holds only its own subset of the frozen round's vertices.
+Forward gossip sends a vertex ONCE at production and never again; the
+pull path walks parent links backward from held vertices and can never
+discover the other side's childless sibling leaves. Both sides wedge
+forever (`cannot produce: no quorum` 183 times in 90 s, zero vertices
+received). Fix: in `tryProduceVertex`'s cannot-produce branch
+(`internal/consensus/dag.go`), re-broadcast this node's own latest
+produced vertex (`getByRoundProducer` → `sendVertex`) on the liveness
+tick — idempotent, already-signed, safety-neutral. Failing test first:
+two DAG halves frozen on disjoint round-N vertex sets must reconverge
+once vertices flow again.
+
+**Commit 2 — deep-behind reintegration (node).** The batched backfill
+fixed the `onCausalStall` path only; a far-behind running validator
+wedges on the `onWaitStall` path, which still surfaces one round-layer
+per fetch cycle (~6 rounds per 90 s measured; store promotion is
+all-or-nothing until the whole gap bridges). Fix: a vertex-RANGE
+catch-up request in the sync protocol (`internal/sync/protocol.go`,
+served from the store by round range, chunked) invoked from the
+wait-stall handler when the gap between the commit cursor and the
+highest buffered round exceeds a threshold — the gap closes in a few
+round-trips. Failing test first: a DAG behind by tens of rounds with the
+far frontier buffered must close the gap in a bounded number of fetch
+iterations.
+
+**Commit 3 — grace-leg retry contract (scenario).** ~1-in-3 flake:
+`transferWithRetry`'s pre-submit routed read can hit a transient
+deadline exactly at the epoch transition (sequential holder probes at
+5 s each vs the client's 8 s budget) and the leg fatals on any non-typed
+error. Fix in `test/scenarios/scenario_aggregation_test.go`: treat a
+transient timeout like a stale collection (log, continue the retry
+loop), and schedule the retry a beat past the transition rather than at
+it. The retry budget already exists; no oracle weakening.
+
+**Orchestrator validation:** `TestScenarioPartition` (full),
+`TestScenarioAggregation` (×2 runs), `TestScenarioJoinLoad` (regression
+guard for the sync protocol change).
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
