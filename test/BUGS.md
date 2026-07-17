@@ -145,6 +145,12 @@ established the pool-carry-over mechanism this gap is compatible with.
 
 **Subsystem:** `internal/state/state.go` (existing `TODO`, deletion path).
 
+**Status: FIXED** (deletion accounting decoupled from content: the deposit
+release/refund/burn is tracker-driven and runs identically on every node,
+content removal stays holder-only; also wires the previously caller-less
+tracker entry release, so the deposits term finally shrinks on deletion;
+this branch).
+
 `coins_total`/`total_supply` diverge across nodes if a pod deletes a
 replicated object carrying a locked deposit: the refund/burn accounting for a
 deletion currently only runs on the object's holders, not on every node, so
@@ -168,6 +174,10 @@ tracker-derived aggregates (deposits, tracked-object counts).
 ### 6. Spec-code gap: no domain update/delete capability
 
 **Subsystem:** `internal/state/domain.go` (`domainStore.delete`).
+
+**Status: CLOSED as a documented gap** (the whitepaper's domain section now
+states the operations are specified but not yet reachable; exposing them is
+future feature work, out of this campaign; this branch).
 
 The whitepaper describes domain updates and deletions, but the protocol
 exposes no way to trigger them: `domainStore.delete` has zero callers. This
