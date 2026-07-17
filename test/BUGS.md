@@ -630,6 +630,11 @@ verifier's snapshot, capturing the split verdict at the unit seam.
 (`internal/consensus/epoch.go` neighborhood, the deferred deregistration
 path that releases a departing validator's bond).
 
+**Status: FIXED** (the released self-stake is credited to the departing
+validator's RewardCoin via the unbond credit primitive, with a new
+`stake.released` event; a validator with no reward coin keeps its bond and
+stays active until one exists; this branch).
+
 When a validator's deregistration is applied at an epoch boundary, its bond
 leaves `total_bonded` but the principal is never credited to any coin: the
 supply identity loses the full bond amount. This was entry 2's "blast
