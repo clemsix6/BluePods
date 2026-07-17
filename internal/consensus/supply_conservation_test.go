@@ -75,15 +75,17 @@ func TestEpochTransitionCarriesUndistributablePool(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
-	// A funded pool but zero reward weight: the validator produced no rounds this
-	// epoch (epochRoundsProduced unset), so totalRewardWeight is 0 and the pool has
-	// no weight to distribute against.
+	// A funded pool but zero reward weight: the settled epoch has no committed
+	// production (epochRoundsProduced unset), so totalRewardWeight is 0 and the pool has
+	// no weight to distribute against. Settlement is deferred one boundary, so drive it
+	// from epoch 1 with epoch 0's pool pending.
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 100)
-	dag.epochFees = 500
+	dag.epochFees[0] = 500
 
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
-	if dag.epochFees != 500 {
-		t.Errorf("epochFees after boundary = %d, want 500 (undistributable pool carried over, not lost)", dag.epochFees)
+	if dag.totalEpochFees() != 500 {
+		t.Errorf("in-flight pool after boundary = %d, want 500 (undistributable pool carried over, not lost)", dag.totalEpochFees())
 	}
 }

@@ -361,8 +361,14 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 			continue
 		}
 
-		d.creditLiveness(v, credited)
-		d.epochFees += d.processTransactions(v, h, commitRound, verdicts).Epoch
+		// Attribute liveness and fees to the epoch the vertex's ROUND belongs to, not
+		// the epoch current when this batch commits. A vertex adjacent to a boundary is
+		// committed in different batches on different nodes (as its own anchor, or swept
+		// into a later one), so keying by round is what lands it in the same bucket
+		// everywhere and keeps the eventual settlement identical.
+		epoch := d.commitEpochForRound(v.Round())
+		d.creditLiveness(epoch, v, credited)
+		d.epochFees[epoch] = safeAdd(d.epochFees[epoch], d.processTransactions(v, h, commitRound, verdicts).Epoch)
 		d.store.markVertexCommitted(h)
 
 		// The vertex is now committed history: its producer enters the live produced
@@ -371,18 +377,45 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 	}
 }
 
-// creditLiveness credits a vertex's producer one round of liveness, deduped by
-// (producer, round) within the batch so an equivocating producer's same-round
-// vertices count once. Liveness is per distinct round, not per vertex; a double
-// credit would inflate that producer's effective_stake x liveness reward share.
-func (d *DAG) creditLiveness(v *types.Vertex, credited map[producerRound]bool) {
+// creditLiveness credits a vertex's producer one round of liveness in the given
+// epoch's bucket, deduped by (producer, round) within the batch so an equivocating
+// producer's same-round vertices count once. Liveness is per distinct round, not per
+// vertex; a double credit would inflate that producer's effective_stake x liveness
+// reward share. epoch is the round-owned epoch (commitEpochForRound), so the credit
+// lands in the same bucket regardless of which batch committed the vertex.
+func (d *DAG) creditLiveness(epoch uint64, v *types.Vertex, credited map[producerRound]bool) {
 	key := producerRound{producer: extractProducer(v), round: v.Round()}
 	if credited[key] {
 		return
 	}
 
 	credited[key] = true
-	d.epochRoundsProduced[key.producer]++
+	d.roundsProducedBucket(epoch)[key.producer]++
+}
+
+// roundsProducedBucket returns epoch E's per-producer liveness map, creating an empty
+// one on first use so a caller can increment it directly. The caller holds commitMu.
+func (d *DAG) roundsProducedBucket(epoch uint64) map[Hash]uint64 {
+	bucket := d.epochRoundsProduced[epoch]
+	if bucket == nil {
+		bucket = make(map[Hash]uint64)
+		d.epochRoundsProduced[epoch] = bucket
+	}
+
+	return bucket
+}
+
+// totalEpochFees sums every undistributed epoch fee bucket. It is the pool the fee
+// path debited from coins and has not yet redistributed, so coins_total + total_bonded
+// + deposits + this equals total_supply at every instant — the fingerprint reports it
+// as fees-in-flight. The caller holds commitMu.
+func (d *DAG) totalEpochFees() uint64 {
+	var total uint64
+	for _, fees := range d.epochFees {
+		total = safeAdd(total, fees)
+	}
+
+	return total
 }
 
 // proofVerdicts carries the parallel proof-verification result of a round to the

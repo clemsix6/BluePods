@@ -165,9 +165,14 @@ type DAG struct {
 	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
 	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
-	// Epoch rewards: accumulated fees and round tracking per validator.
-	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
-	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
+	// Epoch rewards: pooled fees and per-validator liveness, both bucketed by the
+	// epoch a vertex's ROUND belongs to (commitEpochForRound), not the epoch current
+	// when its anchor batch commits. Bucketing by round is what makes a
+	// boundary-straddling vertex land in the same epoch on every node regardless of
+	// which batch sweeps it up; settlement of a bucket is deferred one boundary past
+	// the epoch's close so every node has committed all of it first. Guarded by commitMu.
+	epochFees           map[uint64]uint64          // epochFees[E] pools total_epoch of every committed vertex whose round is in epoch E, awaiting E's deferred settlement
+	epochRoundsProduced map[uint64]map[Hash]uint64 // epochRoundsProduced[E][producer] counts the distinct rounds producer produced in epoch E
 
 	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
 	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
@@ -354,7 +359,8 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		committed:           make(chan CommittedTx, channelBuffer),
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
-		epochRoundsProduced: make(map[Hash]uint64),
+		epochFees:           make(map[uint64]uint64),
+		epochRoundsProduced: make(map[uint64]map[Hash]uint64),
 		commissionBPS:       defaultCommissionBPS,
 		votingCapMille:      defaultVotingCapMille,
 		verifyTxAuth:        verifyTxAuthenticity,

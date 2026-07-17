@@ -86,15 +86,17 @@ func (d *DAG) runThermostat(distributable bool) uint64 {
 }
 
 // totalRewardWeight sums effective_stake × liveness over the active set, where
-// liveness is the validator's rounds produced this epoch. It is the EXACT
-// denominator reward distribution uses, so minting only when it is positive
-// guarantees the pool is fully distributable (it covers the edge where producers
-// have zero stake while stakers produced zero rounds). Batch 7 reuses it.
-func (d *DAG) totalRewardWeight() uint64 {
+// liveness is each validator's rounds produced in the settled epoch (read from that
+// epoch's produced bucket). It is the EXACT denominator reward distribution uses, so
+// minting only when it is positive guarantees the pool is fully distributable (it
+// covers the edge where producers have zero stake while stakers produced zero rounds).
+// A nil bucket (an epoch with no committed production) reads as zero for every
+// validator, so the total is zero.
+func (d *DAG) totalRewardWeight(produced map[Hash]uint64) uint64 {
 	var total uint64
 
 	for _, v := range d.validators.All() {
-		rounds := d.epochRoundsProduced[v.Pubkey]
+		rounds := produced[v.Pubkey]
 		total = safeAdd(total, safeMul(EffectiveStake(v), rounds))
 	}
 

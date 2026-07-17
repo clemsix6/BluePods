@@ -447,7 +447,8 @@ func TestApplyBatch_EquivocationCreditedOnce(t *testing.T) {
 
 	dag.applyBatch(round, []Hash{h1, h2})
 
-	if got := dag.epochRoundsProduced[validators[0].pubKey]; got != 1 {
+	// epochLength is 0 here, so every round's epoch is 0.
+	if got := dag.epochRoundsProduced[0][validators[0].pubKey]; got != 1 {
 		t.Fatalf("equivocating producer credited %d rounds, want 1", got)
 	}
 }

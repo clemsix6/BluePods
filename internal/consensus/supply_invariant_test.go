@@ -64,9 +64,9 @@ func TestSupplyInvariant(t *testing.T) {
 	deleteObjectWithRefund(t, st, objID, coinID)
 
 	// Epoch boundary: credit the pooled consumed fees back into circulation
-	// (distribution) so epochFees returns to 0, then clear it.
-	creditPooledFees(t, st, coinID, dag.epochFees)
-	dag.epochFees = 0
+	// (distribution) so the in-flight pool returns to 0, then clear it.
+	creditPooledFees(t, st, coinID, dag.totalEpochFees())
+	dag.epochFees = make(map[uint64]uint64)
 
 	assertSupplyInvariant(t, db, st)
 }
@@ -108,7 +108,7 @@ func payFee(t *testing.T, dag *DAG, st *state.State, coinID, owner [32]byte) {
 		t.Fatal("payFee: deductFees did not proceed")
 	}
 
-	dag.epochFees += split.Epoch
+	dag.epochFees[0] = safeAdd(dag.epochFees[0], split.Epoch)
 }
 
 // splitCoin reduces the source coin and creates a destination coin holding the

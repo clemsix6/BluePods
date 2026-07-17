@@ -30,21 +30,26 @@ func (d *DAG) isEpochBoundary(round uint64) bool {
 }
 
 // transitionEpoch handles the epoch boundary transition.
-// 1. Distributes epoch rewards to validators
+// 1. Settles the epoch that closed one boundary ago (deferred reward mint)
 // 2. Applies pending removals (with churn limiting)
 // 3. Snapshots validators → epochHolders
 // 4. Clears epoch tracking state
 // 5. Increments epoch counter
 // 6. Fires epoch transition callback
+//
+// The reward settlement is deferred by one boundary on purpose: a vertex whose round
+// sits at a boundary is committed in different batches on different nodes, so the
+// bucket for that round's epoch is not final until every node has swept it up. Waiting
+// one full epoch length past the epoch's close guarantees that, so all nodes settle the
+// identical bucket. The MEMBERSHIP work (removals, additions, holder freeze, epoch
+// increment) stays at the boundary, where it is already a pure function of committed
+// history.
 func (d *DAG) transitionEpoch(round uint64) {
 	prevEpoch := d.currentEpoch
 
-	// Run the thermostat (adjusts the rate every epoch, mints only when there is
-	// reward weight to distribute), then distribute the pool BEFORE removals so
-	// outgoing validators still get their share.
-	distributable := d.totalRewardWeight() > 0
-	issuance := d.runThermostat(distributable)
-	leftover := d.distributeEpochRewards(issuance)
+	// Mint and distribute the rewards of the epoch that closed one boundary ago, now
+	// that its bucket is complete on every node.
+	d.settleDeferredEpoch()
 
 	// Capture epochAdditions BEFORE clearEpochState wipes it, and the pubkeys
 	// applyPendingRemovals actually removed (churn-deferred ones are excluded),
@@ -91,11 +96,6 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	d.clearEpochState()
 
-	// clearEpochState just zeroed epochFees; re-seed it with whatever the pool
-	// could not credit anywhere, so an uncreditable reward share carries into the
-	// next epoch's pool instead of silently vanishing from accounted supply.
-	d.epochFees = leftover
-
 	d.currentEpoch++
 
 	logger.Info("epoch transition",
@@ -113,6 +113,39 @@ func (d *DAG) transitionEpoch(round uint64) {
 	}
 }
 
+// settleDeferredEpoch mints and distributes the rewards of the epoch that closed one
+// boundary ago (currentEpoch-1, before the pending increment). By now the commit cursor
+// is a full epoch length past that epoch's last round, so every node has committed all
+// of its vertices and its liveness/fee bucket is complete and identical everywhere —
+// which is what makes the settlement insensitive to the per-node commit-vs-skip timing
+// at the boundary. The genesis epoch (currentEpoch 0) has no earlier epoch to settle.
+//
+// The thermostat runs here too, so an epoch's rate adjustment and mint happen together
+// with its distribution. Any share the pool could not credit anywhere folds into the
+// current, still-open epoch's bucket so it stays accounted in total_supply rather than
+// vanishing. Removing the settled epoch's buckets keeps the maps bounded to the one or
+// two epochs still in flight. The caller holds commitMu.
+func (d *DAG) settleDeferredEpoch() {
+	if d.currentEpoch == 0 {
+		return
+	}
+
+	epoch := d.currentEpoch - 1
+
+	// Mint only when the settled epoch has reward weight; the rate still adjusts either
+	// way, exactly as an at-boundary settlement did.
+	distributable := d.totalRewardWeight(d.epochRoundsProduced[epoch]) > 0
+	issuance := d.runThermostat(distributable)
+	leftover := d.distributeEpochRewards(epoch, issuance)
+
+	delete(d.epochFees, epoch)
+	delete(d.epochRoundsProduced, epoch)
+
+	if leftover > 0 {
+		d.epochFees[d.currentEpoch] = safeAdd(d.epochFees[d.currentEpoch], leftover)
+	}
+}
+
 // hexSlice hex-encodes a slice of hashes for event attributes.
 func hexSlice(hashes []Hash) []string {
 	out := make([]string, len(hashes))
@@ -123,48 +156,52 @@ func hexSlice(hashes []Hash) []string {
 }
 
 // rewardWeight returns a validator's epoch reward weight: effective_stake ×
-// liveness, where liveness is the validator's rounds produced this epoch (one
-// vertex per round, so equivocation cannot double it). A jailed or zero-stake
-// validator, or one that produced no rounds, has zero weight. Uses safeMul. Shares
-// are this weight over the total weight, so no epoch-wide round denominator is needed.
-func (d *DAG) rewardWeight(v *ValidatorInfo) uint64 {
-	return safeMul(EffectiveStake(v), d.epochRoundsProduced[v.Pubkey])
+// liveness, where liveness is the validator's rounds produced in the settled epoch
+// (one vertex per round, so equivocation cannot double it), read from that epoch's
+// produced bucket. A jailed or zero-stake validator, or one that produced no rounds,
+// has zero weight. Uses safeMul. Shares are this weight over the total weight, so no
+// epoch-wide round denominator is needed.
+func (d *DAG) rewardWeight(v *ValidatorInfo, produced map[Hash]uint64) uint64 {
+	return safeMul(EffectiveStake(v), produced[v.Pubkey])
 }
 
-// distributeEpochRewards credits the epoch reward pool (epochFees + issuance) to
-// validators in full. Each validator's share is effective_stake × liveness over
+// distributeEpochRewards credits epoch E's reward pool (E's pooled fees + issuance) to
+// validators in full. Each validator's share is effective_stake × E's liveness over
 // the total weight; the share is split with its delegators (creditDelegators) and
 // its own portion is auto-restaked and credited liquid (creditValidatorReward).
 // The integer-division remainder goes to the deterministic top-weight validator so
 // the whole pool lands in coins/stake (sum credited == pool, no orphaned tokens).
 // It returns the leftover amount that could not be credited anywhere (no fee
 // system wired, no reward weight to distribute to, or an uncreditable remainder
-// recipient), so the caller carries it into the next epoch's pool instead of
-// losing it: the epoch reward pool must never silently vanish.
-func (d *DAG) distributeEpochRewards(issuance uint64) (leftover uint64) {
-	pool := safeAdd(d.epochFees, issuance)
+// recipient), so the caller carries it into an open pool instead of losing it: the
+// epoch reward pool must never silently vanish. The stake is read from the live set at
+// settlement time, which is network-uniform at this deterministic cursor point.
+func (d *DAG) distributeEpochRewards(epoch, issuance uint64) (leftover uint64) {
+	produced := d.epochRoundsProduced[epoch]
+	pool := safeAdd(d.epochFees[epoch], issuance)
 
 	if d.feeParams == nil || d.coinStore == nil {
 		return pool // nowhere to credit it: carry the whole pool forward
 	}
 
-	totalWeight := d.totalRewardWeight()
+	totalWeight := d.totalRewardWeight(produced)
 	if pool == 0 || totalWeight == 0 {
 		return pool // no reward weight: carry the whole pool forward (harmless if 0)
 	}
 
 	vals := d.validators.All()
-	top := pickRemainderRecipient(vals, d.rewardWeight)
+	weightOf := func(v *ValidatorInfo) uint64 { return d.rewardWeight(v, produced) }
+	top := pickRemainderRecipient(vals, weightOf)
 
 	var distributed uint64
 	for _, v := range vals {
-		share := safeMul(pool, d.rewardWeight(v)) / totalWeight
+		share := safeMul(pool, d.rewardWeight(v, produced)) / totalWeight
 		distributed += d.creditShare(v, share)
 	}
 
 	distributed += d.creditRemainder(top, pool-distributed)
 
-	events.RewardsDistributed(d.currentEpoch, pool, len(vals))
+	events.RewardsDistributed(epoch, pool, len(vals))
 
 	return pool - distributed
 }
@@ -514,11 +551,12 @@ func sortedAdditions(additions []Hash, limit int) []Hash {
 	return sorted
 }
 
-// clearEpochState resets per-epoch tracking data.
+// clearEpochState resets the per-boundary membership churn tracking. It does NOT
+// touch the fee or liveness buckets: those are keyed by epoch and settled (then
+// deleted) one boundary later by settleDeferredEpoch, so a straddling vertex committed
+// just after this boundary must still find its not-yet-settled bucket.
 func (d *DAG) clearEpochState() {
 	d.epochAdditions = nil
-	d.epochFees = 0
-	d.epochRoundsProduced = make(map[Hash]uint64)
 }
 
 // InitEpochHolders is a no-op: the genesis epoch's holder snapshot is not taken

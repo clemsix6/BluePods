@@ -1797,30 +1797,29 @@ func TestRewardWeight(t *testing.T) {
 
 	// Equal stake (100), different rounds (2 vs 5) → weight ∝ rounds.
 	dag.validators.SetSelfStake(pk, 100)
-	dag.epochRoundsProduced[pk] = 2
+	produced := map[Hash]uint64{pk: 2}
 
 	v := dag.validators.Get(pk)
-	if got := dag.rewardWeight(v); got != 200 {
+	if got := dag.rewardWeight(v, produced); got != 200 {
 		t.Fatalf("weight (stake 100 × rounds 2) = %d, want 200", got)
 	}
 
-	dag.epochRoundsProduced[pk] = 5
+	produced[pk] = 5
 	v = dag.validators.Get(pk)
-	if got := dag.rewardWeight(v); got != 500 {
+	if got := dag.rewardWeight(v, produced); got != 500 {
 		t.Fatalf("weight (stake 100 × rounds 5) = %d, want 500", got)
 	}
 
 	// Equal rounds (5), more stake (300) → weight ∝ stake.
 	dag.validators.SetSelfStake(pk, 300)
 	v = dag.validators.Get(pk)
-	if got := dag.rewardWeight(v); got != 1500 {
+	if got := dag.rewardWeight(v, produced); got != 1500 {
 		t.Fatalf("weight (stake 300 × rounds 5) = %d, want 1500", got)
 	}
 
-	// Zero rounds → zero weight (no liveness, no reward).
-	dag.epochRoundsProduced = make(map[Hash]uint64)
+	// Zero rounds → zero weight (no liveness, no reward). A nil bucket reads as zero.
 	v = dag.validators.Get(pk)
-	if got := dag.rewardWeight(v); got != 0 {
+	if got := dag.rewardWeight(v, nil); got != 0 {
 		t.Fatalf("weight with zero rounds = %d, want 0", got)
 	}
 }
@@ -1837,10 +1836,10 @@ func TestRewardWeight_LivenessCountsDistinctRounds(t *testing.T) {
 	defer dag.Close()
 
 	dag.validators.SetSelfStake(pk, 10)
-	dag.epochRoundsProduced[pk] = 3 // three distinct rounds
+	produced := map[Hash]uint64{pk: 3} // three distinct rounds
 
 	v := dag.validators.Get(pk)
-	if got := dag.rewardWeight(v); got != 30 {
+	if got := dag.rewardWeight(v, produced); got != 30 {
 		t.Fatalf("weight = %d, want 30 (one weight unit per distinct round)", got)
 	}
 }
@@ -1877,10 +1876,10 @@ func TestRewardCrediting(t *testing.T) {
 	dag.validators.SetSelfStake(pk, 100)
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
-	dag.epochRoundsProduced[pk] = 5
-	dag.epochFees = 1000
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
+	dag.epochFees[0] = 1000
 
-	dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
+	dag.distributeEpochRewards(0, 0) // epoch 0, issuance 0; pool = epochFees[0] = 1000
 
 	// Expected split: share = 1000 (single producer). splitValidatorReward(1000,
 	// self 100, commission 10%, dels [{d2,100}]) → validator 550, delegator 450.
@@ -1941,11 +1940,10 @@ func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
 	dag.validators.SetSelfStake(low, 3)
 	dag.validators.SetRewardCoin(top, topCoin)
 	dag.validators.SetRewardCoin(low, lowCoin)
-	dag.epochRoundsProduced[top] = 1
-	dag.epochRoundsProduced[low] = 1
-	dag.epochFees = 101
+	dag.epochRoundsProduced[0] = map[Hash]uint64{top: 1, low: 1}
+	dag.epochFees[0] = 101
 
-	dag.distributeEpochRewards(0)
+	dag.distributeEpochRewards(0, 0)
 
 	topBal := coinBalance(t, store, topCoin)
 	lowBal := coinBalance(t, store, lowCoin)
@@ -1989,10 +1987,10 @@ func TestRewardCrediting_CoinlessValidatorCompoundsIntoSelfStake(t *testing.T) {
 	// Reward weight but no reward coin designated: the transient join window, or a
 	// validator that never funds and designates a coin.
 	dag.validators.SetSelfStake(pk, 100)
-	dag.epochRoundsProduced[pk] = 5
-	dag.epochFees = 1000
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
+	dag.epochFees[0] = 1000
 
-	leftover := dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
+	leftover := dag.distributeEpochRewards(0, 0) // epoch 0, issuance 0; pool = epochFees[0] = 1000
 
 	if leftover != 0 {
 		t.Errorf("leftover = %d, want 0 (the coinless validator's share is credited, not deferred into the pool)", leftover)
@@ -2030,15 +2028,18 @@ func TestRewardConservation(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
+	// Settlement is deferred one boundary, so epoch 0's bucket is minted at the next
+	// boundary. Model that: the node is in epoch 1 with epoch 0's bucket still pending.
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio → rate rises, issuance > 0
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
-	dag.epochRoundsProduced[pk] = 5
-	dag.epochFees = 1234
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
+	dag.epochFees[0] = 1234
 
 	// Pre-boundary value held in coins + stake + delegation positions.
 	beforeValue := rewardSideValue(t, store, dag, pk)
-	epochFees := dag.epochFees
+	epochFees := dag.epochFees[0]
 
 	// Compute the issuance the thermostat will mint (rate adjusts first).
 	wantRate := dag.issuanceRateMicro + testThermostatParams().StepCapMicro
@@ -2048,7 +2049,7 @@ func TestRewardConservation(t *testing.T) {
 	}
 	pool := epochFees + issuance
 
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20) // currentEpoch 1 → settles the deferred epoch 0
 
 	afterValue := rewardSideValue(t, store, dag, pk)
 
@@ -2106,14 +2107,16 @@ func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
-	// Bonded far below the 25% band → the rate should rise.
+	// Bonded far below the 25% band → the rate should rise. Settlement is deferred one
+	// boundary, so drive it from epoch 1 with epoch 0's bucket pending.
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
-	dag.epochRoundsProduced[pk] = 5
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 
 	rateBefore := dag.issuanceRateMicro // 18 (genesis)
 	supplyBefore := store.TotalSupply()
 
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
 	wantRate := rateBefore + testThermostatParams().StepCapMicro
 	if dag.issuanceRateMicro != wantRate {
@@ -2139,12 +2142,12 @@ func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 10_000)
-	dag.epochRoundsProduced[pk] = 3
-	dag.epochFees = 0 // no fees this epoch
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 3} // no fees this epoch, only issuance
 
 	supplyBefore := store.TotalSupply()
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
 	if store.TotalSupply() <= supplyBefore {
 		t.Errorf("zero-fee epoch with production must still mint: supply %d -> %d",
@@ -2159,14 +2162,15 @@ func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 10_000)
-	// No rounds produced this epoch → totalRewardWeight == 0.
-	dag.epochRoundsProduced = make(map[Hash]uint64)
+	// No rounds produced in the settled epoch → totalRewardWeight == 0.
+	dag.epochRoundsProduced = make(map[uint64]map[Hash]uint64)
 
 	rateBefore := dag.issuanceRateMicro
 	supplyBefore := store.TotalSupply()
 
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
 	if store.TotalSupply() != supplyBefore {
 		t.Errorf("zero-weight epoch must mint nothing: supply %d -> %d",
@@ -2199,11 +2203,12 @@ func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 10_000)
-	dag.epochRoundsProduced[pk] = 5
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 
 	supplyBefore := store.TotalSupply()
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
 	if dag.issuanceRateMicro != 0 {
 		t.Errorf("rate must stay 0 with the thermostat off, got %d", dag.issuanceRateMicro)
