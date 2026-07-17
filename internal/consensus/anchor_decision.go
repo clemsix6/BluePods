@@ -49,15 +49,28 @@ type citationTally struct {
 // in that anchor's causal history. Later blamed rounds are decided-skips and are
 // scanned past. A later UNDECIDED round normally returns wait, because it could
 // still certify and become the resolving anchor — resolving past it would risk a
-// view-dependent, forking result. The one exception is a later undecided round
-// whose designated anchor is CERTIFICATION-IMPOSSIBLE (anchorCertImpossible): such
-// a round can never certify on any node, so it can never be the resolving anchor,
-// and the scan passes it to reach the genuinely certified anchor beyond. Without
-// that exception a run of permanently-undecided rounds (an anchor producer that was
+// view-dependent, forking result. The one exception is a later undecided round that
+// is CERTIFICATION-IMPOSSIBLE: such a round can never be the resolving anchor, and
+// the scan passes it to reach the genuinely certified anchor beyond. Without that
+// exception a run of permanently-undecided rounds (an anchor producer that was
 // unreachable when its round passed) wedges the commit cursor forever even though a
-// later certified anchor would resolve it. An unavailable stake set still returns
-// wait. Wait therefore holds until every round up to the resolving anchor is either
-// decided or provably cert-impossible.
+// later certified anchor would resolve it.
+//
+// Impossibility has two grades. Blame — a citation quorum against the producer — is
+// immutable: once a round is blame-impossible every node agrees, forever. Silence —
+// a holder absent from a deep span counting as a non-supporter — is REVERSIBLE: a
+// slow holder's vertices shrink the silent set, so a better-informed node may still
+// certify a round a starved node called impossible. Passing a merely silence-
+// impossible round is safe for any round two or more above the queried one, because
+// quorum intersection forces the queried round's designated vertex into every anchor
+// that far ahead, so all of them resolve it identically. The round IMMEDIATELY above
+// the queried one is the sole exception: its certified anchor is one round up and can
+// OMIT that vertex, resolving the queried round the opposite way. That round is passed
+// on silence evidence only when its certification would agree with the later anchor;
+// otherwise the scan waits for the missing vertices. An unavailable stake set still
+// returns wait. Wait therefore holds until every round up to the resolving anchor is
+// decided, blame-impossible, or a silence-impossible round whose certification could
+// not change the outcome.
 func (d *DAG) anchorStatus(round uint64) anchorDecision {
 	latest := d.store.highestRound()
 
@@ -75,14 +88,100 @@ func (d *DAG) anchorStatus(round uint64) anchorDecision {
 			continue // a later decided-skip is never the anchor; keep scanning
 		case verdict == verdictUndecided && r == round:
 			continue // round itself is undecided; scan forward for a resolver
-		case verdict == verdictUndecided && d.anchorCertImpossible(r):
-			continue // a later round that can never certify is never the resolving anchor
+		case verdict == verdictUndecided:
+			if dec, pass := d.scanPastUndecided(round, r); !pass {
+				return dec
+			}
+			continue // a later round that cannot resolve `round` differently is safe to pass
 		default:
-			return anchorDecision{kind: anchorWait} // later-undecided-but-still-certifiable or unavailable: cannot resolve past it
+			return anchorDecision{kind: anchorWait} // unavailable stake set: cannot resolve
 		}
 	}
 
 	return anchorDecision{kind: anchorWait}
+}
+
+// scanPastUndecided decides whether the forward scan for an undecided queried round
+// may pass a later undecided round r. It may pass only a certification-impossible r.
+// Blame-impossibility is immutable and always safe to pass. Silence-impossibility is
+// reversible, so passing r ON SILENCE is unsafe exactly when r is the round
+// immediately above the queried one and its certification could resolve the queried
+// round differently from the later anchor the scan will use; then it waits. The bool
+// is true when the scan may continue past r.
+func (d *DAG) scanPastUndecided(round, r uint64) (anchorDecision, bool) {
+	impossible, byBlame := d.certImpossibility(r)
+	if !impossible {
+		return anchorDecision{kind: anchorWait}, false
+	}
+
+	if !byBlame && r == round+1 && !d.adjacentCertifyAgrees(round, r) {
+		return anchorDecision{kind: anchorWait}, false
+	}
+
+	return anchorDecision{}, true
+}
+
+// adjacentCertifyAgrees reports whether certifying round r (== round+1) would resolve
+// the queried round the same way a later anchor will. A later anchor two or more
+// rounds above the queried one always carries its designated vertex by quorum
+// intersection and COMMITS it; the adjacent round r is the only later round whose
+// certified anchor sits one round up and could instead OMIT that vertex and SKIP.
+// They agree exactly when every stored round-r vertex of r's designated producer
+// cites the queried round's single designated vertex, so whichever one certifies also
+// carries it. A missing or equivocated designated vertex on either side is read as
+// disagreement, so the scan waits rather than pass on a reversible skip.
+func (d *DAG) adjacentCertifyAgrees(round, r uint64) bool {
+	producer, ok := d.anchorProducerFor(round)
+	if !ok {
+		return false
+	}
+
+	candidates := d.designatedVertexSet(round, producer)
+	if len(candidates) != 1 {
+		return false // absent or equivocated: no single agreed outcome to prove
+	}
+
+	rVertices, ok := d.designatedRoundVertices(r)
+	if !ok {
+		return false // r's anchor vertex not held locally: cannot prove it carries the candidate
+	}
+
+	for _, rv := range rVertices {
+		if !d.vertexCitesCandidate(rv, candidates) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// designatedRoundVertices returns the round's designated producer's stored vertices.
+// The bool is false when the round has no designated producer or the producer holds
+// no vertex at the round.
+func (d *DAG) designatedRoundVertices(round uint64) ([]Hash, bool) {
+	producer, ok := d.anchorProducerFor(round)
+	if !ok {
+		return nil, false
+	}
+
+	return d.store.getByRoundProducer(round, producer)
+}
+
+// vertexCitesCandidate reports whether the stored vertex cites any candidate among
+// its direct parents.
+func (d *DAG) vertexCitesCandidate(hash Hash, candidates map[Hash]bool) bool {
+	vertex := d.store.get(hash)
+	if vertex == nil {
+		return false
+	}
+
+	for _, parent := range appendParentHashes(nil, vertex) {
+		if candidates[parent] {
+			return true
+		}
+	}
+
+	return false
 }
 
 // directAnchorVerdict computes the strict direct verdict for a round's designated
@@ -234,11 +333,20 @@ func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bo
 }
 
 // anchorCertImpossible reports whether an UNDECIDED later round can NEVER be
-// certified, so anchorStatus's forward scan may pass it to reach a genuinely
-// certified resolving anchor instead of waiting on it forever. It is the disarming
+// certified, so anchorStatus's forward scan may pass it. It is the disarming
 // predicate for the permanent commit wedge: a run of undecided rounds (an anchor
 // producer unreachable, or dead, when its round passed) otherwise blocks the scan
-// from ever reaching the certified anchor that would resolve the wedged round.
+// from ever reaching the certified anchor that would resolve the wedged round. It
+// collapses the two grades of impossibility its scan callers must distinguish into
+// one bool; those callers use certImpossibility directly.
+func (d *DAG) anchorCertImpossible(round uint64) bool {
+	impossible, _ := d.certImpossibility(round)
+	return impossible
+}
+
+// certImpossibility reports whether an undecided round can never certify and, when it
+// cannot, whether IMMUTABLE blame alone establishes it (byBlame). The two grades
+// differ in reversibility, which is why the caller needs them apart.
 //
 // It fires only in the STRICT regime (a relaxed bootstrap round certifies on a
 // single supporter and is never ruled out here) and only when the round-N+1 holder
@@ -248,70 +356,56 @@ func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bo
 // verdict uses (tallyCitations), so a producer that ever cites a candidate, even
 // via an equivocating second vertex, is a possible supporter, never a blamer. Every
 // holder with NO stored round-N+1 vertex counts as a POTENTIAL SUPPORTER: its
-// future vertex might cite the candidate, so assuming support is the conservative
-// reading. The round is impossible when even the maximum achievable support falls
-// below the strict 2/3 capped-stake quorum.
+// future vertex might cite the candidate. The round is impossible when even the
+// maximum achievable support falls below the strict 2/3 capped-stake quorum.
 //
-// Determinism, monotonicity, and zero rollback: the verdict is computed only from
-// stored, immutable vertices (citations are parent hashes fixed at production), so
-// any two nodes holding the same vertices compute the identical result. An honest
-// holder produces at most one round-N+1 vertex, so as honest vertices arrive an
-// absent holder either confirms the support already assumed for it or becomes a
-// blamer — the achievable support only SHRINKS. Once it is below the quorum it
-// stays below it on every node, so a cert-impossible round can never later become
-// the resolving anchor — which is what preserves zero rollback.
+// The BLAME grade (byBlame true) rests only on stored blamer vertices, whose citations
+// are parent hashes fixed at production. It is immutable and MONOTONE: more evidence
+// only adds blamers, never removes them, so once a quorum's worth of blame is ruled
+// out every node agrees forever. Passing a blame-impossible round can never fork.
 //
-// A holder with NO stored round-N+1 vertex normally keeps its potential-supporter
-// weight forever, which lets a crashed (or long-partitioned) validator block the
-// predicate indefinitely: a frontier split thinned by dead stake can leave stored
-// blame below one third while the true achievable support is under the quorum. The
-// SILENCE rule closes that: once the store holds a deep span of rounds above the
-// frontier (anchorSilenceSpanRounds) in which a holder produced NOTHING, that
-// holder's stake also stops counting as potential support. The honest-model
-// argument: an honest producer produces rounds sequentially and cites every stored
-// parent, so a holder absent from the whole observed span either never produces
-// the frontier round at all (crashed: genuinely non-supporting, and the span stays
-// empty forever on every node) or later back-fills the span citing the candidates
-// it holds — support that completes certifications consistent with the membership
-// decisions other nodes took through the resolving anchor. A holder merely delayed
-// by load is covered by the span's depth: its vertices arrive well inside it.
-//
-// Byzantine caveat: a producer that first blames and later EQUIVOCATES a second
-// round-N+1 vertex citing the candidate leaves the blamer set under the union rule,
-// growing the achievable support. An equivocator whose stake covers the gap below
-// the quorum at the blocking frontier could therefore flip an impossibility one
-// node has already acted on, while a fuller-evidence node still waits and later
-// certifies. A revived validator that back-fills a silent span with SELECTIVE
-// citations (not citing candidates it holds) has the same power. Both are excluded
-// by the honest-failure model the observed wedges live in (crash and partition
-// unreachability, no adversarial stake) — the same >1/3 adversary envelope under
-// which certification's own quorum-intersection argument fails.
-func (d *DAG) anchorCertImpossible(round uint64) bool {
+// The SILENCE grade (byBlame false) additionally treats holders absent from a deep
+// span above the frontier (anchorSilenceSpanRounds) as non-supporters, so a crashed
+// validator's dead stake stops blocking the predicate. This grade is NOT monotone:
+// the silent set SHRINKS as a slow holder's vertices arrive, so a starved node counts
+// silence a better-informed node does not — the less-informed node is the readier to
+// rule the round out. A holder absent because it crashed is indistinguishable, at the
+// frontier, from one merely delayed past the span by a partition; the span's depth is
+// a timing assumption, not a proof. The verdict a starved node reaches by silence can
+// therefore be reversed on a node that holds the delayed vertices. Because of that,
+// silence-impossibility is safe to ACT on only where a reversal cannot change an
+// earlier round's resolution — the intersection guarantee two rounds up, enforced by
+// scanPastUndecided's adjacent-round guard — never as a standalone license to skip.
+func (d *DAG) certImpossibility(round uint64) (impossible, byBlame bool) {
 	if d.roundIsRelaxed(round) {
-		return false
+		return false, false
 	}
 
 	producer, ok := d.anchorProducerFor(round)
 	if !ok {
-		return false
+		return false, false
 	}
 
 	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round + 1))
 	if !ok {
-		return false
+		return false, false
 	}
 
 	tally := d.tallyCitations(round, producer)
 	if d.certificationRuledOut(set, tally.blamers) {
-		return true
+		return true, true // immutable blame quorum
 	}
 
 	silent := d.silentHolders(set, round+1)
 	if len(silent) == 0 {
-		return false
+		return false, false
 	}
 
-	return d.certificationRuledOut(set, mergeMemberSets(tally.blamers, silent))
+	if d.certificationRuledOut(set, mergeMemberSets(tally.blamers, silent)) {
+		return true, false // reversible: rests on silence
+	}
+
+	return false, false
 }
 
 // anchorSilenceSpanRounds is the depth of stored rounds above a frontier that must
