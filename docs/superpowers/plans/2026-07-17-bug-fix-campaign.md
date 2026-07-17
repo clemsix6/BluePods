@@ -876,6 +876,66 @@ transaction builders are next touched.
 **Orchestrator validation:** none beyond the per-commit gates (pure
 deletions and comments).
 
+### Batch R8 — boundary-straddling liveness credits fork the reward split (Opus)
+
+Diagnosed against the R1-validated corpus (Partition symmetric and
+heal_under_traffic, Epochs teardown): the node that caught up through
+replay reaches the right round with every fingerprint section identical
+EXCEPT singletons — coin balances split by zero-sum deltas, the signature
+of a conserved pool divided by divergent weights. Proven at vertex level:
+`creditLiveness` (`internal/consensus/commit.go`, ~line 378) and the
+`epochFees` accumulation (~line 365) credit the epoch that is CURRENT when
+a vertex's batch commits, but the commit-vs-skip decision for a
+boundary-adjacent anchor round is not network-uniform between the live
+path and the catch-up path — a replay node committed round 99 as its own
+anchor while live nodes skipped it and committed those vertices after the
+round-100 boundary. The same vertices' liveness lands in epoch 1 on one
+node and epoch 2 on another; when the producer's effective stake changes
+across that boundary the reward weights differ and every subsequent split
+diverges permanently. `epochFees` carries the identical latent
+misattribution (not yet observed only because the straddling vertices held
+no transactions).
+
+- [ ] **Step 1 — failing unit test:** two DAGs commit the same
+  boundary-straddling vertices in different batches (one commits the
+  adjacent round as its own anchor, one skips it and commits those
+  vertices past the boundary); assert both settle IDENTICAL rewards and
+  identical `epochRoundsProduced`/`epochFees` buckets. Must fail today.
+- [ ] **Step 2 — attribute by round-owned epoch:** `creditLiveness` and
+  the `epochFees` accumulation key their bucket by
+  `commitEpochForRound(v.Round())` (`epoch.go`, ~line 542) instead of the
+  current epoch, so the attribution is a pure function of the committed
+  log.
+- [ ] **Step 3 — defer each epoch's settlement until its rounds drain:**
+  `transitionEpoch` keeps the membership work (removals, additions,
+  holder freeze, epoch increment) at the boundary, but runs
+  `runThermostat` + `distributeEpochRewards` for epoch E only once the
+  cursor has passed `boundary(E) + EpochGraceRounds` (in practice: settle
+  E at the NEXT boundary), reading E's now-final bucket. Carry the
+  deferred bucket in the persisted accumulators
+  (`epoch_accumulators.go`) and the sync regime blob (`regime_sync.go`)
+  so a restart or joiner settles the deferred epoch identically.
+- [ ] **Step 4 — scenario expectations:** the deferral shifts WHEN
+  `epoch.rewards.distributed` fires (epoch E's rewards at boundary E+1).
+  Check `scenario_epochs_test.go`'s expectations and adjust if the
+  timing semantics legitimately changed — an event-timing change is a
+  breaking change to call out in the commit body.
+- [ ] **Step 5:** tests green; one commit (plus the scenario-expectation
+  commit if step 4 changes files).
+
+**Orchestrator validation:** `TestScenarioPartition` (symmetric and
+heal_under_traffic now green, 5/5 total), `TestScenarioEpochs` full
+teardown, `TestScenarioStake`.
+
+### Batch R9 — EpochCrash commit stall at the boundary kill (diagnose, then fix)
+
+NOT the R8 class. Clean-run signature at the R1 commit: `timeout waiting
+for 7 "epoch.transitioned" (have 6)` — after the boundary kill one node
+never transitions; commit progress stalls rather than state diverging.
+This is the crash-wedge family. Diagnosis first (root cause with
+event-journal evidence and the smallest reproducing seam, plus a minimal
+fix proposal), then the fix as its own commit with a failing test first.
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
@@ -907,6 +967,7 @@ deletions and comments).
 - Every scenario-level validation belongs to the orchestrator (runs exceed
   the subagent watchdog), runs in background, and a red after a pushed
   commit becomes a follow-up fix commit — never an amend.
-- Remediation batches follow the same rules and run strictly in order
-  R1 → R2 → R3 → R4 → R5 → R6 → R7; the final batch (corpus + register
-  retirement + PR ready) closes the campaign after them.
+- Remediation batches follow the same rules. Order: R1 → R2 → R3 → R4,
+  then R8 (it gates the remaining Partition/Epochs reds), then R5, R9,
+  R6, R7; the final batch (corpus + register retirement + PR ready)
+  closes the campaign after them.
