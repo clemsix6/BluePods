@@ -443,7 +443,7 @@ func TestDeductFees_EmitsFeesDeducted_Covered(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	buf := captureEvents(t)
-	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	_, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if !proceed {
 		t.Fatal("fee deduction should proceed: gas coin fully covers the fee")
 	}
@@ -487,7 +487,7 @@ func TestDeductFees_EmitsFeesDeducted_Partial(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	buf := captureEvents(t)
-	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	_, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if proceed {
 		t.Fatal("fee deduction should reject: gas coin does not fully cover the fee")
 	}

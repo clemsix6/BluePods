@@ -392,6 +392,8 @@ Every created object locks a storage deposit in its `fees` field, computed as `s
 
 A deposit is locked only against a coin that was actually debited. A fee-exempt transaction is the exception: `register_validator` and `deregister_validator` carry no gas coin (Section 10), so nothing is debited and the objects they create, such as the Validator singleton a registration produces, lock a zero deposit. This keeps the locked deposit equal to what was paid, so a registration leaves total supply and the supply identity (Section 10) exact rather than inflating the deposits term by an unpaid amount.
 
+A deposit is also locked only when the object is actually created. A created-object transaction pays its storage portion up front, before execution, and fees are always deducted even when a transaction later fails (Section 7). When such a transaction's pod execution fails, no object is created, so nothing locks the already-debited storage portion; it is pooled into the epoch reward pool like the consumed part instead. The full declared fee is still charged and fully accounted, so the supply identity (Section 10) stays exact rather than leaking the storage component.
+
 On deletion, 95% of the deposit is refunded and 5% is burned. The burn prevents spam through rapid creation/deletion cycles, and the burned remainder leaves total supply (Section 10). The refund follows the gas coin of the delete transaction: a self-paid delete refunds the owner, and a sponsored delete refunds that delete's sponsor. The 5% deletion burn is the only burn in the protocol.
 
 ### Gas Coin Mechanics

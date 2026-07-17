@@ -581,7 +581,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	// Protocol-level fee deduction (before execution)
-	feeSplit, proceed := d.deductFees(tx, atx, producer)
+	feeSplit, storageDeposit, proceed := d.deductFees(tx, atx, producer)
 
 	// If fee deduction rejected tx (insufficient funds, invalid gas_coin, min_gas violation)
 	if !proceed {
@@ -639,6 +639,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 
 	logger.Debug("tx completed", "func", funcName, "success", success)
 
+	// A failed execution created no object, so nothing locks the storage deposit
+	// deductFees already debited; pool it so the debited fee stays accounted.
+	if !success {
+		feeSplit = poolUnlockedStorage(feeSplit, storageDeposit)
+	}
+
 	reason := FailNone
 	if !success {
 		reason = FailRevert
@@ -652,6 +658,24 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	events.TxCommitted(txHash, vertexHash, commitRound, success, commitReason)
 
 	return feeSplit
+}
+
+// poolUnlockedStorage folds a storage deposit that was debited but never locked
+// into a fee split's epoch pool. A created-object transaction pays its storage
+// deposit up front, withheld from the pool in anticipation of locking it against
+// the object the pod creates. When execution fails no object is created, so
+// nothing locks the withheld storage: pooling it like the consumed portion keeps
+// the full debited fee accounted, so the supply identity does not leak the
+// storage component in the deflationary direction. The verdict is
+// network-uniform: a created-object transaction's declared replication forces
+// every validator to execute it, and its pod input is the attested transaction
+// plus the singleton gas coin every node debited identically, so the pod's
+// success or failure is the same on every node.
+func poolUnlockedStorage(split FeeSplit, storage uint64) FeeSplit {
+	split.Total = safeAdd(split.Total, storage)
+	split.Epoch = safeAdd(split.Epoch, storage)
+
+	return split
 }
 
 // proofVerdict returns the proof-verification verdict for one ATX. An ATX with no
@@ -675,13 +699,17 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 }
 
 // deductFees performs protocol-level fee deduction from gas_coin.
-// Returns the fee split and whether the tx should proceed.
+// Returns the fee split, the storage deposit that was debited but withheld from
+// the pool, and whether the tx should proceed. The storage deposit is nonzero
+// only on the fully-covered created-object path, where it is normally locked
+// against the object the pod creates; the caller pools it instead when execution
+// creates no object, so the debited fee never leaks from the supply identity.
 // proceed=true means fees were successfully handled (or fees are disabled).
 // proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
 // insufficient funds).
-func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, bool) {
+func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, uint64, bool) {
 	if d.feeParams == nil || d.coinStore == nil {
-		return FeeSplit{}, true
+		return FeeSplit{}, 0, true
 	}
 
 	// No gas coin: reject, unless this is a validator-set-management action.
@@ -693,10 +721,10 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	gasCoinBytes := tx.GasCoinBytes()
 	if len(gasCoinBytes) != 32 {
 		if d.isRegisterValidatorTx(tx) || d.isDeregisterValidatorTx(tx) {
-			return FeeSplit{}, true
+			return FeeSplit{}, 0, true
 		}
 
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	var gasCoinID [32]byte
@@ -705,13 +733,13 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	// min_gas anti-spam check
 	if tx.MaxGas() < d.feeParams.MinGas {
 		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", d.feeParams.MinGas)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	// Validate gas_coin ownership: must belong to sender
 	if err := d.validateGasCoin(tx, gasCoinID); err != nil {
 		logger.Warn("gas coin validation failed", "error", err)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
@@ -719,14 +747,14 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	consumed, storage := d.calculateTxFeeSplit(tx, atx)
 	fee := consumed + storage
 	if fee == 0 {
-		return FeeSplit{}, true
+		return FeeSplit{}, 0, true
 	}
 
 	// Deduct consumed+storage from gas_coin in one debit.
 	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
 	if err != nil {
 		logger.Warn("fee deduction failed", "error", err)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	txHash, _ := txCommitHash(tx)
@@ -734,13 +762,15 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 	// If insufficient funds: the coin was drained of whatever it held, and that
 	// taken amount left the coin, so it is pooled like any consumed fee instead of
-	// vanishing from the accounted supply. The tx itself is still rejected.
+	// vanishing from the accounted supply. The tx itself is still rejected, and
+	// no object is created, so there is no withheld storage deposit to report.
 	if !fullyCovered {
-		return FeeSplit{Total: fee, Epoch: deducted}, false
+		return FeeSplit{Total: fee, Epoch: deducted}, 0, false
 	}
 
-	// Pool only the consumed portion; the storage deposit stays locked in the object.
-	return SplitFee(consumed, *d.feeParams), true
+	// Pool only the consumed portion; the storage deposit stays withheld, locked
+	// against the created object on success or pooled by the caller on failure.
+	return SplitFee(consumed, *d.feeParams), storage, true
 }
 
 // calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed

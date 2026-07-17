@@ -3,6 +3,7 @@ package consensus
 import (
 	"crypto/ed25519"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 
@@ -1289,6 +1290,54 @@ func TestDeductFees_Success(t *testing.T) {
 	}
 }
 
+// TestFailedExecutionPoolsStorageFee drives the commit/state seam for a
+// created-object transaction whose pod execution fails. deductFees debits the
+// full declared fee (consumed + storage) from the gas coin before execution;
+// on failure the pod creates no object, so applyCreatedObjects never locks the
+// storage portion as a deposit. Every unit that left the coin must therefore be
+// pooled into the epoch reward pool (the fees_in_flight term), or the supply
+// identity coins_total + total_bonded + deposits + fees_in_flight ==
+// total_supply leaks the storage component in the deflationary direction. With
+// three validators and StorageFee 1000 the leaked amount is exactly 1000.
+func TestFailedExecutionPoolsStorageFee(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(3)
+
+	// A failing executor stands in for a pod ERR_INSUFFICIENT_BALANCE: state
+	// Execute returns before processOutput, so no created object is stored and no
+	// storage deposit is locked, exactly as on a real execution failure.
+	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey,
+		&stubExecutor{err: errors.New("ERR_INSUFFICIENT_BALANCE")})
+	defer dag.Close()
+	disableTxAuth(dag)
+
+	coinStore := newMockCoinStore()
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &params, nil)
+
+	sender := Hash{0x01}
+	gasCoinID := Hash{0xCC}
+	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
+
+	// One created singleton (replication 0): StorageDeposit(0, 3, 1000) = 1000,
+	// comfortably covered by the coin, so deductFees debits the full fee.
+	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+
+	before, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+	feeSplit := dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
+	after, _ := readCoinBalance(coinStore.GetObject(gasCoinID))
+
+	debited := before - after
+
+	// Execution failed, so no deposit was locked: every unit debited from the
+	// coin must have entered the epoch pool. Any gap is the deflationary leak.
+	if feeSplit.Epoch != debited {
+		t.Fatalf("failed created-object tx leaked storage from supply: coin debited %d, pooled %d (shortfall %d)",
+			debited, feeSplit.Epoch, int64(debited)-int64(feeSplit.Epoch))
+	}
+}
+
 // TestDeductFees_NoGasCoin_Proceeds verifies that a tx without gas_coin proceeds.
 // TestDeductFees_RejectsMissingGasCoin verifies that a transaction whose
 // gas_coin is not a 32-byte object reference is rejected (proceed=false).
@@ -1312,7 +1361,7 @@ func TestDeductFees_RejectsMissingGasCoin(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	feeSplit, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	feeSplit, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 
 	if proceed {
 		t.Error("expected proceed=false for a tx without a gas coin")
@@ -1344,7 +1393,7 @@ func TestDeductFees_RegisterValidatorExempt(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	_, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 
 	if !proceed {
 		t.Error("expected proceed=true for register_validator without a gas coin")

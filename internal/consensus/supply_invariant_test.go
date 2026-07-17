@@ -103,7 +103,7 @@ func payFee(t *testing.T, dag *DAG, st *state.State, coinID, owner [32]byte) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	split, proceed := dag.deductFees(tx, atx, dag.validators.All()[0].Pubkey)
+	split, _, proceed := dag.deductFees(tx, atx, dag.validators.All()[0].Pubkey)
 	if !proceed {
 		t.Fatal("payFee: deductFees did not proceed")
 	}

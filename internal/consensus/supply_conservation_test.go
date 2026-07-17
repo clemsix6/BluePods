@@ -34,7 +34,7 @@ func TestPartialFeeCoveragePooled(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	split, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	split, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if proceed {
 		t.Fatal("expected proceed=false: the fee is not fully covered")
 	}

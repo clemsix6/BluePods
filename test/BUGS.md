@@ -471,6 +471,11 @@ path was previously untested.
 (the storage/consumed fee split) together with `internal/state/state.go`
 `applyCreatedObjects` (the only place that credits a storage deposit).
 
+**Status: FIXED** (a created-object transaction whose execution fails pools its
+already-debited storage portion into the epoch reward pool instead of leaving it
+uncredited, so the full declared fee stays accounted and the supply identity is
+exact; this branch).
+
 A transaction that declares `created_objects_replication` (any
 created-object-bearing call: `split`, `create_object`) has its full fee —
 consumed plus storage — computed from that DECLARED header field and debited
