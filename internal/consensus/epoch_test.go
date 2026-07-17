@@ -297,6 +297,58 @@ func TestMidEpochRegistration_NotInEpochHolders(t *testing.T) {
 	}
 }
 
+// TestSnapshotEpochHolders_UniformAcrossSelfAdd proves the epoch-boundary holder
+// freeze is a pure function of COMMITTED membership, not the transient live set.
+// A joining node optimistically self-adds its own registration to the LIVE
+// validator set before that registration commits (cmd/node/registration.go
+// selfAddToValidatorSet -> AddValidator). Such a phantom sits in the live set on
+// that node ONLY, is absent from committedMembers, and — never having committed —
+// is absent from epochAdditions too, so the addition filter would admit it. If the
+// boundary freeze reads the live set, the self-adding node freezes a committee
+// with one extra holder while every peer freezes without it. That frozen set drives
+// Rendezvous sharding and BLS quorum resolution, so the fork is durable: an ATX
+// proof then verifies on the self-adder and is rejected as an invalid aggregate on
+// its peers. Both nodes share identical committed history, so their frozen snapshots
+// MUST be byte-identical.
+func TestSnapshotEpochHolders_UniformAcrossSelfAdd(t *testing.T) {
+	v0, v1, v2 := newTestValidator(), newTestValidator(), newTestValidator()
+	phantom := newTestValidator()
+	members := []Hash{v0.pubKey, v1.pubKey, v2.pubKey}
+
+	dagSelf := New(newTestStorage(t), NewValidatorSet(members), nil, testSystemPod, 0, v0.privKey, nil,
+		WithEpochLength(10))
+	defer dagSelf.Close()
+
+	dagPeer := New(newTestStorage(t), NewValidatorSet(members), nil, testSystemPod, 0, v0.privKey, nil,
+		WithEpochLength(10))
+	defer dagPeer.Close()
+
+	// Both nodes carry the identical committed committee, frozen at genesis exactly
+	// as the production commit path freezes it from committed registrations.
+	freezeGenesis(dagSelf)
+	freezeGenesis(dagPeer)
+
+	// dagSelf ONLY performs the optimistic self-add of a not-yet-committed
+	// registration — exactly what selfAddToValidatorSet does before the commit.
+	dagSelf.AddValidator(phantom.pubKey, "quic://phantom:9090", [48]byte{0xAA})
+
+	// Drive both across the SAME epoch boundary.
+	dagSelf.transitionEpoch(10)
+	dagPeer.transitionEpoch(10)
+
+	selfBlob := encodeHolderSnapshot(dagSelf.EpochHolders())
+	peerBlob := encodeHolderSnapshot(dagPeer.EpochHolders())
+
+	if !bytes.Equal(selfBlob, peerBlob) {
+		t.Fatalf("frozen epoch holder snapshots diverged across an optimistic self-add: self len=%d, peer len=%d — the self-adding node froze the uncommitted phantom into the epoch committee",
+			dagSelf.EpochHolders().Len(), dagPeer.EpochHolders().Len())
+	}
+
+	if dagSelf.EpochHolders().Contains(phantom.pubKey) {
+		t.Fatalf("self-adding node froze the uncommitted phantom %x into the epoch committee", phantom.pubKey[:4])
+	}
+}
+
 // TestMidEpochRegistration_InEpochHoldersAfterTransition tests new validator included after transition.
 func TestMidEpochRegistration_InEpochHoldersAfterTransition(t *testing.T) {
 	db := newTestStorage(t)

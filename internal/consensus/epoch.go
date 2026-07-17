@@ -424,9 +424,22 @@ func sortedMemberKeys(set map[Hash]bool) []Hash {
 	return keys
 }
 
-// snapshotEpochHolders creates a frozen copy of the current validator set.
-// This copy is used for Rendezvous hashing until the next epoch boundary.
-// Respects maxChurnPerEpoch for additions: excess additions are excluded.
+// snapshotEpochHolders freezes the incoming epoch's holder committee. Membership is
+// a pure function of COMMITTED state — the committed member set as of this boundary —
+// never of the live set's transient view. The stake, address, and jail fields are
+// read from the live set, which is already committed-deterministic for them (only
+// genesis, committed bonds, and epoch rewards move stake). Respects maxChurnPerEpoch
+// for additions: excess additions are excluded.
+//
+// The membership filter matters because the live set is NOT network-uniform at every
+// instant: a joining node optimistically self-adds its own registration to the live
+// set before that registration commits (cmd/node/registration.go selfAddToValidatorSet
+// -> AddValidator). That phantom sits in the live set on the self-adding node ONLY, is
+// absent from committedMembers, and — never having committed — is absent from
+// epochAdditions too, so the addition filter alone would admit it and fork the frozen
+// snapshot on that one node. Because the frozen snapshot then drives Rendezvous
+// sharding, routed reads, and BLS quorum resolution, that fork is durable. Freezing
+// from committed membership excludes the phantom on every node alike.
 func (d *DAG) snapshotEpochHolders() {
 	validators := d.validators.All()
 	d.epochHolders = NewValidatorSet(nil)
@@ -442,7 +455,18 @@ func (d *DAG) snapshotEpochHolders() {
 		additionSet[a] = true
 	}
 
+	// An empty committedMembers means a unit test built the whole committee up front
+	// with no self-add to exclude (see freezeGenesis); treat every live validator as
+	// committed then. In production committedMembers always carries the genesis
+	// founder, so the filter is active from the first boundary on.
+	tracked := len(d.committedMembers) > 0
+
 	for _, v := range validators {
+		// Never freeze an uncommitted optimistic self-add into the epoch committee.
+		if tracked && !d.committedMembers[v.Pubkey] {
+			continue
+		}
+
 		// Include validator if it was NOT a new addition, or if churn allowed it in.
 		if !additionSet[v.Pubkey] || allowedSet[v.Pubkey] {
 			d.epochHolders.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
