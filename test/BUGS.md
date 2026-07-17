@@ -539,3 +539,29 @@ reads and the failing collections go through `Client(0)`).
 the scenario body; green in isolation (`-run
 'TestScenarioAggregation/attested_transfer'`), which is itself part of the
 signature.
+
+### 14. Deregistration principal is released from total_bonded but credited to no coin
+
+**Subsystem:** the epoch-boundary deregistration processing
+(`internal/consensus/epoch.go` neighborhood, the deferred deregistration
+path that releases a departing validator's bond).
+
+When a validator's deregistration is applied at an epoch boundary, its bond
+leaves `total_bonded` but the principal is never credited to any coin: the
+supply identity loses the full bond amount. This was entry 2's "blast
+radius" paragraph; the RewardCoin fix (entry 2, fixed on this branch) made
+the loss NETWORK-UNIFORM instead of bootstrap-vs-synced divergent, proving
+it is a distinct defect in the credit path itself, not a snapshot-rebuild
+artifact.
+
+**Evidence:** `TestScenarioEpochs` teardown after the batch-1 fixes: every
+node now reports the SAME failing identity, node 0 included —
+`coinsTotal(1000169008)+totalBonded(799222082216)+deposits(20000)+feesInFlight(0)=800222271224
+!= totalSupply(1000000000000)` — short ~199.78 B, almost exactly the two
+deregistered validators' ~100 B bonds, with teardown convergence green
+(entries 1/2 fixed). Before those fixes only synced nodes showed this sum
+while the bootstrap node diverged.
+
+**Reproduced by:** `TestScenarioEpochs` (teardown supply identity;
+`deregister_deferred_to_boundary` is green in-body, so the deferral works —
+only the principal credit is missing).

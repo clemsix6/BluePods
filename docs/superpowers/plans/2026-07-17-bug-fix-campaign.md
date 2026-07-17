@@ -411,13 +411,13 @@ scenario `test/scenarios/scenario_consensus_test.go`
 
 ---
 
-### Batch 4 — Bugs 8 + 12 + 3: fee, deposit and reward accounting (Opus)
+### Batch 4 — Bugs 8 + 12 + 14 + 3: fee, deposit, bond and reward accounting (Opus)
 
 The two supply-identity leaks are mirror images in the same accounting path
 (`internal/consensus/commit.go` `deductFees`/`calculateTxFeeSplit`,
-`internal/state` `applyCreatedObjects`/`computeStorageDeposit`), and bug 3
-lives in the adjacent reward-crediting code (`internal/consensus/epoch.go`
-`distributeEpochRewards`). Three commits. The supply identity
+`internal/state` `applyCreatedObjects`/`computeStorageDeposit`), and bugs
+14 and 3 live in the adjacent boundary/reward code
+(`internal/consensus/epoch.go`). Four commits. The supply identity
 `coins_total + total_bonded + deposits + fees_in_flight == total_supply`
 must hold EXACTLY after each commit.
 
@@ -459,7 +459,26 @@ must hold EXACTLY after each commit.
   chosen path creates one).
 - [ ] Fix, tests green. Update BUGS.md entry 12 (FIXED), commit.
 
-#### Task 4.3 — bug 3: reward deferred indefinitely without a reward coin
+#### Task 4.3 — bug 14: deregistration principal credited to no coin
+
+Filed during batch-1 validation (entry 14 in `test/BUGS.md`): at an epoch
+boundary, a deregistered validator's bond leaves `total_bonded` but the
+principal is never credited to any coin — the supply identity loses the
+full bond (~199.78 B for two validators at `TestScenarioEpochs`' teardown,
+now network-uniform since the entry-2 fix).
+
+- [ ] Read entry 14. Find the deferred-deregistration application path in
+  `internal/consensus/epoch.go` and establish where the released principal
+  is SUPPOSED to land (the validator's reward coin is the natural target
+  now that entry 2 guarantees synced nodes know it; decide what happens
+  when the validator has none — one coherent rule with task 4.4's choice).
+- [ ] Failing unit test: applying a deregistration at a boundary must keep
+  the supply identity exact — the released bond lands in a coin
+  (`coins_total` grows by exactly the principal), with the matching
+  `internal/events` emission.
+- [ ] Fix, tests green. Update BUGS.md entry 14 (FIXED), commit.
+
+#### Task 4.4 — bug 3: reward deferred indefinitely without a reward coin
 
 - [ ] Read entry 3. A validator with no designated reward coin has its
   liquid epoch share folded into the carry-over pool forever (fairness gap,
@@ -478,7 +497,9 @@ must hold EXACTLY after each commit.
 `split_exceeds_balance_is_execution_error` AND
 `underfunded_gas_coin_pools_partial` green, including the per-node supply
 identity. `TestScenarioEpochs` (12m): `supply_identity_across_boundary`
-green (was +9000). From this batch on, multi-node teardowns are expected
+green (was +9000) AND the teardown supply identity exact (was short
+~199.78 B on entry 14's deregistration principal). From this batch on,
+multi-node teardowns are expected
 FULLY green (convergence from batch 1, liveness from batch 2, supply from
 this batch) — any residual red is a new finding to triage, not to ignore.
 
