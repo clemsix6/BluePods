@@ -369,6 +369,11 @@ temporary form above; green in isolation).
 together with a missing validator-set persistence path;
 `internal/consensus/dag.go` `SeedGenesisValidator`.
 
+**Status: FIXED** (the live validator set, RewardCoin included, is persisted
+with every commit-cursor batch and restored by buildValidatorSet on restart;
+SeedGenesisValidator is merge-safe and seeds genesis values only on a fresh
+chain; this branch).
+
 `SeedGenesisValidator` runs on every bootstrap start, restart included
 (unlike `SeedGenesisLedger`, which is genesis-only), and its
 `SetSelfStake`/`SetRewardCoin` calls overwrite rather than merge. A bootstrap
