@@ -88,7 +88,7 @@ Domains follow a hierarchical convention using `.` as separator. The `system.*` 
 
 Registration happens through pod execution. A pod declares domains to register in its `PodExecuteOutput`, specifying for each entry a domain name and either an `object_index` (referencing a newly created object from the same transaction) or a direct `object_id` (for an existing object). After execution, the protocol resolves any index reference into the computed ObjectID, checks uniqueness in Pebble, and inserts the mapping. If a domain already exists, the transaction reverts, the same pattern as version conflicts. Domain resolution is a purely local operation: a direct lookup in the validator's Pebble store with no network communication, exposed to clients via the `GET /domain/{name}` endpoint.
 
-A domain can be updated to point to a different object, or deleted entirely, by its owner through the same pod execution mechanism. To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee.
+A domain can be updated to point to a different object, or deleted entirely, by its owner through the same pod execution mechanism. To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee. No system pod currently exposes these operations, so domain registration, update, and deletion are specified here but not yet reachable in the running node.
 
 ---
 
