@@ -25,6 +25,9 @@ func (f *deliveringFetcher) FetchVertices(hashes []Hash) {
 	}
 }
 
+// FetchRange is unused by the causal-stall backfill this fetcher exercises.
+func (f *deliveringFetcher) FetchRange(from, to uint64) {}
+
 // deepBufferedGap builds an observer DAG whose commit cursor is blocked on a decided
 // anchor sitting above a DEEP causal gap: the anchor is stored, a long single-producer
 // chain below it is entirely BUFFERED (the descendants arrived out of order and cannot

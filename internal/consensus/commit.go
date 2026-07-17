@@ -17,6 +17,14 @@ import (
 const (
 	// commitCheckInterval is how often to check for new commits.
 	commitCheckInterval = 50 * time.Millisecond
+
+	// deepGapRangeThreshold is the round gap between the commit cursor and the highest
+	// buffered round beyond which the wait-stall recovery fetches a whole range of
+	// vertices rather than the single missing frontier layer. A gap this deep means a
+	// block of rounds between the cursor and the buffered frontier never arrived, and
+	// forward gossip never re-pushes an old vertex, so the layer-by-layer frontier walk
+	// would close them one round per stalled tick.
+	deepGapRangeThreshold = 10
 )
 
 // commitLoop runs in background and detects committed vertices.
@@ -148,12 +156,19 @@ func (d *DAG) onCausalStall(anchor Hash) {
 // historical vertices in the rounds between its floor and its join round, forward
 // gossip never redelivers them, and the relaxed regime never blames the absent
 // designated producer — so the cursor WAITs forever. Fetching delivers the missing
-// vertices so the UNCHANGED verdict rule can decide (commit or skip). A WAIT is not a
-// decided-anchor causal stall, so the causal-stall accounting is reset here. Runs
-// under commitMu.
+// vertices so the UNCHANGED verdict rule can decide (commit or skip). When a distant
+// frontier sits buffered far above the cursor, the whole span between them is fetched
+// in one range request first, since the single-layer frontier walk would otherwise
+// close that gap one round per tick. A WAIT is not a decided-anchor causal stall, so
+// the causal-stall accounting is reset here. Runs under commitMu.
 func (d *DAG) onWaitStall(round uint64) {
 	d.stallAnchor = Hash{}
 	d.stallTicks = 0
+
+	// A deep buffered frontier is a definite backlog forward gossip will never fill, so
+	// fetch its whole span at once rather than waiting the two-tick grace and surfacing
+	// one round per tick.
+	d.requestDeepGapRange(round)
 
 	if d.waitRound != round {
 		d.waitRound = round
@@ -206,6 +221,28 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 	}
 
 	d.vertexFetcher.FetchVertices(missing)
+}
+
+// requestDeepGapRange asks peers for the whole span of vertices between the commit
+// cursor and the highest buffered round when that gap is deep. A far-behind validator
+// receives a distant frontier by gossip and buffers it, but the frontier cannot
+// promote until the block of rounds beneath it is filled; those rounds never arrive by
+// gossip (forward gossip does not re-push old vertices) and the single-layer frontier
+// walk surfaces only one round per stalled tick, so a deep gap closes over minutes. One
+// range request closes it in a few round-trips instead. It is a no-op when no fetcher is
+// wired or the gap is shallow; the fetcher deduplicates an identical range already in
+// flight, so it retries safely each stalled tick. Runs under commitMu.
+func (d *DAG) requestDeepGapRange(cursor uint64) {
+	if d.vertexFetcher == nil {
+		return
+	}
+
+	highest := d.highestPendingRound()
+	if highest <= cursor || highest-cursor <= deepGapRangeThreshold {
+		return
+	}
+
+	d.vertexFetcher.FetchRange(cursor, highest)
 }
 
 // requestMissingAncestors hands the anchor's absent causal ancestry to the vertex

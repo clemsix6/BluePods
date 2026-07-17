@@ -14,17 +14,24 @@ import (
 const (
 	// vertexFetchTimeout bounds one mesh vertex-fetch round-trip.
 	vertexFetchTimeout = 5 * time.Second
+
+	// vertexRangeChunk caps how many vertices a range response carries. A vertex is
+	// small, so a few hundred stay well under the network message-size limit while
+	// still closing a deep gap in a few round-trips.
+	vertexRangeChunk = 256
 )
 
-// meshVertexFetcher recovers a decided anchor's missing ancestry by requesting the
-// absent vertices from mesh peers. It implements consensus.VertexFetcher. Fetches
-// run asynchronously and are deduplicated by in-flight hash, so the commit loop —
-// which re-triggers every tick while stalled — never blocks under the commit lock
-// and issues at most one outstanding request per hash.
+// meshVertexFetcher recovers a stalled commit cursor by requesting absent vertices
+// from mesh peers, either by hash (a decided anchor's missing ancestry) or by round
+// range (a far-behind node's deep gap). It implements consensus.VertexFetcher.
+// Fetches run asynchronously and are deduplicated by in-flight hash and in-flight
+// range, so the commit loop — which re-triggers every tick while stalled — never
+// blocks under the commit lock and issues at most one outstanding request per key.
 type meshVertexFetcher struct {
-	node     *Node                       // node provides the peer set and the DAG ingest path
-	mu       sync.Mutex                  // mu guards inFlight
-	inFlight map[consensus.Hash]struct{} // inFlight holds only the hashes with a request outstanding
+	node           *Node                       // node provides the peer set and the DAG ingest path
+	mu             sync.Mutex                  // mu guards inFlight and inFlightRanges
+	inFlight       map[consensus.Hash]struct{} // inFlight holds only the hashes with a request outstanding
+	inFlightRanges map[[2]uint64]struct{}      // inFlightRanges holds only the round spans with a request outstanding
 }
 
 // newVertexFetcher builds the mesh vertex fetcher for this node. Every DAG
@@ -32,8 +39,9 @@ type meshVertexFetcher struct {
 // missing-ancestor recovery as dead code and stalls joiners.
 func (n *Node) newVertexFetcher() *meshVertexFetcher {
 	return &meshVertexFetcher{
-		node:     n,
-		inFlight: make(map[consensus.Hash]struct{}),
+		node:           n,
+		inFlight:       make(map[consensus.Hash]struct{}),
+		inFlightRanges: make(map[[2]uint64]struct{}),
 	}
 }
 
@@ -92,6 +100,84 @@ func (f *meshVertexFetcher) fetchOne(h consensus.Hash) {
 		f.node.dag.AddVertex(data)
 		return
 	}
+}
+
+// FetchRange requests the round span [from, to] from peers in its own goroutine and
+// returns immediately, so the commit loop is never blocked on network I/O. An identical
+// span already in flight is skipped, so a stalled cursor re-triggering each tick issues
+// at most one outstanding request per span.
+func (f *meshVertexFetcher) FetchRange(from, to uint64) {
+	if f.beginRange(from, to) {
+		go f.fetchRange(from, to)
+	}
+}
+
+// beginRange marks a span in flight, returning false when a request is already
+// outstanding for it.
+func (f *meshVertexFetcher) beginRange(from, to uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	key := [2]uint64{from, to}
+	if _, busy := f.inFlightRanges[key]; busy {
+		return false
+	}
+
+	f.inFlightRanges[key] = struct{}{}
+	return true
+}
+
+// finishRange clears a span's in-flight mark so a later stalled tick can retry it.
+func (f *meshVertexFetcher) finishRange(from, to uint64) {
+	f.mu.Lock()
+	delete(f.inFlightRanges, [2]uint64{from, to})
+	f.mu.Unlock()
+}
+
+// fetchRange asks each connected peer for the vertices in [from, to] until one returns
+// a non-empty chunk, then ingests every vertex through the normal AddVertex path. Each
+// vertex is re-validated there (producer signature, parents), so a peer cannot inject a
+// forged or out-of-range vertex; the cursor promotes its pending buffer as the gap
+// fills, and a later stalled tick re-requests the still-open remainder of the span.
+func (f *meshVertexFetcher) fetchRange(from, to uint64) {
+	defer f.finishRange(from, to)
+
+	if f.node.network == nil || f.node.dag == nil {
+		return
+	}
+
+	req := network.EncodeGetVertexRange(&network.GetVertexRangeRequest{From: from, To: to})
+
+	for _, peer := range f.node.network.Peers() {
+		vertices := f.requestRangeFrom(peer, req)
+		if len(vertices) == 0 {
+			continue
+		}
+
+		for _, data := range vertices {
+			f.node.dag.AddVertex(data)
+		}
+		return
+	}
+}
+
+// requestRangeFrom performs one range request against a peer and returns the vertices
+// it served, or nil on any transport or decode error so fetchRange tries another peer.
+func (f *meshVertexFetcher) requestRangeFrom(peer *network.Peer, req []byte) [][]byte {
+	ctx, cancel := context.WithTimeout(context.Background(), vertexFetchTimeout)
+	defer cancel()
+
+	respBytes, err := peer.Request(ctx, req)
+	if err != nil {
+		return nil
+	}
+
+	resp, err := network.DecodeGetVertexRangeResp(respBytes)
+	if err != nil {
+		return nil
+	}
+
+	return resp.Vertices
 }
 
 // requestVertexFrom performs one vertex request against a peer and returns the
@@ -173,4 +259,23 @@ func (n *Node) handleGetVertex(data []byte) ([]byte, error) {
 	}
 
 	return network.EncodeGetVertexResp(&network.GetVertexResponse{Found: true, Data: vertex}), nil
+}
+
+// handleGetVertexRange serves a mesh peer the vertices this node holds in the requested
+// round span, ascending and bounded to one chunk (vertexRangeChunk) so the response
+// stays within the message-size limit. It enumerates only the asked-for span; a
+// far-behind peer marches up a deep gap over successive requests as its cursor advances.
+func (n *Node) handleGetVertexRange(data []byte) ([]byte, error) {
+	req, err := network.DecodeGetVertexRange(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if n.dag == nil {
+		return network.EncodeGetVertexRangeResp(&network.GetVertexRangeResponse{}), nil
+	}
+
+	vertices := n.dag.VertexRange(req.From, req.To, vertexRangeChunk)
+
+	return network.EncodeGetVertexRangeResp(&network.GetVertexRangeResponse{Vertices: vertices}), nil
 }

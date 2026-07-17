@@ -202,6 +202,9 @@ func (f *recordingFetcher) FetchVertices(hashes []Hash) {
 	}
 }
 
+// FetchRange is unused by the causal-stall recovery this fetcher observes.
+func (f *recordingFetcher) FetchRange(from, to uint64) {}
+
 // requested reports whether the given hash was ever requested.
 func (f *recordingFetcher) requested(h Hash) bool {
 	f.mu.Lock()

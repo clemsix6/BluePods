@@ -557,6 +557,15 @@ type VertexFetcher interface {
 	// immediately; a fetched vertex re-enters through AddVertex and is picked up by
 	// the commit loop on a later tick.
 	FetchVertices(hashes []Hash)
+
+	// FetchRange requests every vertex a peer holds in the round span [from, to]. It
+	// backs deep catch-up: when a far-behind node has buffered a distant frontier but
+	// lacks the whole block of rounds beneath it (which forward gossip never re-pushes),
+	// one range request closes the gap in a few round-trips instead of one round per
+	// stalled tick. Like FetchVertices it must return immediately, deduplicate an
+	// identical range already in flight, and let fetched vertices re-enter through
+	// AddVertex.
+	FetchRange(from, to uint64)
 }
 
 // SetVertexFetcher installs the fetcher the commit loop uses to recover a decided
@@ -587,6 +596,15 @@ func (d *DAG) VertexFetcherWired() bool {
 // single requested vertex and enumerates nothing else.
 func (d *DAG) VertexBytes(hash Hash) []byte {
 	return d.store.getRaw(hash)
+}
+
+// VertexRange returns the raw bytes of the vertices this node holds in the round span
+// [from, to], ordered by round ascending and capped at limit. It backs the mesh
+// range-catch-up handler, serving a bounded chunk of a peer's requested span so a
+// far-behind node can bridge a deep gap in a few round-trips instead of one round per
+// stalled tick.
+func (d *DAG) VertexRange(from, to uint64, limit int) [][]byte {
+	return d.store.rawRange(from, to, limit)
 }
 
 // TrackObject registers a created object in the tracker.
@@ -1348,6 +1366,26 @@ func (d *DAG) pendingMissingParents() []Hash {
 	}
 
 	return missing
+}
+
+// highestPendingRound returns the greatest round among the buffered pending
+// vertices, or 0 when the buffer is empty. It measures how far ahead of the commit
+// cursor the received-but-unpromotable frontier sits, so the wait-stall recovery can
+// tell a deep catch-up gap (a block of rounds never delivered, sitting below a far
+// buffered frontier) from an ordinary one-layer wait.
+func (d *DAG) highestPendingRound() uint64 {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	var highest uint64
+
+	for _, data := range d.pendingVertices {
+		if r := types.GetRootAsVertex(data, 0).Round(); r > highest {
+			highest = r
+		}
+	}
+
+	return highest
 }
 
 // pendingParentSnapshot copies each buffered vertex's parent links into a plain map

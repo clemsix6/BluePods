@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// stubFetcher records the hash lists handed to it, so a test can assert whether
-// and when the commit loop's stall trigger requested missing ancestry.
+// stubFetcher records the hash lists and range requests handed to it, so a test can
+// assert whether and when the commit loop's stall trigger requested missing ancestry.
 type stubFetcher struct {
-	mu    sync.Mutex // mu guards calls
-	calls [][]Hash   // calls is one entry per FetchVertices invocation
+	mu     sync.Mutex  // mu guards calls and ranges
+	calls  [][]Hash    // calls is one entry per FetchVertices invocation
+	ranges [][2]uint64 // ranges is one {from, to} entry per FetchRange invocation
 }
 
 // FetchVertices records a copy of the requested hashes.
@@ -18,6 +19,14 @@ func (s *stubFetcher) FetchVertices(hashes []Hash) {
 	defer s.mu.Unlock()
 
 	s.calls = append(s.calls, append([]Hash(nil), hashes...))
+}
+
+// FetchRange records the requested round span.
+func (s *stubFetcher) FetchRange(from, to uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ranges = append(s.ranges, [2]uint64{from, to})
 }
 
 // count returns how many times FetchVertices was called.

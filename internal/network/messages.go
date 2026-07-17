@@ -90,6 +90,16 @@ const (
 
 	// MsgTagTestControlResp is the response to a test-control operation.
 	MsgTagTestControlResp = 0x1A
+
+	// MsgTagGetVertexRange requests every DAG vertex a peer holds in a round span. It
+	// is the deep-catch-up companion to MsgTagGetVertex: a far-behind node fetches a
+	// whole block of missing rounds in one round-trip rather than one hash per stalled
+	// tick.
+	MsgTagGetVertexRange = 0x1B
+
+	// MsgTagGetVertexRangeResp carries the vertices in the requested span, bounded to
+	// one chunk.
+	MsgTagGetVertexRangeResp = 0x1C
 )
 
 // EncodeGossipTx wraps a transaction body for gossip on the one-way message
@@ -127,6 +137,7 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagDomainResolve:    {},
 	MsgTagGetTxStatus:      {},
 	MsgTagGetVertex:        {},
+	MsgTagGetVertexRange:   {},
 	MsgTagStateFingerprint: {},
 	MsgTagTestControl:      {},
 }
@@ -737,6 +748,98 @@ func DecodeGetVertexResp(data []byte) (*GetVertexResponse, error) {
 	if len(data) > 2 {
 		resp.Data = make([]byte, len(data)-2)
 		copy(resp.Data, data[2:])
+	}
+
+	return resp, nil
+}
+
+// GetVertexRangeRequest requests every DAG vertex a peer holds in a round span.
+type GetVertexRangeRequest struct {
+	From uint64 // From is the first round of the requested span (inclusive)
+	To   uint64 // To is the last round of the requested span (inclusive)
+}
+
+// EncodeGetVertexRange encodes a vertex-range request.
+// Format: [1B tag] [8B from] [8B to].
+func EncodeGetVertexRange(req *GetVertexRangeRequest) []byte {
+	buf := make([]byte, 1+8+8)
+	buf[0] = MsgTagGetVertexRange
+	binary.BigEndian.PutUint64(buf[1:9], req.From)
+	binary.BigEndian.PutUint64(buf[9:17], req.To)
+
+	return buf
+}
+
+// DecodeGetVertexRange decodes a vertex-range request.
+func DecodeGetVertexRange(data []byte) (*GetVertexRangeRequest, error) {
+	if len(data) < 17 || data[0] != MsgTagGetVertexRange {
+		return nil, fmt.Errorf("not a get-vertex-range message")
+	}
+
+	return &GetVertexRangeRequest{
+		From: binary.BigEndian.Uint64(data[1:9]),
+		To:   binary.BigEndian.Uint64(data[9:17]),
+	}, nil
+}
+
+// GetVertexRangeResponse carries the vertices a peer holds in the requested span,
+// bounded to one chunk by the server. An empty slice means the peer held none.
+type GetVertexRangeResponse struct {
+	Vertices [][]byte // Vertices are the serialized Vertex FlatBuffers, round-ascending
+}
+
+// EncodeGetVertexRangeResp encodes a vertex-range response.
+// Format: [1B tag] [4B count] repeated([4B len] [vertex bytes]).
+func EncodeGetVertexRangeResp(resp *GetVertexRangeResponse) []byte {
+	size := 1 + 4
+	for _, v := range resp.Vertices {
+		size += 4 + len(v)
+	}
+
+	buf := make([]byte, size)
+	buf[0] = MsgTagGetVertexRangeResp
+	binary.BigEndian.PutUint32(buf[1:5], uint32(len(resp.Vertices)))
+
+	off := 5
+	for _, v := range resp.Vertices {
+		binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(v)))
+		off += 4
+		copy(buf[off:off+len(v)], v)
+		off += len(v)
+	}
+
+	return buf
+}
+
+// DecodeGetVertexRangeResp decodes a vertex-range response. It tolerates a truncated or
+// malformed payload by returning the vertices that parse cleanly and stopping at the
+// first bad length prefix, so a Byzantine peer cannot crash the requester; every vertex
+// is re-validated downstream through AddVertex.
+func DecodeGetVertexRangeResp(data []byte) (*GetVertexRangeResponse, error) {
+	if len(data) < 5 || data[0] != MsgTagGetVertexRangeResp {
+		return nil, fmt.Errorf("not a get-vertex-range response")
+	}
+
+	count := binary.BigEndian.Uint32(data[1:5])
+	resp := &GetVertexRangeResponse{}
+
+	off := 5
+	for i := uint32(0); i < count; i++ {
+		if off+4 > len(data) {
+			break
+		}
+
+		n := int(binary.BigEndian.Uint32(data[off : off+4]))
+		off += 4
+
+		if off+n > len(data) {
+			break
+		}
+
+		v := make([]byte, n)
+		copy(v, data[off:off+n])
+		resp.Vertices = append(resp.Vertices, v)
+		off += n
 	}
 
 	return resp, nil
