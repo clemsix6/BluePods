@@ -151,6 +151,57 @@ func (s *store) missingAncestors(anchor Hash) []Hash {
 	return missing
 }
 
+// missingCausalRoots walks a decided anchor's causal ancestry through BOTH the
+// validated store and the buffered pending vertices, and returns only the hashes
+// absent from both — the true roots of the gap the anchor is blocked on. Where
+// missingAncestors stops at the first absent hash (an absent vertex's parents are
+// unknown to the store, so a deep gap surfaces one frontier layer per stalled tick),
+// this follows a buffered vertex's parent links through pendingParents, so the whole
+// KNOWN depth of the gap is surfaced in a single pass: a deep chain sitting entirely
+// in the pending buffer collapses to the one root below it, which a single fetch and
+// the pending cascade then resolve. A vertex already held in the pending buffer is
+// never returned — the node has it, so the walk asks only for what it truly lacks,
+// which also stops the causal path from re-requesting buffered vertices tick after
+// tick. The second return reports whether the walk passed through any buffered vertex,
+// marking a backlog that forward gossip will never re-push. The caller supplies the
+// pending-parent snapshot so no pending lock is taken under the store lock.
+func (s *store) missingCausalRoots(anchor Hash, pendingParents map[Hash][]Hash) ([]Hash, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[Hash]bool)
+	queue := []Hash{anchor}
+	var missing []Hash
+	throughPending := false
+
+	for len(queue) > 0 {
+		hash := queue[0]
+		queue = queue[1:]
+
+		if seen[hash] || s.committedVertices[hash] {
+			continue
+		}
+		seen[hash] = true
+
+		if vertex := s.get(hash); vertex != nil {
+			if !s.belowCommitFloor(vertex.Round()) {
+				queue = appendParentHashes(queue, vertex)
+			}
+			continue
+		}
+
+		if parents, buffered := pendingParents[hash]; buffered {
+			throughPending = true
+			queue = append(queue, parents...)
+			continue
+		}
+
+		missing = append(missing, hash)
+	}
+
+	return missing, throughPending
+}
+
 // belowCommitFloor reports whether round is at or below the snapshot commit floor,
 // meaning the vertex is already committed and must bound the causal walk.
 func (s *store) belowCommitFloor(round uint64) bool {

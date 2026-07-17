@@ -1332,6 +1332,32 @@ func (d *DAG) pendingMissingParents() []Hash {
 	return missing
 }
 
+// pendingParentSnapshot copies each buffered vertex's parent links into a plain map
+// (hash -> parent hashes) under pendingMu, so a causal walk can consult the pending
+// buffer without holding the pending lock across the store lock. Order is not
+// significant; the walk deduplicates.
+func (d *DAG) pendingParentSnapshot() map[Hash][]Hash {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	snapshot := make(map[Hash][]Hash, len(d.pendingVertices))
+	for hash, data := range d.pendingVertices {
+		vertex := types.GetRootAsVertex(data, 0)
+		snapshot[hash] = appendParentHashes(nil, vertex)
+	}
+
+	return snapshot
+}
+
+// missingCausalAncestry surfaces the anchor's absent causal ancestry across the store
+// and the pending buffer in one pass. It returns the truly-absent roots to fetch and
+// whether the gap sits behind a buffered cascade, composing a pending-parent snapshot
+// with the store walk so a deep gap is requested whole rather than one frontier layer
+// per stalled tick.
+func (d *DAG) missingCausalAncestry(anchor Hash) ([]Hash, bool) {
+	return d.store.missingCausalRoots(anchor, d.pendingParentSnapshot())
+}
+
 // processPendingVertices retries vertices whose parents may now be available.
 // Processes in a loop until no more progress is made.
 func (d *DAG) processPendingVertices() {

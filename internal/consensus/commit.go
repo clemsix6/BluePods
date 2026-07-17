@@ -115,21 +115,29 @@ func (d *DAG) commitNextRound() bool {
 }
 
 // onCausalStall records that the commit cursor's decided anchor is blocked on absent
-// causal history for another tick, and after two consecutive stalled ticks asks mesh
-// peers for the missing ancestry. The two-tick delay first gives gossip and the
-// pending buffer (a passive retry queue) a chance to deliver. It keeps re-requesting
-// each stalled tick thereafter; the fetcher's in-flight dedup bounds that to one
-// outstanding request per hash, so it is a retry, not a storm. Runs under commitMu.
+// causal history and asks mesh peers for the missing ancestry. It fetches after two
+// consecutive stalled ticks — a grace that first lets gossip and the pending buffer (a
+// passive retry queue) deliver — OR immediately when the gap sits behind a buffered
+// cascade: forward gossip never re-pushes an old vertex, so a grace tick there is pure
+// catch-up latency and only a targeted fetch of the roots below the buffer can unblock
+// the cursor. The request surfaces the whole KNOWN depth of the gap in one pass
+// (missingCausalAncestry walks through the pending buffer), so a node rejoining behind a
+// deep gap backfills in a bounded number of round-trips rather than one frontier layer
+// per tick. It keeps re-requesting each stalled tick thereafter; the fetcher's in-flight
+// dedup bounds that to one outstanding request per hash, so it is a retry, not a storm.
+// Runs under commitMu.
 func (d *DAG) onCausalStall(anchor Hash) {
+	missing, behindBacklog := d.missingCausalAncestry(anchor)
+
 	if d.stallAnchor != anchor {
 		d.stallAnchor = anchor
 		d.stallTicks = 1
-		return
+	} else {
+		d.stallTicks++
 	}
 
-	d.stallTicks++
-	if d.stallTicks >= 2 {
-		d.requestMissingAncestors(anchor)
+	if d.stallTicks >= 2 || behindBacklog {
+		d.fetchMissing(missing)
 	}
 }
 
@@ -200,22 +208,30 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 	d.vertexFetcher.FetchVertices(missing)
 }
 
-// requestMissingAncestors hands the anchor's absent causal frontier to the vertex
-// fetcher. It is a no-op when no fetcher is wired (nil-safe) or nothing is missing.
+// requestMissingAncestors hands the anchor's absent causal ancestry to the vertex
+// fetcher in one pass. It walks the anchor's history through the store AND the pending
+// buffer (missingCausalAncestry), so the whole known depth is requested at once rather
+// than a single frontier layer, and vertices already buffered are never re-requested.
 // The fetcher is asynchronous, so this returns without blocking the commit loop on
-// network I/O; a fetched vertex re-enters through AddVertex and is picked up on a
-// later tick. Runs under commitMu.
+// network I/O; a fetched root re-enters through AddVertex, its cascade flushes the
+// pending buffer, and the completed batch is picked up on a later tick. Runs under
+// commitMu.
 func (d *DAG) requestMissingAncestors(anchor Hash) {
-	if d.vertexFetcher == nil {
+	missing, _ := d.missingCausalAncestry(anchor)
+	d.fetchMissing(missing)
+}
+
+// fetchMissing hands a set of absent hashes to the vertex fetcher. It is a no-op when
+// no fetcher is wired (nil-safe) or nothing is missing, centralizing both guards for
+// the causal-stall recovery path. Each hash rides its own bounded request message, so
+// the walk's breadth is fetched in parallel with no per-message size limit to chunk.
+// Runs under commitMu.
+func (d *DAG) fetchMissing(hashes []Hash) {
+	if d.vertexFetcher == nil || len(hashes) == 0 {
 		return
 	}
 
-	missing := d.store.missingAncestors(anchor)
-	if len(missing) == 0 {
-		return
-	}
-
-	d.vertexFetcher.FetchVertices(missing)
+	d.vertexFetcher.FetchVertices(hashes)
 }
 
 // advanceCommitCursor moves the persisted commit cursor past the decided round and,
