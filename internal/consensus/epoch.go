@@ -331,6 +331,10 @@ func (d *DAG) applyPendingRemovals() []Hash {
 			break // defer remaining to next epoch
 		}
 
+		if !d.returnDeregisteredStake(pubkey) {
+			continue // bond has no coin to return to: keep it bonded, retry next boundary
+		}
+
 		d.validators.Remove(pubkey)
 		delete(d.pendingRemovals, pubkey)
 		removed = append(removed, pubkey)
@@ -341,6 +345,60 @@ func (d *DAG) applyPendingRemovals() []Hash {
 	}
 
 	return removed
+}
+
+// returnDeregisteredStake returns a departing validator's self-stake principal to
+// its reward coin as the boundary removes it from the active set, mirroring a full
+// unbond (a coin credit plus an event) performed automatically at deregistration.
+// The self-stake is the part of the validator's effective stake it bonded itself;
+// the delegated remainder stays with the delegation positions their delegators own
+// and is withdrawn through undelegate, so only the self-stake is re-homed here.
+//
+// It reports whether the removal may proceed: true when the principal is credited
+// (or there is nothing to credit), false when the validator designates no reward
+// coin or the credit fails, in which case the caller keeps the validator bonded so
+// no bond is ever released from total_bonded without landing in coins_total. That
+// keeps the protocol supply identity exact: coins_total grows by exactly the
+// self-stake that leaves total_bonded.
+//
+// The decision is deterministic and network-uniform: every node carries the same
+// reward coin and self-stake for the validator, so all nodes credit or refuse
+// alike. Refusal defers the departure to a later boundary (a liveness cost paid to
+// keep supply safety absolute), the same shape the reward split uses when a
+// validator has no coin to receive its liquid share.
+func (d *DAG) returnDeregisteredStake(pubkey Hash) bool {
+	principal := releasedSelfStake(d.validators.Get(pubkey))
+	if principal == 0 {
+		return true // nothing left total_bonded (zero or jailed stake): remove freely
+	}
+
+	info := d.validators.Get(pubkey)
+	if d.coinStore == nil || info.RewardCoin == (Hash{}) {
+		logger.Warn("deregistration deferred; validator has no reward coin for its bond",
+			"pubkey_prefix", pubkey[:4], "principal", principal)
+		return false
+	}
+
+	if err := creditCoin(d.coinStore, info.RewardCoin, principal); err != nil {
+		logger.Warn("deregistration bond credit failed; keeping validator bonded",
+			"error", err)
+		return false
+	}
+
+	events.StakeReleased(pubkey, info.RewardCoin, principal)
+	return true
+}
+
+// releasedSelfStake returns the self-stake principal that leaves total_bonded when
+// v is removed from the active set: the validator's own bonded self-stake, or zero
+// for a nil or jailed validator (a jailed validator already carries zero effective
+// stake, so its removal drops nothing from total_bonded and returns nothing).
+func releasedSelfStake(v *ValidatorInfo) uint64 {
+	if v == nil || v.Jailed {
+		return 0
+	}
+
+	return v.SelfStake
 }
 
 // sortedMemberKeys extracts the keys of a hash set and sorts them by pubkey bytes
