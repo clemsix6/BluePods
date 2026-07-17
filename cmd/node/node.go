@@ -48,9 +48,10 @@ type Node struct {
 	useTUI bool // useTUI is true when the dashboard should run instead of line logs
 
 	// Aggregation components
-	blsKey     *aggregation.BLSKeyPair // blsKey is the BLS key for signing attestations
-	attHandler *aggregation.Handler    // attHandler responds to attestation requests
-	rendezvous *aggregation.Rendezvous // rendezvous computes object-holder mappings
+	blsKey     *aggregation.BLSKeyPair                          // blsKey is the BLS key for signing attestations
+	attHandler *aggregation.Handler                             // attHandler responds to attestation requests
+	rendezvous *aggregation.Rendezvous                          // rendezvous computes object-holder mappings
+	isHolder   func(objectID [32]byte, replication uint16) bool // isHolder reports whether this node currently holds a replicated object
 
 	// Faucet serialization. Every faucet split mutates the single genesis reserve
 	// coin, so concurrent requests would all read the same version and lose the

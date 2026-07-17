@@ -236,31 +236,76 @@ func copyHash(hash []byte) []byte {
 	return out
 }
 
-// handleGetObject returns a held object, or fetches it from a computed holder
-// over the QUIC mesh when this node does not hold it.
+// handleGetObject answers an object read. A local-only probe replies strictly
+// from local state. A routed read trusts the local copy only when this node
+// currently holds the object; otherwise it probes the holders, which carry the
+// object's current version, and never serves a possibly-stale local copy.
 func (n *Node) handleGetObject(data []byte) ([]byte, error) {
 	req, err := network.DecodeGetObject(data)
 	if err != nil {
 		return nil, err
 	}
 
-	if n.state != nil {
-		if obj := n.state.GetObject(req.ObjectID); obj != nil {
-			return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: true, Data: obj}), nil
-		}
+	local := n.localObject(req.ObjectID)
+
+	// A local-only probe answers strictly from local state: a holder returns its
+	// stored copy, a miss is a definitive not-found, and it never re-routes.
+	if req.LocalOnly {
+		return encodeObjectResp(local), nil
 	}
 
-	// A local-only request never routes to a remote holder, so a non-holder
-	// answers not-found and a caller can probe local holdership.
-	if req.LocalOnly {
-		return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: false}), nil
+	// A routed read trusts the local copy only when this node currently holds the
+	// object (or the object is a singleton every validator holds). A node that has
+	// lost holdership keeps its copy lazily past epoch transitions, so that copy
+	// can lag the holders after an ownership change. In that case the holders carry
+	// the truth and are probed for the current version.
+	if local != nil && n.holdsObjectLocally(req.ObjectID, local) {
+		return encodeObjectResp(local), nil
 	}
 
 	if fetched := n.fetchObjectFromHolder(req.ObjectID); fetched != nil {
-		return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: true, Data: fetched}), nil
+		return encodeObjectResp(fetched), nil
 	}
 
-	return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: false}), nil
+	return encodeObjectResp(nil), nil
+}
+
+// localObject returns this node's locally stored copy of an object, or nil when
+// state is unavailable or the object is not stored locally.
+func (n *Node) localObject(id [32]byte) []byte {
+	if n.state == nil {
+		return nil
+	}
+
+	return n.state.GetObject(id)
+}
+
+// holdsObjectLocally reports whether this node is a current holder of the object
+// and can treat its local copy as authoritative. Singletons (replication 0) are
+// held by every validator. A replicated object is held only when this node is in
+// the current rendezvous holder set; a node that merely retained a copy from a
+// past epoch is not a current holder and must defer to the holders.
+func (n *Node) holdsObjectLocally(id [32]byte, data []byte) bool {
+	replication := types.GetRootAsObject(data, 0).Replication()
+	if replication == 0 {
+		return true
+	}
+
+	if n.isHolder == nil {
+		return false
+	}
+
+	return n.isHolder(id, replication)
+}
+
+// encodeObjectResp encodes a GetObject response: found with the data when the
+// object is present, not-found when data is nil.
+func encodeObjectResp(data []byte) []byte {
+	if data == nil {
+		return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: false})
+	}
+
+	return network.EncodeGetObjectResp(&network.GetObjectResponse{Found: true, Data: data})
 }
 
 // fetchObjectFromHolder fetches an object from one of its computed holders over

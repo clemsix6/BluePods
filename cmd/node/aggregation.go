@@ -41,6 +41,7 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	myPubkey := n.myPubkey()
 	isHolder := n.buildIsHolder(myPubkey)
 
+	n.isHolder = isHolder
 	n.dag.SetIsHolder(isHolder)
 	n.state.SetIsHolder(isHolder)
 

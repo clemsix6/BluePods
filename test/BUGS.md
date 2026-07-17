@@ -509,6 +509,10 @@ previously unreachable by the corpus.
 the routed object-read path serving the client (`cmd/node/clienthandlers.go`
 neighborhood, same as entry 11), against `internal/consensus` ATX commit.
 
+**Status: FIXED** (the routed read served the serving node's own stale copy of
+a replicated object it no longer held, instead of probing the holders that
+carried the post-transfer version; this branch).
+
 A first `TransferObject` through the daemon is accepted at submission, but
 the routed `GetObject` poll never observes the ownership change (20 s
 bound). Every subsequent recollection attempt — each one made in a FRESH
@@ -518,14 +522,20 @@ for at least three consecutive epochs. From the submitting client's
 perspective the object is wedged: the first transfer neither lands nor
 frees the collection path.
 
-Two candidate mechanisms, not yet discriminated (the teardown dump's
-per-node ring buffer does not reach back to attempt time): either the first
-ATX applied on the holders but the routed read keeps serving a stale owner,
-making the client retry a transfer it no longer owns (quorum then correctly
-impossible against the moved object) — or the first ATX was dropped at
-commit and holder attestation state is left in a shape the daemon can never
-re-assemble a quorum from. The first mechanism would make this a read-path
-bug adjacent to entry 11; the second an aggregation-state bug.
+The mechanism proven was the read-path one, adjacent to entry 11. The first
+ATX did apply on the holders (they emitted `state.object.updated version:1`),
+so the alternative — an ATX dropped at commit leaving holder attestation state
+the daemon can never re-assemble a quorum from — is ruled out. The wedge was
+that the routed read through the serving node returned that node's own stale
+copy: storage and execution are sharded by rendezvous holdership, and the
+holder set is re-frozen each epoch from the evolving validator set, so a node
+that held the object at create time and lost holdership by transfer time keeps
+a lazily-retained stale copy. `handleGetObject` trusted any local copy before
+probing holders, so the client kept seeing the pre-transfer owner and retried a
+transfer of an object it no longer owned — after which `attestation quorum
+impossible` was the daemon correctly refusing to re-collect against the moved
+object. In isolation the create and transfer land inside one epoch with the
+serving node's holdership stable, so the stale copy never arises.
 
 **Evidence:** `TestScenarioAggregation/attested_transfer`, deterministic in
 three consecutive full-scenario runs (84 s = 4 stale attempts of 20 s, then
