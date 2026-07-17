@@ -1,6 +1,11 @@
 package consensus
 
-import "testing"
+import (
+	"sync"
+	"testing"
+
+	"BluePods/internal/types"
+)
 
 // splitByMembership partitions members into those that should support (the
 // designated producer first, then fill to wantSupport) and the rest as blamers.
@@ -175,6 +180,152 @@ func withoutHash(hashes []Hash, remove Hash) []Hash {
 	}
 
 	return out
+}
+
+// recordingFetcher is a VertexFetcher stub that records every requested hash so
+// a test can assert exactly which vertices the recovery path asked for.
+type recordingFetcher struct {
+	mu     sync.Mutex    // mu guards requested
+	ustore map[Hash]bool // ustore is the set of hashes requested so far
+}
+
+// FetchVertices records the requested hashes and returns immediately.
+func (f *recordingFetcher) FetchVertices(hashes []Hash) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.ustore == nil {
+		f.ustore = make(map[Hash]bool)
+	}
+	for _, h := range hashes {
+		f.ustore[h] = true
+	}
+}
+
+// requested reports whether the given hash was ever requested.
+func (f *recordingFetcher) requested(h Hash) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.ustore[h]
+}
+
+// ingestLinkedRound builds one signed vertex per producer at round, each citing
+// the given parent links, and feeds them through the REAL AddVertex ingestion
+// path (validation, buffering). It returns the produced links keyed for reuse as
+// the next round's parents.
+func ingestLinkedRound(t *testing.T, dag *DAG, producers []testValidator, round uint64, parents []parentLink) []parentLink {
+	t.Helper()
+
+	var links []parentLink
+	for _, v := range producers {
+		data := buildTestVertexWithParentLinks(t, v, round, 0, parents)
+		dag.AddVertex(data)
+
+		vertex := types.GetRootAsVertex(data, 0)
+		var h Hash
+		copy(h[:], vertex.HashBytes())
+		links = append(links, parentLink{hash: h, producer: v.pubKey})
+	}
+
+	return links
+}
+
+// TestCommitWedge_BufferedCascadeFetchesWithheldParent reproduces the partition
+// form of the permanent commit wedge at the INGESTION layer, where the two
+// decision-layer fixes cannot help because the store itself is starved.
+//
+// The shape: a partition cut is not atomic, so an unreachable validator's last
+// vertex (v3E) reaches a subset of its peers. A peer that HAS it (D) keeps citing
+// it and its descendants; every node that missed it BUFFERS all of D's subsequent
+// vertices (missing parent), transitively and forever, because gossip only pushes
+// a vertex at production time and nothing ever re-requests v3E: the WAIT-stall
+// recovery walk starts from STORED vertices, and a validated store is causally
+// closed, so the walk finds nothing missing while the pending buffer — which
+// knows exactly which parent it is blocked on — is never consulted. The node's
+// visible frontier thins to 3 of 5 producers (60 percent, below the two-thirds
+// quorum), no round can ever certify in its view, and the commit cursor freezes
+// with zero skips while production races on. The decision layer WAITS correctly
+// here: the defect is pure recovery.
+//
+// The test drives a five-validator view through real AddVertex ingestion: rounds
+// 0-2 full; v3E withheld (the cut); D's vertices from round 4 on cite v3E's
+// descendants and are buffered; A/B/C chain on alone. It asserts the cursor
+// wedges, then that the WAIT-stall fetch REQUESTS v3E (fails on unfixed code),
+// then that delivering v3E (the fetch response / the heal) flushes the buffer and
+// unwedges the cursor.
+func TestCommitWedge_BufferedCascadeFetchesWithheldParent(t *testing.T) {
+	vals, vs := newTestValidatorSet(5)
+
+	// The DAG under test observes with a NON-member key so ingestion never
+	// triggers its own production into the fixture rounds.
+	observer := newTestValidator()
+	dag := New(newTestStorage(t), vs, nil, testSystemPod, 0, observer.privKey, nil)
+	t.Cleanup(func() { dag.Close() })
+
+	// Equal stake: capped weight 20 percent each, quorum needs 4 of 5.
+	setEqualStake(dag, vals, 25)
+
+	fetcher := &recordingFetcher{}
+	dag.SetVertexFetcher(fetcher)
+
+	abc, dd, ee := vals[:3], vals[3], vals[4]
+
+	// Rounds 0-2: fully connected, all five producers.
+	r0 := ingestLinkedRound(t, dag, vals, 0, nil)
+	r1 := ingestLinkedRound(t, dag, vals, 1, r0)
+	r2 := ingestLinkedRound(t, dag, vals, 2, r1)
+
+	// The cut: E's round-3 vertex exists (D received it) but never reaches this
+	// node — built and withheld.
+	v3eData := buildTestVertexWithParentLinks(t, ee, 3, 0, r2)
+	var v3e Hash
+	copy(v3e[:], types.GetRootAsVertex(v3eData, 0).HashBytes())
+
+	// Round 3: A, B, C, D produce normally (citing round 2); E's vertex is withheld.
+	r3 := ingestLinkedRound(t, dag, abc, 3, r2)
+	r3d := ingestLinkedRound(t, dag, []testValidator{dd}, 3, r2)
+	r3all := append(append([]parentLink{}, r3...), r3d...)
+	r3withE := append(append([]parentLink{}, r3all...), parentLink{hash: v3e, producer: ee.pubKey})
+
+	// Rounds 4..30: A/B/C chain on among themselves; D cites v3E (round 4) and its
+	// own chain after that, so every D vertex is buffered here, cascading.
+	abcParents, dParents := r3all, r3withE
+	for r := uint64(4); r <= 30; r++ {
+		abcLinks := ingestLinkedRound(t, dag, abc, r, abcParents)
+		dLinks := ingestLinkedRound(t, dag, []testValidator{dd}, r, dParents)
+
+		abcParents = abcLinks
+		dParents = append(append([]parentLink{}, abcLinks...), dLinks...)
+	}
+
+	// Phase 1 — the wedge: only A/B/C are visible from round 4 on (60 percent), so
+	// no round can certify and the cursor must freeze after the fully-cited rounds.
+	dag.checkCommits()
+	wedgedAt := dag.LastCommittedRound()
+	if wedgedAt > 4 {
+		t.Fatalf("setup: expected the cursor to wedge near round 3 on a 60 percent frontier, got %d", wedgedAt)
+	}
+
+	// Phase 2 — recovery must ASK for the withheld parent: two consecutive stalled
+	// ticks arm the WAIT-stall fetch, which must surface v3E from the pending
+	// buffer's blocked parents. On unfixed code the stored-frontier walk finds
+	// nothing (the store is causally closed) and v3E is never requested.
+	dag.checkCommits()
+	dag.checkCommits()
+	if !fetcher.requested(v3e) {
+		t.Fatalf("WAIT-stall recovery never requested the withheld parent %x the pending buffer is blocked on", v3e[:4])
+	}
+
+	// Phase 3 — the fetch response (the heal): delivering v3E flushes D's buffered
+	// chain, the frontier thickens to 4 of 5, rounds certify, and the cursor moves.
+	if !dag.AddVertex(v3eData) {
+		t.Fatal("withheld vertex was not accepted on delivery")
+	}
+	dag.checkCommits()
+	if got := dag.LastCommittedRound(); got <= wedgedAt {
+		t.Fatalf("cursor still wedged at %d after the withheld parent was delivered", got)
+	}
 }
 
 // TestCommitWedge_LateCertifiedAnchorUnblocksUndecidedRun reproduces a permanent

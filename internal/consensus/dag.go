@@ -1286,6 +1286,40 @@ func (d *DAG) bufferPendingVertex(hash Hash, data []byte) {
 	)
 }
 
+// pendingMissingParents returns the parent hashes the pending buffer is blocked
+// on: every parent of a buffered vertex that is neither stored nor itself
+// buffered. These are the roots of buffered cascades — a vertex cut mid-broadcast
+// is never re-pushed by gossip, its descendants from the peers that hold it pile
+// up here, and the stored frontier stays causally closed, so no store walk can
+// surface the gap. Only an explicit fetch of these hashes can. Deduplicated;
+// order is not significant (the fetcher deduplicates in flight).
+func (d *DAG) pendingMissingParents() []Hash {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	seen := make(map[Hash]bool)
+	var missing []Hash
+
+	for _, data := range d.pendingVertices {
+		vertex := types.GetRootAsVertex(data, 0)
+
+		for _, parent := range appendParentHashes(nil, vertex) {
+			if seen[parent] {
+				continue
+			}
+			seen[parent] = true
+
+			if _, buffered := d.pendingVertices[parent]; buffered || d.store.has(parent) {
+				continue
+			}
+
+			missing = append(missing, parent)
+		}
+	}
+
+	return missing
+}
+
 // processPendingVertices retries vertices whose parents may now be available.
 // Processes in a loop until no more progress is made.
 func (d *DAG) processPendingVertices() {

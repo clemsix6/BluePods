@@ -174,7 +174,15 @@ func (d *DAG) clearStall() {
 // missing. Like requestMissingAncestors it is asynchronous and in-flight
 // deduplicated, so it retries safely each stalled tick; unlike it, it seeds the walk
 // from the whole forward frontier the node holds rather than a single decided anchor,
-// which is what an UNDECIDED wedge needs. Runs under commitMu.
+// which is what an UNDECIDED wedge needs.
+//
+// The stored-frontier walk alone cannot see one class of gap: a validated store is
+// causally closed, so when the missing vertex's descendants are all sitting in the
+// PENDING buffer (their ancestor was cut mid-broadcast and gossip never re-pushes
+// an old vertex), the walk finds nothing while the node's visible frontier thins
+// below quorum and the cursor wedges. The pending buffer knows exactly which parents
+// it is blocked on, so those are fetched too; any peer that stored the vertex can
+// serve it. Runs under commitMu.
 func (d *DAG) requestMissingFrontier(round uint64) {
 	if d.vertexFetcher == nil {
 		return
@@ -184,6 +192,7 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 	// tick with no backoff (the tracked I6 delivery-gap / BFS-cost follow-up); bound
 	// the re-walk cost once the fetch protocol grows a backoff.
 	missing := d.store.missingFrontierAbove(round)
+	missing = append(missing, d.pendingMissingParents()...)
 	if len(missing) == 0 {
 		return
 	}

@@ -284,7 +284,7 @@ indirect resolution machinery around the crash window (`anchorStatus`,
 `resolveIndirect`, and whatever vertex-recovery path should backfill a dead
 producer's last vertices).
 
-**Status: FIXED** (two layers, this branch: anchorStatus's forward scan passes certification-impossible rounds so resolveIndirect can decide wedged anchors, and the impossibility predicate stops counting holders silent across a deep stored span above the frontier as potential supporters, so splits thinned by crashed or long-partitioned validators resolve instead of waiting forever).
+**Status: FIXED** (three layers, this branch: anchorStatus's forward scan passes certification-impossible rounds so resolveIndirect can decide wedged anchors; the impossibility predicate stops counting holders silent across a deep stored span above the frontier as potential supporters, so splits thinned by crashed or long-partitioned validators resolve; and the WAIT-stall recovery now fetches the parents the pending buffer is blocked on, so a vertex cut mid-broadcast no longer starves the visible frontier below quorum through its buffered descendants).
 
 On a 10-node, 50-round-epoch, equal-stake cluster, SIGKILLing two
 non-founder validators immediately after an epoch boundary can wedge the
