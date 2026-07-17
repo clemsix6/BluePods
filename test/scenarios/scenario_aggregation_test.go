@@ -104,9 +104,14 @@ func transferWithRetry(t *testing.T, c *harness.Cluster, cli *client.Client, w *
 	t.Helper()
 
 	for attempt := 0; attempt < aggTransferAttempts; attempt++ {
-		_, err := w.TransferObject(cli, objectID, recipient, gasCoin)
+		txHash, err := w.TransferObject(cli, objectID, recipient, gasCoin)
 		if err != nil && !errors.Is(err, daemon.ErrQuorumImpossible) {
 			t.Fatalf("attested transfer failed with a non-typed error: %v", err)
+		}
+		if err != nil {
+			t.Logf("attempt %d: collection error: %v", attempt+1, err)
+		} else {
+			t.Logf("attempt %d: submitted tx %x", attempt+1, txHash[:8])
 		}
 
 		if waitOwnerBounded(t, cli, objectID, recipient, aggAttemptWait) {
@@ -114,6 +119,15 @@ func transferWithRetry(t *testing.T, c *harness.Cluster, cli *client.Client, w *
 		}
 
 		t.Logf("attested transfer attempt %d did not land (stale collection); recollecting", attempt+1)
+
+		// De-phase the retry from the epoch cadence before recollecting: the
+		// epoch period (aggEpochLength rounds) is close to aggAttemptWait, so
+		// a fixed-cadence retry that first lands in the pre-boundary stale
+		// window lands there on EVERY attempt (observed twice: 4/4 attempts
+		// stale). Recollecting right after a transition starts the next
+		// attempt at the epoch's widest validity window, which is exactly
+		// the documented recollect contract.
+		waitNextBoundary(t, c.Node(0))
 	}
 
 	c.Dump(t)

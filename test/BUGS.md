@@ -37,6 +37,17 @@ self-add of its own registration races the committed replay of that same
 registration arriving through consensus, so nodes disagree on `epochAdditions`
 contents from the moment a second validator joins.
 
+Root cause proven by direct investigation (candidate fix parked on
+`fix/multi-node-convergence`, not yet applied): the optimistic self-add puts
+the node's own key in the LIVE validator set before its registration commits,
+so when `handleRegisterValidator` replays the committed transaction,
+`validators.Add` returns `isNew=false` on the self-registering node and
+`isNew=true` everywhere else — and `isNew` gates the `epochAdditions` append
+that the fingerprint hashes. A two-DAG unit diagnostic fed the identical
+committed transaction shows `epochAdditions` empty on the self-added node and
+populated elsewhere; gating on the committed-members set (never touched by
+the optimistic add) instead of `isNew` makes both DAGs agree.
+
 **Evidence:** confirmed by byte-level fingerprint inspection on a real 3-node
 cluster — stable divergence across 40+ polls (`test/harness/cluster_test.go`
 `TestClusterBasics`, run with `WithoutInvariants` for exactly this reason).
@@ -60,27 +71,49 @@ checksums at identical committed round 215
 (`023c8d62 / e5f5869f / 83b8df70 / c4a2a09a / c83b03be`), with both its
 sponsored-transaction sub-tests green.
 
-### 2. Multi-node fingerprint divergence, cause B: reward distribution sensitive to validator insertion order
+### 2. Multi-node fingerprint divergence, cause B: synced nodes drop every validator's RewardCoin, so epoch credits diverge from the bootstrap node
 
-**Subsystem:** `internal/consensus/epoch.go` `distributeEpochRewards`.
+**Subsystem:** `cmd/node/sync.go` `buildValidatorSetFromSnapshot`.
 
-After an epoch transition, the founder's reward coin (the genesis reserve
-coin) ends up with a node-dependent balance. Reward distribution over the
-validator set appears sensitive to insertion order, so nodes that added
-validators in different orders (or at different times) diverge on the
-founder's coin balance once an epoch boundary lands.
+Root cause proven by direct investigation (candidate fix parked on
+`fix/multi-node-convergence`, not yet applied). The original hypothesis here
+(reward distribution sensitive to validator insertion order) was tested
+directly and DISPROVEN: two DAGs fed identical validators in different
+insertion orders credit identical balances. The real mechanism: every
+joining, non-bootstrap node rebuilds its live validator set from the synced
+snapshot through `buildValidatorSetFromSnapshot`, which calls
+`vs.AddWithStake(...)` per validator and never `vs.SetRewardCoin(...)` — the
+snapshot wire format carries RewardCoin correctly, but the rebuild silently
+drops it. A non-founder's own coin gets repaired later by its explicit
+`register_validator` replay; the founder never re-registers, so on every
+synced node the founder's RewardCoin stays zero forever. Any epoch-boundary
+credit that targets a RewardCoin then lands on the bootstrap node but is
+skipped on synced nodes, and the fingerprints diverge.
 
-**Evidence:** consistent with the same fingerprint divergence investigation
-as bug 1; distinguished from cause A by manifesting specifically at and after
-an epoch transition, rather than immediately on second-validator
-registration.
+**Evidence:** on a real 5-node cluster at the epoch-0 boundary, the
+bootstrap node credited the undistributed reward remainder while all four
+synced nodes carried it forward instead — deltas of exactly 4301 in founder
+coin balance, `feesInFlight`, and `coinsTotal` simultaneously, with
+`epoch.rewards.distributed` identical (pool=8000) on all five nodes. With
+the one-line candidate fix (SetRewardCoin after AddWithStake) the same
+cluster converges to a byte-identical checksum on all five nodes.
 
-**Reproduced by:** `TestScenarioPartition` (all sub-scenarios cross
-reward-bearing epoch boundaries before partitioning; the teardown sweeps
-repeatedly show most non-founder checksums agreeing while the founder's
-diverges, for example symmetric at round 330: founder `7a0a7b7e` against
-`16512932` on all four non-founders — the founder's reward coin is the
-genesis reserve coin, a singleton whose content is fingerprinted).
+**Blast radius includes deregistration principal.** At
+`TestScenarioEpochs`' teardown (10 nodes, two validators deregistered at a
+boundary), synced node 1 reports
+`coinsTotal(1000169008)+totalBonded(799222082216)+deposits(20000)+feesInFlight(0)=800222271224 != totalSupply(1000000000000)`
+— short by almost exactly the two deregistered validators' ~100 B bonds:
+released from `totalBonded`, credited to no coin the synced nodes know
+about, while node 0's checksum (`6f5b79f2`) splits from the pack. The
+deregistration-principal credit path needs re-verification once the
+RewardCoin fix lands.
+
+**Reproduced by:** `TestScenarioPartition` (teardown sweeps repeatedly show
+non-founder checksums agreeing while the founder's diverges, for example
+symmetric at round 330: founder `7a0a7b7e` against `16512932` on all four
+non-founders), `TestScenarioStress` and `TestScenarioEpochCrash` (11 of 12
+and 7 of 8 checksums identical, only the founder's out), and
+`TestScenarioEpochs` (deregistration evidence above).
 
 ### 3. A validator without a reward coin defers its liquid reward indefinitely
 
@@ -283,13 +316,30 @@ way, to arm the wedge; the recurring factor is anchor rounds whose producer
 was unreachable when its round passed, which the decision/recovery machinery
 then never resolves, even after connectivity returns.
 
+**Fourth observation, a temporary form under load:**
+`TestScenarioStress/double_spend_storm` (6 conflicting hand-built transfers
+submitted right after the concurrent-traffic sub-test crosses an epoch
+boundary on a 12-node cluster) timed out twice waiting 90 s for commit
+verdicts — yet the same run's teardown minutes later found commits flowing
+again and 11 of 12 checksums converged, and the sub-test run in isolation
+passes in 0.16 s with zero submission errors. So the commit stall in this
+trigger RECOVERED after multiple minutes, unlike the permanent wedges
+above. Either the wedge has a self-healing variant, or heavy load plus a
+boundary produces a distinct multi-minute commit outage with the same
+external signature; discriminating the two belongs to the fix
+investigation.
+
 **Reproduced by:** `TestScenarioEpochCrash`, red in-scenario at the
 post-kill boundary wait in the wedged runs (the dominant outcome), and red
 only at teardown convergence (entries 1/2) in runs that escape the wedge.
 Also `TestScenarioPartition/across_epoch_boundary`, red in-scenario at the
-post-heal catch-up waits whenever the wedge engages (intermittent, 1 of 2
-runs observed), and `TestScenarioPartition/flapping_partitions`, red
-in-scenario at the mid-cycle traffic-progress wait (1 of 1 run observed).
+post-heal catch-up waits whenever the wedge engages (three failure shapes
+across three runs: post-heal catch-up, majority boundary wait, and one
+clean escape), `TestScenarioPartition/flapping_partitions` (2 of 2 runs,
+mid-cycle traffic-progress wait), `TestScenarioPartition/symmetric` (1 run:
+post-heal uniform split never got a verdict on one node), and
+`TestScenarioStress/double_spend_storm` (2 of 2 full-scenario runs, the
+temporary form above; green in isolation).
 
 ### 10. Bootstrap restart reverts founder self-stake and reward coin to genesis values while coin debits persist
 
@@ -440,3 +490,45 @@ red in the scenario body via a direct before/after `Fingerprint` delta check,
 not just at teardown). No prior scenario had exercised the `execution_error`
 path for a transaction that declares created objects, so this leak was
 previously unreachable by the corpus.
+
+### 13. An attested transfer that never lands wedges its object: every recollection is refused quorum-impossible across epochs
+
+**Subsystem:** `pkg/daemon` attestation collection / quorum assembly, and
+the routed object-read path serving the client (`cmd/node/clienthandlers.go`
+neighborhood, same as entry 11), against `internal/consensus` ATX commit.
+
+A first `TransferObject` through the daemon is accepted at submission, but
+the routed `GetObject` poll never observes the ownership change (20 s
+bound). Every subsequent recollection attempt — each one made in a FRESH
+epoch, so attestation staleness cannot explain it — is refused by the
+daemon with the typed error `attestation quorum impossible`, persistently,
+for at least three consecutive epochs. From the submitting client's
+perspective the object is wedged: the first transfer neither lands nor
+frees the collection path.
+
+Two candidate mechanisms, not yet discriminated (the teardown dump's
+per-node ring buffer does not reach back to attempt time): either the first
+ATX applied on the holders but the routed read keeps serving a stale owner,
+making the client retry a transfer it no longer owns (quorum then correctly
+impossible against the moved object) — or the first ATX was dropped at
+commit and holder attestation state is left in a shape the daemon can never
+re-assemble a quorum from. The first mechanism would make this a read-path
+bug adjacent to entry 11; the second an aggregation-state bug.
+
+**Evidence:** `TestScenarioAggregation/attested_transfer`, deterministic in
+three consecutive full-scenario runs (84 s = 4 stale attempts of 20 s, then
+red), including one run where each retry explicitly waited out an epoch
+boundary before recollecting: attempt 1 `submitted tx 40c79adb...`, then
+attempts 2-4 all `collection error: ... attestation quorum impossible`.
+The same run's sibling sub-tests (`version_race`, `epoch_boundary_grace`,
+`cold_holder`) drive the identical create-and-transfer machinery and pass,
+and the sub-test run in isolation passes in 0.69 s with the holders
+emitting `state.object.updated` immediately — the failure is specific to
+some property of the full-scenario run (object identity / holder-set
+placement relative to the serving node is the leading suspect: the routed
+reads and the failing collections go through `Client(0)`).
+
+**Reproduced by:** `TestScenarioAggregation` (`attested_transfer`), red in
+the scenario body; green in isolation (`-run
+'TestScenarioAggregation/attested_transfer'`), which is itself part of the
+signature.
