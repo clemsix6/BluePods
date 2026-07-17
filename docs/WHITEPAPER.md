@@ -390,6 +390,8 @@ Since the scarcity burn was removed, `total_burned` is always zero. The field is
 
 Every created object locks a storage deposit in its `fees` field, computed as `storage_fee × effective_rep(replication) / total_validators`. The deposit is debited from the gas coin at creation but is never pooled: it stays locked in the object as a deposit, not a fee. The two formulas that compute it (the debit at creation and the amount stamped on the object) read the same live validator count, so the debited storage equals the stamped deposit and total supply is unchanged at creation.
 
+A deposit is locked only against a coin that was actually debited. A fee-exempt transaction is the exception: `register_validator` and `deregister_validator` carry no gas coin (Section 10), so nothing is debited and the objects they create, such as the Validator singleton a registration produces, lock a zero deposit. This keeps the locked deposit equal to what was paid, so a registration leaves total supply and the supply identity (Section 10) exact rather than inflating the deposits term by an unpaid amount.
+
 On deletion, 95% of the deposit is refunded and 5% is burned. The burn prevents spam through rapid creation/deletion cycles, and the burned remainder leaves total supply (Section 10). The refund follows the gas coin of the delete transaction: a self-paid delete refunds the owner, and a sponsored delete refunds that delete's sponsor. The 5% deletion burn is the only burn in the protocol.
 
 ### Gas Coin Mechanics

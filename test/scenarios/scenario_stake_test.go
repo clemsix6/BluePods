@@ -65,18 +65,19 @@ type stakeDelta struct {
 // state, never on the epoch-snapshotted consensus weight that would make a
 // weight assertion racy.
 //
-// supply_delta_conserved is the discriminating sub-test: instead of the raw
-// per-node supply identity (polluted by the +4000-per-registration deposit
-// leak baked into this cluster's own 4 non-founder setup registrations), it
-// captures the fingerprint's coins/bonded/deposits/fees terms immediately
-// before and after each operation and checks the DELTA conserves exactly,
-// with the bonded<->coins transfer equal to the amount moved and the
-// residual accounted for by that operation's own fee.
+// supply_delta_conserved is the discriminating sub-test: it captures the
+// fingerprint's coins/bonded/deposits/fees terms immediately before and after
+// each operation and checks the DELTA conserves exactly, with the
+// bonded<->coins transfer equal to the amount moved and the residual accounted
+// for by that operation's own fee. It is a delta check by design; with entry 8
+// fixed, the raw per-node identity that this cluster's 4 non-founder setup
+// registrations once inflated by +4000 now holds as well.
 //
-// Teardown is still red on the per-node supply identity: this cluster's 4
-// non-founder setup registrations each stamp a +1000 storage deposit no coin
-// pays, inflating the raw supply identity by +4000 — the same circumstance
-// as every other 5-node functional scenario in this corpus.
+// Teardown's per-node supply identity now holds: with entry 8 fixed, this
+// cluster's 4 non-founder setup registrations each stamp a zero deposit rather
+// than a +1000 no coin pays, so the raw identity is exact rather than off by
+// +4000, the same circumstance as every other 5-node functional scenario in
+// this corpus.
 //
 // undelegate_returns_principal is also expected red IN THE BODY, per BUGS.md
 // entry 11: confirming the deleted delegation position is no longer readable

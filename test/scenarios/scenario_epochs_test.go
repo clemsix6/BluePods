@@ -31,9 +31,10 @@ const (
 // validator deregistration deferred to the boundary, witnessed by the
 // epoch.transitioned removed list and the shrinking validator count.
 //
-// Expected red, per test/BUGS.md: the supply-identity step fails against
-// entry 8 (registration-stamped deposits), and teardown's convergence check
-// fails against entries 1 and 2.
+// Per test/BUGS.md entry 8 (now fixed): the supply-identity step holds on every
+// node across the boundary, because the nine non-founder registrations no
+// longer stamp an unpaid deposit. Teardown's convergence check may still fail
+// against entries 1 and 2.
 func TestScenarioEpochs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

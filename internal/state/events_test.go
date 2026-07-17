@@ -63,7 +63,7 @@ func TestApplyCreatedObjects_EmitsObjectCreatedAndDepositLocked(t *testing.T) {
 	txHash := Hash{0xAA}
 	output := buildPodOutputWithCreated(2, 10) // 2 objects, replication=10
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 2 {
@@ -113,7 +113,7 @@ func TestApplyCreatedObjects_NoDepositEventWhenFeesZero(t *testing.T) {
 	txHash := Hash{0xBB}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 1 {
@@ -139,7 +139,7 @@ func TestApplyCreatedObjects_ObjectCreatedFiresEvenIfNotHolder(t *testing.T) {
 	txHash := Hash{0xCC}
 	output := buildPodOutputWithCreated(2, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 2 {

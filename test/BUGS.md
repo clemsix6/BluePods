@@ -215,6 +215,10 @@ for its created object (`internal/state` `applyCreatedObjects` /
 `computeStorageDeposit`), and the system pod's `register_validator` creating
 a replication-0 object.
 
+**Status: FIXED** (a transaction that references no gas coin locks a zero
+storage deposit on the objects it creates, so the fee-exempt registration path
+debits no coin and locks nothing; this branch).
+
 A validator joining through the register_validator transaction creates a
 replication-0 object owned by the validator, and the state layer stamps its
 storage deposit (1000 at the default fee params) into the object tracker.

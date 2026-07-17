@@ -168,15 +168,14 @@ func testSplitExceedsBalance(t *testing.T, c *harness.Cluster, cli *client.Clien
 
 // testUnderfundedGasCoin funds a coin with 1 unit (below any fee), attempts a
 // split, and asserts the typed fee_rejected verdict on every node, the
-// partial (covered=false) deduction event, and the supply identity intact on
-// every node afterwards: the drained unit must enter the epoch pool instead
-// of vanishing (the Task 3 fix). The identity assertion is RED against
-// BUGS.md entry 8: registration-stamped deposits inflate it by 1000 per
-// non-founder validator before this step even runs. On this cluster the
-// observed delta is entry 8's +4000 (four non-founder registrations)
-// compounded with entry 12's own -1000 (the execution_error step just before
-// this one silently drops one created-object transaction's storage fee), net
-// +3000 — both leaks superimposed on the same ledger, not a new discrepancy.
+// partial (covered=false) deduction event, and the supply identity on every
+// node afterwards: the drained unit must enter the epoch pool instead of
+// vanishing (the Task 3 fix). With entry 8 fixed, the four non-founder
+// registrations no longer inflate the identity by +4000. The identity
+// assertion is now RED only against BUGS.md entry 12's -1000: the
+// execution_error step just before this one silently drops one created-object
+// transaction's storage fee, a deflationary leak that stands until it is
+// fixed.
 func testUnderfundedGasCoin(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 

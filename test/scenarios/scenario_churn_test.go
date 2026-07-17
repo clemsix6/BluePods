@@ -50,11 +50,11 @@ const (
 // that base registration exactly at the cap, so the scenario's own spawns are
 // the only thing churn limiting is observed acting on.
 //
-// Expected red, per test/BUGS.md entry 8: teardown's supply-identity check
-// fails by exactly +4000 (four non-founder registrations — the base
-// non-founder plus the three spawned nodes — at 1000 each), the same
-// registration-stamped-deposit leak entry 8 already documents. Both
-// in-scenario subtests are green.
+// Per test/BUGS.md entry 8 (now fixed): teardown's supply-identity check holds
+// on every node. The four non-founder registrations (the base non-founder plus
+// the three spawned nodes) each now stamp a zero deposit instead of an unpaid
+// 1000, so the identity is exact rather than off by +4000. Both in-scenario
+// subtests are green.
 func TestScenarioChurn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

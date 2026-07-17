@@ -335,7 +335,7 @@ func TestApplyCreatedObjectsDeterministicIDs(t *testing.T) {
 	txHash := Hash{0xDE, 0xAD}
 	output := buildPodOutputWithCreated(2, 10) // 2 objects, replication=10
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	// Verify deterministic IDs
 	for i := 0; i < 2; i++ {
@@ -366,7 +366,7 @@ func TestApplyCreatedObjectsHolderSharding(t *testing.T) {
 	expectedID := computeObjectID(txHash, 0)
 	heldID = expectedID // Make isHolder return true for this ID
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	stored := s.GetObject(expectedID)
 	if stored == nil {
@@ -387,7 +387,7 @@ func TestApplyCreatedObjectsNotHolder(t *testing.T) {
 	txHash := Hash{0x51}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	expectedID := computeObjectID(txHash, 0)
 	if s.GetObject(expectedID) != nil {
@@ -404,7 +404,7 @@ func TestApplyCreatedObjectsNoHolderFunc(t *testing.T) {
 	txHash := Hash{0x52}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	expectedID := computeObjectID(txHash, 0)
 	if s.GetObject(expectedID) == nil {
@@ -433,7 +433,7 @@ func TestApplyCreatedObjectsOnObjectCreatedCallback(t *testing.T) {
 	txHash := Hash{0xCB}
 	output := buildPodOutputWithCreated(3, 7) // 3 objects, replication=7
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	if len(calls) != 3 {
 		t.Fatalf("expected 3 callback calls, got %d", len(calls))
@@ -465,7 +465,7 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 	txHash := Hash{0xCC}
 	output := buildPodOutputWithCreated(2, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	// Callback should fire even though we're not a holder (all validators track)
 	if callbackCount != 2 {
@@ -478,6 +478,70 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 		if s.GetObject(id) != nil {
 			t.Errorf("object %d should not be stored by non-holder", i)
 		}
+	}
+}
+
+// TestRegisterValidatorCommitPreservesSupplyIdentity drives the state/commit
+// seam for a fee-exempt registration. A register_validator transaction
+// references no gas coin, so the consensus fee path debits no coin, yet the
+// system pod creates a replication-0 Validator object owned by the joining
+// validator. The storage deposit stamped on that object must be zero: nothing
+// was debited, so nothing is locked. Otherwise the supply identity
+//
+//	coins_total + total_bonded + deposits + fees_in_flight == total_supply
+//
+// inflates by one storage deposit (1000 at the default params) per registration
+// on every node — the deposits term grows while coins_total never moves.
+func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func([32]byte, uint16) bool { return true }) // singletons: every validator holds it
+	s.SetStorageFees(1000, 9500, 4)                            // singleton deposit == storage_fee == 1000
+
+	// The deposits term of the supply identity is the sum of the storage
+	// deposits the tracker records, fed by the onObjectCreated callback (exactly
+	// what consensus wires to DAG.TrackObject).
+	var deposits uint64
+	s.SetOnObjectCreated(func(_ [32]byte, _ uint64, _ uint16, fees uint64) {
+		deposits += fees
+	})
+
+	// A ledger that holds the identity exactly before the registration.
+	const coinsTotal, totalBonded, feesInFlight = uint64(1_000_000), uint64(0), uint64(0)
+	s.SetTotalSupply(coinsTotal + totalBonded)
+
+	// Commit the registration through the real commit-path entry. The
+	// transaction carries no gas coin (fee-exempt) and permits one created
+	// object; the output creates one replication-0 Validator singleton.
+	regTx := buildTxWithLimits(1, 0)
+	if err := s.processOutput(buildCreatedOutputBytes(1, 0), Hash{0xAA}, regTx); err != nil {
+		t.Fatalf("processOutput: %v", err)
+	}
+
+	// The fee-exempt path debited no coin, so coins_total and fees_in_flight are
+	// unchanged; the identity must still be exact.
+	lhs := coinsTotal + totalBonded + deposits + feesInFlight
+	if lhs != s.TotalSupply() {
+		t.Fatalf("registration broke the supply identity: coins %d + bonded %d + deposits %d + fees %d = %d, want total_supply %d (delta %+d)",
+			coinsTotal, totalBonded, deposits, feesInFlight, lhs, s.TotalSupply(), int64(lhs)-int64(s.TotalSupply()))
+	}
+}
+
+// TestTxLocksDepositsFollowsGasCoin guards the deposit-stamping rule against
+// over-zeroing: a transaction with a gas coin was debited its storage fee, so
+// its created objects must still lock a deposit, while a transaction with no gas
+// coin (the fee-exempt registration path) must lock none.
+func TestTxLocksDepositsFollowsGasCoin(t *testing.T) {
+	if txLocksDeposits(buildTxWithLimits(1, 0)) {
+		t.Error("a transaction with no gas coin (fee-exempt) must lock no deposit")
+	}
+
+	if !txLocksDeposits(buildMinimalTxWithGasCoin(Hash{0x01}, Hash{0xCC})) {
+		t.Error("a transaction with a gas coin must lock its storage deposit")
+	}
+
+	if txLocksDeposits(nil) {
+		t.Error("a nil transaction must lock no deposit")
 	}
 }
 
@@ -707,6 +771,13 @@ func buildTxWithMutableRefs(refs []objectRef) *types.Transaction {
 
 // buildPodOutputWithCreated creates a PodExecuteOutput with created objects.
 func buildPodOutputWithCreated(count int, replication uint16) *types.PodExecuteOutput {
+	return types.GetRootAsPodExecuteOutput(buildCreatedOutputBytes(count, replication), 0)
+}
+
+// buildCreatedOutputBytes serializes a PodExecuteOutput carrying count created
+// objects at the given replication, returning the raw bytes so a test can drive
+// the real processOutput commit-path entry.
+func buildCreatedOutputBytes(count int, replication uint16) []byte {
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Build created objects (without real IDs - they get assigned by applyCreatedObjects)
@@ -745,7 +816,7 @@ func buildPodOutputWithCreated(count int, replication uint16) *types.PodExecuteO
 
 	builder.Finish(outputOffset)
 
-	return types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
+	return builder.FinishedBytes()
 }
 
 // buildPodOutputWithUpdated creates a PodExecuteOutput with an updated object.

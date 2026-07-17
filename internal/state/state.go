@@ -339,7 +339,7 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 	}
 
 	s.applyUpdatedObjects(output, txHash)
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, txLocksDeposits(tx))
 	s.applyDeletedObjects(output, tx)
 	s.applyRegisteredDomains(output, txHash)
 
@@ -497,8 +497,9 @@ func rebuildObjectIncrementVersion(obj *types.Object) []byte {
 // Each object ID is computed as blake3(txHash || index_u32_LE) per the spec.
 // Storage sharding: only stores objects where this node is a holder.
 // Notifies the tracker callback for each created object (all validators track all objects).
-// Protocol sets the storage deposit in object.fees.
-func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte) {
+// Protocol sets the storage deposit in object.fees, but only when locksDeposit is
+// true: a fee-exempt transaction paid no coin, so it locks a zero deposit.
+func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]byte, locksDeposit bool) {
 	var obj types.Object
 
 	for i := 0; i < output.CreatedObjectsLength(); i++ {
@@ -508,8 +509,13 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 
 		id := computeObjectID(txHash, uint32(i))
 
-		// Compute storage deposit (protocol-level, overrides pod value)
-		fees := s.computeStorageDeposit(obj.Replication())
+		// Storage deposit (protocol-level, overrides pod value). A deposit is
+		// locked only against a coin that was actually debited: a fee-exempt
+		// transaction (locksDeposit false) debited none, so it locks zero.
+		var fees uint64
+		if locksDeposit {
+			fees = s.computeStorageDeposit(obj.Replication())
+		}
 
 		// Notify tracker (all validators track all objects regardless of holding)
 		if s.onObjectCreated != nil {
@@ -540,6 +546,21 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 		// Eagerly sign the created object at its initial version.
 		s.eagerlySign(id, obj.ContentBytes(), obj.Version(), obj.Replication())
 	}
+}
+
+// txLocksDeposits reports whether the objects a committed transaction creates
+// should lock a storage deposit. A deposit is locked only when a coin was
+// actually debited to fund it: the consensus fee path debits a transaction's
+// storage fee from its gas coin and stamps the equal deposit on the created
+// object. A transaction that references no gas coin is fee-exempt (the validator
+// register/deregister path deductFees waives), debits no coin, and so must lock
+// a zero deposit. Otherwise the supply identity
+// coins_total + total_bonded + deposits + fees_in_flight == total_supply would
+// inflate by one unpaid deposit per such transaction, permanently, on every
+// node. The decision reads only the committed transaction's gas_coin field, so
+// every validator reaches it identically.
+func txLocksDeposits(tx *types.Transaction) bool {
+	return tx != nil && len(tx.GasCoinBytes()) == 32
 }
 
 // computeObjectID generates a deterministic object ID: blake3(txHash || index_u32_LE).
