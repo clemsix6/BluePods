@@ -585,3 +585,29 @@ while the bootstrap node diverged.
 **Reproduced by:** `TestScenarioEpochs` (teardown supply identity;
 `deregister_deferred_to_boundary` is green in-body, so the deferral works —
 only the principal credit is missing).
+
+### 15. A healed (formerly partitioned) node converges in round but not in fingerprint
+
+**Subsystem:** the post-heal catch-up path — how an isolated node that could
+not commit during a partition replays the majority's committed rounds after
+connectivity returns (`internal/sync` / `internal/consensus` commit replay),
+suspected against the live-commit path it must byte-match.
+
+After every partition/heal cycle, the formerly isolated node reaches the
+SAME committed round as the majority but with a DIFFERENT state fingerprint,
+and never reconverges within the teardown bound. The majority nodes are
+byte-identical among themselves (the batch-1 fixes hold); only the healed
+node splits. Zero rollback holds throughout.
+
+**Evidence:** two independent `TestScenarioPartition` runs on this branch,
+one WITH the wedge fix (bc6db89) and one WITHOUT it (d27f5f2), show the
+identical pattern, proving the defect pre-exists the wedge fix and was
+previously masked by the five-distinct-checksums noise of entries 1/2:
+minority at d27f5f2: nodes 0-3 all `24db9459` at round 320, isolated node 4
+`8e3e5645` at the same round 320; symmetric and heal_under_traffic show the
+same single-node split (`91191c80` x4 vs `7633966a`, `5225a427` x4 vs
+`7fb35b04`).
+
+**Reproduced by:** `TestScenarioPartition` — every sub-test's teardown
+convergence check (minority, symmetric, heal_under_traffic,
+across_epoch_boundary, flapping_partitions), deterministic across both runs.

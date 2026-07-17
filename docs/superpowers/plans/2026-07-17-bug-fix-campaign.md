@@ -590,6 +590,29 @@ The user delegated both decisions to the campaign (2026-07-17). Chosen:
 
 ---
 
+### Batch 8 — Bug 15: healed-node fingerprint divergence (Opus)
+
+Filed during batch-2 validation (entry 15 in `test/BUGS.md`): after every
+partition/heal cycle, the formerly isolated node reaches the majority's
+committed round with a DIFFERENT fingerprint and never reconverges. Proven
+pre-existing (identical pattern with and without the wedge fix); previously
+masked by entries 1/2. Scheduled after the batch-2 kill-shape follow-up
+lands (shared `internal/consensus` files).
+
+- [ ] Diagnose: how does an isolated node catch up after heal — live commit
+  replay of gossiped vertices, or the sync/snapshot path? Diff the healed
+  node's state against a majority node's at the same committed round in a
+  unit/harness seam (the fingerprint components: coins, objects, validator
+  set, epoch bookkeeping) to identify WHICH component splits, then trace
+  where the catch-up path diverges from the live-commit path. Candidates:
+  state the isolate mutated optimistically while alone; epoch bookkeeping
+  (additions/holders) rebuilt differently on catch-up; a sync path that
+  drops a field (entry 2's class of defect, different field).
+- [ ] Failing test at the smallest seam that shows the split component.
+- [ ] Fix at the root; scenario validation (orchestrator):
+  `TestScenarioPartition` all five sub-tests' teardown convergence green.
+- [ ] Update BUGS.md entry 15 (FIXED), commit.
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
