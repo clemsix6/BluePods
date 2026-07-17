@@ -127,6 +127,10 @@ and 7 of 8 checksums identical, only the founder's out), and
 **Subsystem:** `internal/consensus/epoch.go` (reward crediting / carry-over
 pool).
 
+**Status: FIXED** (a coinless validator's whole epoch share now compounds
+into its self-stake instead of folding into the carry-over pool; recovered
+on unbond or deregistration; this branch).
+
 A validator that has not designated a reward coin has its liquid epoch
 reward share folded into the carried-over pool rather than credited anywhere,
 indefinitely deferring it. This is a fairness/liveness gap, not a supply
