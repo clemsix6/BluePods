@@ -1415,43 +1415,36 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	}
 }
 
-// setRewardCoinFromArgs designates the validator's reward coin: an explicit
-// reward-coin arg takes priority, else the transaction's gas coin when the
-// validator owns it. If neither is determinable the reward coin is left zero, and
-// the epoch reward split skips that validator's liquid portion with a warning
-// rather than failing the epoch (per spec §6).
+// setRewardCoinFromArgs designates the validator's reward coin from committed,
+// network-uniform transaction data alone: an explicit reward-coin arg when present,
+// else the transaction's declared gas coin. It never reads the live coin store, so
+// every node designates the identical coin regardless of when it applies the
+// registration, and the designation cannot diverge between a live commit and a
+// replay. When neither input is present the reward coin is left zero: the coinless
+// path compounds the validator's reward into its self-stake deterministically (the
+// epoch split skips the liquid credit with a warning rather than failing the epoch).
 func (d *DAG) setRewardCoinFromArgs(tx *types.Transaction, pubkey Hash) {
 	if coin, ok := genesis.DecodeRegisterValidatorRewardCoin(tx.ArgsBytes()); ok {
 		d.validators.SetRewardCoin(pubkey, coin)
 		return
 	}
 
-	if coin, ok := d.ownedGasCoin(tx, pubkey); ok {
+	if coin, ok := declaredGasCoin(tx); ok {
 		d.validators.SetRewardCoin(pubkey, coin)
 	}
 }
 
-// ownedGasCoin returns the transaction's gas coin when it is a 32-byte ID owned
-// by owner. It returns ok=false when there is no gas coin, the coin store is
-// unwired, or the coin is not owned by owner.
-func (d *DAG) ownedGasCoin(tx *types.Transaction, owner Hash) (Hash, bool) {
+// declaredGasCoin returns the transaction's declared gas coin id when it is a full
+// 32-byte id. It reads only committed transaction bytes — never the live coin store —
+// so the reward-coin designation it feeds is identical on every node.
+func declaredGasCoin(tx *types.Transaction) (Hash, bool) {
 	gasCoinBytes := tx.GasCoinBytes()
-	if len(gasCoinBytes) != 32 || d.coinStore == nil {
+	if len(gasCoinBytes) != 32 {
 		return Hash{}, false
 	}
 
 	var coinID Hash
 	copy(coinID[:], gasCoinBytes)
-
-	data := d.coinStore.GetObject(coinID)
-	if data == nil {
-		return Hash{}, false
-	}
-
-	coinOwner, err := readCoinOwner(data)
-	if err != nil || coinOwner != owner {
-		return Hash{}, false
-	}
 
 	return coinID, true
 }

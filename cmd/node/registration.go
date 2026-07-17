@@ -42,9 +42,10 @@ func (n *Node) registerAsValidator() error {
 		blsPubkeyBytes = n.blsKey.PublicKeyBytes()
 	}
 
-	// A joining validator has no coin yet at registration time, so no reward coin
-	// is designated here: setRewardCoinFromArgs falls back to the tx's owned gas
-	// coin once the validator funds one and re-registers (or bonds).
+	// A joining validator has no coin yet at registration time, so it designates no
+	// reward coin and declares no gas coin here. setRewardCoinFromArgs then leaves
+	// the reward coin zero, and the validator's reward compounds deterministically
+	// into its self-stake until a later registration designates a coin explicitly.
 	tx := genesis.BuildRegisterValidatorRawTx(
 		n.cfg.PrivateKey,
 		n.systemPod,

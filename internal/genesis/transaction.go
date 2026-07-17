@@ -95,7 +95,8 @@ func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, qu
 // Used by validators joining the network — the receiving node wraps it in ATX.
 // rewardCoin optionally designates the coin the validator's liquid epoch reward
 // is credited to; a zero value encodes no designation (setRewardCoinFromArgs
-// then falls back to the tx's owned gas coin, if any).
+// then falls back to the transaction's declared gas coin, if any, else leaves it
+// zero — never a live coin-store read).
 func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) []byte {
 	args := EncodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey, rewardCoin)
 	pubKey := privKey.Public().(ed25519.PublicKey)
