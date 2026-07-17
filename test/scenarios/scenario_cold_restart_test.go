@@ -9,6 +9,16 @@ import (
 )
 
 const (
+	// coldRestartEpochsSize is the validator count for
+	// TestScenarioColdRestartEpochs.
+	coldRestartEpochsSize = 5
+
+	// coldRestartEpochsLength keeps epoch boundaries frequent enough that the
+	// scenario crosses one before the restart and another after it within budget.
+	coldRestartEpochsLength = 50
+)
+
+const (
 	// coldRestartScenarioSize is the validator count for TestScenarioColdRestart.
 	coldRestartScenarioSize = 5
 
@@ -259,4 +269,60 @@ func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cl
 		requireNoErr(t, err)
 		requireVerdictAll(stepCtx(t), t, c, hash, true, "")
 	})
+}
+
+// TestScenarioColdRestartEpochs restarts the bootstrap node past the genesis
+// epoch and confirms it refreezes the SAME committee the rest of the cluster
+// does at the next boundary. With epochs enabled the committee is frozen at
+// every boundary from the committed member set, so that set must survive the
+// bootstrap restart: otherwise the restarted node re-seeds a founder-only set
+// and freezes a divergent committee, a durable fork of the execution shard,
+// routed reads, and BLS quorum resolution.
+//
+// TestScenarioColdRestart runs with epochs disabled and never crosses a
+// boundary, so it cannot exercise the boundary freeze after a restart. This
+// leg fills that gap: it reaches epoch >= 1, restarts the bootstrap node over
+// its own data directory, crosses another boundary, and relies on the
+// automatic teardown convergence check (registered by NewCluster) to assert
+// every node — the restarted bootstrap included — agrees on the committed
+// (round, fingerprint) after the post-restart boundary.
+func TestScenarioColdRestartEpochs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scenario")
+	}
+
+	c := harness.NewCluster(t, coldRestartEpochsSize, harness.WithEpochLength(coldRestartEpochsLength))
+	node0 := c.Node(0)
+
+	// Reach epoch >= 1 before restarting, so the restart happens past the
+	// genesis epoch, where the committed-set restore used to be skipped.
+	waitNextBoundary(t, node0)
+
+	coldRestartEpochsRestartBootstrap(t, c, node0)
+
+	// Cross another boundary after the restart: this is the freeze that forks
+	// if the committed member set did not survive the restart.
+	waitNextBoundary(t, node0)
+}
+
+// coldRestartEpochsRestartBootstrap restarts the bootstrap node over its own
+// data directory in bootstrap mode (the syncFrom argument is irrelevant for the
+// bootstrap identity — see test/harness/node.go) and waits for it to become
+// ready in its new journal segment, mirroring coldRestartPhaseC's bootstrap
+// handling.
+func coldRestartEpochsRestartBootstrap(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
+	t.Helper()
+
+	var preSeg int
+	if ready := node0.Journal().Events("node.ready"); len(ready) > 0 {
+		preSeg = ready[len(ready)-1].Seg
+	}
+	nextSeg := preSeg + 1
+	inNewSegment := func(e harness.Event) bool { return e.Seg >= nextSeg }
+
+	requireNoErr(t, node0.Restart(""))
+	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", inNewSegment); err != nil {
+		c.Dump(t)
+		t.Fatalf("bootstrap node did not become ready after restart past a boundary: %v", err)
+	}
 }
