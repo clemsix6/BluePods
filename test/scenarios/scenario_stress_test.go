@@ -158,6 +158,7 @@ func testDoubleSpendStorm(t *testing.T, c *harness.Cluster, cli *client.Client, 
 	requireNoErr(t, err)
 
 	hashes := make([][32]byte, stressDoubleSpenders)
+	landed := make([]bool, stressDoubleSpenders)
 
 	var wg sync.WaitGroup
 	for i := 0; i < stressDoubleSpenders; i++ {
@@ -169,19 +170,38 @@ func testDoubleSpendStorm(t *testing.T, c *harness.Cluster, cli *client.Client, 
 		wg.Add(1)
 		go func(contender int, body []byte, addr string) {
 			defer wg.Done()
-			if _, err := client.NewQUICTransport(addr).SubmitTx(body); err != nil {
-				// Contending submissions may legitimately race ingress; the
-				// error is logged (not fatal) so a contender that never gets
-				// a verdict can be told apart from one that was never
-				// delivered at all.
-				t.Logf("contender %d: submit to %s failed: %v", contender, addr, err)
+
+			// The faucet coin is committed cluster-wide, but a target node's
+			// ingress view may lag it on loaded hardware and reject the spend
+			// as referencing an unknown object. Retry within a bounded window
+			// so the race is between spends that actually entered consensus;
+			// a contender that never lands is excluded from the verdict wait
+			// rather than awaited forever (a rejected submission produces no
+			// verdict). A late loser may also stay rejected at ingress once
+			// the winner bumps the coin version — equally a non-entrant.
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				if _, err := client.NewQUICTransport(addr).SubmitTx(body); err == nil {
+					landed[contender] = true
+					return
+				} else if time.Now().After(deadline) {
+					t.Logf("contender %d: submit to %s never landed: %v", contender, addr, err)
+					return
+				}
+				time.Sleep(250 * time.Millisecond)
 			}
 		}(i, txBytes, target.QUICAddr)
 	}
 	wg.Wait()
 
+	entrants := 0
 	successes := 0
-	for _, hash := range hashes {
+	for i, hash := range hashes {
+		if !landed[i] {
+			continue
+		}
+		entrants++
+
 		verdicts := collectVerdicts(stepCtx(t), t, c, hash)
 		if verdicts[0] == "success" {
 			successes++
@@ -190,7 +210,11 @@ func testDoubleSpendStorm(t *testing.T, c *harness.Cluster, cli *client.Client, 
 		}
 	}
 
+	if entrants < 2 {
+		t.Fatalf("double-spend storm: only %d contenders entered consensus, need at least 2 for a race", entrants)
+	}
+
 	if successes != 1 {
-		t.Fatalf("double-spend storm: %d contenders succeeded, want exactly 1", successes)
+		t.Fatalf("double-spend storm: %d of %d contenders succeeded, want exactly 1", successes, entrants)
 	}
 }
