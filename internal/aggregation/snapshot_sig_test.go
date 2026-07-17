@@ -21,7 +21,7 @@ func TestSnapshotSignatureRoundTripServesWithoutSigning(t *testing.T) {
 	source := newSigTestStorage(t)
 	applied := newSigTestStorage(t)
 
-	blsKey, err := GenerateBLSKey()
+	blsKey, err := attest.GenerateBLSKey()
 	if err != nil {
 		t.Fatalf("generate BLS key: %v", err)
 	}
@@ -70,12 +70,12 @@ func TestSnapshotSignatureRoundTripServesWithoutSigning(t *testing.T) {
 		t.Fatalf("process request: %v", err)
 	}
 
-	msgType, _ := GetMessageType(respData)
+	msgType, _ := attest.GetMessageType(respData)
 	if msgType != msgTypePositive {
 		t.Fatalf("expected positive response served from store, got type 0x%02x", msgType)
 	}
 
-	resp, err := DecodePositiveResponse(respData)
+	resp, err := attest.DecodePositiveResponse(respData)
 	if err != nil {
 		t.Fatalf("decode positive response: %v", err)
 	}

@@ -24,7 +24,7 @@ func TestHandlerHashAgreement(t *testing.T) {
 
 	st := state.New(db, &podvm.Pool{})
 
-	blsKey, err := GenerateBLSKey()
+	blsKey, err := attest.GenerateBLSKey()
 	if err != nil {
 		t.Fatalf("generate BLS key: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestHandlerHashAgreement(t *testing.T) {
 		t.Fatalf("process request: %v", err)
 	}
 
-	resp, err := DecodePositiveResponse(respData)
+	resp, err := attest.DecodePositiveResponse(respData)
 	if err != nil {
 		t.Fatalf("decode positive response: %v", err)
 	}

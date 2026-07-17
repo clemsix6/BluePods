@@ -21,8 +21,3 @@ func NewRendezvous(vs *consensus.ValidatorSet) *Rendezvous {
 func (r *Rendezvous) ComputeHolders(objectID [32]byte, replication int) []consensus.Hash {
 	return attest.ComputeHolders(r.vs, objectID, replication)
 }
-
-// QuorumSize returns the minimum number of attestations required for quorum.
-func QuorumSize(replication int) int {
-	return attest.QuorumSize(replication)
-}
