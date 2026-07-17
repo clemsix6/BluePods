@@ -249,10 +249,8 @@ func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bo
 // via an equivocating second vertex, is a possible supporter, never a blamer. Every
 // holder with NO stored round-N+1 vertex counts as a POTENTIAL SUPPORTER: its
 // future vertex might cite the candidate, so assuming support is the conservative
-// reading — and it is what lets rounds blocked by DEAD producers resolve, since
-// only the survivors' stored citations can rule certification out. The round is
-// impossible when even that maximum achievable support falls below the strict 2/3
-// capped-stake quorum.
+// reading. The round is impossible when even the maximum achievable support falls
+// below the strict 2/3 capped-stake quorum.
 //
 // Determinism, monotonicity, and zero rollback: the verdict is computed only from
 // stored, immutable vertices (citations are parent hashes fixed at production), so
@@ -263,15 +261,31 @@ func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bo
 // stays below it on every node, so a cert-impossible round can never later become
 // the resolving anchor — which is what preserves zero rollback.
 //
+// A holder with NO stored round-N+1 vertex normally keeps its potential-supporter
+// weight forever, which lets a crashed (or long-partitioned) validator block the
+// predicate indefinitely: a frontier split thinned by dead stake can leave stored
+// blame below one third while the true achievable support is under the quorum. The
+// SILENCE rule closes that: once the store holds a deep span of rounds above the
+// frontier (anchorSilenceSpanRounds) in which a holder produced NOTHING, that
+// holder's stake also stops counting as potential support. The honest-model
+// argument: an honest producer produces rounds sequentially and cites every stored
+// parent, so a holder absent from the whole observed span either never produces
+// the frontier round at all (crashed: genuinely non-supporting, and the span stays
+// empty forever on every node) or later back-fills the span citing the candidates
+// it holds — support that completes certifications consistent with the membership
+// decisions other nodes took through the resolving anchor. A holder merely delayed
+// by load is covered by the span's depth: its vertices arrive well inside it.
+//
 // Byzantine caveat: a producer that first blames and later EQUIVOCATES a second
 // round-N+1 vertex citing the candidate leaves the blamer set under the union rule,
 // growing the achievable support. An equivocator whose stake covers the gap below
 // the quorum at the blocking frontier could therefore flip an impossibility one
 // node has already acted on, while a fuller-evidence node still waits and later
-// certifies. This is excluded by the honest-failure model the observed wedges live
-// in (crash and partition unreachability, no adversarial stake) — the same >1/3
-// adversary envelope under which certification's own quorum-intersection argument
-// fails.
+// certifies. A revived validator that back-fills a silent span with SELECTIVE
+// citations (not citing candidates it holds) has the same power. Both are excluded
+// by the honest-failure model the observed wedges live in (crash and partition
+// unreachability, no adversarial stake) — the same >1/3 adversary envelope under
+// which certification's own quorum-intersection argument fails.
 func (d *DAG) anchorCertImpossible(round uint64) bool {
 	if d.roundIsRelaxed(round) {
 		return false
@@ -287,26 +301,80 @@ func (d *DAG) anchorCertImpossible(round uint64) bool {
 		return false
 	}
 
-	return d.certificationRuledOut(set, d.tallyCitations(round, producer))
+	tally := d.tallyCitations(round, producer)
+	if d.certificationRuledOut(set, tally.blamers) {
+		return true
+	}
+
+	silent := d.silentHolders(set, round+1)
+	if len(silent) == 0 {
+		return false
+	}
+
+	return d.certificationRuledOut(set, mergeMemberSets(tally.blamers, silent))
+}
+
+// anchorSilenceSpanRounds is the depth of stored rounds above a frontier that must
+// be observed, with a holder absent from ALL of them, before that holder's stake
+// stops counting as potential support in anchorCertImpossible. At the production
+// cadence this spans several seconds, far beyond gossip delivery skew under load,
+// so a merely-slow holder's vertices land inside the span while a crashed one
+// leaves it empty forever.
+const anchorSilenceSpanRounds = 20
+
+// silentHolders returns the holders with no stored vertex at ANY round of the span
+// [frontier, frontier+anchorSilenceSpanRounds]. It returns nil while the store's
+// highest round has not reached the span's end: an unobserved span proves nothing,
+// which keeps a shallow store (or a fresh wedge) reading every absent holder as a
+// potential supporter. Honest production is sequential, so a holder with a stored
+// vertex above the span but none inside it still reads as present only once one of
+// its in-span vertices arrives.
+func (d *DAG) silentHolders(set *ValidatorSet, frontier uint64) map[Hash]bool {
+	horizon := frontier + anchorSilenceSpanRounds
+	if d.store.highestRound() < horizon {
+		return nil
+	}
+
+	seen := d.store.producersInRange(frontier, horizon)
+
+	silent := make(map[Hash]bool)
+	for _, v := range set.All() {
+		if !seen[v.Pubkey] {
+			silent[v.Pubkey] = true
+		}
+	}
+
+	return silent
 }
 
 // certificationRuledOut reports whether even the UNION of all possible supporters —
-// every round-N+1 holder except the stored blamers that cite none of the designated
-// producer's vertices — falls short of the strict 2/3 capped-stake quorum. Holders
-// absent from the tally (no stored round-N+1 vertex) are not blamers, so their full
-// weight rides in maxSupport as potential support. The union's support is at least
-// any single candidate vertex's support, so if the union cannot reach quorum, no
-// single candidate can, and the round can never be certified. A zero-weight holder
-// set is never ruled out (it is a degenerate, not a decided, frontier).
-func (d *DAG) certificationRuledOut(set *ValidatorSet, tally citationTally) bool {
-	blamerCapped, cappedTotal := d.cappedStakeOf(set, tally.blamers)
+// every round-N+1 holder except the given non-supporters — falls short of the
+// strict 2/3 capped-stake quorum. The union's support is at least any single
+// candidate vertex's support, so if the union cannot reach quorum, no single
+// candidate can, and the round can never be certified. A zero-weight holder set is
+// never ruled out (it is a degenerate, not a decided, frontier).
+func (d *DAG) certificationRuledOut(set *ValidatorSet, nonSupporters map[Hash]bool) bool {
+	nonSupportCapped, cappedTotal := d.cappedStakeOf(set, nonSupporters)
 	if cappedTotal == 0 {
 		return false
 	}
 
-	maxSupport := cappedTotal - blamerCapped
+	maxSupport := cappedTotal - nonSupportCapped
 
 	return !quorumReached(maxSupport, cappedTotal)
+}
+
+// mergeMemberSets returns the union of two member sets without mutating either.
+func mergeMemberSets(a, b map[Hash]bool) map[Hash]bool {
+	merged := make(map[Hash]bool, len(a)+len(b))
+	for k := range a {
+		merged[k] = true
+	}
+	for k := range b {
+		merged[k] = true
+	}
+
+	return merged
 }
 
 // membersInSet counts how many of the producers are members of the holder set.

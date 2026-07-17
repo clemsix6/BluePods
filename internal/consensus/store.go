@@ -178,6 +178,23 @@ func (s *store) producerAt(round uint64, hash Hash) Hash {
 	return producer
 }
 
+// producersInRange returns the set of producers with at least one stored vertex
+// at any round in [from, to]. Producers are read from the round index, so the
+// result reflects exactly the locally stored frontier.
+func (s *store) producersInRange(from, to uint64) map[Hash]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[Hash]bool)
+	for r := from; r <= to; r++ {
+		for _, hash := range s.byRound[r] {
+			seen[s.producerAt(r, hash)] = true
+		}
+	}
+
+	return seen
+}
+
 // highestRound returns the greatest round for which any vertex is stored. It
 // bounds the anchor rule's forward scan so an undecided round yields WAIT rather
 // than scanning unboundedly.
