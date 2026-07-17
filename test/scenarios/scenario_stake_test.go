@@ -77,22 +77,13 @@ type stakeDelta struct {
 // fingerprint's coins/bonded/deposits/fees terms immediately before and after
 // each operation and checks the DELTA conserves exactly, with the
 // bonded<->coins transfer equal to the amount moved and the residual accounted
-// for by that operation's own fee. It is a delta check by design; with entry 8
-// fixed, the raw per-node identity that this cluster's 4 non-founder setup
-// registrations once inflated by +4000 now holds as well.
+// for by that operation's own fee. It is a delta check by design; the raw
+// per-node identity holds too, as the next paragraph explains.
 //
-// Teardown's per-node supply identity now holds: with entry 8 fixed, this
-// cluster's 4 non-founder setup registrations each stamp a zero deposit rather
-// than a +1000 no coin pays, so the raw identity is exact rather than off by
-// +4000, the same circumstance as every other 5-node functional scenario in
-// this corpus.
-//
-// undelegate_returns_principal is also expected red IN THE BODY, per BUGS.md
-// entry 11: confirming the deleted delegation position is no longer readable
-// calls cli.GetObject (routed, non-local) on an object no node holds, which
-// this scenario is the first to exercise, and that path cascades across the
-// mesh instead of returning a prompt not-found, timing out the client. Every
-// other sub-test is expected green.
+// Teardown's per-node supply identity holds as well: this cluster's 4
+// non-founder setup registrations each stamp a zero deposit rather than an
+// unpaid one, so the raw identity is exact, the same as every other 5-node
+// functional scenario in this corpus.
 func TestScenarioStake(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

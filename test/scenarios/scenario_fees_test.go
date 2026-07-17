@@ -16,13 +16,12 @@ import (
 // three gas-coin validation rejections (missing, not owned, not a
 // singleton).
 //
-// Per test/BUGS.md, with entries 8 and 12 fixed: the execution_error step's
-// before/after Fingerprint delta holds, because a failed created-object
-// transaction now pools its already-debited storage portion into the epoch fee
-// pool instead of dropping it. The underfunded step's per-node supply identity
-// also holds: the four non-founder registrations no longer inflate it (entry 8)
-// and the execution_error step no longer deflates it (entry 12). Teardown's
-// automatic convergence check still fails against entry 1.
+// The execution_error step's before/after Fingerprint delta holds, because a
+// failed created-object transaction pools its already-debited storage
+// portion into the epoch fee pool instead of dropping it. The underfunded
+// step's per-node supply identity also holds: the four non-founder
+// registrations stamp a zero deposit rather than inflating it, and the
+// execution_error step pools its storage fee rather than deflating it.
 func TestScenarioFees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -149,14 +148,14 @@ func testSplitExceedsBalance(t *testing.T, c *harness.Cluster, cli *client.Clien
 	// pools the storage portion into the epoch fee pool like the consumed
 	// portion instead of dropping it. So what left the coin equals what
 	// deposits+feesInFlight gained: the identity is exact on the execution_error
-	// path (test/BUGS.md entry 12, fixed).
+	// path.
 	after, err := cli.Fingerprint()
 	requireNoErr(t, err)
 
 	coinsLost := before.CoinsTotal - after.CoinsTotal
 	accountedFor := (after.Deposits - before.Deposits) + (after.FeesInFlight - before.FeesInFlight)
 	if accountedFor != coinsLost {
-		t.Fatalf("failed-execution fee not fully accounted: coin lost %d, deposits+fees_in_flight only gained %d (BUGS.md entry 12)",
+		t.Fatalf("failed-execution fee not fully accounted: coin lost %d, deposits+fees_in_flight only gained %d",
 			coinsLost, accountedFor)
 	}
 }
@@ -165,10 +164,9 @@ func testSplitExceedsBalance(t *testing.T, c *harness.Cluster, cli *client.Clien
 // split, and asserts the typed fee_rejected verdict on every node, the
 // partial (covered=false) deduction event, and the supply identity on every
 // node afterwards: the drained unit must enter the epoch pool instead of
-// vanishing (the Task 3 fix). With entries 8 and 12 fixed, the identity holds:
-// the four non-founder registrations no longer inflate it, and the
-// execution_error step just before this one no longer deflates it by dropping a
-// created-object transaction's storage fee.
+// vanishing. The identity holds: the four non-founder registrations stamp a
+// zero deposit rather than inflating it, and the execution_error step just
+// before this one pools its storage fee rather than deflating it.
 func testUnderfundedGasCoin(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 

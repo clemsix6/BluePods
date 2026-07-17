@@ -403,11 +403,11 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]
 // source coin must read back at a zero balance everywhere rather than being
 // deleted (pods/pod-system/src/functions/merge/execute.rs empties every
 // source coin via with_updated, never a deletion) — checked with
-// GetObjectLocal on every node rather than a routed GetObject. BUGS.md entry
-// 11 documents a routed GetObject cascading to a client timeout for an
-// object no node holds; that is not this case (the coin is a singleton every
-// node still holds after merge), but the local-only read is both cheaper and
-// immune to that failure mode regardless.
+// GetObjectLocal on every node rather than a routed GetObject: a routed
+// GetObject can cascade to a client timeout for an object no node holds,
+// which is not this case (the coin is a singleton every node still holds
+// after merge), but the local-only read is both cheaper and immune to that
+// failure mode regardless.
 func testMergeCombinesCoins(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 

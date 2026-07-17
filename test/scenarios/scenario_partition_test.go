@@ -128,6 +128,10 @@ func testMinorityPartition(t *testing.T) {
 // >= 10 and 6 >= 10 both false), so both plateau; the whole network halts,
 // and nobody contradicts a commit while it does. This is the CP-promise
 // scenario.
+//
+// May still fail: the reintegrated side can still be replaying the commits
+// it missed while partitioned when teardown's convergence window checks it.
+// Under investigation.
 func testSymmetricPartition(t *testing.T) {
 	c := newPartitionCluster(t)
 	node0 := c.Node(0)
@@ -154,6 +158,10 @@ func testSymmetricPartition(t *testing.T) {
 // testHealUnderTraffic partitions 4|1 with sustained majority traffic
 // running, heals, and confirms the isolated node catches up PAST the whole
 // burst it missed while cut off.
+//
+// May still fail: the reintegrated side can still be replaying the commits
+// it missed while partitioned when teardown's convergence window checks it.
+// Under investigation.
 func testHealUnderTraffic(t *testing.T) {
 	c := newPartitionCluster(t)
 	node0 := c.Node(0)
@@ -196,13 +204,6 @@ func testHealUnderTraffic(t *testing.T) {
 // observe the SAME epoch transition the majority already committed (not a
 // diverged one) and catch up to the majority's anchor round, without ever
 // contradicting a committed anchor.
-//
-// Known red, intermittent: this sub-test is a second trigger for BUGS.md
-// entry 9 — the boundary-window commit wedge engages in some runs (the
-// majority's own commit cursor freezes just past the boundary and never
-// recovers, even after Heal), timing out the post-heal catch-up waits.
-// Runs that escape the wedge pass in-body and stay red only at teardown
-// (entries 1/8).
 func testAcrossEpochBoundary(t *testing.T) {
 	c := newPartitionCluster(t)
 	node0 := c.Node(0)
@@ -243,11 +244,6 @@ func testAcrossEpochBoundary(t *testing.T) {
 // background traffic, confirming after every heal that the isolated node
 // catches up past the majority's round at heal time, then proves zero
 // rollback over the whole flapping run.
-//
-// Known red: this sub-test is a third trigger for BUGS.md entry 9 — the
-// commit wedge engages on a repeated partition cycle even away from an
-// epoch boundary, freezing every node's commit cursor and stalling the
-// background traffic's progress wait.
 func testFlappingPartitions(t *testing.T) {
 	c := newPartitionCluster(t)
 	node0 := c.Node(0)

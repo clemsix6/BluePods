@@ -51,8 +51,7 @@ const (
 // per node): this suite validates the attested path's state value through the
 // holders that actually carry it, while the network-uniform commit verdict for
 // replicated-object transactions is asserted directly in
-// TestScenarioConsensusBasics and not duplicated here. Teardown convergence is
-// expected red per entries 1 and 2.
+// TestScenarioConsensusBasics and not duplicated here.
 func TestScenarioAggregation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

@@ -258,6 +258,7 @@ must be called out in the commit that does it.
 | `stake.unbonded` | validator, coin, amount |
 | `stake.delegated` | validator, position, amount |
 | `stake.undelegated` | validator, position, amount |
+| `stake.released` | validator, coin, amount |
 | `supply.issued` | epoch, amount, rate |
 | `supply.burned` | amount, reason |
 | `epoch.transitioned` | epoch, added, removed |
