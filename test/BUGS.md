@@ -681,6 +681,12 @@ not commit during a partition replays the majority's committed rounds after
 connectivity returns (`internal/sync` / `internal/consensus` commit replay),
 suspected against the live-commit path it must byte-match.
 
+**Status: FIXED** (root cause was upstream of catch-up: snapshotEpochHolders
+froze the epoch committee from the LIVE validator set, which transiently
+differs across nodes around an optimistic self-registration, so one node
+froze a phantom extra holder and its sharding, reads and proof checks forked
+durably; the freeze now admits committed members only; this branch).
+
 After every partition/heal cycle, the formerly isolated node reaches the
 SAME committed round as the majority but with a DIFFERENT state fingerprint,
 and never reconverges within the teardown bound. The majority nodes are
