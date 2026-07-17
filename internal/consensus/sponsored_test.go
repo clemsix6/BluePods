@@ -55,7 +55,7 @@ func TestVerifyTxAuthenticity_SponsorForged(t *testing.T) {
 	// attacker (who does not hold the victim's key) signs the sponsor slot.
 	senderPub := senderKey.Public().(ed25519.PublicKey)
 	sponsor := genesis.Sponsorship{FeePayer: victimPub, ValidUntil: 9}
-	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], nil, nil, sponsor)
+	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], nil, nil, sponsor, nil)
 
 	hash := blake3.Sum256(body)
 	senderSig := ed25519.Sign(senderKey, hash[:])
@@ -63,7 +63,7 @@ func TestVerifyTxAuthenticity_SponsorForged(t *testing.T) {
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
-		builder, senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, attackerSig,
+		builder, senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, attackerSig, nil,
 	)
 	builder.Finish(txOff)
 	tx := types.GetRootAsTransaction(builder.FinishedBytes(), 0)

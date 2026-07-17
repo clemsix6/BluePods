@@ -79,6 +79,7 @@ func rebuildUnsignedTxBody(tx *types.Transaction) []byte {
 		mutableRefs,
 		readRefs,
 		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
+		tx.DeletedObjectsBytes(),
 	)
 }
 

@@ -614,6 +614,16 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	d.handleDelegate(tx)
 	d.handleUndelegate(tx)
 
+	// Deletion accounting runs here, on EVERY node, before the execution-sharding
+	// skip below: a replicated object lives only on its holders and a non-holder
+	// never executes, so releasing the storage deposit, refunding the gas coin, and
+	// burning the remainder must happen in the commit loop from the declared
+	// deletion set and the network-uniform tracker deposit — exactly as fee
+	// deduction does. Placing it before the skip is what keeps coins_total,
+	// deposits, and total_supply identical across holders and non-holders. Physical
+	// content removal stays holder-only in the execution path.
+	d.settleDeclaredDeletions(tx, txHash)
+
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
 	// Otherwise → only holders of mutable objects execute.
@@ -683,6 +693,123 @@ func poolUnlockedStorage(split FeeSplit, storage uint64) FeeSplit {
 	split.Epoch = safeAdd(split.Epoch, storage)
 
 	return split
+}
+
+// settleDeclaredDeletions runs the deposit accounting for every object the
+// transaction declares deleted, once per object, on every node. The declared set
+// (tx.deleted_objects) is intersected with the mutable_refs validateMutableRefOwnership
+// already verified are owned by the sender, so only an owned, referenced object is
+// settled — a tampered ID for an object the sender does not reference is ignored.
+// It is a no-op with no coin store wired.
+func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
+	deleted := declaredDeletedSet(tx)
+	if len(deleted) == 0 || d.coinStore == nil {
+		return
+	}
+
+	gasCoinID, hasGasCoin := txGasCoinID(tx)
+
+	var ref types.ObjectRef
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		id, ok := mutableRefID(&ref)
+		if !ok || !deleted[id] {
+			continue
+		}
+
+		delete(deleted, id) // single-shot per object within this transaction
+		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
+		events.ObjectDeleted(id, txHash, refund)
+	}
+}
+
+// settleDeletion releases a deleted object's storage deposit from the
+// network-uniform tracker and fully accounts it: refund storageRefundBPS to the
+// gas coin (raising coins_total) and burn the remainder from total_supply, or burn
+// the whole deposit when there is no gas coin. Removing the tracker entry shrinks
+// the deposits term of the supply identity by the same amount on every node, so
+// the identity never overstates the coins backing it. It returns the refunded
+// amount. The burn is gated on the refund landing, so a missing coin burns the
+// whole deposit rather than leaking the refund out of supply.
+func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
+	deposit := d.tracker.getFees(objID)
+	d.tracker.deleteObject(objID)
+
+	if deposit == 0 || d.feeParams == nil {
+		return 0
+	}
+
+	if !hasGasCoin || d.feeParams.StorageRefundBPS == 0 {
+		d.coinStore.SubSupply(deposit) // no recipient: burn the full locked deposit
+		events.SupplyBurned(deposit, "deletion")
+		return 0
+	}
+
+	refund := deposit * d.feeParams.StorageRefundBPS / bpsMax
+	burned := deposit - refund
+
+	// creditCoin also raises coins_total; gate the burn on it landing so a missing
+	// coin burns the whole deposit rather than reducing supply while the refund
+	// never reaches a coin.
+	if err := creditCoin(d.coinStore, gasCoinID, refund); err != nil {
+		d.coinStore.SubSupply(deposit)
+		events.SupplyBurned(deposit, "deletion")
+		return 0
+	}
+
+	d.coinStore.SubSupply(burned)
+	events.DepositRefunded(objID, gasCoinID, refund)
+	events.SupplyBurned(burned, "deletion")
+
+	return refund
+}
+
+// declaredDeletedSet reads the transaction's deleted_objects field (concatenated
+// 32-byte IDs) into a set. Trailing bytes that do not fill a full ID are ignored,
+// matching the tolerant decode the execution path uses.
+func declaredDeletedSet(tx *types.Transaction) map[Hash]bool {
+	data := tx.DeletedObjectsBytes()
+	const idSize = 32
+	if len(data) < idSize {
+		return nil
+	}
+
+	set := make(map[Hash]bool, len(data)/idSize)
+	for i := 0; i+idSize <= len(data); i += idSize {
+		var id Hash
+		copy(id[:], data[i:i+idSize])
+		set[id] = true
+	}
+
+	return set
+}
+
+// mutableRefID returns the 32-byte object ID of a mutable ref, or ok=false for a
+// domain ref (no ID) or a malformed ID.
+func mutableRefID(ref *types.ObjectRef) (Hash, bool) {
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		return Hash{}, false
+	}
+
+	var id Hash
+	copy(id[:], idBytes)
+	return id, true
+}
+
+// txGasCoinID returns the transaction's 32-byte gas coin ID and whether one is set.
+func txGasCoinID(tx *types.Transaction) (Hash, bool) {
+	b := tx.GasCoinBytes()
+	if len(b) != 32 {
+		return Hash{}, false
+	}
+
+	var id Hash
+	copy(id[:], b)
+	return id, true
 }
 
 // proofVerdict returns the proof-verification verdict for one ATX. An ATX with no

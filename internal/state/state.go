@@ -29,7 +29,6 @@ type State struct {
 	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
 	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
 	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
-	onObjectDeleted func(id [32]byte) uint64                                              // onObjectDeleted removes a deleted object from the network-uniform tracker and returns the storage deposit it held
 	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
@@ -100,14 +99,6 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 // Used by the consensus tracker to register created objects.
 func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
 	s.onObjectCreated = fn
-}
-
-// SetOnObjectDeleted sets a callback that fires as an object is deleted. It
-// removes the object from the network-uniform consensus tracker and returns the
-// storage deposit its entry held, so the deletion accounting releases that
-// deposit identically on every node, holder or not.
-func (s *State) SetOnObjectDeleted(fn func(id [32]byte) uint64) {
-	s.onObjectDeleted = fn
 }
 
 // SetObjectSigner sets a callback that fires when a held, replicated object is
@@ -351,7 +342,7 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 
 	s.applyUpdatedObjects(output, txHash)
 	s.applyCreatedObjects(output, txHash, txLocksDeposits(tx))
-	s.applyDeletedObjects(output, tx)
+	s.applyDeletedObjects(tx)
 	s.applyRegisteredDomains(output, txHash)
 
 	return nil
@@ -634,57 +625,27 @@ func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Obj
 	return types.ObjectEnd(builder)
 }
 
-// applyDeletedObjects settles and removes every object the pod deleted.
-//
-// The deposit accounting runs on every node from the network-uniform object
-// tracker: releasing the object's tracked deposit (which shrinks the deposits
-// term of the supply identity), refunding storageRefundBPS of it to the gas coin,
-// and burning the remainder. The deposit is read from the tracker, not from the
-// object's content, so a holder and a non-holder move coins_total, deposits, and
-// total_supply identically. This is what keeps a deletion from forking the supply
-// identity across nodes when a replicated object carrying a locked deposit is
-// removed: holder and non-holder alike burn and refund the same amount.
-//
-// Removing the object's stored content stays holder-only: a non-holder never
-// stored it, and the owner-only guard reads content only a holder has. In
-// production the pod-decided deletion set is already owner-authorized (mutable
-// refs are ownership-checked at commit), so content deletion and accounting agree.
-func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Transaction) {
-	data := output.DeletedObjectsBytes()
+// applyDeletedObjects removes the stored content of every object the transaction
+// declares deleted (tx.deleted_objects). It runs in the execution path, so only a
+// holder reaches it: a holder removes the object it stores, guarded by the
+// owner-only check that reads content only a holder has. The deposit accounting
+// (deposit release, refund, burn) does NOT run here — it runs once per deletion in
+// the commit loop on every node from the same declared set, so a holder never
+// accounts a deletion twice and a non-holder still accounts it. Content removal
+// reads the same network-uniform declared set the accounting uses, not the pod
+// output, so on every holder the two agree.
+func (s *State) applyDeletedObjects(tx *types.Transaction) {
+	data := tx.DeletedObjectsBytes()
 	const idSize = 32
 
-	txHash := extractTxHash(tx)
 	sender := extractSender(tx)
-	gasCoinID, hasGasCoin := extractGasCoin(tx)
 
 	for i := 0; i+idSize <= len(data); i += idSize {
 		var id Hash
 		copy(id[:], data[i:i+idSize])
 
-		// Network-uniform accounting: release the tracked deposit and fully
-		// account it (part refunded to a coin, the remainder burned) so it never
-		// silently vanishes and total_supply never overstates the coins backing it.
-		deposit := s.releaseTrackedDeposit(id)
-		refund := s.settleDeletionDeposit(id, gasCoinID, deposit, hasGasCoin)
-
-		// Holder-only content removal.
 		s.deleteHeldContent(id, sender)
-
-		events.ObjectDeleted(id, txHash, refund)
 	}
-}
-
-// releaseTrackedDeposit removes a deleted object from the network-uniform tracker
-// and returns the storage deposit its entry held. Every node runs this from the
-// same tracker metadata, so the deposits term shrinks by the same amount whether
-// or not the node holds the object's content. It returns 0 when no tracker is
-// wired (unit tests) or the object carried no deposit.
-func (s *State) releaseTrackedDeposit(id Hash) uint64 {
-	if s.onObjectDeleted == nil {
-		return 0
-	}
-
-	return s.onObjectDeleted(id)
 }
 
 // deleteHeldContent removes a deleted object's stored content, but only for a
@@ -728,57 +689,6 @@ func extractSender(tx *types.Transaction) Hash {
 	return sender
 }
 
-// extractGasCoin reads the transaction's gas_coin id and reports whether one is
-// set. The zero hash is returned when no valid gas coin is present.
-func extractGasCoin(tx *types.Transaction) (Hash, bool) {
-	var id Hash
-	if b := tx.GasCoinBytes(); len(b) == 32 {
-		copy(id[:], b)
-		return id, true
-	}
-
-	return id, false
-}
-
-// settleDeletionDeposit fully accounts a deleted object's locked storage
-// deposit: it refunds storageRefundBPS to the gas_coin and burns the
-// remainder, or burns the whole deposit when there is no recipient. It
-// returns the amount actually refunded (0 when nothing was credited). Every
-// burn emits supply.burned; a landed refund also emits fees.deposit.refunded.
-// The burn is gated on the refund actually landing (creditGasCoin succeeding),
-// so a failed refund never reduces supply while the refund vanishes.
-func (s *State) settleDeletionDeposit(id, gasCoinID Hash, objFees uint64, hasGasCoin bool) uint64 {
-	if objFees == 0 {
-		return 0
-	}
-
-	if !hasGasCoin || s.storageRefundBPS == 0 {
-		s.SubSupply(objFees) // no recipient: burn the full locked deposit
-		events.SupplyBurned(objFees, "deletion")
-		return 0
-	}
-
-	refund := objFees * s.storageRefundBPS / 10000
-	burned := objFees - refund
-
-	// Only the refund leaves supply (into a coin); gate the burn on it landing.
-	if !s.creditGasCoin(gasCoinID, refund) {
-		s.SubSupply(objFees) // refund failed: burn the full deposit, none leaks
-		events.SupplyBurned(objFees, "deletion")
-		return 0
-	}
-
-	// The refund landed in the gas coin's balance: coins_total rises by exactly
-	// the refunded amount, mirroring the supply burn below.
-	s.AddCoins(refund)
-	s.SubSupply(burned)
-
-	events.DepositRefunded(id, gasCoinID, refund)
-	events.SupplyBurned(burned, "deletion")
-
-	return refund
-}
-
 // computeStorageDeposit calculates the storage deposit for a new object.
 // It reads the live validator count (so the deposit matches the storage fee
 // debited at commit), falling back to the init-time count if none is wired.
@@ -798,62 +708,6 @@ func (s *State) computeStorageDeposit(replication uint16) uint64 {
 	}
 
 	return uint64(effRep) * s.storageFee / uint64(total)
-}
-
-// creditGasCoin adds a refund amount to a gas_coin balance and reports whether
-// the credit landed. It returns false when the coin is missing, malformed, or
-// would overflow, so the caller can avoid burning supply against a refund that
-// never reached a coin. A zero amount is a no-op and reports success (there is
-// nothing to credit and nothing to leak). Version is NOT incremented (implicit
-// protocol modification).
-func (s *State) creditGasCoin(coinID Hash, amount uint64) bool {
-	if amount == 0 {
-		return true
-	}
-
-	data := s.objects.get(coinID)
-	if data == nil {
-		return false
-	}
-
-	obj := types.GetRootAsObject(data, 0)
-	content := obj.ContentBytes()
-	if len(content) < 8 {
-		return false
-	}
-
-	balance := binary.LittleEndian.Uint64(content[:8])
-	newBalance := balance + amount
-
-	// Overflow check
-	if newBalance < balance {
-		return false
-	}
-
-	// Rebuild with new balance
-	newContent := make([]byte, len(content))
-	copy(newContent, content)
-	binary.LittleEndian.PutUint64(newContent[:8], newBalance)
-
-	builder := flatbuffers.NewBuilder(256)
-
-	idVec := builder.CreateByteVector(obj.IdBytes())
-	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
-	contentVec := builder.CreateByteVector(newContent)
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, obj.Version())
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, obj.Replication())
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, obj.Fees())
-
-	offset := types.ObjectEnd(builder)
-	builder.Finish(offset)
-
-	s.objects.set(coinID, builder.FinishedBytes())
-	return true
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects

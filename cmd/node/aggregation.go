@@ -54,13 +54,6 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.dag.TrackObject(id, version, replication, fees)
 	})
 
-	// Wire object deletion callback to tracker: removing the entry releases the
-	// object's storage deposit from the network-uniform deposits total on every
-	// node, and returns the deposit so the deletion accounting settles it.
-	n.state.SetOnObjectDeleted(func(id [32]byte) uint64 {
-		return n.dag.UntrackObject(id)
-	})
-
 	// Eager signing: at execution, a holder signs the persisted version and
 	// stores it durably next to the object so attestation requests are pure reads.
 	n.state.SetObjectSigner(func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) {
