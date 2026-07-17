@@ -33,6 +33,12 @@ cause before fix, failing test first).
   the evidence text. If a scenario carries a "known red" annotation for the
   entry (e.g. partition sub-tests for entry 9), remove the annotation in the
   same commit.
+- **Code comments never cite the register.** `test/BUGS.md` is retired at
+  the end of the campaign (user decision), so no code comment, test doc
+  comment, or test failure message may reference "BUGS.md" or "entry N" —
+  write them self-contained: state the invariant and the failure mechanism
+  directly. Register references belong only in BUGS.md itself, commit
+  messages, and the PR body.
 - **Root cause before fix** (systematic-debugging). Entries whose root cause
   is already proven (1, 2, 11) go straight to TDD; the others start with a
   diagnosis task whose deliverable is a written root cause plus a failing

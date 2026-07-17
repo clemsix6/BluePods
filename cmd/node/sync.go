@@ -355,8 +355,8 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 	// epoch_persist.go), so dropping it here would zero the founder's reward-coin
 	// designation on every syncing node forever — the founder never re-registers to
 	// repair it the way a non-founder does, so any epoch credit targeting it lands
-	// on the bootstrap node but is silently skipped everywhere else (test/BUGS.md
-	// entry 2).
+	// on the bootstrap node but is silently skipped everywhere else, forking the
+	// state fingerprint.
 	for _, v := range validators {
 		vs.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
 		vs.SetRewardCoin(v.Pubkey, v.RewardCoin)

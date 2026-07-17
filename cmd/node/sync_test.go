@@ -148,9 +148,9 @@ func TestRequestAndApplySnapshot_EmitsSnapshotApplied(t *testing.T) {
 	}
 }
 
-// TestBuildValidatorSetFromSnapshot_CarriesRewardCoin reproduces
-// test/BUGS.md entry 2: buildValidatorSetFromSnapshot calls vs.AddWithStake
-// per validator but never vs.SetRewardCoin, so RewardCoin is silently
+// TestBuildValidatorSetFromSnapshot_CarriesRewardCoin guards against a
+// fingerprint-forking regression: buildValidatorSetFromSnapshot calling only
+// vs.AddWithStake per validator, never vs.SetRewardCoin, so RewardCoin is silently
 // dropped rebuilding the live validator set from a synced snapshot, even
 // though the snapshot wire format carries it correctly. A non-founder's own
 // RewardCoin gets repaired later by its own register_validator replay, but
