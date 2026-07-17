@@ -129,8 +129,20 @@ func (d *DAG) scanPastUndecided(round, r uint64) (anchorDecision, bool) {
 // They agree exactly when every stored round-r vertex of r's designated producer
 // cites the queried round's single designated vertex, so whichever one certifies also
 // carries it. A missing or equivocated designated vertex on either side is read as
-// disagreement, so the scan waits rather than pass on a reversible skip.
+// disagreement, so the scan waits rather than pass on a reversible skip — UNLESS the
+// queried round's producer is itself dead (no stored vertex and span-silent), the one
+// missing-vertex case that is agreement rather than disagreement: with no candidate to
+// carry, every resolution SKIPS the queried round, so r's certification cannot change
+// the outcome.
 func (d *DAG) adjacentCertifyAgrees(round, r uint64) bool {
+	if d.deadDesignatedProducer(round) {
+		// No candidate exists in any node's history: certifying r cannot carry a vertex
+		// that is not there, and neither can a later anchor, so both paths skip. Silence
+		// of the producer is what makes this agreement — a merely locally-absent producer
+		// could still deliver a candidate a later certification would carry.
+		return true
+	}
+
 	producer, ok := d.anchorProducerFor(round)
 	if !ok {
 		return false
@@ -344,20 +356,59 @@ func (d *DAG) anchorCertImpossible(round uint64) bool {
 	return impossible
 }
 
+// deadDesignatedProducer reports whether the round's designated producer stored NO
+// vertex at the round AND is silent across the deep span above the frontier
+// (anchorSilenceSpanRounds). Such a producer has, and will deliver, no candidate for
+// any node to certify, so the round can never be certified — in EITHER regime, because
+// certification needs a candidate to cite and there is none. The verdict rests on the
+// silence timing assumption (a crashed producer is indistinguishable at the frontier
+// from one delayed past the span), so callers treat the impossibility it establishes as
+// REVERSIBLE and keep it under the same adjacent-round guard silence-impossibility
+// already carries.
+//
+// Skipping such a round in the RELAXED bootstrap regime is no weaker a guarantee than
+// the regime already offers: relaxed certification itself accepts a SINGLE supporter, so
+// the regime concedes quorum intersection in its central rule, and a skip founded on the
+// silence span sits within that same concession. The strict regime keeps the full
+// intersection guard (adjacentCertifyAgrees), so its safety is unchanged. The result is
+// false while the span is unobservable, the natural bootstrap guard silentHolders
+// provides by returning an empty set on a shallow store.
+func (d *DAG) deadDesignatedProducer(round uint64) bool {
+	producer, ok := d.anchorProducerFor(round)
+	if !ok {
+		return false
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round + 1))
+	if !ok {
+		return false
+	}
+
+	if len(d.designatedVertexSet(round, producer)) != 0 {
+		return false // a stored candidate exists: this grade does not apply
+	}
+
+	return d.silentHolders(set, round+1)[producer]
+}
+
 // certImpossibility reports whether an undecided round can never certify and, when it
 // cannot, whether IMMUTABLE blame alone establishes it (byBlame). The two grades
 // differ in reversibility, which is why the caller needs them apart.
 //
-// It fires only in the STRICT regime (a relaxed bootstrap round certifies on a
-// single supporter and is never ruled out here) and only when the round-N+1 holder
-// snapshot resolves. The rule is potential support: a holder is a BLAMER only when
-// it has at least one STORED round-N+1 vertex and none of its stored round-N+1
-// vertices cites any of the candidate's vertices — the SAME union rule the direct
-// verdict uses (tallyCitations), so a producer that ever cites a candidate, even
-// via an equivocating second vertex, is a possible supporter, never a blamer. Every
-// holder with NO stored round-N+1 vertex counts as a POTENTIAL SUPPORTER: its
-// future vertex might cite the candidate. The round is impossible when even the
-// maximum achievable support falls below the strict 2/3 capped-stake quorum.
+// A designated producer with NO stored vertex that is span-silent is ruled out FIRST,
+// in ANY regime (deadDesignatedProducer): a round with no candidate cannot be certified
+// under any rule, and the verdict is REVERSIBLE because it rests on the producer's
+// silence. The stake-quorum grades below fire only in the STRICT regime — a relaxed
+// bootstrap round certifies on a single supporter, so once it has a candidate it is
+// never ruled out here — and only when the round-N+1 holder snapshot resolves. The rule
+// is potential support: a holder is a BLAMER only when it has at least one STORED
+// round-N+1 vertex and none of its stored round-N+1 vertices cites any of the
+// candidate's vertices — the SAME union rule the direct verdict uses (tallyCitations),
+// so a producer that ever cites a candidate, even via an equivocating second vertex, is
+// a possible supporter, never a blamer. Every holder with NO stored round-N+1 vertex
+// counts as a POTENTIAL SUPPORTER: its future vertex might cite the candidate. The round
+// is impossible when even the maximum achievable support falls below the strict 2/3
+// capped-stake quorum.
 //
 // The BLAME grade (byBlame true) rests only on stored blamer vertices, whose citations
 // are parent hashes fixed at production. It is immutable and MONOTONE: more evidence
@@ -377,6 +428,10 @@ func (d *DAG) anchorCertImpossible(round uint64) bool {
 // earlier round's resolution — the intersection guarantee two rounds up, enforced by
 // scanPastUndecided's adjacent-round guard — never as a standalone license to skip.
 func (d *DAG) certImpossibility(round uint64) (impossible, byBlame bool) {
+	if d.deadDesignatedProducer(round) {
+		return true, false // no candidate in any regime; reversible on the producer's silence
+	}
+
 	if d.roundIsRelaxed(round) {
 		return false, false
 	}
