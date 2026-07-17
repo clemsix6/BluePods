@@ -40,6 +40,7 @@ func TestScenarioBootstrap(t *testing.T) {
 		newCoinID, hash, err := w.Split(cli, coinID, 100_000, recipient.Pubkey())
 		requireNoErr(t, err)
 		requireCommittedSuccess(ctx, t, node, hash)
+		requireTxStatusMatchesCommit(t, cli, hash, true)
 
 		obj, err := cli.GetObject(newCoinID)
 		requireNoErr(t, err)

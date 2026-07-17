@@ -170,10 +170,16 @@ func testDoubleSpendStorm(t *testing.T, c *harness.Cluster, cli *client.Client, 
 		target := c.Node(i % stressScenarioSize)
 
 		wg.Add(1)
-		go func(body []byte, addr string) {
+		go func(contender int, body []byte, addr string) {
 			defer wg.Done()
-			client.NewQUICTransport(addr).SubmitTx(body) //nolint:errcheck // contending submissions may race ingress
-		}(txBytes, target.QUICAddr)
+			if _, err := client.NewQUICTransport(addr).SubmitTx(body); err != nil {
+				// Contending submissions may legitimately race ingress; the
+				// error is logged (not fatal) so a contender that never gets
+				// a verdict can be told apart from one that was never
+				// delivered at all.
+				t.Logf("contender %d: submit to %s failed: %v", contender, addr, err)
+			}
+		}(i, txBytes, target.QUICAddr)
 	}
 	wg.Wait()
 

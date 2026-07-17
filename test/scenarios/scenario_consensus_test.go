@@ -12,6 +12,7 @@ import (
 	"github.com/zeebo/blake3"
 
 	"BluePods/internal/genesis"
+	"BluePods/internal/types"
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
 )
@@ -163,6 +164,10 @@ func TestScenarioConsensusBasics(t *testing.T) {
 		}
 	})
 
+	t.Run("merge", func(t *testing.T) {
+		testMergeCombinesCoins(t, c, cli, node0)
+	})
+
 	t.Run("security_rejects", func(t *testing.T) {
 		t.Run("replay_is_duplicate", func(t *testing.T) {
 			testReplayRejected(t, c, systemPod)
@@ -172,6 +177,9 @@ func TestScenarioConsensusBasics(t *testing.T) {
 		})
 		t.Run("wrong_owner_is_ownership", func(t *testing.T) {
 			testWrongOwnerRejected(t, c, systemPod)
+		})
+		t.Run("sharded_mutation_without_valid_proof_is_proof_failed", func(t *testing.T) {
+			testProofFailedRejected(t, c, systemPod)
 		})
 	})
 }
@@ -393,4 +401,192 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), bad
+}
+
+// testMergeCombinesCoins splits a funded coin into two coins the same wallet
+// owns, then merges the split-off source back into the original destination:
+// every node must agree on success, the destination balance must equal the
+// pre-merge sum of both coins minus the merge's OWN fee (the destination coin
+// also pays the merge's gas, exactly like testFullDeduction's split), and the
+// source coin must read back at a zero balance everywhere rather than being
+// deleted (pods/pod-system/src/functions/merge/execute.rs empties every
+// source coin via with_updated, never a deletion) — checked with
+// GetObjectLocal on every node rather than a routed GetObject. BUGS.md entry
+// 11 documents a routed GetObject cascading to a client timeout for an
+// object no node holds; that is not this case (the coin is a singleton every
+// node still holds after merge), but the local-only read is both cheaper and
+// immune to that failure mode regardless.
+func testMergeCombinesCoins(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
+	t.Helper()
+
+	const funding, splitAmount = uint64(1_000_000), uint64(400_000)
+
+	w, destCoin := fundedWallet(stepCtx(t), t, cli, node0, funding)
+
+	sourceCoin, splitHash, err := w.Split(cli, destCoin, splitAmount, w.Pubkey())
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, splitHash, true, "")
+
+	requireNoErr(t, w.RefreshCoin(cli, destCoin))
+	requireNoErr(t, w.RefreshCoin(cli, sourceCoin))
+
+	destBefore := w.GetCoin(destCoin).Balance
+	sourceBefore := w.GetCoin(sourceCoin).Balance
+
+	mergeHash, err := w.Merge(cli, destCoin, w.GetCoin(destCoin).Version, []*client.CoinInfo{w.GetCoin(sourceCoin)})
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, mergeHash, true, "")
+
+	ev, err := node0.WaitEvent(stepCtx(t), "fees.deducted",
+		harness.Attr("tx", hex.EncodeToString(mergeHash[:])), harness.Attr("covered", true))
+	requireNoErr(t, err)
+
+	fee, ok := ev.Attrs["amount"].(float64)
+	if !ok || fee <= 0 {
+		t.Fatalf("fees.deducted carries no positive amount: %v", ev.Attrs)
+	}
+
+	requireNoErr(t, w.RefreshCoin(cli, destCoin))
+	if got, want := w.GetCoin(destCoin).Balance, destBefore+sourceBefore-uint64(fee); got != want {
+		t.Fatalf("merged destination balance: got %d, want %d (dest %d + source %d - fee %d)",
+			got, want, destBefore, sourceBefore, uint64(fee))
+	}
+
+	requireCoinBalanceEverywhere(t, c, sourceCoin, 0)
+}
+
+// requireCoinBalanceEverywhere asserts every alive node's LOCAL copy of a
+// singleton coin carries exactly want as its balance.
+func requireCoinBalanceEverywhere(t *testing.T, c *harness.Cluster, coinID [32]byte, want uint64) {
+	t.Helper()
+
+	for _, n := range c.Alive() {
+		data, err := client.NewQUICTransport(n.QUICAddr).GetObjectLocal(coinID)
+		requireNoErr(t, err)
+		if data == nil {
+			t.Fatalf("node %d: coin %x missing locally", n.Index, coinID[:4])
+		}
+
+		if got := coinBalance(client.ParseObject(data)); got != want {
+			t.Fatalf("node %d: coin %x balance: got %d, want %d", n.Index, coinID[:4], got, want)
+		}
+	}
+}
+
+// testProofFailedRejected mutates a real sharded (replication-3) object,
+// created through the ordinary CreateObject path, via a hand-built ATX that
+// carries exactly one QuorumProof but an EMPTY Objects vector. The
+// commit-time proof gate (internal/aggregation's ATXVerifier.prepareSingleProof,
+// invoked through internal/consensus/commit.go's proofVerdict) looks the
+// proof's referenced object up in the ATX's OWN Objects vector before it ever
+// touches BLS cryptography or any node-local state; with that vector empty
+// the lookup fails identically everywhere ("object not found in ATX"), so
+// every alive node derives the SAME proof_failed verdict from the gossiped
+// bytes alone. Unlike BUGS.md entry 7 (the ownership check), this path runs
+// BEFORE any node-local, holdership-dependent check, so there is no
+// holder/non-holder split to reproduce here.
+//
+// This is the deterministic external analogue of "no valid attestation
+// proof": a legitimate BLS quorum signature cannot be forged from outside the
+// validator set, but an ATX that claims a proof for an object it never
+// attaches is exactly what proofVerdict must reject, and it is reachable
+// without any cooperation from consensus internals — the reason this is
+// written as a scenario rather than left undone.
+func testProofFailedRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
+	t.Helper()
+
+	node0 := c.Node(0)
+	cli := c.Client(0)
+
+	priv, sender := generateRawKey(t)
+	w := client.NewWalletFromKey(priv)
+
+	gasCoin, faucetHash, err := cli.Faucet(sender, 1_000_000)
+	requireNoErr(t, err)
+	requireCommittedSuccess(stepCtx(t), t, node0, faucetHash)
+	requireNoErr(t, w.RefreshCoin(cli, gasCoin))
+
+	objID, createHash, err := w.CreateObject(cli, 3, []byte("proof-failed-target"), gasCoin)
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, createHash, true, "")
+	waitHolders(stepCtx(t), t, c, objID, 3)
+
+	obj, err := cli.GetObject(objID)
+	requireNoErr(t, err)
+
+	status, err := cli.Status()
+	requireNoErr(t, err)
+
+	rawTx, hash := buildSignedTransferObjectTx(priv, systemPod, objID, obj.Version, gasCoin, randomID(t))
+	atxBytes := buildATXWithBogusProof(rawTx, objID, status.Epoch)
+
+	transport := client.NewQUICTransport(node0.QUICAddr)
+	returnedHash, err := transport.SubmitTx(atxBytes)
+	requireNoErr(t, err) // structurally valid ATX; the proof is only checked at commit
+	assertHash(t, returnedHash, hash)
+
+	requireVerdictAll(stepCtx(t), t, c, hash, false, "proof_failed")
+}
+
+// buildSignedTransferObjectTx builds a signed "transfer_object" tx mutating
+// objID (at version) to newOwner, paying gas from a separately owned gasCoin
+// (mirroring TransferObject's shape: the mutated object is not itself a coin,
+// so gas comes from a distinct owned singleton). Returns the tx bytes and hash.
+func buildSignedTransferObjectTx(priv ed25519.PrivateKey, systemPod, objID [32]byte, version uint64, gasCoin, newOwner [32]byte) ([]byte, [32]byte) {
+	pub := priv.Public().(ed25519.PublicKey)
+	args := make([]byte, 32)
+	copy(args, newOwner[:])
+	refs := []genesis.ObjectRefData{{ID: objID, Version: version}}
+
+	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "transfer_object", args, nil, 0, 1000, gasCoin[:], refs, nil)
+	hash := blake3.Sum256(unsigned)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "transfer_object", args, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil)
+	builder.Finish(txOff)
+
+	return builder.FinishedBytes(), hash
+}
+
+// buildATXWithBogusProof wraps rawTx in a hand-built AttestedTransaction that
+// carries exactly one QuorumProof naming objID but an EMPTY Objects vector,
+// so the proof's object lookup fails deterministically for every node
+// ("object not found in ATX") without any BLS material. attestationEpoch is
+// stamped from the caller's live epoch read so the epoch-boundary check
+// (ATXVerifier.resolveHolders) never itself rejects the ATX first and masks
+// the proof failure this test targets.
+func buildATXWithBogusProof(rawTx []byte, objID [32]byte, attestationEpoch uint64) []byte {
+	tx := types.GetRootAsTransaction(rawTx, 0)
+
+	builder := flatbuffers.NewBuilder(len(rawTx) + 512)
+	txOffset := genesis.RebuildTxInBuilder(builder, tx)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objectsVec := builder.EndVector(0)
+
+	objIDVec := builder.CreateByteVector(objID[:])
+	sigVec := builder.CreateByteVector([]byte{0xDE, 0xAD, 0xBE, 0xEF})
+	bitmapVec := builder.CreateByteVector([]byte{0xFF})
+
+	types.QuorumProofStart(builder)
+	types.QuorumProofAddObjectId(builder, objIDVec)
+	types.QuorumProofAddBlsSignature(builder, sigVec)
+	types.QuorumProofAddSignerBitmap(builder, bitmapVec)
+	proofOff := types.QuorumProofEnd(builder)
+
+	types.AttestedTransactionStartProofsVector(builder, 1)
+	builder.PrependUOffsetT(proofOff)
+	proofsVec := builder.EndVector(1)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOffset)
+	types.AttestedTransactionAddObjects(builder, objectsVec)
+	types.AttestedTransactionAddProofs(builder, proofsVec)
+	types.AttestedTransactionAddAttestationEpoch(builder, attestationEpoch)
+	atxOffset := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOffset)
+
+	return builder.FinishedBytes()
 }

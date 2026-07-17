@@ -1,6 +1,7 @@
 package scenarios
 
 import (
+	"bytes"
 	"testing"
 
 	"BluePods/pkg/client"
@@ -80,6 +81,14 @@ func TestScenarioObjects(t *testing.T) {
 	t.Run("singleton_mutation_on_all_nodes", func(t *testing.T) {
 		testSingletonMutationEverywhere(t, c, cli, node0)
 	})
+
+	t.Run("set_object_updates_sharded_content", func(t *testing.T) {
+		testSetObjectUpdatesSharded(t, c, cli, w, gasCoin, sharded)
+	})
+
+	t.Run("holders_report_matches_actual_count", func(t *testing.T) {
+		testHoldersReportMatchesActual(t, c, cli, sharded)
+	})
 }
 
 // holderSet returns the set of alive node indices holding id locally.
@@ -95,6 +104,22 @@ func holderSet(t *testing.T, c *harness.Cluster, id [32]byte) map[int]bool {
 	}
 
 	return holders
+}
+
+// firstHolderNode returns the first alive node (by iteration order) holding
+// id locally, failing the test if none does.
+func firstHolderNode(t *testing.T, c *harness.Cluster, id [32]byte) *harness.Node {
+	t.Helper()
+
+	holders := holderSet(t, c, id)
+	for _, n := range c.Alive() {
+		if holders[n.Index] {
+			return n
+		}
+	}
+
+	t.Fatalf("no holder found for object %x", id[:4])
+	return nil
 }
 
 // sameIntSet reports whether two index sets are identical.
@@ -197,5 +222,83 @@ func testSingletonMutationEverywhere(t *testing.T, c *harness.Cluster, cli *clie
 		if local.Owner != recipient.Pubkey() {
 			t.Fatalf("node %d: singleton owner not updated", n.Index)
 		}
+	}
+}
+
+// testSetObjectUpdatesSharded overwrites the sharded (replication-5) object's
+// content via Wallet.SetObject (which routes through the daemon's ATX
+// aggregation, since the object is replicated) and confirms: success on a
+// HOLDER of the object, a state.object.updated event for the object
+// (requireObjectUpdatedEvent, from scenario_aggregation_test.go), the new
+// content readable back as a Borsh-serialized wrapper (a suffix match,
+// mirroring TestScenarioBootstrap's create_object assertion), and the
+// version advanced on every node that holds the object locally.
+//
+// Per BUGS.md entry 7, a replicated-object mutation's commit verdict
+// diverges between holders (success) and non-holders (ownership failure:
+// validateMutableRefOwnership resolves the mutable ref through local state,
+// which a non-holder does not have). This confronts the attested path
+// through a holder's own verdict, exactly as TestScenarioAggregation does,
+// rather than requiring uniformity across every node the way
+// TestScenarioConsensusBasics deliberately does (and stays red on).
+func testSetObjectUpdatesSharded(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, objectID [32]byte) {
+	t.Helper()
+
+	before, err := cli.GetObject(objectID)
+	requireNoErr(t, err)
+
+	holderNode := firstHolderNode(t, c, objectID)
+
+	newContent := []byte("sharded content replaced by set_object")
+
+	hash, err := w.SetObject(cli, objectID, newContent, gasCoin)
+	requireNoErr(t, err)
+	requireCommittedSuccess(stepCtx(t), t, holderNode, hash)
+	requireObjectUpdatedEvent(t, c, objectID)
+
+	after, err := cli.GetObject(objectID)
+	requireNoErr(t, err)
+	if !bytes.HasSuffix(after.Content, newContent) {
+		t.Fatalf("set_object content: got %q, want a suffix of %q", after.Content, newContent)
+	}
+
+	for _, n := range c.Alive() {
+		data, err := client.NewQUICTransport(n.QUICAddr).GetObjectLocal(objectID)
+		requireNoErr(t, err)
+		if data == nil {
+			continue // non-holder: nothing to check locally
+		}
+
+		if local := client.ParseObject(data); local.Version <= before.Version {
+			t.Fatalf("node %d: sharded object version did not advance (%d <= %d)", n.Index, local.Version, before.Version)
+		}
+	}
+}
+
+// testHoldersReportMatchesActual confronts Client.Holders (pkg/client/holders.go)
+// against the harness's own countHolders: on this cluster every node stays
+// alive throughout, so the reported Actual holder set must equal the
+// rendezvous-computed Expected set exactly, and its size must match a fresh
+// countHolders sweep — two independent ways of counting holders (probing
+// every known validator's QUICAddr vs. probing every alive harness node)
+// that must agree when both sets are "everyone".
+func testHoldersReportMatchesActual(t *testing.T, c *harness.Cluster, cli *client.Client, id [32]byte) {
+	t.Helper()
+
+	report, err := cli.Holders(id)
+	requireNoErr(t, err)
+
+	if len(report.Actual) != len(report.Expected) {
+		t.Fatalf("holders report: %d actual vs %d expected (all nodes alive, they must match)", len(report.Actual), len(report.Expected))
+	}
+
+	for pk := range report.Expected {
+		if !report.Actual[pk] {
+			t.Fatalf("expected holder %x missing from the actual holder set", pk[:8])
+		}
+	}
+
+	if got := countHolders(t, c, id); got != len(report.Actual) {
+		t.Fatalf("countHolders (%d) disagrees with Client.Holders' actual count (%d)", got, len(report.Actual))
 	}
 }

@@ -2,6 +2,7 @@ package scenarios
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +47,10 @@ const (
 	// plateauSettleBound caps the settle phase: a count that never sits
 	// still was never going to plateau, and that IS the violation.
 	plateauSettleBound = 30 * time.Second
+
+	// flappingCycles is how many Partition/Heal cycles testFlappingPartitions
+	// drives under sustained background traffic.
+	flappingCycles = 3
 )
 
 // TestScenarioPartition drives the CP-promise scenarios on a 5-node,
@@ -65,6 +70,8 @@ func TestScenarioPartition(t *testing.T) {
 	t.Run("minority", testMinorityPartition)
 	t.Run("symmetric", testSymmetricPartition)
 	t.Run("heal_under_traffic", testHealUnderTraffic)
+	t.Run("across_epoch_boundary", testAcrossEpochBoundary)
+	t.Run("flapping_partitions", testFlappingPartitions)
 }
 
 // newPartitionCluster starts an equal-stake 5-node cluster and waits until
@@ -181,6 +188,112 @@ func testHealUnderTraffic(t *testing.T) {
 	}
 
 	requireZeroRollback(t, c)
+}
+
+// testAcrossEpochBoundary isolates one node (4|1) for long enough that the
+// majority crosses at least one epoch boundary while the isolate is cut off
+// entirely — the epoch snapshot governing quorum, and the attested-tx epoch
+// validity window, both change under it. Healing must let the isolate
+// observe the SAME epoch transition the majority already committed (not a
+// diverged one) and catch up to the majority's anchor round, without ever
+// contradicting a committed anchor.
+//
+// Known red, intermittent: this sub-test is a second trigger for BUGS.md
+// entry 9 — the boundary-window commit wedge engages in some runs (the
+// majority's own commit cursor freezes just past the boundary and never
+// recovers, even after Heal), timing out the post-heal catch-up waits.
+// Runs that escape the wedge pass in-body and stay red only at teardown
+// (entries 1/8).
+func testAcrossEpochBoundary(t *testing.T) {
+	c := newPartitionCluster(t)
+	node0 := c.Node(0)
+
+	isolated := partitionScenarioSize - 1
+	majority := []int{0, 1, 2, 3}
+
+	startEpoch := latestEpoch(node0)
+
+	c.Partition(majority, []int{isolated})
+
+	requirePlateau(t, c.Node(isolated))
+
+	waitNextBoundary(t, node0)
+	crossedEpoch := latestEpoch(node0)
+	if crossedEpoch <= startEpoch {
+		t.Fatalf("majority did not cross an epoch boundary while partitioned: start=%d, now=%d", startEpoch, crossedEpoch)
+	}
+
+	majorityRound := latestAnchorRound(node0)
+
+	c.Heal()
+
+	if _, err := c.Node(isolated).WaitEvent(stepCtx(t), "epoch.transitioned", harness.AttrGE("epoch", crossedEpoch)); err != nil {
+		c.Dump(t)
+		t.Fatalf("isolated node %d never caught up to epoch %d after heal: %v", isolated, crossedEpoch, err)
+	}
+
+	if _, err := c.Node(isolated).WaitEvent(stepCtx(t), "consensus.anchor.committed", harness.AttrGE("round", majorityRound)); err != nil {
+		c.Dump(t)
+		t.Fatalf("isolated node %d never caught up past round %d after heal: %v", isolated, majorityRound, err)
+	}
+
+	requireZeroRollback(t, c)
+}
+
+// testFlappingPartitions drives 3 Partition(4|1)/Heal cycles under sustained
+// background traffic, confirming after every heal that the isolated node
+// catches up past the majority's round at heal time, then proves zero
+// rollback over the whole flapping run.
+//
+// Known red: this sub-test is a third trigger for BUGS.md entry 9 — the
+// commit wedge engages on a repeated partition cycle even away from an
+// epoch boundary, freezing every node's commit cursor and stalling the
+// background traffic's progress wait.
+func testFlappingPartitions(t *testing.T) {
+	c := newPartitionCluster(t)
+	node0 := c.Node(0)
+	cli := c.Client(0)
+
+	isolated := partitionScenarioSize - 1
+	majority := []int{0, 1, 2, 3}
+
+	w, coin := fundedWallet(stepCtx(t), t, cli, node0, 5_000_000)
+
+	trafficCtx, stopTraffic := context.WithCancel(context.Background())
+	defer stopTraffic()
+	progress, results := startTraffic(trafficCtx, cli, node0, w, coin)
+
+	for cycle := 0; cycle < flappingCycles; cycle++ {
+		flapOnce(t, c, node0, isolated, majority, progress, cycle)
+	}
+
+	stopTraffic()
+	res := <-results
+	requireNoErr(t, res.err)
+
+	requireZeroRollback(t, c)
+}
+
+// flapOnce drives one Partition/Heal cycle of testFlappingPartitions: it
+// partitions the isolate away, waits for visible majority progress under the
+// already-running traffic, heals, and confirms the isolate catches up past
+// the majority's round at heal time.
+func flapOnce(t *testing.T, c *harness.Cluster, node0 *harness.Node, isolated int, majority []int, progress *atomic.Int64, cycle int) {
+	t.Helper()
+
+	before := progress.Load()
+
+	c.Partition(majority, []int{isolated})
+	waitProgress(stepCtx(t), t, progress, before+2)
+
+	burstRound := latestAnchorRound(node0)
+
+	c.Heal()
+
+	if _, err := c.Node(isolated).WaitEvent(stepCtx(t), "consensus.anchor.committed", harness.AttrGE("round", burstRound)); err != nil {
+		c.Dump(t)
+		t.Fatalf("cycle %d: isolated node %d never caught up past round %d after heal: %v", cycle, isolated, burstRound, err)
+	}
 }
 
 // requirePlateau asserts n's consensus.anchor.committed count plateaus: a

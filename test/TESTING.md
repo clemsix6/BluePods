@@ -57,13 +57,17 @@ runs the corpus. The current corpus:
 | functional | `TestScenarioEpochs` | 10 |
 | functional | `TestScenarioObjects` | 12 |
 | functional | `TestScenarioAggregation` | 5 |
+| functional | `TestScenarioSponsored` | 5 |
+| functional | `TestScenarioStake` | 5 |
 | functional | `TestScenarioJoining` | 5+ |
 | functional | `TestScenarioStress` | 12 |
+| functional | `TestScenarioChurn` | 2+3 |
 | adversarial | `TestScenarioCrash` | 5 |
 | adversarial | `TestScenarioAnchorCrash` | 5 |
 | adversarial | `TestScenarioJoinLoad` | 5+1 |
 | adversarial | `TestScenarioPartition` | 5 |
 | adversarial | `TestScenarioEpochCrash` | 10 |
+| adversarial | `TestScenarioColdRestart` | 5 |
 
 ## Writing a scenario
 

@@ -54,8 +54,10 @@ func (w *Wallet) SignSponsoredOp(op SponsoredOp, sponsorPubkey [32]byte, gasCoin
 // SubmitSponsored co-signs a sender-authorized operation as the sponsor (fee_payer)
 // and submits the doubly-signed transaction. The sponsor signs the SAME body hash
 // the sender signed; a mismatch (a tampered op) yields a body the sender's
-// signature no longer covers, which is rejected at commit.
-func (w *Wallet) SubmitSponsored(c *Client, signed SignedSponsoredOp) error {
+// signature no longer covers, which is rejected at commit. Returns the tx hash
+// (the same canonical body hash both parties signed), so a caller can wait on
+// tx.committed without recomputing it independently.
+func (w *Wallet) SubmitSponsored(c *Client, signed SignedSponsoredOp) ([32]byte, error) {
 	sponsorPubkey := w.Pubkey()
 	body := sponsoredBody(signed.Sender, signed.Op, sponsorPubkey, signed.GasCoin, signed.ValidUntil)
 	hash := blake3.Sum256(body)
@@ -71,10 +73,10 @@ func (w *Wallet) SubmitSponsored(c *Client, signed SignedSponsoredOp) error {
 	builder.Finish(txOff)
 
 	if err := c.submit(builder.FinishedBytes()); err != nil {
-		return fmt.Errorf("submit sponsored tx:\n%w", err)
+		return [32]byte{}, fmt.Errorf("submit sponsored tx:\n%w", err)
 	}
 
-	return nil
+	return hash, nil
 }
 
 // sponsoredBody builds the canonical unsigned body shared by the sender and the
