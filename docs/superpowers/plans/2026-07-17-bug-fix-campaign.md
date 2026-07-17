@@ -1035,6 +1035,40 @@ batching.
 **Orchestrator validation:** `TestScenarioPartition` (all five),
 `TestScenarioEpochCrash`, `TestScenarioStress`.
 
+### Batch R12 — the partition scenarios never tested the strict regime (Opus)
+
+Final diagnosis of the last two reds (symmetric, heal_under_traffic):
+both die at `requirePlateau` BEFORE `Heal()` is called — the catch-up
+path the earlier batches hardened is never even reached in these legs.
+Root cause: the strict-regime latch is only evaluated during epoch 0,
+and the harness's sequential bootstrap commits the five founding
+registrations at rounds ~0/24/50/76/102 — across THREE 50-round epochs —
+so committed membership never reaches minValidators inside the epoch-0
+window and the whole scenario runs in the relaxed single-supporter
+regime, where a partition halts neither side (each certifies disjoint
+rounds alone; zero-rollback checks cannot see it). The scenario's
+premise comment is simply false. The node behaves correctly for a
+relaxed cluster; the node-side latch limitation is filed as issue #8.
+
+- [ ] **Step 1:** raise `partitionEpochLength` so epoch 0 spans the whole
+  founding bootstrap (150 verified empirically: all five registrations
+  commit in epoch 0, the latch fires at ~round 100 with strictStart
+  ~130, boundary 1 at 150 still applies the equal-stake arithmetic).
+  Update the scenario's premise comment to state the real constraint:
+  epoch 0 must outlast the sequential bootstrap or the strict regime
+  never arms (issue #8).
+- [ ] **Step 2:** make `requirePlateau` race-free: capture the
+  production frontier F0 at the moment of the cut and fail only if the
+  committed round REACHES F0 — a no-quorum side can legitimately drain
+  commits below F0 (certifications for rounds >= F0 cannot exist
+  locally), so the drain tail stops flaking the assertion while genuine
+  post-cut quorum progress still fails it. The oracle stays strict.
+- [ ] **Step 3:** `go vet ./test/scenarios/` green; one commit; the
+  orchestrator validates `TestScenarioPartition` in full — with the
+  strict regime finally governing, the plateau assertions become
+  meaningful and the post-heal catch-up path gets its first real
+  exercise.
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
