@@ -34,6 +34,14 @@ const (
 	// delegateAmount is the amount delegated, and (delegate never being
 	// partial) also the exact principal undelegate later returns.
 	delegateAmount = uint64(1_000_000)
+
+	// deregWithDelegatorsSize is the validator count for
+	// TestScenarioDeregisterWithDelegators.
+	deregWithDelegatorsSize = 5
+
+	// deregWithDelegatorsEpochLength makes boundaries land often enough that the
+	// scenario crosses the one that would apply the queued removal within budget.
+	deregWithDelegatorsEpochLength = 50
 )
 
 // stakeDelta captures one stake operation's fingerprint terms immediately
@@ -119,6 +127,55 @@ func TestScenarioStake(t *testing.T) {
 	t.Run("supply_delta_conserved", func(t *testing.T) {
 		requireDeltasConserved(t, deltas)
 	})
+}
+
+// TestScenarioDeregisterWithDelegators drives the deregistration path for a
+// validator that still carries a live delegation across an epoch boundary: a fresh
+// wallet delegates to a non-founder validator, that validator deregisters, and the
+// cluster crosses the boundary that would otherwise apply the queued removal. The
+// removal is deferred while the delegated stake is bonded, so the delegated total
+// never leaves total_bonded uncredited and the per-node supply identity stays exact
+// across the boundary — the accounting the unguarded path drops by exactly the
+// delegated amount. Teardown re-checks convergence and the identity cluster-wide;
+// this scenario only has to exercise the boundary while the delegation is live.
+func TestScenarioDeregisterWithDelegators(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scenario")
+	}
+
+	c := harness.NewCluster(t, deregWithDelegatorsSize, harness.WithEpochLength(deregWithDelegatorsEpochLength))
+	node0 := c.Node(0)
+	cli := c.Client(0)
+
+	validator := walletFromNodeKey(t, c.Node(1))
+	validatorPub := validator.Pubkey()
+
+	// A fresh wallet delegates to the validator through the real delegate path,
+	// opening a position bonded behind it.
+	delegator, coinID := fundedWallet(stepCtx(t), t, cli, node0, delegateFunding)
+
+	posID, hash, err := delegator.Delegate(cli, coinID, delegator.GetCoin(coinID).Version, validatorPub, delegateAmount)
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+
+	_, err = node0.WaitEvent(stepCtx(t), "stake.delegated",
+		harness.Attr("validator", hexID(validatorPub)),
+		harness.Attr("position", hexID(posID)),
+		harness.Attr("amount", delegateAmount))
+	requireNoErr(t, err)
+
+	// The validator deregisters; the removal is queued for the next epoch boundary.
+	requireNoErr(t, validator.DeregisterValidator(cli))
+
+	_, err = node0.WaitEvent(stepCtx(t), "epoch.validator.deregistered",
+		harness.Attr("validator", hexID(validatorPub)))
+	requireNoErr(t, err)
+
+	// Cross the boundary that would apply the removal, then assert the supply
+	// identity holds on every node: the delegated stake stayed bonded because the
+	// removal is deferred while the delegation is outstanding.
+	waitNextBoundary(t, node0)
+	requireSupplyIdentity(t, c)
 }
 
 // testUnbondCreditsCoin has validator (a non-founder validator whose wallet is
