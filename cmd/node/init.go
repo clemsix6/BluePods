@@ -15,7 +15,6 @@ import (
 	"BluePods/internal/podvm"
 	"BluePods/internal/state"
 	"BluePods/internal/storage"
-	"BluePods/internal/types"
 )
 
 // initStorage initializes the Pebble storage.
@@ -201,15 +200,6 @@ func (n *Node) seedGenesisState() {
 	}
 
 	n.dag.SeedGenesis(is)
-
-	// SeedGenesis sets the reserve coin directly into the coin store but never
-	// notifies the tracker, unlike every transaction-driven object-creation path
-	// (state.applyCreatedObjects tracks every created object it processes).
-	// Track it here so tracker-derived aggregates (locked deposits,
-	// tracked-object counts) and the fingerprint's singleton-content hashing
-	// include the genesis reserve coin like any other object.
-	coin := types.GetRootAsObject(is.Coin, 0)
-	n.dag.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
 
 	logger.Info("seeded genesis state",
 		"supply", is.Supply,

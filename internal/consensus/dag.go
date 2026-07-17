@@ -661,6 +661,15 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	// founder's self-stake is locked OUT of the coin by BuildInitialState, so it
 	// is bonded (counted as total_bonded), not sitting in a coin balance.
 	d.coinStore.SetCoinsTotal(is.Supply - is.SelfStake)
+
+	// The reserve coin is tracked like every transaction-created object
+	// (state.applyCreatedObjects tracks each one it processes): the tracker
+	// feeds the deposit and object-count aggregates and selects which
+	// singletons get their content hashed into the convergence fingerprint, so
+	// an untracked reserve coin would keep its balance outside the checksum
+	// entirely.
+	coin := types.GetRootAsObject(is.Coin, 0)
+	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
 }
 
 // SeedGenesisValidator seeds the founding validator into the validator set:
