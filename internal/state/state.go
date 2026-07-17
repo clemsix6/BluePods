@@ -29,6 +29,7 @@ type State struct {
 	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
 	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
 	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
+	onObjectDeleted func(id [32]byte) uint64                                              // onObjectDeleted removes a deleted object from the network-uniform tracker and returns the storage deposit it held
 	signObject      func(id [32]byte, content []byte, version uint64, replication uint16) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
@@ -99,6 +100,14 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 // Used by the consensus tracker to register created objects.
 func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
 	s.onObjectCreated = fn
+}
+
+// SetOnObjectDeleted sets a callback that fires as an object is deleted. It
+// removes the object from the network-uniform consensus tracker and returns the
+// storage deposit its entry held, so the deletion accounting releases that
+// deposit identically on every node, holder or not.
+func (s *State) SetOnObjectDeleted(fn func(id [32]byte) uint64) {
+	s.onObjectDeleted = fn
 }
 
 // SetObjectSigner sets a callback that fires when a held, replicated object is
@@ -620,76 +629,110 @@ func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Obj
 	return types.ObjectEnd(builder)
 }
 
-// applyDeletedObjects removes deleted objects with ownership verification.
-// Protocol-level ownership check: only the object owner can delete.
-// Computes refund (95% of fees) and credits the sender's gas_coin.
+// applyDeletedObjects settles and removes every object the pod deleted.
 //
-// Determinism limit: the deletion supply/refund accounting here (SubSupply for
-// the burn, creditGasCoin for the refund) runs on the SHARDED execution path
-// (only object holders execute), so it is deterministic ONLY for singleton
-// objects, which every node holds and therefore applies identically. The current
-// system pod deletes no objects and coins are singletons, so this is latent today.
+// The deposit accounting runs on every node from the network-uniform object
+// tracker: releasing the object's tracked deposit (which shrinks the deposits
+// term of the supply identity), refunding storageRefundBPS of it to the gas coin,
+// and burning the remainder. The deposit is read from the tracker, not from the
+// object's content, so a holder and a non-holder move coins_total, deposits, and
+// total_supply identically. This is what keeps a deletion from forking the supply
+// identity across nodes when a replicated object carrying a locked deposit is
+// removed: holder and non-holder alike burn and refund the same amount.
 //
-// TODO: before any pod is allowed to delete REPLICATED objects carrying a storage
-// deposit, move this supply/refund accounting to a deterministic all-nodes path
-// driven by a committed/attested deletion set, applied identically on every node.
-// Otherwise total_supply and coin balances will diverge across nodes (a fork),
-// because holders would burn/refund while non-holders would not.
+// Removing the object's stored content stays holder-only: a non-holder never
+// stored it, and the owner-only guard reads content only a holder has. In
+// production the pod-decided deletion set is already owner-authorized (mutable
+// refs are ownership-checked at commit), so content deletion and accounting agree.
 func (s *State) applyDeletedObjects(output *types.PodExecuteOutput, tx *types.Transaction) {
 	data := output.DeletedObjectsBytes()
 	const idSize = 32
 
 	txHash := extractTxHash(tx)
-
-	// Extract sender for ownership check
-	var sender Hash
-	if senderBytes := tx.SenderBytes(); len(senderBytes) == 32 {
-		copy(sender[:], senderBytes)
-	}
-
-	// Extract gas_coin for refund credit
-	var gasCoinID Hash
-	hasGasCoin := false
-	if gasCoinBytes := tx.GasCoinBytes(); len(gasCoinBytes) == 32 {
-		copy(gasCoinID[:], gasCoinBytes)
-		hasGasCoin = true
-	}
+	sender := extractSender(tx)
+	gasCoinID, hasGasCoin := extractGasCoin(tx)
 
 	for i := 0; i+idSize <= len(data); i += idSize {
 		var id Hash
 		copy(id[:], data[i:i+idSize])
 
-		// Load object to verify ownership
-		objData := s.objects.get(id)
-		if objData == nil {
-			continue // object not in local storage, skip
-		}
+		// Network-uniform accounting: release the tracked deposit and fully
+		// account it (part refunded to a coin, the remainder burned) so it never
+		// silently vanishes and total_supply never overstates the coins backing it.
+		deposit := s.releaseTrackedDeposit(id)
+		refund := s.settleDeletionDeposit(id, gasCoinID, deposit, hasGasCoin)
 
-		// Ownership check: only owner can delete
-		obj := types.GetRootAsObject(objData, 0)
-		var owner Hash
-		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
-			copy(owner[:], ownerBytes)
-		}
+		// Holder-only content removal.
+		s.deleteHeldContent(id, sender)
 
-		if owner != sender {
-			logger.Warn("non-owner deletion blocked",
-				"id_prefix", id[:4],
-				"owner_prefix", owner[:4],
-				"sender_prefix", sender[:4],
-			)
-			continue
-		}
-
-		// The full objFees was locked supply, so on deletion it must be fully
-		// accounted: part refunded to a coin (stays in supply) and the remainder
-		// burned (leaves supply). It must never silently vanish, or total_supply
-		// would overstate the coins backing it.
-		refund := s.settleDeletionDeposit(id, gasCoinID, obj.Fees(), hasGasCoin)
-
-		s.objects.delete(id)
 		events.ObjectDeleted(id, txHash, refund)
 	}
+}
+
+// releaseTrackedDeposit removes a deleted object from the network-uniform tracker
+// and returns the storage deposit its entry held. Every node runs this from the
+// same tracker metadata, so the deposits term shrinks by the same amount whether
+// or not the node holds the object's content. It returns 0 when no tracker is
+// wired (unit tests) or the object carried no deposit.
+func (s *State) releaseTrackedDeposit(id Hash) uint64 {
+	if s.onObjectDeleted == nil {
+		return 0
+	}
+
+	return s.onObjectDeleted(id)
+}
+
+// deleteHeldContent removes a deleted object's stored content, but only for a
+// holder that owns it. A non-holder never stored the object, so there is nothing
+// to remove. The owner-only guard is a defense-in-depth check on content only a
+// holder has; in production the deletion set is already owner-authorized, so it
+// never blocks a legitimate deletion.
+func (s *State) deleteHeldContent(id, sender Hash) {
+	objData := s.objects.get(id)
+	if objData == nil {
+		return
+	}
+
+	obj := types.GetRootAsObject(objData, 0)
+
+	var owner Hash
+	if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
+		copy(owner[:], ownerBytes)
+	}
+
+	if owner != sender {
+		logger.Warn("non-owner deletion blocked",
+			"id_prefix", id[:4],
+			"owner_prefix", owner[:4],
+			"sender_prefix", sender[:4],
+		)
+		return
+	}
+
+	s.objects.delete(id)
+}
+
+// extractSender reads the 32-byte sender from a transaction, or the zero hash
+// when it is absent or malformed.
+func extractSender(tx *types.Transaction) Hash {
+	var sender Hash
+	if b := tx.SenderBytes(); len(b) == 32 {
+		copy(sender[:], b)
+	}
+
+	return sender
+}
+
+// extractGasCoin reads the transaction's gas_coin id and reports whether one is
+// set. The zero hash is returned when no valid gas coin is present.
+func extractGasCoin(tx *types.Transaction) (Hash, bool) {
+	var id Hash
+	if b := tx.GasCoinBytes(); len(b) == 32 {
+		copy(id[:], b)
+		return id, true
+	}
+
+	return id, false
 }
 
 // settleDeletionDeposit fully accounts a deleted object's locked storage

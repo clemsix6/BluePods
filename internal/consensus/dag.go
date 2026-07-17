@@ -600,6 +600,19 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	d.tracker.trackObject(h, version, replication, fees)
 }
 
+// UntrackObject removes a deleted object from the tracker and returns the storage
+// deposit its entry held. Called by the state layer as an object is deleted, so
+// the deposit is released from the network-uniform deposits total on every node,
+// holder or not.
+func (d *DAG) UntrackObject(id [32]byte) uint64 {
+	var h Hash
+	copy(h[:], id[:])
+	fees := d.tracker.getFees(h)
+	d.tracker.deleteObject(h)
+
+	return fees
+}
+
 // SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
 // verifier receives the commit round so it can pick the holder snapshot of the
 // epoch the attestations belong to. The round commit loop prefers the batch

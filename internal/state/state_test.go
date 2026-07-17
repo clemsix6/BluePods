@@ -1206,6 +1206,9 @@ func TestApplyDeletedObjects_RefundCredits(t *testing.T) {
 	gasCoinData := buildCoinObject(gasCoinID, 5000, owner)
 	s.SetObject(gasCoinData)
 
+	// The tracker records the deposit; deletion reads it from there, not content.
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 10000 })
+
 	// Object with fees=10000
 	objData := buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 10000)
 	s.SetObject(objData)
@@ -1253,6 +1256,7 @@ func TestApplyDeletedObjects_BurnsSupply(t *testing.T) {
 	objID := Hash{0x75}
 	gasCoinID := Hash{0xEF}
 
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 1000 })
 	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
 	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
 
@@ -1280,6 +1284,7 @@ func TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit(t *testing.T) {
 	owner := Hash{0xAA}
 	objID := Hash{0x76}
 
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 1000 })
 	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
 
 	// tx has sender=owner but NO gas_coin: the deposit has no refund recipient.
@@ -1308,6 +1313,7 @@ func TestApplyDeletedObjects_FailedRefundBurnsFullDeposit(t *testing.T) {
 	objID := Hash{0x77}
 	missingGasCoin := Hash{0xEE} // referenced but never stored
 
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 1000 })
 	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
 
 	tx := buildMinimalTxWithGasCoin(owner, missingGasCoin)
@@ -1318,6 +1324,59 @@ func TestApplyDeletedObjects_FailedRefundBurnsFullDeposit(t *testing.T) {
 	// Refund cannot land → full 1000 burned (not just the 50 remainder).
 	if got := s.TotalSupply(); got != 9000 {
 		t.Errorf("total supply after failed refund: got %d, want 9000", got)
+	}
+}
+
+// TestApplyDeletedObjects_UniformAcrossHolders verifies the deletion accounting
+// moves coins_total, deposits, and total_supply identically on a holder and a
+// non-holder of a replicated object. The storage deposit is sourced from the
+// network-uniform tracker (the onObjectDeleted callback), not the holder-only
+// object content, so a non-holder that never stored the object still refunds,
+// burns, and shrinks deposits by the same amount as a holder.
+func TestApplyDeletedObjects_UniformAcrossHolders(t *testing.T) {
+	const deposit = 10000
+
+	owner := Hash{0xAA}
+	objID := Hash{0x88}
+	gasCoinID := Hash{0xEE}
+
+	// run applies the same committed deletion to a fresh state that either holds
+	// the replicated object's content or does not, and returns the accounting.
+	run := func(holder bool) (coins, deposits, supply uint64) {
+		db := newTestStorage(t)
+		s := New(db, nil)
+		s.SetStorageFees(1000, 9500, 100) // 95% refund, 5% burn
+		s.SetTotalSupply(100000)
+		s.SetIsHolder(func([32]byte, uint16) bool { return holder })
+
+		// The tracker records the deposit on every node; deletion releases it.
+		deposits = deposit
+		s.SetOnObjectDeleted(func([32]byte) uint64 {
+			deposits -= deposit
+			return deposit
+		})
+
+		// The gas coin is a singleton every node holds.
+		s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
+
+		// Only a holder stores the replicated object's content.
+		if holder {
+			s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 3, []byte("data"), deposit))
+		}
+
+		tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
+		output := buildPodOutputWithDeleted(objID)
+		s.applyDeletedObjects(output, tx)
+
+		return s.CoinsTotal(), deposits, s.TotalSupply()
+	}
+
+	hc, hd, hs := run(true)
+	nc, nd, ns := run(false)
+
+	if hc != nc || hd != nd || hs != ns {
+		t.Fatalf("holder vs non-holder diverged: coins %d/%d, deposits %d/%d, supply %d/%d",
+			hc, nc, hd, nd, hs, ns)
 	}
 }
 

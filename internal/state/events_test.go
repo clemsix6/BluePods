@@ -191,6 +191,7 @@ func TestApplyDeletedObjects_RefundEmitsDepositRefundedAndSupplyBurned(t *testin
 	objID := Hash{0x74}
 	gasCoinID := Hash{0xEE}
 
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 10000 })
 	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
 	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 10000))
 
@@ -250,6 +251,7 @@ func TestApplyDeletedObjects_NoGasCoinBurnsFullAmountNoRefundEvent(t *testing.T)
 	owner := Hash{0xAA}
 	objID := Hash{0x76}
 
+	s.SetOnObjectDeleted(func([32]byte) uint64 { return 1000 })
 	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
 
 	// tx has sender=owner but NO gas_coin.
