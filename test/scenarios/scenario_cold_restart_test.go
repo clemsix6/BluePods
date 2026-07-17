@@ -320,6 +320,10 @@ func coldRestartEpochsRestartBootstrap(t *testing.T, c *harness.Cluster, node0 *
 	nextSeg := preSeg + 1
 	inNewSegment := func(e harness.Event) bool { return e.Seg >= nextSeg }
 
+	// Restart spawns a new process without stopping the old one (its contract
+	// delegates that to the caller); stop first, or the new process loses the
+	// storage lock to the still-live old one and dies at boot.
+	requireNoErr(t, node0.Stop())
 	requireNoErr(t, node0.Restart(""))
 	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", inNewSegment); err != nil {
 		c.Dump(t)
