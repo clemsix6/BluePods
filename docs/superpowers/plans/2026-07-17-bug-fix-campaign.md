@@ -927,14 +927,51 @@ no transactions).
 heal_under_traffic now green, 5/5 total), `TestScenarioEpochs` full
 teardown, `TestScenarioStake`.
 
-### Batch R9 — EpochCrash commit stall at the boundary kill (diagnose, then fix)
+### Batch R9 — consecutive dead-designated rounds wedge the relaxed regime (Opus)
 
-NOT the R8 class. Clean-run signature at the R1 commit: `timeout waiting
-for 7 "epoch.transitioned" (have 6)` — after the boundary kill one node
-never transitions; commit progress stalls rather than state diverging.
-This is the crash-wedge family. Diagnosis first (root cause with
-event-journal evidence and the smallest reproducing seam, plus a minimal
-fix proposal), then the fix as its own commit with a failing test first.
+Diagnosed (~99% deterministic on EpochCrash; same family as the
+Partition/across_epoch_boundary stall — cursor frozen while production
+races ahead). Mechanism: the cluster is still in the RELAXED bootstrap
+regime when the kill lands (`strictStartRound = minValidators-commit +
+grace + buffer` puts the whole run inside the relaxed window), and in
+that regime BOTH wedge escapes are disabled — `verdictFromTally` never
+blames a relaxed round and `anchorCertImpossible` short-circuits to
+false. A round designated to a single dead producer still resolves
+through the next certified anchor, but TWO CONSECUTIVE dead-designated
+rounds block `anchorStatus`'s forward scan forever (first: undecided
+queried round, continue; second: undecided, not impossible, wait), so
+the certified anchor one round further is never reached. Every node
+wedges identically at the same round.
+
+- [ ] **Step 1 — failing unit test** (the diagnosis prototyped it):
+  a relaxed-regime DAG with two consecutive rounds designated to
+  producers that hold no vertex at their round and are silent across the
+  deep span; the commit cursor must pass them and reach the certified
+  anchor beyond. Must wedge today. Keep the strict-regime twin asserting
+  the existing blame path still handles it.
+- [ ] **Step 2 — regime-independent impossibility, integrated with the
+  silence hardening:** extend `certImpossibility`
+  (`internal/consensus/anchor_decision.go`) with a check that runs BEFORE
+  the relaxed short-circuit: a designated producer with NO stored vertex
+  at the round that is silent across the deep stored span
+  (`silentHolders`) can never be certified — there is no candidate to
+  cite. Classify it as the reversible (silence) grade, so
+  `scanPastUndecided`'s adjacent-round guard keeps governing it, and
+  teach `adjacentCertifyAgrees` the dead-pair case: when the QUERIED
+  round's designated producer also holds no stored vertex and is
+  span-silent, every resolver skips it on this node's evidence, so
+  passing the adjacent silence-impossible round cannot flip the
+  resolution. Justify the relaxed-regime safety argument in the
+  docstring by the regime's own trust model: relaxed certification
+  accepts a single supporter (no quorum intersection), so a span-silence
+  skip is not a weaker guarantee than the regime's certification rule —
+  and the strict regime keeps the full R4 intersection guard unchanged.
+- [ ] **Step 3:** existing wedge and silence-sim tests stay green
+  (the R4 fork sim especially — the new escape must not weaken it);
+  full suite green; one commit.
+
+**Orchestrator validation:** `TestScenarioEpochCrash`,
+`TestScenarioPartition` (across_epoch_boundary), `TestScenarioChurn`.
 
 ### Final batch — full-corpus validation (orchestrator)
 
