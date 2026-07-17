@@ -541,27 +541,25 @@ green (batches 1/2/4 all landed by now, so a clean run is the bar).
 
 ---
 
-### Batch 7 — Bugs 4 + 6: design decisions (user gate, then sized on decision)
+### Batch 7 — Bugs 4 + 6: resolved decisions (delegated to the orchestrator)
 
-No implementation until the user decides. The orchestrator presents both
-questions when the campaign reaches this batch:
+The user delegated both decisions to the campaign (2026-07-17). Chosen:
 
-- **Bug 4 (deletion accounting runs only on holders):** (a) run the
-  refund/burn accounting for deleted replicated objects on EVERY node from
-  tracker metadata (deposit amount is network-uniform), making the supply
-  terms move identically everywhere; or (b) document and enforce the
-  current restriction (pods may delete only replication-0/singleton
-  objects), turning the latent divergence into a rejected operation.
-- **Bug 6 (whole DNS unreachable — no register/update/delete callable):**
-  (a) expose domain register/update/delete in the system pod + client verb
-  + a `test/scenarios` DNS scenario (this is feature work: if chosen, it
-  goes through the feature pipeline, not this campaign); or (b) strike/mark
-  the DNS section in `docs/WHITEPAPER.md` as not yet implemented and keep
-  entry 6 open as a spec-code gap.
-
-Once decided: bug 4 is one commit on this branch (Opus if (a), Sonnet if
-(b)); bug 6 option (b) is a docs commit here, option (a) leaves this
-campaign entirely.
+- **Bug 4 → fix it properly (Opus, one commit):** run the refund/burn
+  accounting for deleted replicated objects on EVERY node from tracker
+  metadata (the deposit amount is network-uniform), so the supply terms
+  move identically everywhere. Failing unit test first: a deletion of a
+  replicated object must move `deposits`/`coins_total` identically on a
+  holder DAG and a non-holder DAG. Resolves the `TODO` in
+  `internal/state/state.go`'s deletion path. New mutation on non-holders ⇒
+  reuse the existing deletion/refund events; add an `internal/events`
+  constructor only if a genuinely new mutation appears.
+- **Bug 6 → close the spec-code gap on the docs side (one docs commit):**
+  the whole domain surface (register/update/delete) is unreachable from any
+  client; exposing it is feature work for a later cycle. Add a short,
+  factual note to `docs/WHITEPAPER.md`'s naming/domains section stating the
+  capability is specified but not yet exposed by the system pod, so the
+  whitepaper stays accurate as the document of record.
 
 ---
 
@@ -573,9 +571,13 @@ campaign entirely.
 - [ ] Expected: every scenario green except what batch 7's decisions leave
   open. Any red: triage per `test/TESTING.md` (harness flake → fix harness;
   project bug → new BUGS.md entry + follow-up fix commit on this branch).
-- [ ] Sweep `test/BUGS.md`: every fixed entry marked with its commit; the
-  file's preamble ("fixing these bugs is out of scope for the
-  test-environment cycle") updated to reflect the campaign.
+- [ ] Retire the register (user request): DELETE `test/BUGS.md` in the
+  final commit — the fixed-entry history lives in git and in this
+  campaign's commits. Update `test/TESTING.md`'s triage protocol in the
+  same commit: a confirmed project bug is now fixed on a branch (or filed
+  as an issue), no longer registered in a standing file; drop every
+  BUGS.md reference (TESTING.md, scenario comments, CLAUDE.md's project
+  layout line).
 - [ ] Update the PR body (all State boxes ticked), mark ready for review,
   final review pass on the whole diff by Fable before merge.
 
