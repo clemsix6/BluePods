@@ -376,20 +376,24 @@ func TestAnchorStatusWaitsUntilLaterAnchorDecided(t *testing.T) {
 	}
 }
 
-// TestAnchorStatusWaitsPastLaterUndecided is the anti-fork safety case: an
-// undecided round must NOT be resolved by skipping past a later still-undecided
-// round to reach a further certified anchor. That later round could yet certify
-// and become the true resolving anchor, so a node with fuller evidence could
-// decide differently. The rule must return wait, even though a certified anchor
-// exists two rounds ahead.
-func TestAnchorStatusWaitsPastLaterUndecided(t *testing.T) {
+// TestAnchorStatusResolvesPastCertImpossibleLaterRound is the liveness half of the
+// former "waits past later undecided" case: an undecided round scans PAST a later
+// undecided round whose designated anchor is CERTIFICATION-IMPOSSIBLE — a complete
+// round-N+2 frontier split two/two, capping achievable support at 1/2 below the 2/3
+// quorum — to reach a further certified anchor, and resolves by causal membership.
+// A cert-impossible round can never certify on any node, so it can never be the
+// resolving anchor; passing it is safe and unwedges the cursor. Before the fix this
+// WAITed forever (the permanent commit wedge).
+func TestAnchorStatusResolvesPastCertImpossibleLaterRound(t *testing.T) {
 	vals, dag := newDecisionDAG(t)
 
 	const round = 3
-	v, a1 := buildSplitRound(t, dag, vals, round, true) // round N undecided; anchor a1
+	v, a1 := buildSplitRound(t, dag, vals, round, true) // round N undecided; anchor a1 cites V
 
-	// Round N+1 is itself undecided: its round-N+2 citations split two/two, so
-	// neither a certify nor a blame quorum forms for a1.
+	// Round N+1 is itself undecided with a COMPLETE round-N+2 frontier split two/two:
+	// two producers cite a1, two cite nothing of it. Neither quorum forms, and the two
+	// blamers cap achievable support below the 2/3 quorum — so round N+1 is
+	// certification-impossible and can never be the resolver.
 	anchorer2 := designatedProducer(t, dag, vals, round+2)
 	rest2 := others(vals, anchorer2)
 	a2 := addDagVertex(t, dag, anchorer2, round+2, []Hash{a1}) // supports N+1 (and carries a1→V)
@@ -397,15 +401,128 @@ func TestAnchorStatusWaitsPastLaterUndecided(t *testing.T) {
 	addDagVertex(t, dag, rest2[1], round+2, nil)               // blames N+1
 	addDagVertex(t, dag, rest2[2], round+2, nil)               // blames N+1
 
-	// A certified anchor two rounds ahead that the buggy "skip past undecided" rule
-	// would wrongly use to resolve round N.
+	// A certified anchor two rounds ahead. Because round N+1 is cert-impossible, the
+	// scan passes it and this anchor resolves round N: V sits in a2's causal history
+	// via a1, so round N commits V.
 	for _, c := range others(vals, anchorer2)[:3] {
 		addDagVertex(t, dag, c, round+3, []Hash{a2})
 	}
 
-	_ = v
+	dec := dag.anchorStatus(round)
+	if dec.kind != anchorCommit || dec.anchor != v {
+		t.Fatalf("must resolve past a cert-impossible later round and commit(%x), got kind=%d anchor=%x", v[:4], dec.kind, dec.anchor[:4])
+	}
+}
+
+// TestAnchorStatusWaitsPastIncompleteLaterRound is the anti-fork safety half: an
+// undecided round must NOT be resolved by skipping past a later undecided round
+// whose stored round-N+2 blame is still THIN. Here one holder is absent and only
+// one stored vertex blames the later anchor (1/4 < 1/3): the absent holder counts
+// as a potential supporter, so achievable support (3/4) still reaches the quorum —
+// the withheld vertex could yet cite the later anchor and lift it to certification,
+// making it the true resolving anchor. A node with fuller evidence could then
+// decide differently, so the rule must WAIT and self-heal when the missing vertex
+// arrives, even though a certified anchor exists two rounds ahead. This is the
+// delayed-not-lost (load) form of the frontier.
+func TestAnchorStatusWaitsPastIncompleteLaterRound(t *testing.T) {
+	vals, dag := newDecisionDAG(t)
+
+	const round = 3
+	_, a1 := buildSplitRound(t, dag, vals, round, true)
+
+	// Round N+1 is undecided with an INCOMPLETE round-N+2 frontier and thin stored
+	// blame: two supporters, one blamer, one holder absent. Achievable support is
+	// 3/4 ≥ 2/3, so certification is not ruled out.
+	anchorer2 := designatedProducer(t, dag, vals, round+2)
+	rest2 := others(vals, anchorer2)
+	a2 := addDagVertex(t, dag, anchorer2, round+2, []Hash{a1}) // supports N+1
+	addDagVertex(t, dag, rest2[0], round+2, []Hash{a1})        // supports N+1
+	addDagVertex(t, dag, rest2[1], round+2, nil)               // blames N+1
+	// rest2[2] withheld → a potential supporter, keeping certification possible.
+
+	// A certified anchor two rounds ahead IS present, so only the still-possible
+	// certification keeps the cursor waiting — not an absent resolver.
+	for _, c := range others(vals, anchorer2)[:3] {
+		addDagVertex(t, dag, c, round+3, []Hash{a2})
+	}
+
 	if dec := dag.anchorStatus(round); dec.kind != anchorWait {
-		t.Fatalf("must wait past a later undecided round, got kind=%d", dec.kind)
+		t.Fatalf("must wait on a later undecided round that could still certify, got kind=%d", dec.kind)
+	}
+}
+
+// TestAnchorStatusResolvesPastDeadProducerLaterRound is the dead-producer form: a
+// later undecided round whose round-N+2 frontier is INCOMPLETE — one holder never
+// produced (crashed) — still resolves when the STORED blame already rules
+// certification out. Two of four stored vertices blame the later anchor (1/2 ≥
+// 1/3), so even counting the absent holder as a potential supporter the achievable
+// support (1/2) is below the 2/3 quorum: no future vertex can certify the round,
+// dead or alive. The scan must pass it and let the certified anchor beyond resolve
+// the wedged round. Requiring a complete frontier here would let a dead producer
+// block the predicate forever, reintroducing the permanent wedge.
+func TestAnchorStatusResolvesPastDeadProducerLaterRound(t *testing.T) {
+	vals, dag := newDecisionDAG(t)
+
+	const round = 3
+	v, a1 := buildSplitRound(t, dag, vals, round, true) // round N undecided; a1 cites V
+
+	// Round N+1 undecided, frontier incomplete: one supporter, two stored blamers,
+	// one holder dead (no vertex, ever). Achievable support 1/2 < 2/3 → impossible.
+	anchorer2 := designatedProducer(t, dag, vals, round+2)
+	rest2 := others(vals, anchorer2)
+	a2 := addDagVertex(t, dag, anchorer2, round+2, []Hash{a1}) // supports N+1 (and carries a1→V)
+	addDagVertex(t, dag, rest2[0], round+2, nil)               // blames N+1
+	addDagVertex(t, dag, rest2[1], round+2, nil)               // blames N+1
+	// rest2[2] dead → absent, counted as a potential supporter — still not enough.
+
+	// The certified anchor two rounds ahead: the scan passes the cert-impossible
+	// round N+1 and resolves round N by causal membership (a2→a1→V), committing V.
+	for _, c := range others(vals, anchorer2)[:3] {
+		addDagVertex(t, dag, c, round+3, []Hash{a2})
+	}
+
+	dec := dag.anchorStatus(round)
+	if dec.kind != anchorCommit || dec.anchor != v {
+		t.Fatalf("must resolve past a dead-producer cert-impossible round and commit(%x), got kind=%d anchor=%x", v[:4], dec.kind, dec.anchor[:4])
+	}
+}
+
+// TestAnchorCertImpossibleEquivocatorCountsAsSupporter pins the equivocation rule:
+// a producer that cites the candidate in ANY of its stored round-N+1 vertices counts
+// as a possible supporter (the same union rule the direct verdict uses), never as a
+// blamer. An equivocator can therefore only SHRINK the blamer set — keeping an
+// otherwise-eligible round in WAIT — and can never be double-counted to manufacture a
+// false certification-impossibility that would resolve past a round that could still
+// certify.
+func TestAnchorCertImpossibleEquivocatorCountsAsSupporter(t *testing.T) {
+	vals, dag := newDecisionDAG(t)
+
+	const round = 3
+	producer := designatedProducer(t, dag, vals, round)
+	v := addDagVertex(t, dag, producer, round, nil)
+
+	other := others(vals, producer) // three non-designated validators
+
+	// Complete round-N+1 frontier split two/two: two cite V (supporters), two cite
+	// nothing of the producer (blamers). The two blamers cap achievable support at
+	// 1/2 < the 2/3 quorum, so the round is certification-impossible.
+	addDagVertex(t, dag, producer, round+1, []Hash{v}) // supporter
+	addDagVertex(t, dag, other[0], round+1, []Hash{v}) // supporter
+	addDagVertex(t, dag, other[1], round+1, nil)       // blamer
+	addDagVertex(t, dag, other[2], round+1, nil)       // blamer
+
+	if !dag.anchorCertImpossible(round) {
+		t.Fatal("a complete two/two split must be certification-impossible")
+	}
+
+	// other[1] equivocates with a SECOND round-N+1 vertex that DOES cite V. By the
+	// union rule it now cites a candidate, so it is a possible supporter, not a blamer.
+	// Achievable support rises to 3/4 ≥ the quorum, so the round is no longer
+	// certification-impossible and the scan must keep WAITing.
+	addDagVertex(t, dag, other[1], round+1, []Hash{v})
+
+	if dag.anchorCertImpossible(round) {
+		t.Fatal("an equivocator that cites the candidate must not be counted as a blamer")
 	}
 }
 

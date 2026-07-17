@@ -47,10 +47,17 @@ type citationTally struct {
 // blamed (skip). When it is undecided, the indirect rule scans forward for the
 // FIRST later CERTIFIED anchor and decides the round by whether its producer sits
 // in that anchor's causal history. Later blamed rounds are decided-skips and are
-// scanned past; a later UNDECIDED round (or an unavailable stake set) returns wait,
-// because it could still certify and become the resolving anchor — resolving past
-// it would risk a view-dependent, forking result. Wait therefore holds until every
-// round up to the resolving anchor is decided.
+// scanned past. A later UNDECIDED round normally returns wait, because it could
+// still certify and become the resolving anchor — resolving past it would risk a
+// view-dependent, forking result. The one exception is a later undecided round
+// whose designated anchor is CERTIFICATION-IMPOSSIBLE (anchorCertImpossible): such
+// a round can never certify on any node, so it can never be the resolving anchor,
+// and the scan passes it to reach the genuinely certified anchor beyond. Without
+// that exception a run of permanently-undecided rounds (an anchor producer that was
+// unreachable when its round passed) wedges the commit cursor forever even though a
+// later certified anchor would resolve it. An unavailable stake set still returns
+// wait. Wait therefore holds until every round up to the resolving anchor is either
+// decided or provably cert-impossible.
 func (d *DAG) anchorStatus(round uint64) anchorDecision {
 	latest := d.store.highestRound()
 
@@ -68,8 +75,10 @@ func (d *DAG) anchorStatus(round uint64) anchorDecision {
 			continue // a later decided-skip is never the anchor; keep scanning
 		case verdict == verdictUndecided && r == round:
 			continue // round itself is undecided; scan forward for a resolver
+		case verdict == verdictUndecided && d.anchorCertImpossible(r):
+			continue // a later round that can never certify is never the resolving anchor
 		default:
-			return anchorDecision{kind: anchorWait} // later-undecided or unavailable: cannot resolve past it
+			return anchorDecision{kind: anchorWait} // later-undecided-but-still-certifiable or unavailable: cannot resolve past it
 		}
 	}
 
@@ -222,6 +231,82 @@ func (d *DAG) reachesStrictQuorum(set *ValidatorSet, producers map[Hash]bool) bo
 	cappedSum, cappedTotal := d.cappedStakeOf(set, producers)
 
 	return quorumReached(cappedSum, cappedTotal)
+}
+
+// anchorCertImpossible reports whether an UNDECIDED later round can NEVER be
+// certified, so anchorStatus's forward scan may pass it to reach a genuinely
+// certified resolving anchor instead of waiting on it forever. It is the disarming
+// predicate for the permanent commit wedge: a run of undecided rounds (an anchor
+// producer unreachable, or dead, when its round passed) otherwise blocks the scan
+// from ever reaching the certified anchor that would resolve the wedged round.
+//
+// It fires only in the STRICT regime (a relaxed bootstrap round certifies on a
+// single supporter and is never ruled out here) and only when the round-N+1 holder
+// snapshot resolves. The rule is potential support: a holder is a BLAMER only when
+// it has at least one STORED round-N+1 vertex and none of its stored round-N+1
+// vertices cites any of the candidate's vertices — the SAME union rule the direct
+// verdict uses (tallyCitations), so a producer that ever cites a candidate, even
+// via an equivocating second vertex, is a possible supporter, never a blamer. Every
+// holder with NO stored round-N+1 vertex counts as a POTENTIAL SUPPORTER: its
+// future vertex might cite the candidate, so assuming support is the conservative
+// reading — and it is what lets rounds blocked by DEAD producers resolve, since
+// only the survivors' stored citations can rule certification out. The round is
+// impossible when even that maximum achievable support falls below the strict 2/3
+// capped-stake quorum.
+//
+// Determinism, monotonicity, and zero rollback: the verdict is computed only from
+// stored, immutable vertices (citations are parent hashes fixed at production), so
+// any two nodes holding the same vertices compute the identical result. An honest
+// holder produces at most one round-N+1 vertex, so as honest vertices arrive an
+// absent holder either confirms the support already assumed for it or becomes a
+// blamer — the achievable support only SHRINKS. Once it is below the quorum it
+// stays below it on every node, so a cert-impossible round can never later become
+// the resolving anchor — which is what preserves zero rollback.
+//
+// Byzantine caveat: a producer that first blames and later EQUIVOCATES a second
+// round-N+1 vertex citing the candidate leaves the blamer set under the union rule,
+// growing the achievable support. An equivocator whose stake covers the gap below
+// the quorum at the blocking frontier could therefore flip an impossibility one
+// node has already acted on, while a fuller-evidence node still waits and later
+// certifies. This is excluded by the honest-failure model the observed wedges live
+// in (crash and partition unreachability, no adversarial stake) — the same >1/3
+// adversary envelope under which certification's own quorum-intersection argument
+// fails.
+func (d *DAG) anchorCertImpossible(round uint64) bool {
+	if d.roundIsRelaxed(round) {
+		return false
+	}
+
+	producer, ok := d.anchorProducerFor(round)
+	if !ok {
+		return false
+	}
+
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round + 1))
+	if !ok {
+		return false
+	}
+
+	return d.certificationRuledOut(set, d.tallyCitations(round, producer))
+}
+
+// certificationRuledOut reports whether even the UNION of all possible supporters —
+// every round-N+1 holder except the stored blamers that cite none of the designated
+// producer's vertices — falls short of the strict 2/3 capped-stake quorum. Holders
+// absent from the tally (no stored round-N+1 vertex) are not blamers, so their full
+// weight rides in maxSupport as potential support. The union's support is at least
+// any single candidate vertex's support, so if the union cannot reach quorum, no
+// single candidate can, and the round can never be certified. A zero-weight holder
+// set is never ruled out (it is a degenerate, not a decided, frontier).
+func (d *DAG) certificationRuledOut(set *ValidatorSet, tally citationTally) bool {
+	blamerCapped, cappedTotal := d.cappedStakeOf(set, tally.blamers)
+	if cappedTotal == 0 {
+		return false
+	}
+
+	maxSupport := cappedTotal - blamerCapped
+
+	return !quorumReached(maxSupport, cappedTotal)
 }
 
 // membersInSet counts how many of the producers are members of the holder set.

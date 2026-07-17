@@ -271,6 +271,8 @@ indirect resolution machinery around the crash window (`anchorStatus`,
 `resolveIndirect`, and whatever vertex-recovery path should backfill a dead
 producer's last vertices).
 
+**Status: FIXED** (anchorStatus's forward scan now passes certification-impossible rounds, letting resolveIndirect decide wedged anchors; this branch).
+
 On a 10-node, 50-round-epoch, equal-stake cluster, SIGKILLing two
 non-founder validators immediately after an epoch boundary can wedge the
 COMMIT CURSOR of every surviving node permanently, while round production
