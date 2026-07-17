@@ -6,8 +6,8 @@ import (
 	"BluePods/internal/types"
 )
 
-// TestHandleRegisterValidator_EpochAdditionsUniformAcrossSelfAdd reproduces
-// test/BUGS.md entry 1: a node that optimistically self-adds its own
+// TestHandleRegisterValidator_EpochAdditionsUniformAcrossSelfAdd guards
+// against a fingerprint fork: a node that optimistically self-adds its own
 // registration to the LIVE validator set (mirroring cmd/node/registration.go
 // selfAddToValidatorSet -> AddValidator, called before the registration it
 // just submitted ever commits) must still end up with the same epochAdditions

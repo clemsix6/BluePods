@@ -1090,7 +1090,7 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	// before the registration it just submitted ever commits) sees isNew=false
 	// from validators.Add below for THIS SAME committed transaction, while every
 	// other node sees isNew=true — an asymmetric epochAdditions bookkeeping
-	// (test/BUGS.md entry 1: the fingerprint hashes epochAdditions verbatim, so
+	// (the fingerprint hashes epochAdditions verbatim, so
 	// this alone forks the checksum from the moment a second validator joins).
 	// committedMembers is admitted ONLY through this committed-only path, never
 	// through an optimistic self-add (recordCommittedMember's own guarantee), so

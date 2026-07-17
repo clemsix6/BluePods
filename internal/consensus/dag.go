@@ -677,10 +677,9 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 // live validator set in bootstrap mode, and skipping it on restart would leave
 // the founder with zero live self-stake and a broken total_bonded.
 //
-// Known limitation (test/BUGS.md entry 10): SetSelfStake/SetRewardCoin
-// overwrite rather than merge, so a restart re-seeds these fields to their
-// GENESIS values even if the founder's live self-stake or reward coin has
-// since diverged from genesis.
+// Known limitation: SetSelfStake/SetRewardCoin overwrite rather than merge,
+// so a restart re-seeds these fields to their GENESIS values even if the
+// founder's live self-stake or reward coin has since diverged from genesis.
 func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)
