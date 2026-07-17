@@ -63,6 +63,7 @@ type DAG struct {
 	lastProducedRound atomic.Uint64 // lastProducedRound tracks sequential production during transition
 	roundMu           sync.Mutex
 	pendingTxs        [][]byte
+	lastRebroadcast   time.Time // lastRebroadcast is when the frontier leaf was last re-announced; throttles the cannot-produce re-broadcast to one per liveness interval (guarded by roundMu)
 
 	// Output channel for committed transactions
 	committed chan CommittedTx
@@ -898,6 +899,7 @@ func (d *DAG) tryProduceVertex() {
 		if round%20 == 0 {
 			d.debugRoundVertices(prevRound)
 		}
+		d.rebroadcastFrontierLeaf()
 		return
 	}
 
@@ -926,6 +928,43 @@ func (d *DAG) tryProduceVertex() {
 	d.sendVertex(data)
 	d.lastProducedRound.Store(round)
 	d.updateRound(round + 1)
+}
+
+// rebroadcastFrontierLeaf re-gossips this node's own latest produced vertex while
+// the node cannot advance for lack of quorum. Forward gossip sends a vertex once,
+// at production, so a node stuck at its frontier round never re-announces the leaf
+// its stalled peers are missing. When two sides of a symmetric freeze reconnect,
+// each holds only its own subset of the frozen round's vertices and forward gossip
+// is silent about exactly the leaves the other needs to reach quorum there; walking
+// parent links backward can never reach the other side's childless sibling leaves.
+// Re-announcing the own leaf on the liveness tick carries it across: an
+// already-signed vertex is idempotent on receipt (peers deduplicate) and neutral
+// for safety. The re-gossip is throttled to at most once per liveness interval so a
+// production trigger firing faster than the tick cannot turn it into a storm. The
+// caller holds roundMu.
+func (d *DAG) rebroadcastFrontierLeaf() {
+	lastRound := d.lastProducedRound.Load()
+	if lastRound == 0 {
+		return
+	}
+
+	now := time.Now()
+	if !d.lastRebroadcast.IsZero() && now.Sub(d.lastRebroadcast) < livenessTimeout {
+		return
+	}
+
+	hashes, ok := d.store.getByRoundProducer(lastRound, d.pubKey)
+	if !ok {
+		return
+	}
+
+	d.lastRebroadcast = now
+
+	for _, h := range hashes {
+		if data := d.store.getRaw(h); data != nil {
+			d.sendVertex(data)
+		}
+	}
 }
 
 // nextProductionRound returns the round to produce at.
