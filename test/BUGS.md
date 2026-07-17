@@ -255,9 +255,41 @@ escaped the wedge and completed (restart, epoch reconvergence, uniform
 commit all green), so the trigger is timing-dependent within the
 kill-at-boundary window.
 
+**Second trigger, no crash required:** a plain network partition spanning an
+epoch boundary reproduces the same wedge intermittently. On a 5-node,
+50-round-epoch, equal-stake cluster, isolating one node (4|1) while the
+majority crosses a boundary wedged the MAJORITY's own commit cursor shortly
+after the boundary (majority `lastCommitted` frozen at 164 while production
+raced past 570, `designated` all-zero on every `consensus.round.advanced`
+after the freeze), and the wedge PERSISTED after `Heal()` restored full
+connectivity: all five nodes sat at `lastCommitted` 125-164 with rounds
+569-571 until the scenario timed out. The immediately following rerun of the
+identical scenario escaped the wedge entirely (isolate caught up to the
+majority's epoch and round, all in-body assertions green), confirming the
+timing dependence already noted for the kill trigger. Since no validator
+ever leaves the set here, this rules out dead-producer vertex recovery as
+the sole mechanism; the common factor across both triggers is unreachable
+(not necessarily dead) peers across an epoch-boundary window.
+
+**Third trigger, boundary not required:** repeated partition/heal cycles
+wedge the cursor mid-epoch. Under `TestScenarioPartition/flapping_partitions`
+(5 nodes, 4|1 cycles under background traffic), the second partition cycle
+froze `lastCommitted` at 136-138 on ALL five nodes — 12 rounds short of the
+next boundary at 150 — while production raced to 377-386, with every
+`consensus.round.advanced` after the freeze carrying `designated` all-zero
+(40 of 40 in the teardown dump) and background traffic ceasing to commit.
+This narrows the mechanism: an epoch boundary is one way, but not the only
+way, to arm the wedge; the recurring factor is anchor rounds whose producer
+was unreachable when its round passed, which the decision/recovery machinery
+then never resolves, even after connectivity returns.
+
 **Reproduced by:** `TestScenarioEpochCrash`, red in-scenario at the
 post-kill boundary wait in the wedged runs (the dominant outcome), and red
 only at teardown convergence (entries 1/2) in runs that escape the wedge.
+Also `TestScenarioPartition/across_epoch_boundary`, red in-scenario at the
+post-heal catch-up waits whenever the wedge engages (intermittent, 1 of 2
+runs observed), and `TestScenarioPartition/flapping_partitions`, red
+in-scenario at the mid-cycle traffic-progress wait (1 of 1 run observed).
 
 ### 10. Bootstrap restart reverts founder self-stake and reward coin to genesis values while coin debits persist
 
