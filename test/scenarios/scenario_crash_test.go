@@ -27,8 +27,7 @@ const (
 // the SIGKILL.
 //
 // Zero rollback is proven in-scenario (requireZeroRollback), independent of
-// teardown's automatic convergence check, which is expected red per
-// test/BUGS.md entries 1/2 on any multi-node cluster.
+// teardown's automatic convergence check.
 func TestScenarioCrash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

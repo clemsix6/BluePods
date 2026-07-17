@@ -34,8 +34,7 @@ const (
 // keeps committing. The killed node is restarted and must resync.
 //
 // Zero rollback is proven in-scenario (requireZeroRollback), independent of
-// teardown's automatic convergence check, which is expected red per
-// test/BUGS.md entries 1/2.
+// teardown's automatic convergence check.
 func TestScenarioAnchorCrash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

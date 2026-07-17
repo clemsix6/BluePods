@@ -331,15 +331,10 @@ func waitProgress(ctx context.Context, t *testing.T, progress *atomic.Int64, min
 
 // requireZeroRollback re-derives the harness's own zero-rollback invariant
 // directly from every node's journal (dead or alive, across every
-// process-run segment), independent of CheckInvariants' teardown chain. That
-// chain runs convergence first, and a timeout there calls t.Fatalf inside a
-// t.Cleanup: FailNow's runtime.Goexit unwinds the whole cleanup goroutine, so
-// the rollback check registered after it never runs — exactly what happens
-// on every multi-node scenario, since teardown convergence is expected red
-// per test/BUGS.md entries 1/2. Zero rollback is the property this
-// adversarial corpus exists to stress, so every scenario that kills,
-// restarts, or partitions a node re-proves it here, in-scenario, regardless
-// of convergence's fate.
+// process-run segment), independent of CheckInvariants' teardown chain.
+// Zero rollback is the property this adversarial corpus exists to stress, so
+// every scenario that kills, restarts, or partitions a node re-proves it
+// here, in-scenario, regardless of that chain's outcome.
 func requireZeroRollback(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 

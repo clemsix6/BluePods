@@ -100,14 +100,6 @@ func verdictString(success bool, reason string) string {
 // daemon's attestation path), confirms every commit lands identically on
 // every node, and exercises the three commit-path security rejections:
 // replay, a tampered hash, and a non-owner mutation attempt.
-//
-// This cluster registers 5 validators (the founder plus 4 non-founder bonds
-// from the default stake setup), which reliably reproduces BUGS.md entry 1
-// (and, once an epoch boundary is crossed, entry 2): teardown's automatic
-// CheckInvariants is expected to fail convergence here. That failure is the
-// registered bug reproducing itself, not a defect in this scenario's own
-// assertions — see test/BUGS.md before treating a red run here as a
-// regression to chase.
 func TestScenarioConsensusBasics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

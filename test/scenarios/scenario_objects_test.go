@@ -24,8 +24,8 @@ const (
 // validator count clamping to all nodes, routing from a non-holder, and the
 // local-only read flag.
 //
-// Expected red, per test/BUGS.md: teardown's convergence check fails against
-// entry 1 (and entry 8 keeps the supply term inflated).
+// Teardown is still red on the per-node supply identity: the default stake
+// setup's non-founder registrations keep the supply term inflated.
 func TestScenarioObjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

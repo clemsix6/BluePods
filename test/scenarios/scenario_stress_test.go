@@ -33,9 +33,6 @@ const (
 // double-spend storm submitting contending transfers of one coin at one
 // version through different nodes, of which exactly one may succeed.
 // Throughput is observed (logged), never asserted.
-//
-// Expected red, per test/BUGS.md: teardown's convergence check fails against
-// entries 1 and 2.
 func TestScenarioStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

@@ -60,8 +60,7 @@ const (
 // contradicting a committed anchor.
 //
 // Each sub-test proves zero rollback in-scenario (requireZeroRollback),
-// independent of teardown's automatic convergence check, which is expected
-// red per test/BUGS.md entries 1/2.
+// independent of teardown's automatic convergence check.
 func TestScenarioPartition(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

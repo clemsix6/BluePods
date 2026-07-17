@@ -37,14 +37,14 @@ const (
 )
 
 // stakeDelta captures one stake operation's fingerprint terms immediately
-// before and after it commits, both queried from the SAME node (cli's), so the
-// comparison never crosses the cluster's own known checksum-divergence bug
-// (BUGS.md entry 1): each snapshot is one node's own locally-evaluable view,
-// and the delta between two of them cancels any constant cross-scenario
-// baseline (like entry 8's per-registration inflation) that never changes
-// across the single operation being measured. amount is the operation's signed
-// effect on TotalBonded (positive for delegate, negative for unbond/
-// undelegate); fee is the tx's own fees.deducted amount.
+// before and after it commits, both queried from the SAME node (cli's): each
+// snapshot is one node's own locally-evaluable view, and the delta between
+// two of them cancels any constant cross-scenario baseline (like the
+// per-registration supply-identity inflation from this cluster's own
+// non-founder registrations) that never changes across the single operation
+// being measured. amount is the operation's signed effect on TotalBonded
+// (positive for delegate, negative for unbond/undelegate); fee is the tx's
+// own fees.deducted amount.
 type stakeDelta struct {
 	op     string
 	amount int64
@@ -66,17 +66,17 @@ type stakeDelta struct {
 // weight assertion racy.
 //
 // supply_delta_conserved is the discriminating sub-test: instead of the raw
-// per-node supply identity (polluted by BUGS.md entry 8's +4000-per-
-// registration leak baked into this cluster's own 4 non-founder setup
-// registrations), it captures the fingerprint's coins/bonded/deposits/fees
-// terms immediately before and after each operation and checks the DELTA
-// conserves exactly, with the bonded<->coins transfer equal to the amount
-// moved and the residual accounted for by that operation's own fee.
+// per-node supply identity (polluted by the +4000-per-registration deposit
+// leak baked into this cluster's own 4 non-founder setup registrations), it
+// captures the fingerprint's coins/bonded/deposits/fees terms immediately
+// before and after each operation and checks the DELTA conserves exactly,
+// with the bonded<->coins transfer equal to the amount moved and the
+// residual accounted for by that operation's own fee.
 //
-// Expected red at teardown, per test/BUGS.md: entry 1 (checksum divergence
-// from this cluster's 4 non-founder registrations) and entry 8 (+4000 raw
-// supply identity) — the same circumstance as every other 5-node functional
-// scenario in this corpus.
+// Teardown is still red on the per-node supply identity: this cluster's 4
+// non-founder setup registrations each stamp a +1000 storage deposit no coin
+// pays, inflating the raw supply identity by +4000 — the same circumstance
+// as every other 5-node functional scenario in this corpus.
 //
 // undelegate_returns_principal is also expected red IN THE BODY, per BUGS.md
 // entry 11: confirming the deleted delegation position is no longer readable

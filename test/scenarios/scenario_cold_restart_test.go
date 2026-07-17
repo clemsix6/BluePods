@@ -57,14 +57,12 @@ const (
 // properties hold across the cold restart, with founder_stake_preserved as
 // the discriminating sub-test for entry 10.
 //
-// Expected red at teardown, per test/BUGS.md: entry 1 (checksum divergence,
-// here also showing up as the five nodes disagreeing on the validator
-// COUNT itself once four non-founders re-register against the freshly
-// cold-started bootstrap) and entry 8's own small per-registration leak.
-// But the dominant teardown supply-identity failure observed here is much
-// larger than entry 8 alone accounts for (a ~4*10^11 gap, not entry 8's few
-// thousand): that gap is entry 10's own mechanism at cluster scale — see
-// founder_stake_preserved below and the entry's updated evidence.
+// Teardown is still red on the per-node supply identity: the small
+// per-registration deposit leak from this cluster's four non-founder
+// registrations accounts for only a few thousand of the gap. The dominant
+// failure observed here is far larger (a ~4*10^11 gap): that is the
+// cold-restart validator-set loss's own mechanism at cluster scale — see
+// founder_stake_preserved below.
 //
 // founder_stake_preserved is ALSO expected red, in the body, not just at
 // teardown: it asserts the CORRECT behavior (the founder's totalBonded and

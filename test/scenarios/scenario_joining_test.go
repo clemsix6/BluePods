@@ -18,10 +18,6 @@ const joiningBaseSize = 5
 // self-register (epoch.validator.registered observed by the founder), and
 // join replication (a transaction submitted after the joins commits on every
 // node, newcomers included). The founder's status must count all 8.
-//
-// Expected red, per test/BUGS.md: teardown's convergence check fails against
-// entry 1 — which this scenario reproduces in its purest form, since entry
-// 1's suspected cause is exactly the registration race the joins exercise.
 func TestScenarioJoining(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
