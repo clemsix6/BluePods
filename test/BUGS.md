@@ -421,6 +421,9 @@ exercised this path.
 **Subsystem:** `cmd/node/clienthandlers.go` `fetchObjectFromHolder` /
 `requestObjectFrom`.
 
+**Status: FIXED** (inter-node probes now request LocalOnly, a global miss is
+N direct not-founds; this branch).
+
 `fetchObjectFromHolder`'s own doc comment states it "asks each holder for the
 object locally (the remote handler returns not-found rather than re-routing),
 preventing cascades," but `requestObjectFrom` builds the inter-node request as

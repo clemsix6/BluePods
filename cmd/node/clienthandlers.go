@@ -272,7 +272,8 @@ func (n *Node) fetchObjectFromHolder(id [32]byte) []byte {
 	}
 
 	own := n.myPubkey()
-	reqBytes := network.EncodeGetObject(&network.GetObjectRequest{ObjectID: id})
+	req := buildHolderObjectRequest(id)
+	reqBytes := network.EncodeGetObject(&req)
 
 	for _, holder := range n.rendezvous.ComputeHolders(id, objectFetchProbeHolders) {
 		if holder == own {
@@ -287,8 +288,21 @@ func (n *Node) fetchObjectFromHolder(id [32]byte) []byte {
 	return nil
 }
 
-// requestObjectFrom sends a local GetObject request to one holder over the mesh.
-// It returns the object bytes, or nil if the holder is unreachable or lacks it.
+// buildHolderObjectRequest builds the inter-node GetObject request sent to a
+// computed holder. The request always sets LocalOnly: a remote holder answers
+// from its own local state only, and a miss is a definitive not-found for that
+// holder, never a re-route to the rest of the mesh. Without LocalOnly, a holder
+// that also lacked the object would re-enter the non-local path itself and probe
+// every other validator (including the original requester), so an object no
+// node holds would cascade across the whole mesh instead of one bounded
+// round-trip per holder.
+func buildHolderObjectRequest(id [32]byte) network.GetObjectRequest {
+	return network.GetObjectRequest{ObjectID: id, LocalOnly: true}
+}
+
+// requestObjectFrom sends a LocalOnly GetObject request to one holder over the
+// mesh. It returns the object bytes, or nil if the holder is unreachable or
+// its local state lacks the object.
 func (n *Node) requestObjectFrom(holder consensus.Hash, reqBytes []byte) []byte {
 	peer := n.network.GetPeer(holder[:])
 	if peer == nil {

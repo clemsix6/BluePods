@@ -293,14 +293,11 @@ func requireDelegationPosition(t *testing.T, cli *client.Client, posID, delegato
 // than "not found" is reported distinctly, so a real connectivity problem is
 // never mistaken for confirmation that the position was destroyed.
 //
-// Expected red, per test/BUGS.md entry 11: cli.GetObject routes to every
-// other holder when this node lacks the object, and the inter-node request
-// omits LocalOnly, so a holder that also lacks it (every node, here) cascades
-// into probing further instead of answering not-found directly. The call
-// times out at the QUIC client's own 8s request deadline instead of erroring
-// "not found", so this assertion fails on the deadline, not a stale owner
-// read — that failure IS the reproduction and must not be relaxed (a longer
-// timeout would only hide the cascade, not confirm not-found any sooner).
+// cli.GetObject routes to every other holder when this node lacks the
+// object; the inter-node request is LocalOnly, so a holder that also lacks
+// it (every node, here) answers a direct not-found instead of cascading into
+// probing further. The call returns promptly with "not found" well inside
+// the QUIC client's 8s request deadline.
 func requirePositionGone(t *testing.T, cli *client.Client, posID [32]byte) {
 	t.Helper()
 

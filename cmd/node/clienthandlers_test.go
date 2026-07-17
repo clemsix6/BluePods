@@ -219,3 +219,26 @@ func TestHandleFaucet_EmitsIngressTxReceived(t *testing.T) {
 		t.Errorf("tx = %v, want %s", rec["tx"], hex.EncodeToString(resp.Hash))
 	}
 }
+
+// =============================================================================
+// inter-node holder probes (fetchObjectFromHolder / requestObjectFrom)
+// =============================================================================
+
+// TestBuildHolderObjectRequest_SetsLocalOnly checks the inter-node GetObject
+// request sent to a computed holder is always LocalOnly. A holder that lacks
+// the object must answer a definitive not-found from its own local state
+// rather than re-entering the non-local path and probing the rest of the
+// mesh itself, which is what stops a globally-absent object from cascading.
+func TestBuildHolderObjectRequest_SetsLocalOnly(t *testing.T) {
+	var id [32]byte
+	id[0] = 0x7a
+
+	req := buildHolderObjectRequest(id)
+
+	if !req.LocalOnly {
+		t.Error("LocalOnly = false, want true: a holder probe must never re-route")
+	}
+	if req.ObjectID != id {
+		t.Errorf("ObjectID = %x, want %x", req.ObjectID, id)
+	}
+}
