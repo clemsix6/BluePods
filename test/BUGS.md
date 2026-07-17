@@ -152,6 +152,10 @@ shipped pod (the system pod) deletes singletons only, which every node holds.
 **Subsystem:** `internal/genesis` (`SeedGenesisLedger`) vs. every other
 object-creation path.
 
+**Status: FIXED** (the reserve coin is now registered with the tracker right
+after genesis seeding, via the already-exported `TrackObject`, matching every
+transaction-driven creation path; this branch).
+
 `SeedGenesisLedger` calls `SetObject` for the genesis reserve coin but never
 calls `TrackObject`, unlike every other object-creation path in the protocol.
 The reserve coin is therefore absent from the tracker used to compute
