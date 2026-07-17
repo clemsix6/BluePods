@@ -30,7 +30,7 @@ jobs:
         run: go vet ./...
 
       - name: Unit tests
-        run: go test ./internal/... ./pkg/... ./cmd/... ./test/harness/ -count=1 -timeout 15m
+        run: go test ./internal/... ./pkg/... ./cmd/... -count=1 -timeout 15m
 
   pods:
     runs-on: ubuntu-latest
@@ -90,6 +90,11 @@ jobs:
         with:
           name: pod-wasm
           path: pods/pod-system/build
+
+      # The harness tests spawn real node processes and need the built pod,
+      # which is why they live here rather than in the unit job.
+      - name: Harness tests
+        run: go test ./test/harness/ -count=1 -timeout 10m
 
       - name: Bootstrap
         run: go test ./test/scenarios/ -run '^TestScenarioBootstrap$' -v -count=1 -timeout 8m
