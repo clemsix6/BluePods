@@ -37,6 +37,14 @@ func (d *DAG) recordCommittedMember(pubkey Hash, atRound uint64) {
 	}
 
 	d.committedMembers[pubkey] = true
+
+	// The committed member set drives the boundary committee freeze, so a change to
+	// it must reach disk with the commit cursor. refreezeGenesisRegime marks the
+	// regime dirty only during the genesis epoch; mark it here too so a registration
+	// committed past genesis is persisted the same round it commits, closing the
+	// crash window between the registration and the next epoch boundary.
+	d.regimeDirty = true
+
 	d.refreezeGenesisRegime(atRound)
 }
 
@@ -120,12 +128,21 @@ func (d *DAG) freezeGenesisHolders() *ValidatorSet {
 	return frozen
 }
 
-// restoreCommittedMembers rebuilds the committed member set from the restored
-// epoch-0 genesis snapshot, so a node restarted mid-bootstrap keeps refreezing from
-// the full committed committee rather than shrinking it to only the members
-// re-seeded after the restart. It runs only during the genesis epoch, where
-// epochHolders IS the committed member accumulator. The caller holds no lock (boot).
+// restoreCommittedMembers rebuilds the committed member set at boot so a node
+// restarted in ANY epoch keeps refreezing from the full committed committee rather
+// than shrinking it to only the members re-seeded after the restart. It reads the
+// durably persisted set first — written with the commit cursor at every boundary and
+// on every committed registration — which is the network-uniform set at every epoch.
+// A data dir written before that set was persisted has no key; during the genesis
+// epoch epochHolders IS the committed accumulator, so it is rebuilt from there, and
+// past genesis there is nothing to rebuild from (the caller keeps the empty set). The
+// caller holds no lock (boot).
 func (d *DAG) restoreCommittedMembers() {
+	if members := decodeMemberSet(d.store.loadMetaBytes(committedMembersKey)); members != nil {
+		d.committedMembers = members
+		return
+	}
+
 	if d.currentEpoch != 0 || d.epochHolders == nil {
 		return
 	}

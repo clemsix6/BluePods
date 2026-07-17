@@ -23,6 +23,8 @@ var (
 	prevEligibleKey    = metaKey("prevEligibleHolders") // prevEligibleKey holds the eligible set frozen with the previous snapshot
 	nextEligibleKey    = metaKey("nextEligibleHolders") // nextEligibleKey holds the eligible set frozen with the forward proxy
 
+	committedMembersKey = metaKey("committedMembers") // committedMembersKey holds the committed member set, persisted with the commit cursor so a restart at any epoch refreezes the same committee instead of a partial one
+
 	liveValidatorsKey = metaKey("liveValidators") // liveValidatorsKey holds the LIVE validator set, persisted with the commit cursor so a restart rebuilds it instead of starting from the bare local identity
 )
 
@@ -35,12 +37,12 @@ func metaKey(name string) []byte {
 }
 
 // epochStateKVs returns the persisted epoch/regime state as batch pairs: the epoch
-// counter, the three holder snapshots, and the strict latch (only when latched, so
-// an unlatched node writes no latch key and restores as unlatched). It is written
-// atomically with the commit cursor both at an epoch boundary and, during the
-// genesis epoch, whenever the regime changes (a committed registration refreezes
-// the genesis snapshot or fires the latch), so a restart never desyncs the cursor
-// from the regime.
+// counter, the three holder snapshots, the committed member set, and the strict latch
+// (only when latched, so an unlatched node writes no latch key and restores as
+// unlatched). It is written atomically with the commit cursor both at an epoch
+// boundary and, during the genesis epoch, whenever the regime changes (a committed
+// registration refreezes the genesis snapshot or fires the latch), so a restart never
+// desyncs the cursor from the regime.
 func (d *DAG) epochStateKVs() []storage.KeyValue {
 	epoch := make([]byte, 8)
 	binary.BigEndian.PutUint64(epoch, d.currentEpoch)
@@ -54,6 +56,12 @@ func (d *DAG) epochStateKVs() []storage.KeyValue {
 		{Key: eligibleHoldersKey, Value: encodeMemberSet(d.eligibleHolders)},
 		{Key: prevEligibleKey, Value: encodeMemberSet(d.prevEligibleHolders)},
 		{Key: nextEligibleKey, Value: encodeMemberSet(d.nextEligibleHolders)},
+
+		// The committed member set is the sole input to the boundary committee freeze.
+		// Persisting it here — atomically with the cursor — is what lets a restart at
+		// any epoch refreeze the same committee, rather than one filtered through a
+		// set rebuilt partially (founder-only, or joiner-only) after boot.
+		{Key: committedMembersKey, Value: encodeMemberSet(d.committedMembers)},
 	}
 
 	if d.strictLatched {
