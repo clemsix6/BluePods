@@ -613,6 +613,190 @@ lands (shared `internal/consensus` files).
   `TestScenarioPartition` all five sub-tests' teardown convergence green.
 - [ ] Update BUGS.md entry 15 (FIXED), commit.
 
+## Remediation campaign — final-review findings (2026-07-17)
+
+Two review passes over the full PR diff (an adversarial correctness review
+and a conventions/hygiene review) plus the final corpus run produced the
+findings below. The corpus came back 10 green / 7 red, and the red
+signature (per-joiner fingerprint splits at epoch boundaries in
+Epochs/EpochCrash/Churn/Partition, commit-liveness timeouts in
+Stress/AnchorCrash, holder-routing divergence in Aggregation) empirically
+confirms finding R1: the last-landed committee-freeze fix regressed
+scenarios that had validated green earlier in the campaign.
+
+Remediation rules (delta over Global Constraints):
+
+- Remediation commits do NOT touch `test/BUGS.md` — the register is retired
+  by the final batch; these findings are tracked here and in the PR body.
+- Order is R1 → R2 → R3 → R4 → R5 → R6, then R7 (dead-code cleanup,
+  appended below from the inventory report). R1 goes first because it is
+  what broke the corpus: fixing it restores the campaign's measuring
+  instrument before anything else is validated against it.
+
+### Batch R1 — committee freeze forks after restart or sync in epoch >= 1 (Opus)
+
+`committedMembers` is rebuilt only when `currentEpoch == 0`
+(`internal/consensus/regime.go`, `restoreCommittedMembers` early-returns
+otherwise) and is never persisted. A node that restarts or syncs in epoch
+>= 1 comes back with an empty or partial set: the bootstrap founder path
+re-seeds `{founder}`, a synced node re-fills from the first committed
+registration it sees. The next `snapshotEpochHolders` then filters the
+committee through that partial set, so every such node freezes a DIFFERENT
+committee — execution sharding, routed reads and the BLS bitmap resolution
+fork. This is exactly the corpus signature above.
+
+- [ ] **Step 1 — failing unit test:** restart (and separately: sync) a DAG
+  in epoch >= 1 with a multi-member committed set, drive the next boundary,
+  assert the frozen `epochHolders` equals the pre-restart committee. Must
+  fail today (founder-only or joiner-only freeze).
+- [ ] **Step 2 — fix:** persist the committed member set durably alongside
+  the live-validator snapshot at the commit cursor, restore it on restart
+  in EVERY epoch (drop the epoch-0 guard), and carry it in the regime sync
+  snapshot so a syncing node adopts the network-uniform set instead of
+  reconstructing a partial one. If the sync snapshot schema must grow a
+  field, that is an additive schema change — call it out in the commit
+  body.
+- [ ] **Step 3 — coverage hole:** extend `TestScenarioColdRestart` with an
+  epochs-enabled leg (restart a node in epoch >= 1, cross a boundary,
+  assert teardown convergence). This is the hole that let the regression
+  through.
+- [ ] **Step 4:** unit tests green; fix and scenario extension are separate
+  commits.
+
+**Orchestrator validation:** `TestScenarioEpochs`, `TestScenarioEpochCrash`,
+`TestScenarioChurn`, `TestScenarioPartition` teardown convergence green;
+`TestScenarioColdRestart` (new leg) green.
+
+### Batch R2 — attested owner is not bound by the BLS proof (Opus)
+
+The uniform-verdict fix made every node validate mutable-ref ownership of
+replicated objects against the ATX's `owner` field
+(`internal/consensus/commit.go`, `attestedReplicatedOwner`), but the BLS
+proof only signs `ComputeObjectHash(content, version)`
+(`internal/attest/hash.go`) — `owner` is attacker-controlled. An external
+submitter can collect a legitimate read quorum for any replicated object,
+rewrite `owner` to their own key in the ATX, sign the tx with their own
+key, and steal the object: `transfer_object` performs no ownership
+re-check. Before the campaign the holder-local content check rejected the
+forgery; the fix removed the only authorization gate. This is GitHub issue
+#7, now proven exploitable.
+
+- [ ] **Step 1 — failing test:** at the commit-validation seam, build an
+  ATX whose BLS proof is valid over `(content, version)` but whose `owner`
+  field is rewritten to another key; assert every node rejects the tx.
+  Must fail today (all nodes accept).
+- [ ] **Step 2 — fix:** bind the owner into the attested hash —
+  `ComputeObjectHash(content, version, owner)` — and update every producer
+  and verifier of that hash (holder attestation, `internal/aggregation`
+  verification, `pkg/daemon` collection) so a rewritten owner invalidates
+  the proof. Sweep ALL call sites so the hash stays network-uniform.
+- [ ] **Step 3:** forged-owner test green, whole suite green, one commit
+  (reference issue #7 in the commit body).
+
+**Orchestrator validation:** `TestScenarioAggregation` fully green,
+`attested_transfer` included.
+
+### Batch R3 — replicated-deletion accounting never runs on non-holders (Opus)
+
+The campaign's uniform-deletion-accounting fix lives in the execution path
+(`internal/state/state.go`, `applyDeletedObjects`), but non-holders skip
+execution for exactly the transactions it targets: a replicated-object
+deletion is a holder-gated mutable ref with no created objects, so
+`executeTx` (`internal/consensus/commit.go`) skips it. The fix is dead code
+for its motivating case and effective only for singletons; harmless today
+(no shipped pod deletes replicated objects), but the accounting must move.
+
+- [ ] **Step 1 — failing unit test:** commit a replicated-object deletion
+  through a DAG whose node is NOT a holder (execution skipped); assert
+  `deposits`/`coins_total` move identically to a holder node. Must fail
+  today.
+- [ ] **Step 2 — fix:** run the tracker-driven deposit release/settlement
+  from the commit loop over the committed deletion set (network-uniform
+  metadata) on every node; holders keep content deletion in the execution
+  path; make the accounting single-shot so holder nodes do not
+  double-apply.
+- [ ] **Step 3:** tests green, one commit.
+
+**Orchestrator validation:** `TestScenarioObjects`,
+`TestScenarioAggregation`.
+
+### Batch R4 — the anchor silence rule rests on a timing assumption (Opus)
+
+The wedge fix's cert-impossible predicate has two halves. The blamer half
+is monotone: more information never flips the verdict. The silence half is
+NOT: `silentHolders` shrinks as vertices arrive, so a LESS informed node is
+MORE willing to declare certification impossible and act. The written
+defense (`internal/consensus/anchor_decision.go` docstring) is that honest
+producers do not back-fill and that `anchorSilenceSpanRounds` (20) exceeds
+any honest delivery skew — the latter is a timing assumption, weakest under
+partitions, which is where the rule matters most.
+
+- [ ] **Step 1 — adversarial sim:** at a unit/harness seam, feed two honest
+  nodes the same DAG except one is starved of a holder's vertices for more
+  than `anchorSilenceSpanRounds` while the other receives them late; drive
+  the anchor decision on both and assert they reach the SAME verdict.
+- [ ] **Step 2 — if the sim splits the verdict:** harden the predicate so
+  the silence half is evidence-based rather than time-based (for example,
+  require the blame quorum alone, or an explicit absence proof anchored in
+  committed rounds); re-run the sim.
+- [ ] **Step 3 — if the sim holds:** keep the rule, extend the docstring's
+  safety argument with the sim as its evidence, and keep the sim in the
+  test suite as a regression guard. One commit either way.
+
+**Orchestrator validation:** `TestScenarioAnchorCrash`,
+`TestScenarioPartition`.
+
+### Batch R5 — delegated stake silently leaves total_bonded at removal (Opus)
+
+`applyPendingRemovals` drops the validator's whole `EffectiveStake` (self
+plus delegated) from `total_bonded`, but `returnDeregisteredStake` only
+credits the released SELF stake back to a coin. Outstanding delegated
+positions keep existing while their amount has left every supply term: the
+identity `coins_total + total_bonded + deposits + fees_in_flight ==
+total_supply` runs deflationary until every delegator undelegates. Likely
+pre-existing, but a real break.
+
+- [ ] **Step 1 — failing unit test:** deregister a validator that carries
+  delegated stake; assert the supply identity holds immediately after the
+  removal while the delegations are still outstanding. Must fail today.
+- [ ] **Step 2 — fix:** keep outstanding delegated amounts inside the
+  bonded term until each delegator undelegates, or settle them back to
+  delegator coins at removal — pick ONE, network-uniform, and justify the
+  choice in the commit body. New mutation means an `internal/events`
+  constructor if one appears.
+- [ ] **Step 3 — scenario:** extend `TestScenarioStake` with a
+  deregistration-with-delegators leg asserting the identity at teardown.
+- [ ] **Step 4:** tests green; fix and scenario are separate commits.
+
+**Orchestrator validation:** `TestScenarioStake`, `TestScenarioEpochs`.
+
+### Batch R6 — hygiene: register citations, stale annotations, event catalog (Sonnet)
+
+The late fix commits reintroduced register citations into scenario files,
+some annotations claim open bugs that are now fixed, and the event catalog
+misses an event added by the campaign.
+
+- [ ] **Step 1 — purge the 20 register citations**, rewriting each as a
+  self-contained statement of the invariant and failure mechanism (Global
+  Constraints rule): `scenario_partition_test.go` (200-201, 205, 247),
+  `scenario_stake_test.go` (72, 76, 82-83), `scenario_consensus_test.go`
+  (406-407), `scenario_fees_test.go` (19, 23, 24, 25, 152, 168, and the
+  RUNTIME failure string at 159 — highest priority),
+  `scenario_churn_test.go` (53), `scenario_epochs_test.go` (34, 37),
+  `scenario_aggregation_test.go` (55). Do not touch the four clean files
+  (`scenario_sponsored_test.go`, `scenario_objects_test.go`,
+  `scenario_epoch_crash_test.go`, `scenario_cold_restart_test.go`).
+- [ ] **Step 2 — reconcile stale annotations** against the LATEST
+  per-scenario validation logs (post R1-R5): a "known red" note whose
+  scenario is now green is deleted; a still-red scenario is a triage for
+  the orchestrator, never a comment rewrite.
+- [ ] **Step 3:** add `stake.released` to `test/TESTING.md`'s event catalog
+  table.
+- [ ] **Step 4:** build and vet green, one commit.
+
+**Orchestrator validation:** none beyond build and vet (comments and docs
+only).
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
@@ -644,3 +828,6 @@ lands (shared `internal/consensus` files).
 - Every scenario-level validation belongs to the orchestrator (runs exceed
   the subagent watchdog), runs in background, and a red after a pushed
   commit becomes a follow-up fix commit — never an amend.
+- Remediation batches follow the same rules and run strictly in order
+  R1 → R2 → R3 → R4 → R5 → R6 → R7; the final batch (corpus + register
+  retirement + PR ready) closes the campaign after them.
