@@ -48,10 +48,11 @@ const (
 // exactly as the old suite's safe-window helper did.
 //
 // State assertions go through holder reads (routed GetObject, GetObjectLocal
-// per node): per BUGS.md entry 7, tx.committed verdicts for replicated-object
-// transactions diverge between holders and non-holders, so the uniform
-// verdict shape is asserted (red) in TestScenarioConsensusBasics and not
-// duplicated here. Teardown convergence is expected red per entries 1 and 2.
+// per node): this suite validates the attested path's state value through the
+// holders that actually carry it, while the network-uniform commit verdict for
+// replicated-object transactions is asserted directly in
+// TestScenarioConsensusBasics and not duplicated here. Teardown convergence is
+// expected red per entries 1 and 2.
 func TestScenarioAggregation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

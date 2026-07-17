@@ -474,9 +474,9 @@ func requireCoinBalanceEverywhere(t *testing.T, c *harness.Cluster, coinID [32]b
 // touches BLS cryptography or any node-local state; with that vector empty
 // the lookup fails identically everywhere ("object not found in ATX"), so
 // every alive node derives the SAME proof_failed verdict from the gossiped
-// bytes alone. Unlike BUGS.md entry 7 (the ownership check), this path runs
-// BEFORE any node-local, holdership-dependent check, so there is no
-// holder/non-holder split to reproduce here.
+// bytes alone. This proof gate reads only the ATX's own bytes and runs BEFORE
+// the mutable-ref ownership check, so its verdict is uniform by construction —
+// there is no node-local state to consult and no holder/non-holder split.
 //
 // This is the deterministic external analogue of "no valid attestation
 // proof": a legitimate BLS quorum signature cannot be forged from outside the

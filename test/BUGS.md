@@ -172,6 +172,11 @@ closed.
 
 **Subsystem:** `internal/consensus/commit.go` `validateMutableRefOwnership`.
 
+**Status: FIXED** (a replicated mutable ref's owner is now read from its
+attested copy in the committed ATX, which every node holds identically, instead
+of holder-only local content; singletons keep the local-content check; this
+branch).
+
 The commit-time mutable-ref ownership check resolves each referenced object
 through the local state (`d.coinStore.GetObject`) and rejects the transaction
 when the object is not found. A replicated object's content only exists on

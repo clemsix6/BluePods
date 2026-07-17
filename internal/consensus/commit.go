@@ -583,7 +583,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	// Ownership check: sender must own all mutable_ref objects
-	if !d.validateMutableRefOwnership(tx) {
+	if !d.validateMutableRefOwnership(atx, tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
 		d.emitTransaction(tx, false, FailOwner)
 		events.TxCommitted(txHash, vertexHash, commitRound, false, "ownership")
@@ -820,7 +820,17 @@ func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
 
 // validateMutableRefOwnership checks that all mutable refs are owned by the sender.
 // Returns false if any mutable ref is not owned by the sender.
-func (d *DAG) validateMutableRefOwnership(tx *types.Transaction) bool {
+//
+// The verdict must be identical on every node, so each ref's owner is read from
+// the source every node holds identically at commit. A replicated object
+// (replication > 0) lives only on its holders, so its owner is read from the
+// attested copy every node commits in the ATX. A singleton is held by every
+// node, so its owner is read from local content — unchanged, and still catching
+// a non-owner mutation of a singleton uniformly. This removes the former
+// holdership-dependent split where holders validated a replicated object from
+// local content while non-holders, lacking that content, rejected the same
+// committed transaction.
+func (d *DAG) validateMutableRefOwnership(atx *types.AttestedTransaction, tx *types.Transaction) bool {
 	count := tx.MutableRefsLength()
 	if count == 0 || d.coinStore == nil {
 		return true
@@ -839,41 +849,101 @@ func (d *DAG) validateMutableRefOwnership(tx *types.Transaction) bool {
 	for i := 0; i < count; i++ {
 		tx.MutableRefs(&ref, i)
 
-		idBytes := ref.IdBytes()
-		if len(idBytes) != 32 {
-			// Domain refs have no ID — skip ownership check
-			if len(ref.Domain()) > 0 {
-				continue
-			}
-			return false
-		}
-
-		var objectID Hash
-		copy(objectID[:], idBytes)
-
-		data := d.coinStore.GetObject(objectID)
-		if data == nil {
-			logger.Warn("mutable ref not found", "id_prefix", objectID[:4])
-			return false
-		}
-
-		owner, err := readCoinOwner(data)
-		if err != nil {
-			logger.Warn("mutable ref invalid owner", "error", err)
-			return false
-		}
-
-		if owner != sender {
-			logger.Warn("mutable ref ownership mismatch",
-				"id_prefix", objectID[:4],
-				"owner_prefix", owner[:4],
-				"sender_prefix", sender[:4],
-			)
+		if !d.mutableRefOwnedBy(atx, &ref, sender) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// mutableRefOwnedBy reports whether one mutable ref is owned by sender. A domain
+// ref carries no object ID and is accepted (its ownership is enforced elsewhere).
+// An object ref is checked against the owner from its network-uniform source.
+func (d *DAG) mutableRefOwnedBy(atx *types.AttestedTransaction, ref *types.ObjectRef, sender Hash) bool {
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		// Domain refs have no ID — nothing to own here.
+		return len(ref.Domain()) > 0
+	}
+
+	var objectID Hash
+	copy(objectID[:], idBytes)
+
+	owner, ok := d.mutableRefOwner(atx, objectID)
+	if !ok {
+		logger.Warn("mutable ref not found", "id_prefix", objectID[:4])
+		return false
+	}
+
+	if owner != sender {
+		logger.Warn("mutable ref ownership mismatch",
+			"id_prefix", objectID[:4],
+			"owner_prefix", owner[:4],
+			"sender_prefix", sender[:4],
+		)
+		return false
+	}
+
+	return true
+}
+
+// mutableRefOwner resolves the owner to validate a mutable ref against, from the
+// source every node reads identically at commit. A replicated object (present in
+// the ATX with replication > 0) is resolved from its attested copy; a singleton
+// is resolved from local content, which every node holds. Returns ok=false when
+// the object is found in neither.
+func (d *DAG) mutableRefOwner(atx *types.AttestedTransaction, objectID Hash) (Hash, bool) {
+	if owner, ok := attestedReplicatedOwner(atx, objectID); ok {
+		return owner, true
+	}
+
+	data := d.coinStore.GetObject(objectID)
+	if data == nil {
+		return Hash{}, false
+	}
+
+	owner, err := readCoinOwner(data)
+	if err != nil {
+		logger.Warn("mutable ref invalid owner", "error", err)
+		return Hash{}, false
+	}
+
+	return owner, true
+}
+
+// attestedReplicatedOwner returns the owner of a replicated object as carried in
+// the ATX's attested Objects vector. Only objects with replication > 0 are
+// matched: singletons are never carried in the ATX and keep the local-content
+// check. Returns ok=false when no such attested object is present.
+func attestedReplicatedOwner(atx *types.AttestedTransaction, objectID Hash) (Hash, bool) {
+	var obj types.Object
+
+	for i := 0; i < atx.ObjectsLength(); i++ {
+		if !atx.Objects(&obj, i) {
+			continue
+		}
+
+		if obj.Replication() == 0 {
+			continue
+		}
+
+		if !bytes.Equal(obj.IdBytes(), objectID[:]) {
+			continue
+		}
+
+		ownerBytes := obj.OwnerBytes()
+		if len(ownerBytes) != 32 {
+			return Hash{}, false
+		}
+
+		var owner Hash
+		copy(owner[:], ownerBytes)
+
+		return owner, true
+	}
+
+	return Hash{}, false
 }
 
 // calculateTxFee computes the total fee from transaction header fields.

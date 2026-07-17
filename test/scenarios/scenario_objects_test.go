@@ -234,13 +234,13 @@ func testSingletonMutationEverywhere(t *testing.T, c *harness.Cluster, cli *clie
 // mirroring TestScenarioBootstrap's create_object assertion), and the
 // version advanced on every node that holds the object locally.
 //
-// Per BUGS.md entry 7, a replicated-object mutation's commit verdict
-// diverges between holders (success) and non-holders (ownership failure:
-// validateMutableRefOwnership resolves the mutable ref through local state,
-// which a non-holder does not have). This confronts the attested path
-// through a holder's own verdict, exactly as TestScenarioAggregation does,
-// rather than requiring uniformity across every node the way
-// TestScenarioConsensusBasics deliberately does (and stays red on).
+// A replicated-object mutation's commit verdict is uniform across the
+// cluster: the ownership check reads the object's owner from the attested
+// copy carried in the committed ATX, which every node holds identically,
+// rather than from holder-only local state. This test confirms the mutation
+// through a holder's own verdict and the version-advance sweep over every
+// holding node; the network-wide uniformity of that verdict is asserted
+// directly by TestScenarioConsensusBasics.
 func testSetObjectUpdatesSharded(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, objectID [32]byte) {
 	t.Helper()
 
