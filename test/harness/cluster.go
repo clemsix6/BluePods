@@ -12,7 +12,6 @@ import (
 	"github.com/zeebo/blake3"
 
 	"BluePods/pkg/client"
-	"BluePods/pkg/daemon"
 )
 
 const (
@@ -385,20 +384,6 @@ func (c *Cluster) newClientFor(n *Node) (*client.Client, error) {
 	c.clients[n.Index] = cli
 
 	return cli, nil
-}
-
-// Daemon creates a daemon.Daemon connected to node i.
-func (c *Cluster) Daemon(i int) *daemon.Daemon {
-	c.t.Helper()
-
-	n := c.Node(i)
-
-	d, err := daemon.New([]string{n.QUICAddr})
-	if err != nil {
-		c.t.Fatalf("daemon for node %d: %v", i, err)
-	}
-
-	return d
 }
 
 // Kill hard-kills node i.

@@ -84,13 +84,6 @@ func finishAttestedTx(builder *flatbuffers.Builder, txOffset flatbuffers.UOffset
 	return builder.FinishedBytes()
 }
 
-// BuildRegisterValidatorTx creates a signed register_validator transaction as ATX.
-// Used for the genesis bootstrap path. Validators register only a QUIC address.
-func BuildRegisterValidatorTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte) []byte {
-	args := encodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey)
-	return BuildAttestedTx(privKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
-}
-
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
 // Used by validators joining the network — the receiving node wraps it in ATX.
 // rewardCoin optionally designates the coin the validator's liquid epoch reward

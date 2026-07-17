@@ -2177,22 +2177,6 @@ func rebuildATXInBuilder(builder *flatbuffers.Builder, atxBytes []byte) flatbuff
 	return types.AttestedTransactionEnd(builder)
 }
 
-// addQuorumVertices adds empty vertices from all validators at a given round.
-// Uses stored hashes from previous round as parents.
-func addQuorumVertices(t *testing.T, dag *DAG, validators []testValidator, round uint64) {
-	t.Helper()
-
-	var parents []Hash
-	if round > 0 {
-		parents = dag.store.getByRound(round - 1)
-	}
-
-	for _, v := range validators {
-		data := buildTestVertex(t, v, round, parents, 1)
-		dag.AddVertex(data)
-	}
-}
-
 // buildDeregisterATX creates a deregister_validator ATX from the given sender on the given pod.
 func buildDeregisterATX(t *testing.T, sender Hash, pod Hash) []byte {
 	t.Helper()

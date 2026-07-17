@@ -90,9 +90,6 @@ const (
 
 	// MsgTagTestControlResp is the response to a test-control operation.
 	MsgTagTestControlResp = 0x1A
-
-	// minClientTag is the lowest tag value reserved for client messages.
-	minClientTag = MsgTagSubmitTx
 )
 
 // EncodeGossipTx wraps a transaction body for gossip on the one-way message

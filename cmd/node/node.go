@@ -24,11 +24,6 @@ import (
 	"BluePods/internal/sync"
 )
 
-const (
-	// defaultSyncBufferSec is the default sync buffer duration in seconds.
-	defaultSyncBufferSec = 12
-)
-
 // Node represents a running BluePods node.
 type Node struct {
 	cfg         *Config

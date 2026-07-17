@@ -3,9 +3,6 @@ package consensus
 import "BluePods/internal/validators"
 
 const (
-	// quorumThreshold is the minimum percentage of validators required (67%).
-	quorumThreshold = 67
-
 	// channelBuffer is the buffer size for output channels.
 	channelBuffer = 1024
 

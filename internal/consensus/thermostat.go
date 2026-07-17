@@ -36,23 +36,6 @@ type thermostatParams struct {
 	AutoRestakeMille uint64
 }
 
-// defaultThermostatParams returns the starting thermostat parameters. The band is
-// conservative and errs low (targeting too low rests at low inflation; targeting
-// too high saturates at the ceiling and dilutes forever). The per-epoch rates
-// approximate ~1% floor / ~20% ceiling / ~8-10% genesis annual against an assumed
-// epoch pace; all are governed and recalibrated once the oracle supplies time.
-func defaultThermostatParams() thermostatParams {
-	return thermostatParams{
-		TargetLowMille:   250,
-		TargetHighMille:  350,
-		FloorRateMicro:   2,
-		CeilingRateMicro: 40,
-		GenesisRateMicro: 18,
-		StepCapMicro:     2,
-		AutoRestakeMille: 200,
-	}
-}
-
 // runThermostat advances the issuance control loop one epoch and returns the
 // tokens minted into the reward pool. It reads PRE-mint supply for the ratio (so
 // issuance cannot lower its own denominator) and adjusts the rate EVERY epoch.

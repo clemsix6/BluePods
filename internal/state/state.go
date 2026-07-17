@@ -577,15 +577,6 @@ func computeObjectID(txHash [32]byte, index uint32) Hash {
 	return blake3.Sum256(buf[:])
 }
 
-// rebuildObjectWithID rebuilds an Object FlatBuffers with a new ID.
-func rebuildObjectWithID(id Hash, obj *types.Object) []byte {
-	builder := flatbuffers.NewBuilder(512)
-	offset := rebuildObjectCustomID(builder, id, obj)
-	builder.Finish(offset)
-
-	return builder.FinishedBytes()
-}
-
 // rebuildObjectWithIDAndFees rebuilds an Object with a custom ID and overridden fees.
 func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte {
 	builder := flatbuffers.NewBuilder(512)
@@ -606,23 +597,6 @@ func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte 
 	builder.Finish(offset)
 
 	return builder.FinishedBytes()
-}
-
-// rebuildObjectCustomID rebuilds an Object table with a custom ID in the builder.
-func rebuildObjectCustomID(builder *flatbuffers.Builder, id Hash, obj *types.Object) flatbuffers.UOffsetT {
-	idVec := builder.CreateByteVector(id[:])
-	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
-	contentVec := builder.CreateByteVector(obj.ContentBytes())
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, obj.Version())
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, obj.Replication())
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, obj.Fees())
-
-	return types.ObjectEnd(builder)
 }
 
 // applyDeletedObjects removes the stored content of every object the transaction

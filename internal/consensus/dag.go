@@ -235,16 +235,6 @@ func WithMinStake(stake uint64) Option {
 	}
 }
 
-// WithCommissionBPS sets the fixed delegation commission in basis points. This
-// is a single governed parameter for the whole network (not per-validator), so
-// it avoids a commission field, rate-limited change mechanics, and rug-pull risk.
-// Default is 1000 (10%).
-func WithCommissionBPS(bps uint64) Option {
-	return func(d *DAG) {
-		d.commissionBPS = bps
-	}
-}
-
 // WithVotingCapMille sets the per-validator voting cap in per-mille of total
 // stake (100 = 10%). Capping voting power keeps the global order decentralized
 // even when delegation concentrates stake; reward weight is uncapped. The cap is
@@ -983,17 +973,6 @@ func (d *DAG) effectiveBuffer() uint64 {
 		return uint64(d.bufferRounds)
 	}
 	return transitionBufferRounds
-}
-
-// isInTransition returns true if we're in the grace period after minValidators was reached.
-// During this period, quorum checks are relaxed to let the network converge.
-func (d *DAG) isInTransition() bool {
-	tr := d.transitionRound.Load()
-	if tr < 0 {
-		return false // minValidators not yet reached
-	}
-
-	return d.round.Load() < uint64(tr)+d.effectiveGrace()
 }
 
 // isInTransitionOrBuffer returns true during transition OR the buffer period after.
