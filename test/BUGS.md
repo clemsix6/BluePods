@@ -31,6 +31,9 @@ existing entry ("reproduced by `<scenario name>`") instead of duplicating it.
 **Subsystem:** `cmd/node/registration.go` (optimistic validator self-add) +
 `internal/consensus/commit.go` `handleRegisterValidator`.
 
+**Status: FIXED** (epochAdditions gated on committed membership instead of
+the live-set isNew; this branch).
+
 Registering a second validator leaves `epochAdditions` bookkeeping asymmetric
 across nodes until the first epoch boundary: a node's optimistic local
 self-add of its own registration races the committed replay of that same

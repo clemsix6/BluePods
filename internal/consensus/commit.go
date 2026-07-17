@@ -1084,6 +1084,20 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 		copy(blsPubkey[:], blsPubkeyBytes)
 	}
 
+	// Read committed membership BEFORE recordCommittedMember below admits pubkey
+	// to it. A node that optimistically self-added its own registration to the
+	// LIVE validator set (cmd/node/registration.go selfAddToValidatorSet, called
+	// before the registration it just submitted ever commits) sees isNew=false
+	// from validators.Add below for THIS SAME committed transaction, while every
+	// other node sees isNew=true — an asymmetric epochAdditions bookkeeping
+	// (test/BUGS.md entry 1: the fingerprint hashes epochAdditions verbatim, so
+	// this alone forks the checksum from the moment a second validator joins).
+	// committedMembers is admitted ONLY through this committed-only path, never
+	// through an optimistic self-add (recordCommittedMember's own guarantee), so
+	// "was already a committed member" is identical on every node and is the
+	// correct gate for epochAdditions instead of the live-set isNew.
+	wasCommittedMember := d.committedMembers[pubkey]
+
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
 	events.ValidatorRegistered(pubkey, quicAddr)
 
@@ -1094,13 +1108,20 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 
 	d.setRewardCoinFromArgs(tx, pubkey)
 
-	// Track mid-epoch additions for churn limiting
-	if isNew && d.epochLength > 0 {
+	// Track mid-epoch additions for churn limiting. Gated on committed membership
+	// (wasCommittedMember, captured above), not the live-set isNew: every node
+	// agrees on which registrations were already committed, regardless of any
+	// node's own optimistic self-add.
+	if !wasCommittedMember && d.epochLength > 0 {
 		d.epochAdditions = append(d.epochAdditions, pubkey)
 	}
 
 	// Retry pending vertices — some may be from this newly registered producer.
-	// Run async to avoid blocking the commit path.
+	// Run async to avoid blocking the commit path. isNew (the live-set add) is the
+	// right gate here: it fires whenever THIS node's local set actually gained the
+	// producer just now, whether via this commit or (having already gained it
+	// through an earlier optimistic self-add) not at all — a redundant retry on a
+	// node that already knew the producer is harmless, so no symmetry is required.
 	if isNew {
 		go d.processPendingVertices()
 	}
