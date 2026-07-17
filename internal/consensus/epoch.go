@@ -244,21 +244,28 @@ func (d *DAG) compoundDelegation(delegator, validator Hash, reward uint64) bool 
 
 // creditValidatorReward credits a validator's own portion of its share: a
 // fraction is auto-restaked into its self-stake and the rest is credited liquid to
-// its reward coin. It returns the total moved into stake/coin. The liquid portion
-// is skipped (with a warning, so the epoch does not fail) when the validator
-// designates no reward coin; the skipped amount then flows to the remainder
-// recipient, preserving conservation.
+// its reward coin. It returns the total moved into stake/coin.
+//
+// A validator that designates no reward coin cannot receive a liquid credit, so
+// its WHOLE portion compounds into self-stake instead of being skipped and left
+// to fold into the carried-over pool. That closes the fairness/liveness gap of a
+// coinless validator never being paid its share while the amount sits deferred in
+// the pool indefinitely: a set member always has a self-stake to receive it, and
+// it is recovered on unbond or deregistration once a coin is designated (the same
+// coinless-to-stake path the deregistration boundary already uses). The decision
+// is deterministic and network-uniform — every node carries the same self-stake
+// and reward coin for the validator, so all nodes compound or credit alike.
 func (d *DAG) creditValidatorReward(v *ValidatorInfo, amount uint64) uint64 {
+	if v.RewardCoin == (Hash{}) {
+		d.validators.SetSelfStake(v.Pubkey, safeAdd(v.SelfStake, amount))
+		return amount
+	}
+
 	restake := safeMul(amount, d.thermostat.AutoRestakeMille) / milleMax
 	liquid := amount - restake
 
 	if restake > 0 {
 		d.validators.SetSelfStake(v.Pubkey, safeAdd(v.SelfStake, restake))
-	}
-
-	if v.RewardCoin == (Hash{}) {
-		logger.Warn("validator has no reward coin; liquid reward skipped", "validator_prefix", v.Pubkey[:4])
-		return restake
 	}
 
 	if err := creditCoin(d.coinStore, v.RewardCoin, liquid); err != nil {

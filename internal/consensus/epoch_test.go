@@ -1909,6 +1909,48 @@ func TestRewardCrediting_RemainderToTopValidator(t *testing.T) {
 	}
 }
 
+// TestRewardCrediting_CoinlessValidatorCompoundsIntoSelfStake verifies that a
+// validator with reward weight but NO designated reward coin has its whole epoch
+// share compounded into its self-stake, rather than skipped and folded into the
+// carried-over pool. A validator with no reward coin can never be paid its liquid
+// share while it stays coinless, yet the share would sit in the pool
+// indefinitely: a fairness/liveness gap. A set member always has a self-stake to
+// receive it (recovered on unbond or deregistration once a coin is designated),
+// so the reward is credited rather than deferred forever. The thermostat is off,
+// so absent this rule the entire share is liquid and skipped for a coinless
+// validator, leaving the pool wholly uncredited.
+func TestRewardCrediting_CoinlessValidatorCompoundsIntoSelfStake(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+	pk := validators[0].pubKey
+
+	store := newMockCoinStore()
+	store.SetTotalSupply(1_000_000)
+
+	dag := New(db, vs, nil, testSystemPod, 0, validators[0].privKey, nil,
+		WithEpochLength(10),
+	) // thermostat off → AutoRestakeMille 0: absent the rule the whole share is liquid and skipped
+	params := DefaultFeeParams()
+	dag.SetFeeSystem(store, &params, nil)
+	defer dag.Close()
+
+	// Reward weight but no reward coin designated: the transient join window, or a
+	// validator that never funds and designates a coin.
+	dag.validators.SetSelfStake(pk, 100)
+	dag.epochRoundsProduced[pk] = 5
+	dag.epochFees = 1000
+
+	leftover := dag.distributeEpochRewards(0) // issuance 0; pool = epochFees = 1000
+
+	if leftover != 0 {
+		t.Errorf("leftover = %d, want 0 (the coinless validator's share is credited, not deferred into the pool)", leftover)
+	}
+
+	if got := dag.validators.Get(pk).SelfStake; got != 1100 {
+		t.Errorf("self-stake = %d, want 1100 (100 + the full 1000 share compounded)", got)
+	}
+}
+
 // TestRewardConservation is the property test for Task 7.4: over a real epoch
 // boundary the full pool (epochFees + issuance) lands in coins/stake exactly
 // (sum of credited + restaked == pool), and the supply grows by exactly the
