@@ -522,9 +522,16 @@ previously unreachable by the corpus.
 the routed object-read path serving the client (`cmd/node/clienthandlers.go`
 neighborhood, same as entry 11), against `internal/consensus` ATX commit.
 
-**Status: FIXED** (the routed read served the serving node's own stale copy of
-a replicated object it no longer held, instead of probing the holders that
-carried the post-transfer version; this branch).
+**Status: FIXED in two layers** (read layer: the routed read served the serving
+node's own stale copy of a replicated object it no longer held, instead of
+probing the holders that carried the post-transfer version; this branch.
+Aggregation layer: `handleGetValidators` served the daemon the LIVE validator
+set, so the daemon assembled attestation quorums over holders that differed from
+the epoch-frozen snapshot the chain verifies and executes against, and the proof
+was rejected at commit; `handleGetValidators` now serves the epoch-frozen holder
+snapshot, this branch). A residual `internal/consensus` divergence remains (node
+4's frozen epoch snapshot forks from the other nodes'), documented below and out
+of the aggregation layer's scope.
 
 A first `TransferObject` through the daemon is accepted at submission, but
 the routed `GetObject` poll never observes the ownership change (20 s
@@ -567,6 +574,50 @@ reads and the failing collections go through `Client(0)`).
 the scenario body; green in isolation (`-run
 'TestScenarioAggregation/attested_transfer'`), which is itself part of the
 signature.
+
+**Second layer (aggregation).** With the read fix in place the wedge still
+reproduced with a new shape: the routed read (now truthful) kept showing the OLD
+owner, recollections were refused quorum-impossible, and at teardown node 4's
+fingerprint diverged alone with no fault injected. Driving many
+create-then-transfer cycles on one cluster and dumping each node's commit verdict
+proved the mechanism: the SAME ATX (identical bytes: aggregate signature,
+objects, bitmap, attestation epoch) was accepted at commit by exactly one node
+and rejected by all the others with `proof 0: aggregated BLS signature invalid`,
+so that one node applied the transfer to `version:1` while the rest stayed at the
+old owner. Even the holders the daemon collected the signatures FROM rejected the
+proof carrying their own signatures. Aggregated BLS verification is a pure
+function of (signature, message, public keys); the signature and message are
+identical on every node, so a split verdict means the nodes resolved the signer
+bitmap to different public keys, i.e. they disagreed on the object's holder set.
+
+The trigger is in the aggregation layer and in scope: the daemon computed object
+holders and assembled the quorum from the response of `handleGetValidators`,
+which served `ValidatorsInfo()` — the LIVE validator set — while the chain
+shards storage and execution, serves routed reads, and verifies ATX proofs
+against the epoch-FROZEN holder snapshot (`EpochHolders` / `HoldersForEpoch`).
+When the live set and the frozen snapshot diverge (a boundary frozen mid
+bootstrap, validator churn), the daemon builds a proof over the wrong holders and
+the chain rejects it, so the transfer never lands and every recollection is
+quorum-impossible. The fix serves the epoch-frozen holder snapshot from
+`handleGetValidators`, so the daemon's holder set is identical to the verifier's.
+A 40-iteration create-and-transfer loop went from repeated wedges to 0 wedges
+with the fix.
+
+The residual is a distinct `internal/consensus` defect, not the aggregation
+layer's: node 4's frozen epoch-1 holder snapshot forks from the other four nodes'
+(a split verdict is only possible if the frozen snapshots themselves differ
+across nodes). After the aggregation fix the transfer lands on the majority
+holders, but node 4 — which stored the object under its own divergent holder view
+and then rejected the transfer — keeps a stale copy and diverges in fingerprint.
+That divergence is the same family as entry 15 (node 4 converges in round but not
+in fingerprint) and belongs to the consensus snapshot/validator-set path, out of
+this fix's surface.
+
+**Second-layer reproduced by:** `internal/aggregation`
+`TestATXVerifierRejectsProofBuiltOverDifferentHolderSet` — a quorum proof
+assembled over one holder set is rejected by a verifier reconstructing holders
+from a different (frozen) snapshot, and accepted when reassembled over the
+verifier's snapshot, capturing the split verdict at the unit seam.
 
 ### 14. Deregistration principal is released from total_bonded but credited to no coin
 

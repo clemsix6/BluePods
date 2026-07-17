@@ -371,13 +371,17 @@ func (n *Node) requestObjectFrom(holder consensus.Hash, reqBytes []byte) []byte 
 	return resp.Data
 }
 
-// handleGetValidators returns the current validator set plus the current epoch.
+// handleGetValidators returns the epoch-frozen holder snapshot plus the current
+// epoch. The daemon computes object holders and assembles attestation quorums
+// from this response, and the chain verifies those quorums against the same
+// frozen snapshot (HoldersForEpoch), so serving the epoch holders here — not the
+// live validator set — keeps the daemon's holder set identical to the verifier's.
 func (n *Node) handleGetValidators() ([]byte, error) {
 	if n.dag == nil {
 		return nil, fmt.Errorf("consensus not available")
 	}
 
-	infos := n.dag.ValidatorsInfo()
+	infos := n.dag.EpochHolders().All()
 	entries := make([]network.ValidatorEntry, len(infos))
 
 	for i, info := range infos {

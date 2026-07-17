@@ -219,3 +219,139 @@ func TestATXVerifierFutureEpoch(t *testing.T) {
 		t.Fatal("expected reject for future epoch, got accept")
 	}
 }
+
+// TestATXVerifierRejectsProofBuiltOverDifferentHolderSet is the second-layer
+// attested-transfer wedge at the unit seam: a quorum proof assembled over one
+// holder set (the daemon's live validator set) is rejected by a verifier that
+// reconstructs the holders from a DIFFERENT set (the epoch-frozen snapshot the
+// chain verifies against), because the signer bitmap then resolves to the wrong
+// public keys and the aggregated signature no longer matches. Reassembling the
+// proof over the same frozen snapshot the verifier uses makes it verify.
+//
+// This is why the daemon must compute holders and collect attestations over the
+// epoch-frozen holder snapshot, not the live validator set: when the two differ
+// (validator churn, an epoch boundary frozen mid-bootstrap), a live-set proof is
+// rejected at commit and the transfer wedges.
+func TestATXVerifierRejectsProofBuiltOverDifferentHolderSet(t *testing.T) {
+	const (
+		epochLength      = 100
+		replication      = 3
+		commitRound      = 350
+		attestationEpoch = 3
+	)
+
+	full, keys := buildBLSValidators(t, 5)
+
+	objID := [32]byte{0x77}
+
+	// The live top-3 for the object over the full set. The frozen snapshot drops
+	// one of these holders, so its own top-3 differs, exactly as a node whose
+	// epoch snapshot diverges from the daemon's live set would compute.
+	liveHolders := attest.ComputeHolders(full, objID, replication)
+	frozen := setExcluding(full, liveHolders[0])
+
+	if sameHolders(attest.ComputeHolders(full, objID, replication), attest.ComputeHolders(frozen, objID, replication)) {
+		t.Fatal("fixture invalid: frozen snapshot must yield a different holder set")
+	}
+
+	verifier := NewATXVerifier(fixedResolver(attestationEpoch, frozen, epochLength))
+
+	// A proof assembled over the LIVE set (the pre-fix daemon) is rejected by the
+	// frozen-snapshot verifier: the split that only lets a node whose snapshot
+	// happens to match the live set apply the transfer.
+	liveATX := signQuorumATX(t, full, keys, objID, replication, attestationEpoch)
+	if err := verifier.Verify(types.GetRootAsAttestedTransaction(liveATX, 0), commitRound); err == nil {
+		t.Fatal("expected reject: a proof built over the live set must fail against the frozen snapshot")
+	}
+
+	// The fix: assemble the proof over the SAME frozen snapshot the verifier uses.
+	frozenATX := signQuorumATX(t, frozen, keys, objID, replication, attestationEpoch)
+	if err := verifier.Verify(types.GetRootAsAttestedTransaction(frozenATX, 0), commitRound); err != nil {
+		t.Fatalf("expected accept when the proof is built over the verifier's frozen snapshot: %v", err)
+	}
+}
+
+// buildBLSValidators builds n validators with deterministic BLS keys, returning
+// the set and a lookup from validator pubkey to its signing key.
+func buildBLSValidators(t *testing.T, n int) (*validators.ValidatorSet, map[validators.Hash]*attest.BLSKeyPair) {
+	t.Helper()
+
+	vs := validators.NewValidatorSet(nil)
+	keys := make(map[validators.Hash]*attest.BLSKeyPair, n)
+
+	for i := 0; i < n; i++ {
+		var pubkey validators.Hash
+		pubkey[0] = byte(i + 1)
+
+		seed := make([]byte, 32)
+		seed[0] = byte(i + 1)
+		key, err := attest.GenerateBLSKeyFromSeed(seed)
+		if err != nil {
+			t.Fatalf("derive bls key %d: %v", i, err)
+		}
+
+		var blsPub [48]byte
+		copy(blsPub[:], key.PublicKeyBytes())
+		vs.Add(pubkey, "addr", blsPub)
+		keys[pubkey] = key
+	}
+
+	return vs, keys
+}
+
+// setExcluding returns a copy of vs without the given pubkey.
+func setExcluding(vs *validators.ValidatorSet, drop validators.Hash) *validators.ValidatorSet {
+	out := validators.NewValidatorSet(nil)
+
+	for _, v := range vs.All() {
+		if v.Pubkey == drop {
+			continue
+		}
+		out.Add(v.Pubkey, v.QUICAddr, v.BLSPubkey)
+	}
+
+	return out
+}
+
+// signQuorumATX assembles a one-proof ATX for objID: it computes the holders
+// over signVS, has each holder sign the object hash, aggregates the signatures,
+// and builds the signer bitmap over those holders. This models the daemon
+// assembling a quorum over whatever validator set it computed holders from.
+func signQuorumATX(t *testing.T, signVS *validators.ValidatorSet, keys map[validators.Hash]*attest.BLSKeyPair, objID [32]byte, replication int, epoch uint64) []byte {
+	t.Helper()
+
+	objData := buildTestObject(objID, uint16(replication))
+	obj := types.GetRootAsObject(objData, 0)
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version())
+
+	holders := attest.ComputeHolders(signVS, objID, replication)
+
+	var sigs [][]byte
+	var indices []int
+	for i, h := range holders {
+		sigs = append(sigs, keys[h].Sign(hash[:]))
+		indices = append(indices, i)
+	}
+
+	aggSig, err := attest.AggregateSignatures(sigs)
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+
+	return buildATXWithProof(objID, objData, aggSig, attest.BuildSignerBitmap(indices, len(holders)), epoch)
+}
+
+// sameHolders reports whether two holder slices are identical in order.
+func sameHolders(a, b []validators.Hash) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+}
