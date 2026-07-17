@@ -19,34 +19,30 @@ const (
 	// which side holds the founder.
 	partitionScenarioSize = 5
 
-	// partitionEpochLength makes the first epoch boundary arrive quickly.
-	// The boundary matters for the quorum arithmetic above: the strict-regime
-	// latch freezes the GENESIS committee's stakes as they stood when the
-	// last founding registration committed (internal/consensus/regime.go,
-	// refreezeGenesisRegime) — BEFORE the harness's equal bonds commit — and
-	// that founder-heavy frozen snapshot governs quorum until the first
-	// epoch boundary refreezes from live (bonded) stakes. Partitioning
-	// inside epoch 0 therefore tests the founder-heavy regime, with weights
-	// that even vary run to run (whichever bonds happened to commit before
-	// the latch). Every sub-scenario waits out boundary 1 before
-	// partitioning so the equal-stake arithmetic is actually in force.
-	partitionEpochLength = 50
+	// partitionEpochLength must keep epoch 0 open LONGER than the harness's
+	// sequential founder bootstrap takes to commit; that is the whole point of
+	// the value, not speed. A partition only halts a quorum-starved side once
+	// the strict BFT regime is latched, and that latch is evaluated only during
+	// epoch 0: refreezeGenesisRegime (internal/consensus/regime.go) fires it the
+	// round all founding registrations have committed. The harness commits its
+	// five founder registrations one after another, landing around rounds
+	// 0/24/50/76/100. If epoch 0 closes before the fifth commits, the latch
+	// never arms and consensus stays in the RELAXED single-supporter regime,
+	// where a partition halts no side at all: each side certifies its own
+	// disjoint rounds alone, no committed round ever plateaus, and every
+	// requirePlateau below is doomed. (That relaxed-regime gap, the node's
+	// inability to wedge a partitioned side, is tracked in issue #8.) At 150 all
+	// five registrations commit inside epoch 0, the latch arms near round 100,
+	// and boundary 1 at round 150 hands the equal-stake arithmetic above to
+	// every sub-scenario, each of which waits out that boundary before it
+	// partitions.
+	partitionEpochLength = 150
 
-	// plateauWindow bounds how long a side WITHOUT quorum is watched for an
-	// anchor.committed that must never come. It is a poll with a deadline,
-	// never a sleep-assert.
+	// plateauWindow bounds how long a quorum-starved side is watched for its
+	// committed round to reach the production frontier captured at the cut,
+	// progress it cannot make. It is a poll with a deadline, never a
+	// sleep-assert.
 	plateauWindow = 10 * time.Second
-
-	// plateauSettle is how long a node's anchor.committed count must sit
-	// still before the plateau watch freezes its baseline: decisions already
-	// in flight when the partition lands (vertices gossiped and buffered
-	// BEFORE the blocklist applied) may legitimately commit moments after
-	// Partition returns, and are not quorum violations.
-	plateauSettle = 3 * time.Second
-
-	// plateauSettleBound caps the settle phase: a count that never sits
-	// still was never going to plateau, and that IS the violation.
-	plateauSettleBound = 30 * time.Second
 
 	// flappingCycles is how many Partition/Heal cycles testFlappingPartitions
 	// drives under sustained background traffic.
@@ -82,7 +78,12 @@ func newPartitionCluster(t *testing.T) *harness.Cluster {
 
 	c := harness.NewCluster(t, partitionScenarioSize, harness.WithEpochLength(partitionEpochLength))
 
-	if err := c.WaitAll(stepCtx(t), "epoch.transitioned", harness.AttrGE("epoch", 1)); err != nil {
+	// Boundary 1 now lands at round 150, so wait it out on the epoch-boundary
+	// timeout the epoch scenarios use, not the tighter per-step budget.
+	ctx, cancel := context.WithTimeout(context.Background(), epochsBoundaryTimeout)
+	defer cancel()
+
+	if err := c.WaitAll(ctx, "epoch.transitioned", harness.AttrGE("epoch", 1)); err != nil {
 		c.Dump(t)
 		t.Fatalf("cluster never crossed the first epoch boundary: %v", err)
 	}
@@ -102,12 +103,13 @@ func testMinorityPartition(t *testing.T) {
 	isolated := partitionScenarioSize - 1
 	majority := []int{0, 1, 2, 3}
 
+	f0 := productionFrontier(t, c, isolated)
 	c.Partition(majority, []int{isolated})
 
 	majoritySeen := len(node0.Journal().Events("consensus.anchor.committed"))
 	waitEventCount(stepCtx(t), t, node0, "consensus.anchor.committed", majoritySeen+2)
 
-	requirePlateau(t, c.Node(isolated))
+	requirePlateau(t, c.Node(isolated), f0)
 	settled := len(c.Node(isolated).Journal().Events("consensus.anchor.committed"))
 
 	c.Heal()
@@ -140,10 +142,12 @@ func testSymmetricPartition(t *testing.T) {
 	sideA := []int{0, 1, 2}
 	sideB := []int{3, 4}
 
+	f0A := productionFrontier(t, c, 0)
+	f0B := productionFrontier(t, c, 3)
 	c.Partition(sideA, sideB)
 
-	requirePlateau(t, node0)
-	requirePlateau(t, c.Node(3))
+	requirePlateau(t, node0, f0A)
+	requirePlateau(t, c.Node(3), f0B)
 
 	c.Heal()
 
@@ -172,6 +176,7 @@ func testHealUnderTraffic(t *testing.T) {
 
 	w, coin := fundedWallet(stepCtx(t), t, cli, node0, 5_000_000)
 
+	f0 := productionFrontier(t, c, isolated)
 	c.Partition(majority, []int{isolated})
 
 	trafficCtx, stopTraffic := context.WithCancel(context.Background())
@@ -179,7 +184,7 @@ func testHealUnderTraffic(t *testing.T) {
 	progress, results := startTraffic(trafficCtx, cli, node0, w, coin)
 
 	waitProgress(stepCtx(t), t, progress, 5)
-	requirePlateau(t, c.Node(isolated))
+	requirePlateau(t, c.Node(isolated), f0)
 
 	burstRound := latestAnchorRound(node0)
 
@@ -213,9 +218,10 @@ func testAcrossEpochBoundary(t *testing.T) {
 
 	startEpoch := latestEpoch(node0)
 
+	f0 := productionFrontier(t, c, isolated)
 	c.Partition(majority, []int{isolated})
 
-	requirePlateau(t, c.Node(isolated))
+	requirePlateau(t, c.Node(isolated), f0)
 
 	waitNextBoundary(t, node0)
 	crossedEpoch := latestEpoch(node0)
@@ -291,16 +297,32 @@ func flapOnce(t *testing.T, c *harness.Cluster, node0 *harness.Node, isolated in
 	}
 }
 
-// requirePlateau asserts n's consensus.anchor.committed count plateaus: a
-// bounded two-phase poll, never a sleep-assert. The settle phase absorbs
-// decisions already in flight when the partition landed, waiting for the
-// count to sit still for plateauSettle (bounded by plateauSettleBound — a
-// count that never settles is itself the quorum violation). The watch phase
-// then fails the instant the frozen baseline rises within plateauWindow.
-func requirePlateau(t *testing.T, n *harness.Node) {
+// productionFrontier returns node i's current consensus round: the frontier it
+// is building at, one past the highest round for which any vertex, and so any
+// certification, can exist. Captured the instant before a partition, it is the
+// ceiling a quorum-starved side may drain up to but never reach. Everything
+// below it was produced and gossiped before the cut, so those rounds can still
+// be assembled and committed from buffered state; nothing at or above it was.
+func productionFrontier(t *testing.T, c *harness.Cluster, i int) uint64 {
 	t.Helper()
 
-	baseline := settleAnchorCount(t, n)
+	status, err := c.Client(i).Status()
+	requireNoErr(t, err)
+
+	return status.Round
+}
+
+// requirePlateau asserts n's committed anchor round never reaches f0, the
+// production frontier n reported the instant before the partition. A side
+// without quorum may still drain commits for rounds below f0 (their vertices
+// were gossiped before the cut, so their certifications can be assembled from
+// buffered state), so this deliberately tolerates that drain rather than
+// freezing a baseline. But no vertex, and therefore no certification, exists at
+// or above f0: reaching f0 as a committed anchor demands genuine post-cut
+// production, which needs a quorum this side does not have, and that is exactly
+// the violation. A bounded poll over plateauWindow, never a sleep-assert.
+func requirePlateau(t *testing.T, n *harness.Node, f0 uint64) {
+	t.Helper()
 
 	deadline := time.After(plateauWindow)
 	ticker := time.NewTicker(eventPollInterval)
@@ -309,46 +331,12 @@ func requirePlateau(t *testing.T, n *harness.Node) {
 	for {
 		select {
 		case <-ticker.C:
-			got := len(n.Journal().Events("consensus.anchor.committed"))
-			if got > baseline {
-				t.Fatalf("node %d: anchor.committed advanced from %d to %d during an expected no-quorum plateau",
-					n.Index, baseline, got)
+			if got := latestAnchorRound(n); got >= f0 {
+				t.Fatalf("node %d: committed anchor round reached %d, at or past the pre-partition production frontier %d, during an expected no-quorum plateau",
+					n.Index, got, f0)
 			}
 		case <-deadline:
 			return
-		}
-	}
-}
-
-// settleAnchorCount polls n's anchor.committed count until it has sat still
-// for plateauSettle, returning the settled count, and fails the test if it
-// never settles within plateauSettleBound.
-func settleAnchorCount(t *testing.T, n *harness.Node) int {
-	t.Helper()
-
-	bound := time.After(plateauSettleBound)
-	ticker := time.NewTicker(eventPollInterval)
-	defer ticker.Stop()
-
-	count := len(n.Journal().Events("consensus.anchor.committed"))
-	stableSince := time.Now()
-
-	for {
-		select {
-		case <-ticker.C:
-			got := len(n.Journal().Events("consensus.anchor.committed"))
-			if got != count {
-				count = got
-				stableSince = time.Now()
-				continue
-			}
-			if time.Since(stableSince) >= plateauSettle {
-				return count
-			}
-		case <-bound:
-			t.Fatalf("node %d: anchor.committed never stopped advancing under an expected no-quorum partition (count %d)",
-				n.Index, count)
-			return 0
 		}
 	}
 }
