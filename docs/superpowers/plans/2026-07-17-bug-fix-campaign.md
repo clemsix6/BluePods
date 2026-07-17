@@ -797,6 +797,85 @@ misses an event added by the campaign.
 **Orchestrator validation:** none beyond build and vet (comments and docs
 only).
 
+### Batch R7 — dead-code cleanup (Sonnet)
+
+A repo-wide inventory (deadcode reachability from both mains, with and
+without test roots; staticcheck U1000; cargo check on both pod crates and
+wasm-gas; every candidate re-verified by hand) found 33 safely dead items,
+a half-dead re-export shim, and two Rust vestiges. Test-only symbols
+(harness machinery, test-seam DAG options `WithMinStake` /
+`WithVotingCapMille` / `WithThermostat`, `StorageRefund`,
+`isVertexCommitted`, `genesis.BuildSponsoredTx` / `BuildAttestedTx` /
+`BuildDeregisterValidatorRawTx`, `logger.With`) are the designed test
+surface — do NOT touch them.
+
+- [ ] **Commit 1 — Go dead-symbol sweep.** Delete, verifying each still has
+  zero callers at deletion time (post R1-R6 code may have changed):
+  - `internal/consensus/dag.go` `WithCommissionBPS` (keep the
+    `commissionBPS` field and its default — only the never-called setter
+    goes);
+  - `internal/consensus/dag.go` `DAG.isInTransition` (superseded by
+    `isInTransitionOrBuffer`);
+  - `internal/consensus/thermostat.go` `defaultThermostatParams`;
+  - `internal/consensus/types.go` `quorumThreshold` const;
+  - `internal/consensus/commit_test.go` `addQuorumVertices`;
+  - `internal/state/state.go` `rebuildObjectWithID` AND
+    `rebuildObjectCustomID` (dead chain — the latter's only caller is the
+    former);
+  - `internal/genesis/transaction.go` `BuildRegisterValidatorTx` (replaced
+    by `BuildRegisterValidatorRawTx`, which stays);
+  - `internal/logger/logger.go` `Timed`;
+  - `internal/podvm/system_test.go` `buildCoinObject` (self-documented as
+    replaced by `buildCoinObjectWithOwner`; do NOT confuse with the live
+    `buildCoinObject` in `internal/state/state_test.go`);
+  - `cmd/node/node.go` `defaultSyncBufferSec` const;
+  - `internal/network/messages.go` `minClientTag` const;
+  - `test/harness/cluster.go` `Cluster.Daemon`;
+  - `test/harness/options.go` `WithMinValidators`, `WithGossipFanout`,
+    `WithSyncBuffer`, `WithInitialMint`, `WithTransitionGrace`,
+    `WithTransitionBuffer`, `WithStake` (the fields keep their defaults in
+    `cluster.go`/`setup.go`; only the never-used overrides go);
+  - `test/scenarios/helpers_test.go` `waitCommitted`,
+    `requireCommittedReason`, `waitCommittedAll`, `waitOwner`.
+- [ ] **Commit 2 — retire the `internal/aggregation` re-export shim.** The
+  package re-exports `internal/attest` function-for-function but production
+  wires only five (`DeriveFromED25519`, `DecodeRequest`,
+  `EncodePositiveResponse`, `EncodeNegativeResponse`,
+  `IsAttestationRequest` — these stay). Delete the six dead re-exports
+  (`GenerateBLSKeyFromSeed`, `Verify`, `AggregateSignatures`,
+  `BuildSignerBitmap`, `EncodeRequest`, `BLSPublicKeySize`); migrate the
+  package's own tests off the five test-only re-exports
+  (`GenerateBLSKey`, `DecodePositiveResponse`, `DecodeNegativeResponse`,
+  `GetMessageType`, `QuorumSize`) to direct `attest.*` calls, then delete
+  those re-exports too (minimal-public-API rule: the shim's unfinished
+  migration ends here).
+- [ ] **Commit 3 — Rust vestiges.** Delete the unused
+  `extern "C" fn gas(cost: u32)` declaration in `pods/pod-sdk/src/lib.rs`
+  (gas metering is injected at the binary level by `wasm-gas`, which adds
+  the `env.gas` import itself), and delete
+  `pods/pod-system/src/functions/deregister_validator/args.rs` entirely
+  plus its `mod args;` / `pub use args::Args;` lines (the empty `Args`
+  struct is never constructed; the Go side confirms deregistration takes
+  no arguments). This commit touches `pods/`: both crates' builds and
+  tests must pass, plus the wasm build recipe.
+- [ ] **Commit 4 — keep and document the domain-deletion scaffolding.**
+  `internal/events/state.go` `DomainDeleted` and
+  `internal/state/domain.go` `domainStore.delete` are pre-wired for the
+  domain deletion operation the whitepaper documents as specified but not
+  yet exposed by the system pod. Keep both; add one short doc-comment line
+  to each stating exactly that (no campaign references).
+- [ ] Each commit: build + vet + the touched packages' tests green,
+  foreground, bounded.
+
+**Deliberately NOT cleaned:** `genesis.BuildDeregisterValidatorRawTx`
+duplicates `pkg/client`'s deregister construction path and survives only
+through a `cmd/node` handler test — it is a legitimate test seam today,
+but the duplication is a format-divergence risk to revisit when the client
+transaction builders are next touched.
+
+**Orchestrator validation:** none beyond the per-commit gates (pure
+deletions and comments).
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
