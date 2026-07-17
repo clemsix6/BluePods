@@ -88,5 +88,5 @@ func TestSnapshotSignatureRoundTripServesWithoutSigning(t *testing.T) {
 // computeHashForTest mirrors the handler's content-hash computation.
 func computeHashForTest(objData []byte, version uint64) [32]byte {
 	fbObj := types.GetRootAsObject(objData, 0)
-	return attest.ComputeObjectHash(fbObj.ContentBytes(), version)
+	return attest.ComputeObjectHash(fbObj.ContentBytes(), version, fbObj.OwnerBytes())
 }

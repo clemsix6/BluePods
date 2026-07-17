@@ -63,8 +63,8 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 
 	// Eager signing: at execution, a holder signs the persisted version and
 	// stores it durably next to the object so attestation requests are pure reads.
-	n.state.SetObjectSigner(func(id [32]byte, content []byte, version uint64, replication uint16) {
-		hash := attest.ComputeObjectHash(content, version)
+	n.state.SetObjectSigner(func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) {
+		hash := attest.ComputeObjectHash(content, version, owner)
 		sig := n.blsKey.Sign(hash[:])
 
 		if err := aggregation.PutObjectSig(n.storage, id, version, sig); err != nil {

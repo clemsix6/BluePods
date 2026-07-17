@@ -29,6 +29,82 @@ func buildTestObject(id [32]byte, replication uint16) []byte {
 	return builder.FinishedBytes()
 }
 
+// buildTestObjectWithOwner creates a replicated Object stamped with an explicit
+// owner, so a test can attest one owner while embedding another in the ATX.
+func buildTestObjectWithOwner(id [32]byte, replication uint16, owner [32]byte) []byte {
+	builder := flatbuffers.NewBuilder(256)
+
+	idOffset := builder.CreateByteVector(id[:])
+	ownerOffset := builder.CreateByteVector(owner[:])
+	contentOffset := builder.CreateByteVector([]byte("test content"))
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idOffset)
+	types.ObjectAddVersion(builder, 1)
+	types.ObjectAddOwner(builder, ownerOffset)
+	types.ObjectAddReplication(builder, replication)
+	types.ObjectAddContent(builder, contentOffset)
+
+	objOffset := types.ObjectEnd(builder)
+	builder.Finish(objOffset)
+
+	return builder.FinishedBytes()
+}
+
+// TestATXVerifierRejectsRewrittenOwner is the object-theft forgery wedge at the
+// verify seam: the quorum signs the object's owner as part of the canonical
+// hash, so an ATX that keeps the attested content, version, and proof but
+// rewrites the owner to a different key no longer matches the signed hash and is
+// rejected. Without the owner in the hash a submitter could collect a legitimate
+// read quorum for any replicated object, rewrite its owner to its own key, sign
+// the transfer as that forged owner, and steal the object.
+func TestATXVerifierRejectsRewrittenOwner(t *testing.T) {
+	const (
+		epochLength      = 100
+		replication      = 4
+		commitRound      = 350
+		attestationEpoch = 3
+	)
+
+	vs, keys := buildBLSValidators(t, replication)
+
+	objID := [32]byte{0x42}
+	realOwner := [32]byte{0xAA}
+	attacker := [32]byte{0xEE}
+
+	// The holders attest the object as owned by realOwner: they sign the canonical
+	// hash over the copy they hold, which binds that owner.
+	realObj := buildTestObjectWithOwner(objID, replication, realOwner)
+	obj := types.GetRootAsObject(realObj, 0)
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version(), obj.OwnerBytes())
+
+	holders := attest.ComputeHolders(vs, objID, replication)
+
+	var sigs [][]byte
+	var indices []int
+	for i, h := range holders {
+		sigs = append(sigs, keys[h].Sign(hash[:]))
+		indices = append(indices, i)
+	}
+
+	aggSig, err := attest.AggregateSignatures(sigs)
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+
+	bitmap := attest.BuildSignerBitmap(indices, len(holders))
+
+	// The submitter forges the ATX: same content, version, and quorum proof, but
+	// the owner rewritten to its own key.
+	forgedObj := buildTestObjectWithOwner(objID, replication, attacker)
+	forgedATX := buildATXWithProof(objID, forgedObj, aggSig, bitmap, attestationEpoch)
+
+	verifier := NewATXVerifier(fixedResolver(attestationEpoch, vs, epochLength))
+	if err := verifier.Verify(types.GetRootAsAttestedTransaction(forgedATX, 0), commitRound); err == nil {
+		t.Fatal("expected reject: a rewritten owner must invalidate the BLS proof")
+	}
+}
+
 // buildVerifierFixture builds a validator set whose BLS keys are derived from a
 // seed, plus a one-proof ATX over a replicated object stamped with attestationEpoch.
 // It returns the validator set and the serialized ATX.
@@ -61,7 +137,7 @@ func buildVerifierFixture(t *testing.T, attestationEpoch uint64) (*validators.Va
 	objID := [32]byte{0x42}
 	objData := buildTestObject(objID, replication)
 	obj := types.GetRootAsObject(objData, 0)
-	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version())
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version(), obj.OwnerBytes())
 
 	holders := attest.ComputeHolders(vs, objID, replication)
 
@@ -99,10 +175,12 @@ func buildATXWithProof(objID [32]byte, objData, aggSig, bitmap []byte, attestati
 
 	obj := types.GetRootAsObject(objData, 0)
 	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
 	contentVec := builder.CreateByteVector(obj.ContentBytes())
 	types.ObjectStart(builder)
 	types.ObjectAddId(builder, idVec)
 	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
 	objOffset := types.ObjectEnd(builder)
@@ -322,7 +400,7 @@ func signQuorumATX(t *testing.T, signVS *validators.ValidatorSet, keys map[valid
 
 	objData := buildTestObject(objID, uint16(replication))
 	obj := types.GetRootAsObject(objData, 0)
-	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version())
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version(), obj.OwnerBytes())
 
 	holders := attest.ComputeHolders(signVS, objID, replication)
 

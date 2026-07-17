@@ -102,9 +102,9 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// Verify hash over the object's content bytes (canonical form)
+	// Verify hash over the object's content, version, and owner (canonical form)
 	fbObj := types.GetRootAsObject(objData, 0)
-	expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), version)
+	expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), version, fbObj.OwnerBytes())
 	if resp.Hash != expectedHash {
 		t.Error("hash mismatch")
 	}

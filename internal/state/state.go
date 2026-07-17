@@ -30,7 +30,7 @@ type State struct {
 	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
 	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
 	onObjectDeleted func(id [32]byte) uint64                                              // onObjectDeleted removes a deleted object from the network-uniform tracker and returns the storage deposit it held
-	signObject      func(id [32]byte, content []byte, version uint64, replication uint16) // signObject eagerly attests a held object at the version actually persisted
+	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
@@ -112,9 +112,11 @@ func (s *State) SetOnObjectDeleted(fn func(id [32]byte) uint64) {
 
 // SetObjectSigner sets a callback that fires when a held, replicated object is
 // persisted at a new version, so the node can eagerly produce and store its BLS
-// attestation. The callback is invoked with the version actually written.
+// attestation. The callback is invoked with the version actually written and the
+// object's owner, which the attestation hash binds so the eager signature covers
+// the same owner the verifier recomputes against at commit.
 // State holds only the func, so it never imports the aggregation package.
-func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uint64, replication uint16)) {
+func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)) {
 	s.signObject = fn
 }
 
@@ -459,16 +461,18 @@ func (s *State) applyUpdatedObjects(output *types.PodExecuteOutput, txHash [32]b
 
 		events.ObjectUpdated(id, txHash, newVersion)
 
-		// Eagerly sign the version actually persisted (old version + 1).
+		// Eagerly sign the version actually persisted (old version + 1). The owner
+		// is bound into the attestation hash, so pass the persisted object's owner.
 		// There is no holder filter on updates, so guard it explicitly.
-		s.eagerlySign(id, obj.ContentBytes(), newVersion, obj.Replication())
+		s.eagerlySign(id, obj.ContentBytes(), newVersion, obj.Replication(), obj.OwnerBytes())
 	}
 }
 
 // eagerlySign invokes the object-signer callback for a held, replicated object.
 // Singletons (replication 0) are never attested, and objects this node does not
-// hold are skipped, so the work stays bounded by the held-object count.
-func (s *State) eagerlySign(id Hash, content []byte, version uint64, replication uint16) {
+// hold are skipped, so the work stays bounded by the held-object count. The owner
+// is threaded through because the attestation hash binds it.
+func (s *State) eagerlySign(id Hash, content []byte, version uint64, replication uint16, owner []byte) {
 	if s.signObject == nil || replication == 0 {
 		return
 	}
@@ -477,7 +481,7 @@ func (s *State) eagerlySign(id Hash, content []byte, version uint64, replication
 		return
 	}
 
-	s.signObject(id, content, version, replication)
+	s.signObject(id, content, version, replication, owner)
 }
 
 // rebuildObjectIncrementVersion rebuilds an Object as a standalone FlatBuffer with version+1.
@@ -552,8 +556,9 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 		data := rebuildObjectWithIDAndFees(id, &obj, fees)
 		s.objects.set(id, data)
 
-		// Eagerly sign the created object at its initial version.
-		s.eagerlySign(id, obj.ContentBytes(), obj.Version(), obj.Replication())
+		// Eagerly sign the created object at its initial version, binding its owner
+		// into the attestation hash.
+		s.eagerlySign(id, obj.ContentBytes(), obj.Version(), obj.Replication(), obj.OwnerBytes())
 	}
 }
 

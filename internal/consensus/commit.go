@@ -962,6 +962,11 @@ func (d *DAG) mutableRefOwner(atx *types.AttestedTransaction, objectID Hash) (Ha
 // the ATX's attested Objects vector. Only objects with replication > 0 are
 // matched: singletons are never carried in the ATX and keep the local-content
 // check. Returns ok=false when no such attested object is present.
+//
+// This owner is authenticated: the BLS quorum proof binds it (the attestation
+// hash covers content, version, AND owner), so the proof verified at commit fails
+// unless this owner is the one the holders attested. A submitter therefore cannot
+// rewrite it to steal the object — reading it here is safe.
 func attestedReplicatedOwner(atx *types.AttestedTransaction, objectID Hash) (Hash, bool) {
 	var obj types.Object
 

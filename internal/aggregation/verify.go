@@ -214,8 +214,11 @@ func (v *ATXVerifier) prepareSingleProof(atx *types.AttestedTransaction, proof *
 		return attest.AggCheck{}, fmt.Errorf("cannot read object at index %d", objIdx)
 	}
 
-	// Recompute the canonical hash from the object's content bytes.
-	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version())
+	// Recompute the canonical hash from the ATX object's content, version, AND
+	// owner. Feeding the ATX's own owner here is what authenticates it: the
+	// holders signed over the owner they hold, so an owner rewritten in the ATX
+	// produces a hash the quorum never signed and the aggregated proof fails.
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), obj.Version(), obj.OwnerBytes())
 
 	var objectID [32]byte
 	copy(objectID[:], proof.ObjectIdBytes())
