@@ -78,6 +78,10 @@ sponsored-transaction sub-tests green.
 
 **Subsystem:** `cmd/node/sync.go` `buildValidatorSetFromSnapshot`.
 
+**Status: FIXED** (RewardCoin now carried by buildValidatorSetFromSnapshot;
+this branch). The deregistration-principal blast radius noted below gets
+re-verified by the orchestrator at `TestScenarioEpochs`.
+
 Root cause proven by direct investigation (candidate fix parked on
 `fix/multi-node-convergence`, not yet applied). The original hypothesis here
 (reward distribution sensitive to validator insertion order) was tested
