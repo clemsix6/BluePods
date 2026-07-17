@@ -973,6 +973,68 @@ wedges identically at the same round.
 **Orchestrator validation:** `TestScenarioEpochCrash`,
 `TestScenarioPartition` (across_epoch_boundary), `TestScenarioChurn`.
 
+### Batch R10 — reward-coin designation diverges between live and replay (Opus)
+
+Diagnosed with per-section fingerprint sub-hashes: the healed node splits
+ONLY in the singleton (coin) section — tracker, validator, supply and
+counter sections all match, so the reward share is identical but its
+liquid credit lands on a DIFFERENT coin. Mechanism: when a registration
+carries no explicit reward-coin arg, `setRewardCoinFromArgs`
+(`internal/consensus/commit.go`) falls back to `ownedGasCoin`, a LIVE
+coin-store read at the moment the registration is applied — a
+non-committed, timing-dependent input that resolves differently on the
+live path and the replay path. The divergence hides because
+`hashValidators` (`internal/sync/fingerprint_hash.go`) omits
+`RewardCoin`, and `creditCoin` is version-neutral, so nothing shows
+until epoch credits land. This is the replay-path sibling of the
+sync-path reward-coin loss fixed at the start of the campaign.
+
+- [ ] **Step 1 — failing unit test:** apply the same committed
+  registration (zero reward-coin arg) through the live-commit path and
+  through a replay, assert both designate the IDENTICAL reward coin.
+  Must fail today.
+- [ ] **Step 2 — fix:** designate the reward coin only from committed,
+  network-uniform inputs: the explicit arg, else a coin identified by
+  the registration transaction's own committed data (e.g. its gas
+  coin), else zero — the coinless path already compounds rewards into
+  self-stake deterministically. No live store read at apply time.
+- [ ] **Step 3 — close the blind spot:** include `RewardCoin` in
+  `hashValidators`' per-validator hash. Breaking fingerprint change —
+  call it out in the commit body.
+- [ ] **Step 4:** full suite green, one commit.
+
+**Orchestrator validation:** `TestScenarioPartition` (heal_under_traffic,
+across_epoch_boundary), `TestScenarioEpochCrash`.
+
+### Batch R11 — deep-gap ancestry backfill too slow for reintegration (Opus)
+
+Diagnosed: NOT the anti-fork guard (`adjacentCertifyAgrees` returned true
+at every gate) and not a permanent wedge — the reintegrated node does
+converge given time. The causal backfill (`requestMissingAncestors`,
+gated by `stallTicks >= 2` in the stall handlers) recovers roughly one
+missing frontier layer per 50 ms stall tick, so a node healing across a
+multi-hundred-round gap closes it over dozens of seconds; bounded
+scenario waits (and EpochCrash's tx-commit window) expire first. The
+`TODO` at `internal/consensus/commit.go:191` already flags the missing
+batching.
+
+- [ ] **Step 1 — failing unit test:** a DAG missing a deep ancestry gap
+  (tens of vertices across many rounds) must close it within a small
+  bounded number of fetch iterations. Count fetch rounds through a seam;
+  must fail today (one layer per iteration).
+- [ ] **Step 2 — fix:** on a causal stall, request the FULL missing
+  ancestry breadth (batched, deduplicating in-flight requests, bounded
+  message size — split into chunks if needed), and trigger without
+  waiting extra ticks when the gap is deep. Keep the fetch targeted at
+  committed-anchor ancestry so it cannot flood.
+- [ ] **Step 3:** full suite green, one commit. The convergence oracle
+  stays STRICT — no harness window loosening in this batch; if
+  revalidation still misses windows, that is a follow-up decision with
+  data, not a silent widening.
+
+**Orchestrator validation:** `TestScenarioPartition` (all five),
+`TestScenarioEpochCrash`, `TestScenarioStress`.
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
