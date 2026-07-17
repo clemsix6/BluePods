@@ -23,8 +23,9 @@ const (
 	// genesis self-stake, before extinction. Without this step the founder's
 	// live self-stake never diverges from its genesis value in the first
 	// place, and a restart re-seeding it back to that SAME value would be
-	// indistinguishable from correct behavior: this is what turns BUGS.md
-	// entry 10 from a latent defect into an observable one.
+	// indistinguishable from correct behavior: the bond gives the restart a
+	// live divergence it must preserve, so founder_stake_preserved tests the
+	// durable restore rather than a tautology.
 	coldRestartFounderBondAmount = uint64(7_000_000)
 
 	// coldRestartFounderFundAmount funds the founder's own extra bond coin:
@@ -43,8 +44,9 @@ const (
 // start. No other scenario ever restarts the bootstrap: TestScenarioCrash
 // explicitly kills a non-bootstrap victim instead, because bootstrap's
 // restart takes a different code path (cmd/node's seedGenesisState /
-// consensus.DAG.SeedGenesisValidator), and that path is exactly where
-// BUGS.md entry 10 lives.
+// consensus.DAG.SeedGenesisValidator), and this scenario exercises that
+// path: rebuilding the live validator set from durable state and re-seeding
+// the founder merge-safely.
 //
 // Phase A gives the founder's self-stake a live divergence from its genesis
 // value (an extra bond on top of the genesis self-stake) before stopping
@@ -55,32 +57,26 @@ const (
 // bootstrap node back first, in bootstrap mode, over its own data directory,
 // then resyncs the other four against it. Phase D confirms the cardinal
 // properties hold across the cold restart, with founder_stake_preserved as
-// the discriminating sub-test for entry 10.
+// the discriminating sub-test for the durable validator-set restore.
 //
-// Teardown is still red on the per-node supply identity: the small
-// per-registration deposit leak from this cluster's four non-founder
-// registrations accounts for only a few thousand of the gap. The dominant
-// failure observed here is far larger (a ~4*10^11 gap): that is the
-// cold-restart validator-set loss's own mechanism at cluster scale — see
-// founder_stake_preserved below.
+// The restart rebuilds the live validator set from the snapshot persisted
+// with the commit cursor (buildValidatorSet loads it), so every validator's
+// stake comes back and totalBonded no longer collapses to the founder's bare
+// genesis self-stake. Any residual per-node supply-identity gap at teardown
+// is the small per-registration storage-deposit leak from this cluster's
+// four non-founder registrations (a separate, still-open issue), a few
+// thousand units — not the cluster-scale validator-set loss.
 //
-// founder_stake_preserved is ALSO expected red, in the body, not just at
-// teardown: it asserts the CORRECT behavior (the founder's totalBonded and
-// coinsTotal survive a bootstrap restart unchanged), and BUGS.md entry 10
-// predicts this node re-seeds its self-stake to genesis on every bootstrap
-// start, discarding the bond applied in Phase A while the coin debit that
-// paid for it persists. A red result here is the intended live reproduction
-// of that entry, not a defect in this scenario. The observed magnitude goes
-// beyond the entry's original founder-only claim: totalBonded does not just
-// lose the founder's extra bond, it collapses all the way down to the
-// founder's bare genesis self-stake, confirming the entry's own "suspected
-// ... missing validator-set persistence path" co-factor is real and not
-// founder-specific — buildValidatorSet (cmd/node/init.go) starts every
-// process run, restart included, from an in-memory validator set with
-// nothing but the local identity, and nothing outside SeedGenesisValidator
-// restores anyone into it. See the sub-test for the exact before/after
-// numbers logged as evidence, and test/BUGS.md entry 10 for the full
-// analysis.
+// founder_stake_preserved asserts the CORRECT behavior and holds: the
+// founder's totalBonded and coinsTotal survive a bootstrap restart
+// unchanged. The bootstrap start rebuilds the live validator set from
+// durable state — buildValidatorSet (cmd/node/init.go) restores the set
+// persisted with the commit cursor rather than starting from the bare local
+// identity — and SeedGenesisValidator is merge-safe, so it never regresses
+// the founder's live self-stake or reward coin back to genesis. The bond
+// applied in Phase A therefore stays bonded, and the coin debited to fund it
+// stays debited. See the sub-test for the exact before/after numbers logged
+// as evidence.
 func TestScenarioColdRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -205,8 +201,8 @@ func coldRestartPhaseC(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
 // coldRestartPhaseD runs Phase D's five sub-tests: zero rollback across the
 // restart, the wallet's coin surviving unchanged, the committed round
 // resuming past its pre-extinction value, the founder's stake/coin
-// conservation (the discriminating sub-test for BUGS.md entry 10), and
-// ordinary traffic committing on all five nodes again.
+// conservation (the discriminating sub-test for the durable validator-set
+// restore), and ordinary traffic committing on all five nodes again.
 func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cli0 *client.Client, w *client.Wallet, coin [32]byte, preRound uint64, preFingerprints map[int]*network.FingerprintResponse) {
 	t.Helper()
 
@@ -244,14 +240,14 @@ func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cl
 			preFp.CoinsTotal, postFp.CoinsTotal, int64(postFp.CoinsTotal)-int64(preFp.CoinsTotal))
 
 		if postFp.TotalBonded != preFp.TotalBonded {
-			t.Fatalf("BUGS.md entry 10 reproduced: node 0 totalBonded not conserved across a bootstrap restart: pre=%d post=%d "+
-				"(SeedGenesisValidator re-seeds the founder's self-stake to its genesis value on every bootstrap start, "+
-				"discarding the %d bonded on top of it before extinction)",
+			t.Fatalf("node 0 totalBonded not conserved across a bootstrap restart: pre=%d post=%d "+
+				"(the restart must rebuild the live validator set from durable state and re-seed the founder merge-safely, "+
+				"preserving the %d bonded on top of its genesis self-stake before extinction)",
 				preFp.TotalBonded, postFp.TotalBonded, coldRestartFounderBondAmount)
 		}
 		if postFp.CoinsTotal != preFp.CoinsTotal {
-			t.Fatalf("BUGS.md entry 10 reproduced: node 0 coinsTotal not conserved across a bootstrap restart: pre=%d post=%d "+
-				"(the coin debited to fund the founder's extra bond does not come back, while totalBonded above may already show the bonded amount was discarded)",
+			t.Fatalf("node 0 coinsTotal not conserved across a bootstrap restart: pre=%d post=%d "+
+				"(the coin debited to fund the founder's extra bond stays debited, matching the preserved totalBonded above)",
 				preFp.CoinsTotal, postFp.CoinsTotal)
 		}
 	})

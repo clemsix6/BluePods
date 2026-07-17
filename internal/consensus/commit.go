@@ -229,9 +229,16 @@ func (d *DAG) requestMissingAncestors(anchor Hash) {
 func (d *DAG) advanceCommitCursor(round uint64) {
 	d.lastCommitted = round + 1
 
+	// The LIVE validator set rides every batch, so a restart rebuilds total_bonded and
+	// each validator's stake and reward coin from the last committed round rather than
+	// collapsing to the founder's bare genesis self-stake. A committed bond or delegate
+	// off a boundary mutates the set on an ordinary round, so persisting it only at
+	// boundaries or on a regime change would lose those mutations across a restart.
+	live := d.liveValidatorsKV()
+
 	if d.isEpochBoundary(round) {
 		d.transitionEpoch(round)
-		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.store.saveCommitCursorBatch(d.lastCommitted, append(d.epochStateKVs(), live))
 		d.regimeDirty = false
 		d.producedDirty = false
 		return
@@ -244,7 +251,7 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 	// would make the next freeze derive a different eligible set than the rest of
 	// the network.
 	if d.regimeDirty || d.producedDirty {
-		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.store.saveCommitCursorBatch(d.lastCommitted, append(d.epochStateKVs(), live))
 		d.regimeDirty = false
 		d.producedDirty = false
 		return
@@ -255,7 +262,7 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 	// and per-validator liveness, and committed flags prevent re-deriving them by
 	// replay, so persisting them with the cursor keeps a restart's reward mint exact
 	// (C-2). The holder snapshots are unchanged here, so they are not rewritten.
-	d.store.saveCommitCursorBatch(d.lastCommitted, d.accumulatorKVs())
+	d.store.saveCommitCursorBatch(d.lastCommitted, append(d.accumulatorKVs(), live))
 }
 
 // commitAnchorBatch applies the anchor's causal batch in deterministic order and

@@ -108,20 +108,47 @@ func (n *Node) initConsensus() error {
 	return nil
 }
 
-// buildValidatorSet creates the initial validator set.
+// buildValidatorSet creates the initial validator set. On a restart over an existing
+// data directory it rebuilds the LIVE set from the durable snapshot persisted with the
+// commit cursor, so total_bonded and every validator's stake and reward-coin
+// designation survive; only a fresh start falls back to the bare local identity.
 func (n *Node) buildValidatorSet() *consensus.ValidatorSet {
 	pubKey := n.cfg.PrivateKey.Public().(ed25519.PublicKey)
 
 	var hash consensus.Hash
 	copy(hash[:], pubKey)
 
+	// Restart: rebuild the live validator set from durable state — the local
+	// equivalent of the sync path's buildValidatorSetFromSnapshot.
+	if restored := restoreValidatorSet(consensus.LoadLiveValidators(n.storage)); restored != nil {
+		return restored
+	}
+
 	if n.cfg.Bootstrap {
 		// Bootstrap validator must be in set BEFORE first vertex for validation
 		return consensus.NewValidatorSet([]consensus.Hash{hash})
 	}
 
-	// TODO: Load validator set from state for non-bootstrap nodes
 	return consensus.NewValidatorSet(nil)
+}
+
+// restoreValidatorSet rebuilds a live validator set from validators persisted with the
+// commit cursor, or nil when none were persisted (a fresh chain). Each validator is
+// restored with every field the set carries, mirroring buildValidatorSetFromSnapshot:
+// RewardCoin is set explicitly because AddWithStake omits it, and dropping it — or any
+// other field — would fork the convergence fingerprint on restart.
+func restoreValidatorSet(infos []*consensus.ValidatorInfo) *consensus.ValidatorSet {
+	if len(infos) == 0 {
+		return nil
+	}
+
+	vs := consensus.NewValidatorSet(nil)
+	for _, v := range infos {
+		vs.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
+		vs.SetRewardCoin(v.Pubkey, v.RewardCoin)
+	}
+
+	return vs
 }
 
 // buildConsensusOpts creates consensus options for the bootstrap node.
@@ -178,11 +205,11 @@ func (n *Node) genesisConfig() genesis.Config {
 // The ledger (the reserve coin, total_supply, coins_total) is seeded only once:
 // a bootstrap node restarting over its own data directory must not re-seed it,
 // or it overwrites every balance change committed since genesis. The guard is
-// the genesis coin's presence in state. The founder's validator entry
-// (self-stake, reward coin, committed membership) is idempotent and MUST still
-// be (re-)installed on every start including a restart — nothing else restores
-// the live validator set in bootstrap mode, and skipping it would leave the
-// restarted founder with zero live self-stake and a broken total_bonded.
+// the genesis coin's presence in state. On a restart the live validator set is
+// rebuilt from durable state by buildValidatorSet, so SeedGenesisValidator runs
+// merge-safe: it back-fills the founder's address and committed membership but
+// leaves the restored self-stake and reward coin untouched, seeding their genesis
+// values only on a fresh chain where the founder has no live stake yet.
 func (n *Node) seedGenesisState() {
 	if !n.cfg.Bootstrap {
 		return

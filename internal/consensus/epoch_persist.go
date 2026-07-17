@@ -22,6 +22,8 @@ var (
 	eligibleHoldersKey = metaKey("eligibleHolders")     // eligibleHoldersKey holds the eligible set frozen with the current snapshot
 	prevEligibleKey    = metaKey("prevEligibleHolders") // prevEligibleKey holds the eligible set frozen with the previous snapshot
 	nextEligibleKey    = metaKey("nextEligibleHolders") // nextEligibleKey holds the eligible set frozen with the forward proxy
+
+	liveValidatorsKey = metaKey("liveValidators") // liveValidatorsKey holds the LIVE validator set, persisted with the commit cursor so a restart rebuilds it instead of starting from the bare local identity
 )
 
 // blsKeyLen is the byte length of a validator's BLS public key.
@@ -244,4 +246,100 @@ func boolByte(b bool) byte {
 		return 1
 	}
 	return 0
+}
+
+// liveValidatorsKV returns the live validator set as a batch pair. It rides every
+// commit-cursor advance (see advanceCommitCursor) so a restart over an existing data
+// directory rebuilds total_bonded and every validator's stake and reward-coin
+// designation as of the last committed round, instead of collapsing to the founder's
+// bare genesis self-stake. It is distinct from the frozen epoch holder snapshots: it
+// tracks the LIVE set and, unlike them, carries RewardCoin.
+func (d *DAG) liveValidatorsKV() storage.KeyValue {
+	return storage.KeyValue{Key: liveValidatorsKey, Value: encodeLiveValidators(d.validators)}
+}
+
+// encodeLiveValidators serializes a validator set with EVERY field the restart
+// rebuild needs. It reuses the shared validator record and appends RewardCoin, the
+// one field encodeHolderSnapshot omits (holder snapshots reconstruct through
+// AddWithStake, which does not carry it). A nil set encodes as an empty record.
+func encodeLiveValidators(set *ValidatorSet) []byte {
+	if set == nil {
+		return binary.BigEndian.AppendUint32(nil, 0)
+	}
+
+	all := set.All()
+	buf := binary.BigEndian.AppendUint32(nil, uint32(len(all)))
+	for _, v := range all {
+		buf = appendValidatorRecord(buf, v)
+		buf = append(buf, v.RewardCoin[:]...)
+	}
+
+	return buf
+}
+
+// LoadLiveValidators decodes the live validator set persisted with the commit cursor,
+// or nil when none was persisted (a fresh chain). A restarting node rebuilds its live
+// validator set from this — stake, delegated total, jail flag, BLS key, QUIC address,
+// and reward coin — the local equivalent of the sync path's buildValidatorSetFromSnapshot.
+func LoadLiveValidators(db *storage.Storage) []*ValidatorInfo {
+	data, err := db.Get(liveValidatorsKey)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+
+	return decodeLiveValidators(data)
+}
+
+// decodeLiveValidators rebuilds the validator infos serialized by encodeLiveValidators.
+// A truncated record stops the decode cleanly, matching decodeHolderSnapshot.
+func decodeLiveValidators(data []byte) []*ValidatorInfo {
+	if len(data) < 4 {
+		return nil
+	}
+
+	count := binary.BigEndian.Uint32(data)
+	off := 4
+	infos := make([]*ValidatorInfo, 0, count)
+
+	for i := uint32(0); i < count; i++ {
+		info, n, ok := decodeLiveValidatorRecord(data[off:])
+		if !ok {
+			break
+		}
+		infos = append(infos, info)
+		off += n
+	}
+
+	return infos
+}
+
+// decodeLiveValidatorRecord decodes one record written by encodeLiveValidators: the
+// shared validator fields followed by the 32-byte reward coin. It returns the info and
+// the number of bytes consumed; ok is false when data is too short for the record.
+func decodeLiveValidatorRecord(data []byte) (*ValidatorInfo, int, bool) {
+	const fixed = 32 + blsKeyLen + 8 + 8 + 1 + 2
+	if len(data) < fixed {
+		return nil, 0, false
+	}
+
+	var info ValidatorInfo
+	copy(info.Pubkey[:], data[:32])
+	copy(info.BLSPubkey[:], data[32:32+blsKeyLen])
+
+	off := 32 + blsKeyLen
+	info.SelfStake = binary.BigEndian.Uint64(data[off : off+8])
+	info.DelegatedTotal = binary.BigEndian.Uint64(data[off+8 : off+16])
+	info.Jailed = data[off+16] != 0
+	addrLen := int(binary.BigEndian.Uint16(data[off+17 : off+19]))
+
+	off += 19
+	if len(data) < off+addrLen+32 {
+		return nil, 0, false
+	}
+	info.QUICAddr = string(data[off : off+addrLen])
+
+	off += addrLen
+	copy(info.RewardCoin[:], data[off:off+32])
+
+	return &info, off + 32, true
 }

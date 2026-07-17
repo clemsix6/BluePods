@@ -672,30 +672,36 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
 }
 
-// SeedGenesisValidator seeds the founding validator into the validator set:
+// SeedGenesisValidator installs the founding validator into the validator set:
 // its network address, its bonded self-stake, and its reward coin (its own
 // genesis coin — without a designation the founder's liquid epoch reward share
 // has nowhere to land and silently vanishes at every boundary with a non-zero
-// pool). It then admits the founder to the committed member set and freezes
+// pool). It then admits the founder to the committed member set, which refreezes
 // the genesis holder snapshot so the anchor path resolves epoch 0 without ever
 // reading the live set.
 //
-// Every step here is idempotent (Add/SetSelfStake/SetRewardCoin overwrite,
-// recordCommittedMember is a set-add), so unlike SeedGenesisLedger this MUST
-// run on every bootstrap start, restart included: nothing else restores the
-// live validator set in bootstrap mode, and skipping it on restart would leave
-// the founder with zero live self-stake and a broken total_bonded.
-//
-// Known limitation: SetSelfStake/SetRewardCoin overwrite rather than merge,
-// so a restart re-seeds these fields to their GENESIS values even if the
-// founder's live self-stake or reward coin has since diverged from genesis.
+// It runs on every bootstrap start, restart included, and is merge-safe: the
+// self-stake and reward-coin seed fires ONLY on a fresh chain, when the founder
+// has no live self-stake yet. On a restart the live validator set is already
+// rebuilt from durable state (LoadLiveValidators, via buildValidatorSet) with the
+// founder's post-genesis self-stake and reward coin, so overwriting them here
+// would regress total_bonded and the reward-coin designation to their genesis
+// values while the coin debits that funded the divergence persist in the ledger.
+// Address back-fill and committed-member admission stay idempotent, so they run
+// unconditionally.
 func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)
 
-	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
-	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
-	d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
+	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder may already be in the set; Add back-fills addresses
+
+	// Seed the genesis stake and reward coin only when the founder carries no live
+	// self-stake — a fresh chain. A restart restores these from durable state before
+	// this runs, and must be trusted rather than regressed to genesis.
+	if existing := d.validators.Get(is.Pubkey); existing == nil || existing.SelfStake == 0 {
+		d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
+		d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
+	}
 
 	// Under commitMu because the commit loop is already running.
 	d.commitMu.Lock()
