@@ -375,6 +375,10 @@ func (d *DAG) applyPendingRemovals() []Hash {
 			break // defer remaining to next epoch
 		}
 
+		if d.hasBondedDelegations(pubkey) {
+			continue // delegated stake still bonded: keep it in total_bonded, retry next boundary
+		}
+
 		if !d.returnDeregisteredStake(pubkey) {
 			continue // bond has no coin to return to: keep it bonded, retry next boundary
 		}
@@ -389,6 +393,22 @@ func (d *DAG) applyPendingRemovals() []Hash {
 	}
 
 	return removed
+}
+
+// hasBondedDelegations reports whether a validator pending removal still carries
+// delegated stake bonded behind it. Its delegated total is capital its delegators
+// own, counted in total_bonded; removing the validator drops that total from the
+// active set while returnDeregisteredStake only recredits the self-stake, so the
+// supply identity coins_total + total_bonded + deposits + fees_in_flight ==
+// total_supply would turn deflationary by exactly the delegated amount. The removal
+// is therefore deferred until every delegator has withdrawn its position through
+// undelegate (the normal bonded→coins path), leaving only the self-stake to
+// re-home. It reads the committed DelegatedTotal, identical on every node, so the
+// deferral is network-uniform — the same liveness-for-supply-safety tradeoff the
+// self-stake refusal makes when a departing validator has no coin for its bond.
+func (d *DAG) hasBondedDelegations(pubkey Hash) bool {
+	info := d.validators.Get(pubkey)
+	return info != nil && info.DelegatedTotal > 0
 }
 
 // returnDeregisteredStake returns a departing validator's self-stake principal to
