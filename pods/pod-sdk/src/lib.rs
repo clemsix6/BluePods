@@ -53,7 +53,6 @@ pub const ERR_MISSING_OBJECT: u32 = 4;
 // ============================================================================
 
 extern "C" {
-    fn gas(cost: u32);
     fn input_len() -> u32;
     fn read_input(ptr: *mut u8);
     fn write_output(ptr: *const u8, len: u32);
