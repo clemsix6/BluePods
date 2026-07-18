@@ -98,12 +98,13 @@ func (s *State) validateDomainName(name string, seen map[string]bool) error {
 	return nil
 }
 
-// validateCreatedParents enforces the creation-permission rule: every created
-// object's declared parent must be the sender's own key, an object the sender
-// controls, an object this transaction reaches through a domain reference, or an
-// object created earlier in this same output. Same-output parents are staged in
-// output order so a nested creation (B under a just-created A) is authorized
-// before the tracker has learned A.
+// validateCreatedParents enforces the creation-permission rule: a created
+// object rooted at a key may root at any key (a gift, paid for by the
+// creator), while a created object hung under another object must be an
+// object the sender controls, an object this transaction reaches through a
+// domain reference, or an object created earlier in this same output.
+// Same-output parents are staged in output order so a nested creation (B under
+// a just-created A) is authorized before the tracker has learned A.
 func (s *State) validateCreatedParents(output *types.PodExecuteOutput, tx *types.Transaction, txHash Hash) error {
 	sender := extractSender(tx)
 	domainParents := s.domainReferencedParents(tx)
@@ -126,13 +127,16 @@ func (s *State) validateCreatedParents(output *types.PodExecuteOutput, tx *types
 }
 
 // createdParentAllowed reports whether a created object's declared parent
-// satisfies the creation-permission rule. A KeyRoot parent must be the sender's
-// own key. An object-parent is allowed when it was created earlier in this
-// output, is reached through a domain reference, or is controlled by the sender
-// per the consensus cascade walk.
+// satisfies the creation-permission rule. A KeyRoot parent may be any key: the
+// creator pays the deposit, so rooting a new object at someone else's key is a
+// gift, the same consent-free attach the transfer operation already allows.
+// The protected surface is the object-parent branches: an object-parent is
+// allowed only when it was created earlier in this output, is reached through
+// a domain reference, or is controlled by the sender per the consensus cascade
+// walk.
 func (s *State) createdParentAllowed(kind byte, parent, sender Hash, staged, domainParents map[Hash]bool, tx *types.Transaction) bool {
 	if kind == parentKindKeyRoot {
-		return parent == sender
+		return true
 	}
 
 	if staged[parent] || domainParents[parent] {

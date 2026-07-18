@@ -10,9 +10,11 @@ import (
 
 // --- creation-permission rule ---
 
-// TestValidateOutput_CreateUnderForeignKeyFails verifies that a created object
-// declaring a KeyRoot parent that is not the sender's own key is rejected.
-func TestValidateOutput_CreateUnderForeignKeyFails(t *testing.T) {
+// TestValidateOutput_GiftUnderForeignKeySucceeds verifies that a created object
+// declaring a KeyRoot parent that is not the sender's own key is allowed: the
+// creator pays the deposit, so rooting a new object at someone else's key is a
+// gift, the same consent-free attach the transfer operation already allows.
+func TestValidateOutput_GiftUnderForeignKeySucceeds(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 
@@ -23,8 +25,8 @@ func TestValidateOutput_CreateUnderForeignKeyFails(t *testing.T) {
 	output := buildCreatedParentsOutput([]createdSpec{{owner: foreign, parentKind: parentKindKeyRoot}})
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx, Hash{}, nil); err == nil {
-		t.Error("expected error creating an object under a foreign key")
+	if err := s.validateOutput(out, tx, Hash{}, nil); err != nil {
+		t.Errorf("expected success gifting an object under a foreign key, got: %v", err)
 	}
 }
 

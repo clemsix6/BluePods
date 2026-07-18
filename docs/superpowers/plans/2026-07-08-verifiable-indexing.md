@@ -164,7 +164,7 @@ table DeclaredOp {
 
 **Interfaces — Produces:** a created object's parent must satisfy: KeyRoot == sender, or `controls(sender, parent)`, or parent is referenced by this tx through a domain ref (`ObjectRef.domain != ""`, the existing shared-access exemption). `updated_objects` whose owner/parent bytes differ from the input object's are rejected (input objects are in the ATX at the checked version — a pure local compare, no tracker needed). Pod-output `deleted_objects` (the `podio.fbs` field) is valid only when the tx is globally executed (`CreatedObjectsReplicationLength() > 0` or all mutable refs are singletons — the `merge` carve-out); otherwise the output is rejected.
 
-- [ ] **Test:** creating under someone else's key fails; under an owned object succeeds; under a domain-referenced table succeeds; a pod flipping owner in `updated_objects` reverts the tx; `merge` (singleton coins) still deletes its source coin; a pod deleting a sharded object in a non-creating tx reverts.
+- [ ] **Test:** creating under someone else's key succeeds (gift; deposit paid by creator); under an owned object succeeds; under a domain-referenced table succeeds; a pod flipping owner in `updated_objects` reverts the tx; `merge` (singleton coins) still deletes its source coin; a pod deleting a sharded object in a non-creating tx reverts.
 - [ ] **Run, expect FAIL → implement → PASS.**
 - [ ] **Commit:** title `Creation permission rule and pod-output lockdown`, body `[!] closes the third parent write path (pods) and spam-attach`.
 
