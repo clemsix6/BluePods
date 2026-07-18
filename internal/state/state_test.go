@@ -513,7 +513,7 @@ func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
 	// transaction carries no gas coin (fee-exempt) and permits one created
 	// object; the output creates one replication-0 Validator singleton.
 	regTx := buildTxWithLimits(1, 0)
-	if err := s.processOutput(buildCreatedOutputBytes(1, 0), Hash{0xAA}, regTx); err != nil {
+	if err := s.processOutput(buildCreatedOutputBytes(1, 0), Hash{0xAA}, regTx, nil); err != nil {
 		t.Fatalf("processOutput: %v", err)
 	}
 
@@ -843,7 +843,7 @@ func TestValidateOutput_MaxCreateObjectsExceeded(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(3, 10, nil)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx); err == nil {
+	if err := s.validateOutput(out, tx, Hash{}, nil); err == nil {
 		t.Error("expected error for 3 created objects with max 2")
 	}
 }
@@ -857,7 +857,7 @@ func TestValidateOutput_MaxCreateObjectsExact(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(2, 10, nil)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx); err != nil {
+	if err := s.validateOutput(out, tx, Hash{}, nil); err != nil {
 		t.Errorf("expected success for 2 created objects with max 2, got: %v", err)
 	}
 }
@@ -875,7 +875,7 @@ func TestValidateOutput_MaxCreateDomainsExceeded(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx); err == nil {
+	if err := s.validateOutput(out, tx, Hash{}, nil); err == nil {
 		t.Error("expected error for 2 domains with max 1")
 	}
 }
@@ -890,7 +890,7 @@ func TestValidateOutput_MaxCreateDomainsExact(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx); err != nil {
+	if err := s.validateOutput(out, tx, Hash{}, nil); err != nil {
 		t.Errorf("expected success for 1 domain with max 1, got: %v", err)
 	}
 }
@@ -908,7 +908,7 @@ func TestValidateOutput_DomainCollision(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	err := s.validateOutput(out, tx)
+	err := s.validateOutput(out, tx, Hash{}, nil)
 	if err == nil {
 		t.Error("expected error for domain collision")
 	}
@@ -924,7 +924,7 @@ func TestValidateOutput_EmptyDomainName(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	err := s.validateOutput(out, tx)
+	err := s.validateOutput(out, tx, Hash{}, nil)
 	if err == nil {
 		t.Error("expected error for empty domain name")
 	}
@@ -941,7 +941,7 @@ func TestValidateOutput_DomainNameTooLong(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	err := s.validateOutput(out, tx)
+	err := s.validateOutput(out, tx, Hash{}, nil)
 	if err == nil {
 		t.Error("expected error for domain name exceeding 253 bytes")
 	}
@@ -962,7 +962,7 @@ func TestValidateOutput_DomainNameExact253(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	err := s.validateOutput(out, tx)
+	err := s.validateOutput(out, tx, Hash{}, nil)
 	if err != nil {
 		t.Errorf("expected success for 253-byte domain name, got: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestValidateOutput_DuplicateDomainInOutput(t *testing.T) {
 	output := buildPodOutputWithDomainsRaw(0, 10, domains)
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	err := s.validateOutput(out, tx)
+	err := s.validateOutput(out, tx, Hash{}, nil)
 	if err == nil {
 		t.Error("expected error for duplicate domain name in output")
 	}
@@ -1001,7 +1001,7 @@ func TestProcessOutput_RollbackOnLimitExceeded(t *testing.T) {
 	// 2 created objects but max=1 → should fail
 	output := buildPodOutputWithDomainsRaw(2, 10, nil)
 
-	err := s.processOutput(output, txHash, tx)
+	err := s.processOutput(output, txHash, tx, nil)
 	if err == nil {
 		t.Fatal("expected error for exceeding limits")
 	}
@@ -1029,7 +1029,7 @@ func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
 	domains := []testDomain{{name: "taken.pod"}}
 	output := buildPodOutputWithDomainsRaw(1, 10, domains)
 
-	err := s.processOutput(output, txHash, tx)
+	err := s.processOutput(output, txHash, tx, nil)
 	if err == nil {
 		t.Fatal("expected error for domain collision")
 	}

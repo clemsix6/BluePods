@@ -626,6 +626,23 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
 }
 
+// ControlsParent reports whether sender is authorized to attach a newly created
+// object under the given parent reference. A KeyRoot parent is authorized only
+// when it is the sender's own key; an ObjectParent is authorized when the
+// sender's key terminates the parent's cascade walk. It backs the state layer's
+// creation-permission rule without state importing consensus.
+func (d *DAG) ControlsParent(kind byte, parent [32]byte, sender [32]byte) bool {
+	var p, s Hash
+	copy(p[:], parent[:])
+	copy(s[:], sender[:])
+
+	if kind == keyRootKind {
+		return p == s
+	}
+
+	return d.tracker.controls(s, p)
+}
+
 // SetOnObjectDeleted wires the callback consensus invokes when a declared
 // deletion settles, so the node drops the deleted object's stored body. A node
 // that never held the object no-ops. It mirrors State.SetOnObjectCreated in the

@@ -30,6 +30,7 @@ type State struct {
 	isHolder        func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
 	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
 	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
+	parentValidator func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
@@ -114,6 +115,16 @@ func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uin
 	s.signObject = fn
 }
 
+// SetParentValidator wires the consensus cascade walk that decides whether a
+// transaction sender controls a created object's declared object-parent. State
+// resolves the sender's own key and same-transaction parents locally; only the
+// ObjectParent-under-an-existing-object case needs the global parent walk, which
+// this callback answers. Holding only the func keeps state from importing
+// consensus.
+func (s *State) SetParentValidator(fn func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool) {
+	s.parentValidator = fn
+}
+
 // SetStorageFees configures protocol-level storage deposits and refunds.
 // When storageFee > 0, created objects get a storage deposit in their fees field.
 // totalValidators is only a fallback; SetValidatorCount supplies the live count.
@@ -157,7 +168,7 @@ func (s *State) Execute(atxData []byte) error {
 
 	txHash := extractTxHash(tx)
 
-	if err := s.processOutput(output, txHash, tx); err != nil {
+	if err := s.processOutput(output, txHash, tx, objects); err != nil {
 		return fmt.Errorf("process output:\n%w", err)
 	}
 
@@ -322,9 +333,12 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 }
 
 // processOutput validates and applies PodExecuteOutput to the state.
-// Validates creation limits and domain collisions before applying any mutations.
-// If any validation fails, no state changes are made (rollback semantics).
-func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction) error {
+// Validates creation limits, domain collisions, the creation-permission rule,
+// parent immutability, and the pod-output deletion carve-out before applying any
+// mutations. The inputs are the attested object copies the pod ran against, used
+// as the local comparison basis for the parent and deletion checks. If any
+// validation fails, no state changes are made (rollback semantics).
+func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction, inputs []*types.Object) error {
 	if len(outputData) == 0 {
 		return nil
 	}
@@ -339,7 +353,7 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 		return fmt.Errorf("pod execution error: %d", errCode)
 	}
 
-	if err := s.validateOutput(output, tx); err != nil {
+	if err := s.validateOutput(output, tx, txHash, inputs); err != nil {
 		return fmt.Errorf("output validation failed:\n%w", err)
 	}
 
@@ -347,51 +361,6 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 	s.applyCreatedObjects(output, txHash, txLocksDeposits(tx))
 	s.applyDeletedObjects(tx)
 	s.applyRegisteredDomains(output, txHash)
-
-	return nil
-}
-
-// validateOutput checks creation limits and domain collisions.
-// Returns error if any limit is exceeded or a domain already exists.
-func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transaction) error {
-	createdCount := output.CreatedObjectsLength()
-	maxCreate := tx.CreatedObjectsReplicationLength()
-	if createdCount > maxCreate {
-		return fmt.Errorf("created %d objects, max allowed %d", createdCount, maxCreate)
-	}
-
-	domainCount := output.RegisteredDomainsLength()
-	if domainCount > int(tx.MaxCreateDomains()) {
-		return fmt.Errorf("registered %d domains, max allowed %d", domainCount, tx.MaxCreateDomains())
-	}
-
-	seen := make(map[string]bool, domainCount)
-	var dom types.RegisteredDomain
-
-	for i := 0; i < domainCount; i++ {
-		if !output.RegisteredDomains(&dom, i) {
-			continue
-		}
-
-		name := string(dom.Name())
-
-		if len(name) == 0 {
-			return fmt.Errorf("empty domain name at index %d", i)
-		}
-
-		if len(name) > 253 {
-			return fmt.Errorf("domain name too long: %d bytes (max 253)", len(name))
-		}
-
-		if seen[name] {
-			return fmt.Errorf("duplicate domain name in output: %q", name)
-		}
-		seen[name] = true
-
-		if s.domains.exists(name) {
-			return fmt.Errorf("domain collision: %q already registered", name)
-		}
-	}
 
 	return nil
 }
