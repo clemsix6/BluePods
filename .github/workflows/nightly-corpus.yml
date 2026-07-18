@@ -37,6 +37,12 @@ jobs:
       - name: Build instrumented system pod
         run: cd pods/pod-system && make release
 
+      # The runners' default kernel limits cap UDP buffers far below what
+      # quic-go asks for, causing packet loss under multi-node load — exactly
+      # the delivery skew the scenarios are sensitive to.
+      - name: Raise UDP buffer limits
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+
       # The full 17-scenario corpus, one at a time (the testing guide's rule),
       # every scenario always attempted: a red does not stop the sweep, the
       # job fails at the end with the verdict table in the summary.
