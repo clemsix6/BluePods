@@ -55,6 +55,13 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.dag.TrackObject(id, version, replication, fees, parentKind, parent)
 	})
 
+	// Reverse direction: when a declared deletion settles in the commit loop,
+	// the holder drops the object's stored body (a node that never held it
+	// no-ops on a missing key).
+	n.dag.SetOnObjectDeleted(func(id [32]byte) {
+		n.state.DeleteObject(id)
+	})
+
 	// Eager signing: at execution, a holder signs the persisted version and
 	// stores it durably next to the object so attestation requests are pure reads.
 	n.state.SetObjectSigner(func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) {

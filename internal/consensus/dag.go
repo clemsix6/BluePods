@@ -140,6 +140,13 @@ type DAG struct {
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
 
+	// onObjectDeleted fires when a declared-operation delete settles, so the
+	// holder of the object drops its stored body; a node that never held the
+	// object no-ops. It is the reverse-direction mirror of the state's
+	// SetOnObjectCreated wiring (consensus notifying state), keeping consensus
+	// free of any import of the state package.
+	onObjectDeleted func(id [32]byte)
+
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
 	// Used as the inline fallback when no batch verifier is set (such as direct
@@ -617,6 +624,15 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	copy(h[:], id[:])
 	copy(p[:], parent[:])
 	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
+}
+
+// SetOnObjectDeleted wires the callback consensus invokes when a declared
+// deletion settles, so the node drops the deleted object's stored body. A node
+// that never held the object no-ops. It mirrors State.SetOnObjectCreated in the
+// reverse direction (consensus notifying state), so state keeps its content
+// storage authoritative while consensus stays free of the state package.
+func (d *DAG) SetOnObjectDeleted(fn func(id [32]byte)) {
+	d.onObjectDeleted = fn
 }
 
 // SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
