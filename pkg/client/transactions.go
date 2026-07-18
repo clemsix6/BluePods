@@ -288,15 +288,6 @@ func encodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 	return buf
 }
 
-// encodeTransferArgs encodes transfer function arguments in Borsh format.
-// Format: [u8; 32] new_owner.
-func encodeTransferArgs(newOwner [32]byte) []byte {
-	buf := make([]byte, 32)
-	copy(buf, newOwner[:])
-
-	return buf
-}
-
 // encodeSetObjectArgs encodes set_object arguments in Borsh format.
 // Format: [u8; 32] object_id + u32 content_len (LE) + content bytes.
 func encodeSetObjectArgs(objectID [32]byte, content []byte) []byte {
