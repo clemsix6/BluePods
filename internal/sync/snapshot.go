@@ -775,6 +775,16 @@ func ExtractVertices(snapshot *types.Snapshot) []consensus.VertexEntry {
 	return entries
 }
 
+// decodeHash32 decodes a 32-byte slice into a consensus.Hash.
+// If the slice is not exactly 32 bytes, it returns a zero hash.
+func decodeHash32(b []byte) consensus.Hash {
+	var h consensus.Hash
+	if len(b) == 32 {
+		copy(h[:], b)
+	}
+	return h
+}
+
 // ExtractTrackerEntries extracts object tracker entries from a snapshot.
 func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEntry {
 	length := snapshot.ObjectVersionsLength()
@@ -790,24 +800,13 @@ func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEn
 			continue
 		}
 
-		var id, parent consensus.Hash
-		idBytes := v.IdBytes()
-		if len(idBytes) == 32 {
-			copy(id[:], idBytes)
-		}
-
-		parentBytes := v.ParentBytes()
-		if len(parentBytes) == 32 {
-			copy(parent[:], parentBytes)
-		}
-
 		entries[i] = consensus.ObjectTrackerEntry{
-			ID:          id,
+			ID:          decodeHash32(v.IdBytes()),
 			Version:     v.Version(),
 			Replication: v.Replication(),
 			Fees:        v.Fees(),
 			ParentKind:  v.ParentKind(),
-			Parent:      parent,
+			Parent:      decodeHash32(v.ParentBytes()),
 			ChildCount:  v.ChildCount(),
 		}
 	}
