@@ -20,12 +20,6 @@ const (
 	// their validators in one parallel batch.
 	sequentialStartupMax = 10
 
-	// bigClusterTransition is the cluster size at and above which the
-	// transition window is widened: parallel registration lands validators at
-	// different times, and the default window is too tight to avoid a quorum
-	// deadlock.
-	bigClusterTransition = 10
-
 	// nodeReadyTimeout bounds how long NewCluster waits for a single node to
 	// report node.ready.
 	nodeReadyTimeout = 60 * time.Second
@@ -116,8 +110,10 @@ func NewCluster(t *testing.T, size int, opts ...Option) *Cluster {
 	return c
 }
 
-// resolveOptions applies opts over size-dependent defaults, matching the
-// tuning the old integration suite used for large clusters.
+// resolveOptions applies opts over size-dependent defaults: minValidators
+// defaults to the cluster size, and a large cluster fans gossip out to every
+// peer. The transition grace/buffer keep the node defaults — the strict latch
+// arms on committed stake, so the bootstrap window no longer needs widening.
 func resolveOptions(size int, opts []Option) clusterOpts {
 	o := clusterOpts{initialMint: defaultInitialMint}
 	for _, opt := range opts {
@@ -126,14 +122,6 @@ func resolveOptions(size int, opts []Option) clusterOpts {
 
 	if o.minValidators == 0 {
 		o.minValidators = size
-	}
-	if size >= bigClusterTransition {
-		if o.transitionGrace == 0 {
-			o.transitionGrace = 100
-		}
-		if o.transitionBuffer == 0 {
-			o.transitionBuffer = 100
-		}
 	}
 	if o.gossipFanout == 0 && size > sequentialStartupMax {
 		o.gossipFanout = size

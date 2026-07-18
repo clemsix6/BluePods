@@ -695,7 +695,14 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
 	d.handleDeregisterValidator(tx, commitRound)
-	d.handleBond(tx)
+	if d.handleBond(tx) {
+		// A committed bond may complete the bootstrap stake — the last committed member
+		// gaining a non-zero self-stake — so refresh the genesis regime to re-freeze the
+		// snapshot with the new stake and arm the strict latch. The registration path
+		// refreshes on membership; this refreshes on stake, so the latch observes bonds
+		// that land after every member is already registered.
+		d.refreezeGenesisRegime(commitRound)
+	}
 	d.handleUnbond(tx)
 	d.handleDelegate(tx)
 	d.handleUndelegate(tx)

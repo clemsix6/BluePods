@@ -139,6 +139,66 @@ func TestStrictLatchFromCommittedHistory_I8(t *testing.T) {
 	}
 }
 
+// TestStrictLatchWaitsForCommittedStake is the R14 regression: the strict latch arms
+// on committed STAKE, not on mere registration. minValidators members that have
+// committed (registered) but hold no committed self-stake keep the regime relaxed —
+// arming strict before the members bond would freeze a stakeless genesis snapshot
+// whose 2/3 capped-stake quorum is unreachable, wedging the chain. The latch fires
+// only once every committed member holds a committed non-zero self-stake, at that
+// round plus the default grace and buffer, never at the registration crossing.
+func TestStrictLatchWaitsForCommittedStake(t *testing.T) {
+	const minV = 3
+	members := make([]testValidator, minV)
+	for i := range members {
+		members[i] = newTestValidator()
+	}
+
+	dag := New(newTestStorage(t), NewValidatorSet(nil), nil, testSystemPod, 0, members[0].privKey, nil,
+		WithMinValidators(minV), WithTransitionGrace(2), WithTransitionBuffer(1))
+	t.Cleanup(func() { dag.Close() })
+
+	// Register (commit) every member with ZERO self-stake — bonded nothing yet.
+	regRounds := []uint64{2, 3, 4}
+	dag.commitMu.Lock()
+	for i, m := range members {
+		dag.validators.Add(m.pubKey, "", [48]byte{}) // registered, self-stake 0
+		dag.recordCommittedMember(m.pubKey, regRounds[i])
+	}
+	dag.commitMu.Unlock()
+
+	// Registration alone (member count == minValidators) must NOT arm the latch: the
+	// members hold no committed stake, so the strict quorum is not yet reachable.
+	if dag.strictLatched {
+		t.Fatalf("latch armed on registration alone (start=%d): it must wait for committed stake", dag.strictStartRound)
+	}
+
+	// Bond every member (commit a non-zero self-stake) and refresh the genesis regime
+	// at the completing round, exactly as the commit path does after a committed bond.
+	const bondRound = 6
+	dag.commitMu.Lock()
+	for _, m := range members {
+		dag.validators.SetSelfStake(m.pubKey, 10)
+	}
+	dag.refreezeGenesisRegime(bondRound)
+	dag.commitMu.Unlock()
+
+	// Now every committed member holds committed stake: the latch fires at the
+	// completing round plus the DEFAULT grace (2) and buffer (1) — 6 + 2 + 1 = 9 — not
+	// at the registration crossing (round 4).
+	if !dag.strictLatched {
+		t.Fatal("latch must arm once every committed member holds committed stake")
+	}
+	if want := uint64(bondRound + 2 + 1); dag.strictStartRound != want {
+		t.Fatalf("strictStartRound = %d, want %d (completing-stake round + grace + buffer)", dag.strictStartRound, want)
+	}
+
+	// The frozen genesis snapshot carries the bonded stakes, so the strict quorum it
+	// serves from strictStartRound on is reachable.
+	if dag.epochHolders == nil || dag.epochHolders.Len() != minV {
+		t.Fatalf("genesis snapshot did not freeze the bonded committee: %v", dag.epochHolders)
+	}
+}
+
 // TestGenesisFreezeExcludesUncommittedSelfAdd_I7 is the I7 boundary regression: two
 // epoch-0-tail nodes with different in-flight (uncommitted) registration states decide
 // the boundary round identically, because the anchor decision reads the committed-only

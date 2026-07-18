@@ -4,8 +4,11 @@ package consensus
 // committed history, never of a node's local join timing. A per-node atomic
 // (transitionRound/fullQuorumAchieved) made two honest nodes classify the same
 // round differently and forked the committed log; the latch below replaces that
-// regime decision with strictStartRound, derived from committed registrations,
-// clamped, monotone, and carried in sync snapshots.
+// regime decision with strictStartRound, derived from committed STAKE (the round
+// every committed member holds a committed non-zero self-stake), clamped, monotone,
+// and carried in sync snapshots. Arming on stake, not on registration, keeps the
+// strict 2/3 capped-stake quorum reachable the moment the regime turns strict: the
+// bootstrap committee has actually bonded by then, so no stakeless snapshot wedges.
 
 // roundIsRelaxed reports whether a round is decided under the relaxed bootstrap
 // certificate rather than the strict BFT quorum. It reads only the persisted
@@ -49,11 +52,14 @@ func (d *DAG) recordCommittedMember(pubkey Hash, atRound uint64) {
 }
 
 // refreezeGenesisRegime rebuilds the epoch-0 genesis holder snapshot from the
-// committed member set and fires the strict latch once the committed count reaches
-// minValidators. It is a no-op once latched or past the genesis epoch: after the
-// latch the genesis committee and its stakes are frozen until the first epoch
-// boundary. It marks the regime dirty so the change is persisted atomically with
-// the commit cursor. The caller holds commitMu.
+// committed member set and fires the strict latch once minValidators committed
+// members each hold a committed non-zero self-stake. It is called from both the
+// registration path (a new committed member) and the bond path (a committed member
+// gaining stake), so the snapshot always carries the latest committed stakes and the
+// latch observes the moment the bootstrap committee is fully bonded. It is a no-op
+// once latched or past the genesis epoch: after the latch the genesis committee and
+// its stakes are frozen until the first epoch boundary. It marks the regime dirty so
+// the change is persisted atomically with the commit cursor. The caller holds commitMu.
 func (d *DAG) refreezeGenesisRegime(atRound uint64) {
 	if d.strictLatched || d.currentEpoch != 0 {
 		return
@@ -69,17 +75,35 @@ func (d *DAG) refreezeGenesisRegime(atRound uint64) {
 
 	d.regimeDirty = true
 
-	if d.minValidators > 0 && len(d.committedMembers) >= d.minValidators {
+	if d.minValidators > 0 && d.committedStakedMemberCount() >= d.minValidators {
 		d.latchStrictRegime(atRound)
 	}
 }
 
+// committedStakedMemberCount counts committed members that hold a committed non-zero
+// self-stake. Self-stake is only ever set by genesis seeding and committed bonds, so
+// it is a pure function of committed history; iterating the committed member set (not
+// the live validator set) keeps an uncommitted self-add out of the count, so every
+// node computes the identical bootstrap-complete signal. The caller holds commitMu.
+func (d *DAG) committedStakedMemberCount() int {
+	count := 0
+
+	for pubkey := range d.committedMembers {
+		if v := d.validators.Get(pubkey); v != nil && v.SelfStake > 0 {
+			count++
+		}
+	}
+
+	return count
+}
+
 // latchStrictRegime fires the strict-regime latch once, at the committed round
-// atRound whose commit crossed minValidators. strictStartRound is that round plus
-// the grace and buffer windows, floored one past the crossing round: the crossing
-// round was itself decided relaxed, so the strict regime can only begin strictly
-// after it, and an already-relaxed-decided round is never retroactively reclassified
-// (I8). Monotone: it fires once and is never lowered. The caller holds commitMu.
+// atRound whose commit brought minValidators committed members to a non-zero
+// committed self-stake. strictStartRound is that round plus the grace and buffer
+// windows, floored one past the crossing round: the crossing round was itself decided
+// relaxed, so the strict regime can only begin strictly after it, and an
+// already-relaxed-decided round is never retroactively reclassified (I8). Monotone: it
+// fires once and is never lowered. The caller holds commitMu.
 func (d *DAG) latchStrictRegime(atRound uint64) {
 	if d.strictLatched {
 		return
