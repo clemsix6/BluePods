@@ -148,10 +148,11 @@ type DAG struct {
 	onObjectDeleted func(id [32]byte)
 
 	// onObjectReparented fires when a declared reparent settles, so the holder
-	// of the object rewrites its stored body's owner bytes and parent kind to the
-	// new parent reference; a node that never held the object no-ops. It mirrors
+	// of the object rewrites its stored body's owner bytes, parent kind, and
+	// version to the new parent reference and the tracker's already-bumped
+	// version; a node that never held the object no-ops. It mirrors
 	// onObjectDeleted in the same reverse direction (consensus notifying state).
-	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte)
+	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte, version uint64)
 
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
@@ -660,11 +661,13 @@ func (d *DAG) SetOnObjectDeleted(fn func(id [32]byte)) {
 
 // SetOnObjectReparented wires the callback consensus invokes when a declared
 // reparent settles, so a node holding the object rewrites its stored body's
-// owner bytes and parent kind to the new parent reference. A node that never
-// held the object no-ops. It mirrors SetOnObjectDeleted, keeping the state-held
-// body's owner field (which GetObject serves and pod execution reads) consistent
-// with the tracker's new parent, while consensus stays free of the state package.
-func (d *DAG) SetOnObjectReparented(fn func(id [32]byte, newKind byte, newParent [32]byte)) {
+// owner bytes, parent kind, and version to the new parent reference and the
+// tracker's already-bumped version. A node that never held the object no-ops.
+// It mirrors SetOnObjectDeleted, keeping the state-held body's owner and
+// version fields (which GetObject serves, pod execution reads, and the
+// daemon's attestation collection re-derives its hash from) consistent with
+// the tracker's new parent, while consensus stays free of the state package.
+func (d *DAG) SetOnObjectReparented(fn func(id [32]byte, newKind byte, newParent [32]byte, version uint64)) {
 	d.onObjectReparented = fn
 }
 

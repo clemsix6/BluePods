@@ -265,20 +265,22 @@ func (s *State) DeleteObject(id [32]byte) {
 	s.objects.delete(id)
 }
 
-// ReparentObject rewrites a reparented object's stored body owner bytes and
-// parent kind to the new parent reference, but only for a holder that stores it;
-// a non-holder never held the object, so there is nothing to rewrite. It fires
-// from the consensus commit loop when a declared reparent settles, keeping the
-// held body's owner field — which GetObject serves and pod execution reads —
-// consistent with the tracker's new parent. The transform is deterministic, so
-// rewriting only on holders keeps attested copies consistent at the next version.
-func (s *State) ReparentObject(id [32]byte, newKind byte, newParent [32]byte) {
+// ReparentObject rewrites a reparented object's stored body owner bytes,
+// parent kind, and version to the new parent reference and the tracker's
+// already-bumped version, but only for a holder that stores it; a non-holder
+// never held the object, so there is nothing to rewrite. It fires from the
+// consensus commit loop when a declared reparent settles, keeping the held
+// body's owner and version fields — which GetObject serves, pod execution
+// reads, and the daemon's attestation collection re-derives its hash from —
+// consistent with the tracker. The transform is deterministic, so rewriting
+// only on holders keeps attested copies consistent at the next version.
+func (s *State) ReparentObject(id [32]byte, newKind byte, newParent [32]byte, version uint64) {
 	data := s.objects.get(id)
 	if data == nil {
 		return
 	}
 
-	s.objects.set(id, writeObjectOwner(data, newParent, newKind))
+	s.objects.set(id, writeObjectOwner(data, newParent, newKind, version))
 }
 
 // serializeInput builds the FlatBuffers PodExecuteInput.
@@ -591,12 +593,15 @@ func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte 
 	return builder.FinishedBytes()
 }
 
-// writeObjectOwner rebuilds an object with a new owner (its parent bytes) and
-// parent kind, preserving every other field (ID, version, replication, content,
-// fees). A reparent rewrites the held body's owner to mirror the tracker's new
-// parent reference. Version is NOT incremented — the version bump is the commit
-// path's, not the body rewrite's.
-func writeObjectOwner(data []byte, newOwner [32]byte, newParentKind byte) []byte {
+// writeObjectOwner rebuilds an object with a new owner (its parent bytes), a
+// new parent kind, and the tracker's already-bumped version, preserving every
+// other field (ID, replication, content, fees). A reparent rewrites the held
+// body's owner to mirror the tracker's new parent reference; the version is
+// stamped from the caller (the tracker's post-checkAndUpdate version) so the
+// held copy never falls behind the version-conflict check a follow-up
+// mutation is validated against — GetObject, pod execution, and the daemon's
+// attestation collection all read this field as the object's current version.
+func writeObjectOwner(data []byte, newOwner [32]byte, newParentKind byte, newVersion uint64) []byte {
 	obj := types.GetRootAsObject(data, 0)
 	builder := flatbuffers.NewBuilder(512)
 
@@ -606,7 +611,7 @@ func writeObjectOwner(data []byte, newOwner [32]byte, newParentKind byte) []byte
 
 	types.ObjectStart(builder)
 	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddVersion(builder, newVersion)
 	types.ObjectAddOwner(builder, ownerVec)
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)

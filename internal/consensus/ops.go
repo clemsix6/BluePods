@@ -86,35 +86,40 @@ func (d *DAG) applyDeclaredOps(tx *types.Transaction, ops []genesis.DeclaredOp) 
 }
 
 // applyReparent rebinds an object's parent edge, rewrites the stored body's
-// owner bytes to mirror the new parent reference, and emits the reparent event
-// with the object's current (already version-bumped) version. The tracker edge
-// and the body owner are rewritten in the same apply step, so no reader on this
-// node ever sees the tracker parent and the body owner disagree.
+// owner bytes and version to mirror the new parent reference and the
+// tracker's already version-bumped state, and emits the reparent event with
+// that same version. The tracker edge and the body owner/version are
+// rewritten in the same apply step, so no reader on this node ever sees the
+// tracker parent and the body owner disagree, and a held copy's version never
+// falls behind the version-conflict check a follow-up mutation is validated
+// against.
 func (d *DAG) applyReparent(txHash Hash, op genesis.DeclaredOp) {
 	objID := toHash(op.ObjectID)
 	parent := toHash(op.Target)
+	version := d.tracker.getVersion(objID)
 
 	d.tracker.setParent(objID, op.TargetKind, parent)
-	d.rewriteBodyOwner(objID, op.TargetKind, parent)
-	events.ObjectReparented(objID, txHash, op.TargetKind, parent, d.tracker.getVersion(objID))
+	d.rewriteBodyOwner(objID, op.TargetKind, parent, version)
+	events.ObjectReparented(objID, txHash, op.TargetKind, parent, version)
 }
 
-// rewriteBodyOwner rewrites a reparented object's stored body owner bytes and
-// parent kind wherever a copy lives, restoring the invariant that body owner
-// bytes equal the current parent bytes for every reader (gas ownership,
-// mutable-ref ownership, GetObject, pod execution). It rewrites the
-// consensus-side coin store, where singletons and held copies the ownership
-// checks read live, and fires the state hook for the state-held body. A body
-// absent from either store is a no-op.
-func (d *DAG) rewriteBodyOwner(objID Hash, kind byte, parent Hash) {
+// rewriteBodyOwner rewrites a reparented object's stored body owner bytes,
+// parent kind, and version wherever a copy lives, restoring the invariant
+// that body owner bytes equal the current parent bytes and body version
+// equals the tracker's version for every reader (gas ownership, mutable-ref
+// ownership, GetObject, pod execution, the daemon's attestation collection).
+// It rewrites the consensus-side coin store, where singletons and held
+// copies the ownership checks read live, and fires the state hook for the
+// state-held body. A body absent from either store is a no-op.
+func (d *DAG) rewriteBodyOwner(objID Hash, kind byte, parent Hash, version uint64) {
 	if d.coinStore != nil {
 		if data := d.coinStore.GetObject(objID); data != nil {
-			d.coinStore.SetObject(writeObjectOwner(data, parent, kind))
+			d.coinStore.SetObject(writeObjectOwner(data, parent, kind, version))
 		}
 	}
 
 	if d.onObjectReparented != nil {
-		d.onObjectReparented(objID, kind, parent)
+		d.onObjectReparented(objID, kind, parent, version)
 	}
 }
 

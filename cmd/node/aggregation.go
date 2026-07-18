@@ -64,11 +64,13 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	})
 
 	// Same reverse direction for a declared reparent: the holder rewrites its
-	// stored body's owner bytes and parent kind to the new parent, so every
-	// body-reading site (GetObject, pod execution) sees the new owner (a node
-	// that never held it no-ops on a missing key).
-	n.dag.SetOnObjectReparented(func(id [32]byte, newKind byte, newParent [32]byte) {
-		n.state.ReparentObject(id, newKind, newParent)
+	// stored body's owner bytes, parent kind, and version to the new parent and
+	// the tracker's already-bumped version, so every body-reading site
+	// (GetObject, pod execution, the daemon's attestation collection) sees the
+	// new owner and current version (a node that never held it no-ops on a
+	// missing key).
+	n.dag.SetOnObjectReparented(func(id [32]byte, newKind byte, newParent [32]byte, version uint64) {
+		n.state.ReparentObject(id, newKind, newParent, version)
 	})
 
 	// Creation-permission walk: the state layer asks consensus whether the tx

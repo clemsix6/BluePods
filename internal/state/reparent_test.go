@@ -7,8 +7,10 @@ import (
 )
 
 // TestReparentObject_RewritesHeldBodyOwner asserts that after the reparent hook
-// fires, a held body shows the new owner and parent kind through the same store
-// read GetObject uses.
+// fires, a held body shows the new owner, parent kind, and the caller-supplied
+// (tracker) version through the same store read GetObject uses — the version
+// is stamped from the caller, not preserved from the pre-reparent body, so a
+// held copy never falls behind the tracker's version-conflict check.
 func TestReparentObject_RewritesHeldBodyOwner(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
@@ -19,7 +21,7 @@ func TestReparentObject_RewritesHeldBodyOwner(t *testing.T) {
 
 	s.SetObject(buildTestObjectFull(id, 7, oldOwner, 3, []byte("held content")))
 
-	s.ReparentObject(id, 1, newParent) // ObjectParent
+	s.ReparentObject(id, 1, newParent, 8) // ObjectParent, tracker version bumped to 8
 
 	data := s.GetObject(id)
 	if data == nil {
@@ -33,11 +35,11 @@ func TestReparentObject_RewritesHeldBodyOwner(t *testing.T) {
 	if k := obj.ParentKind(); k != 1 {
 		t.Errorf("body parent_kind = %d, want 1 (ObjectParent)", k)
 	}
+	if obj.Version() != 8 {
+		t.Errorf("body version = %d, want the stamped tracker version 8", obj.Version())
+	}
 
 	// Other fields survive the rewrite.
-	if obj.Version() != 7 {
-		t.Errorf("version changed by reparent: %d, want 7", obj.Version())
-	}
 	if obj.Replication() != 3 {
 		t.Errorf("replication changed by reparent: %d, want 3", obj.Replication())
 	}
@@ -54,7 +56,7 @@ func TestReparentObject_NonHolderNoOps(t *testing.T) {
 
 	id := Hash{0x02}
 
-	s.ReparentObject(id, 0, Hash{0xB2})
+	s.ReparentObject(id, 0, Hash{0xB2}, 1)
 
 	if s.GetObject(id) != nil {
 		t.Error("reparent created a body on a non-holder")
