@@ -85,14 +85,37 @@ func (d *DAG) applyDeclaredOps(tx *types.Transaction, ops []genesis.DeclaredOp) 
 	}
 }
 
-// applyReparent rebinds an object's parent edge and emits the reparent event
-// with the object's current (already version-bumped) version.
+// applyReparent rebinds an object's parent edge, rewrites the stored body's
+// owner bytes to mirror the new parent reference, and emits the reparent event
+// with the object's current (already version-bumped) version. The tracker edge
+// and the body owner are rewritten in the same apply step, so no reader on this
+// node ever sees the tracker parent and the body owner disagree.
 func (d *DAG) applyReparent(txHash Hash, op genesis.DeclaredOp) {
 	objID := toHash(op.ObjectID)
 	parent := toHash(op.Target)
 
 	d.tracker.setParent(objID, op.TargetKind, parent)
+	d.rewriteBodyOwner(objID, op.TargetKind, parent)
 	events.ObjectReparented(objID, txHash, op.TargetKind, parent, d.tracker.getVersion(objID))
+}
+
+// rewriteBodyOwner rewrites a reparented object's stored body owner bytes and
+// parent kind wherever a copy lives, restoring the invariant that body owner
+// bytes equal the current parent bytes for every reader (gas ownership,
+// mutable-ref ownership, GetObject, pod execution). It rewrites the
+// consensus-side coin store, where singletons and held copies the ownership
+// checks read live, and fires the state hook for the state-held body. A body
+// absent from either store is a no-op.
+func (d *DAG) rewriteBodyOwner(objID Hash, kind byte, parent Hash) {
+	if d.coinStore != nil {
+		if data := d.coinStore.GetObject(objID); data != nil {
+			d.coinStore.SetObject(writeObjectOwner(data, parent, kind))
+		}
+	}
+
+	if d.onObjectReparented != nil {
+		d.onObjectReparented(objID, kind, parent)
+	}
 }
 
 // applyDelete settles a deletion — release the deposit, refund/burn 95/5, remove

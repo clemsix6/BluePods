@@ -63,6 +63,14 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.state.DeleteObject(id)
 	})
 
+	// Same reverse direction for a declared reparent: the holder rewrites its
+	// stored body's owner bytes and parent kind to the new parent, so every
+	// body-reading site (GetObject, pod execution) sees the new owner (a node
+	// that never held it no-ops on a missing key).
+	n.dag.SetOnObjectReparented(func(id [32]byte, newKind byte, newParent [32]byte) {
+		n.state.ReparentObject(id, newKind, newParent)
+	})
+
 	// Creation-permission walk: the state layer asks consensus whether the tx
 	// sender controls a created object's declared object-parent, resolved through
 	// the global cascade walk over tracker metadata.

@@ -265,6 +265,22 @@ func (s *State) DeleteObject(id [32]byte) {
 	s.objects.delete(id)
 }
 
+// ReparentObject rewrites a reparented object's stored body owner bytes and
+// parent kind to the new parent reference, but only for a holder that stores it;
+// a non-holder never held the object, so there is nothing to rewrite. It fires
+// from the consensus commit loop when a declared reparent settles, keeping the
+// held body's owner field — which GetObject serves and pod execution reads —
+// consistent with the tracker's new parent. The transform is deterministic, so
+// rewriting only on holders keeps attested copies consistent at the next version.
+func (s *State) ReparentObject(id [32]byte, newKind byte, newParent [32]byte) {
+	data := s.objects.get(id)
+	if data == nil {
+		return
+	}
+
+	s.objects.set(id, writeObjectOwner(data, newParent, newKind))
+}
+
 // serializeInput builds the FlatBuffers PodExecuteInput.
 // Must rebuild nested tables (Transaction, Objects) field by field.
 func (s *State) serializeInput(tx *types.Transaction, objects []*types.Object) ([]byte, error) {
@@ -568,6 +584,34 @@ func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte 
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
 	types.ObjectAddFees(builder, fees)
+
+	offset := types.ObjectEnd(builder)
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
+// writeObjectOwner rebuilds an object with a new owner (its parent bytes) and
+// parent kind, preserving every other field (ID, version, replication, content,
+// fees). A reparent rewrites the held body's owner to mirror the tracker's new
+// parent reference. Version is NOT incremented — the version bump is the commit
+// path's, not the body rewrite's.
+func writeObjectOwner(data []byte, newOwner [32]byte, newParentKind byte) []byte {
+	obj := types.GetRootAsObject(data, 0)
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(newOwner[:])
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, obj.Version())
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
+	types.ObjectAddParentKind(builder, newParentKind)
 
 	offset := types.ObjectEnd(builder)
 	builder.Finish(offset)

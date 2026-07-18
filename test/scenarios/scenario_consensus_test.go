@@ -144,6 +144,14 @@ func TestScenarioConsensusBasics(t *testing.T) {
 		hash, err := w.Transfer(cli, coinID, recipient.Pubkey())
 		requireNoErr(t, err)
 		requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+
+		// The transfer rewrites the coin's stored body owner, so a GetObject
+		// read serves the recipient, not the stale sender.
+		obj, err := cli.GetObject(coinID)
+		requireNoErr(t, err)
+		if obj.Owner != recipient.Pubkey() {
+			t.Fatalf("transferred coin owner mismatch: body owner is not the recipient")
+		}
 	})
 
 	t.Run("object_create_transfer", func(t *testing.T) {
