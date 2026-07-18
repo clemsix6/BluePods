@@ -139,6 +139,187 @@ impl ::core::fmt::Debug for ObjectRef<'_> {
       ds.finish()
   }
 }
+pub enum DeclaredOpOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct DeclaredOp<'a> {
+  pub _tab: ::flatbuffers::Table<'a>,
+}
+
+impl<'a> ::flatbuffers::Follow<'a> for DeclaredOp<'a> {
+  type Inner = DeclaredOp<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: unsafe { ::flatbuffers::Table::new(buf, loc) } }
+  }
+}
+
+impl<'a> DeclaredOp<'a> {
+  pub const VT_KIND: ::flatbuffers::VOffsetT = 4;
+  pub const VT_OBJECT_ID: ::flatbuffers::VOffsetT = 6;
+  pub const VT_TARGET_KIND: ::flatbuffers::VOffsetT = 8;
+  pub const VT_TARGET: ::flatbuffers::VOffsetT = 10;
+  pub const VT_NAME: ::flatbuffers::VOffsetT = 12;
+  pub const VT_TERM_EPOCHS: ::flatbuffers::VOffsetT = 14;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
+    DeclaredOp { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args DeclaredOpArgs<'args>
+  ) -> ::flatbuffers::WIPOffset<DeclaredOp<'bldr>> {
+    let mut builder = DeclaredOpBuilder::new(_fbb);
+    builder.add_term_epochs(args.term_epochs);
+    if let Some(x) = args.name { builder.add_name(x); }
+    if let Some(x) = args.target { builder.add_target(x); }
+    if let Some(x) = args.object_id { builder.add_object_id(x); }
+    builder.add_target_kind(args.target_kind);
+    builder.add_kind(args.kind);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn kind(&self) -> u8 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u8>(DeclaredOp::VT_KIND, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn object_id(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(DeclaredOp::VT_OBJECT_ID, None)}
+  }
+  #[inline]
+  pub fn target_kind(&self) -> u8 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u8>(DeclaredOp::VT_TARGET_KIND, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn target(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(DeclaredOp::VT_TARGET, None)}
+  }
+  #[inline]
+  pub fn name(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(DeclaredOp::VT_NAME, None)}
+  }
+  #[inline]
+  pub fn term_epochs(&self) -> u32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u32>(DeclaredOp::VT_TERM_EPOCHS, Some(0)).unwrap()}
+  }
+}
+
+impl ::flatbuffers::Verifiable for DeclaredOp<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut ::flatbuffers::Verifier, pos: usize
+  ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+    v.visit_table(pos)?
+     .visit_field::<u8>("kind", Self::VT_KIND, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("object_id", Self::VT_OBJECT_ID, false)?
+     .visit_field::<u8>("target_kind", Self::VT_TARGET_KIND, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("target", Self::VT_TARGET, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("name", Self::VT_NAME, false)?
+     .visit_field::<u32>("term_epochs", Self::VT_TERM_EPOCHS, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct DeclaredOpArgs<'a> {
+    pub kind: u8,
+    pub object_id: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub target_kind: u8,
+    pub target: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub name: Option<::flatbuffers::WIPOffset<&'a str>>,
+    pub term_epochs: u32,
+}
+impl<'a> Default for DeclaredOpArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    DeclaredOpArgs {
+      kind: 0,
+      object_id: None,
+      target_kind: 0,
+      target: None,
+      name: None,
+      term_epochs: 0,
+    }
+  }
+}
+
+pub struct DeclaredOpBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> DeclaredOpBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_kind(&mut self, kind: u8) {
+    self.fbb_.push_slot::<u8>(DeclaredOp::VT_KIND, kind, 0);
+  }
+  #[inline]
+  pub fn add_object_id(&mut self, object_id: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(DeclaredOp::VT_OBJECT_ID, object_id);
+  }
+  #[inline]
+  pub fn add_target_kind(&mut self, target_kind: u8) {
+    self.fbb_.push_slot::<u8>(DeclaredOp::VT_TARGET_KIND, target_kind, 0);
+  }
+  #[inline]
+  pub fn add_target(&mut self, target: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(DeclaredOp::VT_TARGET, target);
+  }
+  #[inline]
+  pub fn add_name(&mut self, name: ::flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(DeclaredOp::VT_NAME, name);
+  }
+  #[inline]
+  pub fn add_term_epochs(&mut self, term_epochs: u32) {
+    self.fbb_.push_slot::<u32>(DeclaredOp::VT_TERM_EPOCHS, term_epochs, 0);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> DeclaredOpBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    DeclaredOpBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> ::flatbuffers::WIPOffset<DeclaredOp<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    ::flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl ::core::fmt::Debug for DeclaredOp<'_> {
+  fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+    let mut ds = f.debug_struct("DeclaredOp");
+      ds.field("kind", &self.kind());
+      ds.field("object_id", &self.object_id());
+      ds.field("target_kind", &self.target_kind());
+      ds.field("target", &self.target());
+      ds.field("name", &self.name());
+      ds.field("term_epochs", &self.term_epochs());
+      ds.finish()
+  }
+}
 pub enum TransactionOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -171,6 +352,7 @@ impl<'a> Transaction<'a> {
   pub const VT_SPONSOR_SIGNATURE: ::flatbuffers::VOffsetT = 30;
   pub const VT_VALID_UNTIL: ::flatbuffers::VOffsetT = 32;
   pub const VT_DELETED_OBJECTS: ::flatbuffers::VOffsetT = 34;
+  pub const VT_OPERATIONS: ::flatbuffers::VOffsetT = 36;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -184,6 +366,7 @@ impl<'a> Transaction<'a> {
     let mut builder = TransactionBuilder::new(_fbb);
     builder.add_valid_until(args.valid_until);
     builder.add_max_gas(args.max_gas);
+    if let Some(x) = args.operations { builder.add_operations(x); }
     if let Some(x) = args.deleted_objects { builder.add_deleted_objects(x); }
     if let Some(x) = args.sponsor_signature { builder.add_sponsor_signature(x); }
     if let Some(x) = args.fee_payer { builder.add_fee_payer(x); }
@@ -314,6 +497,13 @@ impl<'a> Transaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_DELETED_OBJECTS, None)}
   }
+  #[inline]
+  pub fn operations(&self) -> Option<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<DeclaredOp<'a>>>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<DeclaredOp>>>>(Transaction::VT_OPERATIONS, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Transaction<'_> {
@@ -338,6 +528,7 @@ impl ::flatbuffers::Verifiable for Transaction<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("sponsor_signature", Self::VT_SPONSOR_SIGNATURE, false)?
      .visit_field::<u64>("valid_until", Self::VT_VALID_UNTIL, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("deleted_objects", Self::VT_DELETED_OBJECTS, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, ::flatbuffers::ForwardsUOffset<DeclaredOp>>>>("operations", Self::VT_OPERATIONS, false)?
      .finish();
     Ok(())
   }
@@ -359,6 +550,7 @@ pub struct TransactionArgs<'a> {
     pub sponsor_signature: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub valid_until: u64,
     pub deleted_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub operations: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, ::flatbuffers::ForwardsUOffset<DeclaredOp<'a>>>>>,
 }
 impl<'a> Default for TransactionArgs<'a> {
   #[inline]
@@ -380,6 +572,7 @@ impl<'a> Default for TransactionArgs<'a> {
       sponsor_signature: None,
       valid_until: 0,
       deleted_objects: None,
+      operations: None,
     }
   }
 }
@@ -454,6 +647,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> TransactionBuilder<'a, 'b, A>
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_DELETED_OBJECTS, deleted_objects);
   }
   #[inline]
+  pub fn add_operations(&mut self, operations: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , ::flatbuffers::ForwardsUOffset<DeclaredOp<'b >>>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_OPERATIONS, operations);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> TransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     TransactionBuilder {
@@ -487,6 +684,7 @@ impl ::core::fmt::Debug for Transaction<'_> {
       ds.field("sponsor_signature", &self.sponsor_signature());
       ds.field("valid_until", &self.valid_until());
       ds.field("deleted_objects", &self.deleted_objects());
+      ds.field("operations", &self.operations());
       ds.finish()
   }
 }

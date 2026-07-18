@@ -19,6 +19,19 @@ table ObjectRef {
     domain:string;
 }
 
+// DeclaredOp is a protocol-level operation applied at commit by every node
+// without pod execution. kind: 0=reparent (transfer is a reparent to a
+// KeyRoot), 1=delete, 2=domain_register, 3=domain_renew, 4=domain_update,
+// 5=domain_transfer, 6=domain_delete.
+table DeclaredOp {
+    kind:ubyte;
+    object_id:[ubyte];    // target object (reparent, delete, domain_register/update pointee)
+    target_kind:ubyte;    // reparent: new parent kind (0=KeyRoot, 1=ObjectParent)
+    target:[ubyte];       // reparent: new parent bytes; domain_transfer: new owner
+    name:string;          // domain ops: the name
+    term_epochs:uint32;   // domain_register/renew: rental term
+}
+
 // Transaction represents a transaction to be executed on the network.
 // Uses a flat structure for easier API integration.
 table Transaction {
@@ -83,6 +96,12 @@ table Transaction {
     // created_objects_replication, the declared field that drives creation-side
     // accounting the same way.
     deleted_objects:[ubyte];
+
+    // operations are protocol-level operations (reparent/transfer, delete,
+    // domain lifecycle) applied at commit by every node without pod execution.
+    // Absent for a transaction that calls a pod function; a transaction must
+    // not carry both (enforced at commit, not here).
+    operations:[DeclaredOp];
 }
 
 root_type Transaction;

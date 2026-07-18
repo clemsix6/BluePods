@@ -202,6 +202,7 @@ func rebuildUnsignedTx(tx *types.Transaction) []byte {
 		readRefs,
 		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 		tx.DeletedObjectsBytes(),
+		genesis.ExtractOperations(tx),
 	)
 }
 

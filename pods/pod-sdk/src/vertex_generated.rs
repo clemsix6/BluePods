@@ -2,14 +2,14 @@
 // @generated
 extern crate alloc;
 
-use crate::transaction_generated::*;
 use crate::object_generated::*;
+use crate::transaction_generated::*;
 
 #[allow(unused_imports, dead_code)]
 pub mod types {
 
-  use crate::transaction_generated::*;
   use crate::object_generated::*;
+  use crate::transaction_generated::*;
 
 pub enum QuorumProofOffset {}
 #[derive(Copy, Clone, PartialEq)]

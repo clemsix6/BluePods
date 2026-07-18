@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
@@ -151,6 +152,45 @@ func TestValidateTx_ValidWithObjects(t *testing.T) {
 
 	if err := ValidateTx(txData); err != nil {
 		t.Fatalf("expected valid tx, got error: %v", err)
+	}
+}
+
+// TestValidateTx_WithOperations confirms a transaction carrying a declared
+// operation validates: rebuildUnsignedTx must include the operations field so
+// the recomputed hash matches the declared hash and the sender signature
+// verifies.
+func TestValidateTx_WithOperations(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var pod, gasCoin, newParent [32]byte
+	pod[0] = 0x11
+	gasCoin[0] = 0x22
+	newParent[0] = 0x33
+
+	ops := []genesis.DeclaredOp{{
+		Kind:       0,
+		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
+		TargetKind: 0,
+		Target:     newParent[:],
+	}}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
+		pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableSponsored(
+		builder, pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+	)
+	builder.Finish(txOffset)
+
+	if err := ValidateTx(builder.FinishedBytes()); err != nil {
+		t.Fatalf("valid tx with operations rejected: %v", err)
 	}
 }
 
