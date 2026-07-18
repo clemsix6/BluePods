@@ -2,7 +2,9 @@ package scenarios
 
 import (
 	"bytes"
+	"context"
 	"testing"
+	"time"
 
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
@@ -24,8 +26,8 @@ const (
 // validator count clamping to all nodes, routing from a non-holder, and the
 // local-only read flag.
 //
-// Expected red, per test/BUGS.md: teardown's convergence check fails against
-// entry 1 (and entry 8 keeps the supply term inflated).
+// Teardown is still red on the per-node supply identity: the default stake
+// setup's non-founder registrations keep the supply term inflated.
 func TestScenarioObjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -234,13 +236,13 @@ func testSingletonMutationEverywhere(t *testing.T, c *harness.Cluster, cli *clie
 // mirroring TestScenarioBootstrap's create_object assertion), and the
 // version advanced on every node that holds the object locally.
 //
-// Per BUGS.md entry 7, a replicated-object mutation's commit verdict
-// diverges between holders (success) and non-holders (ownership failure:
-// validateMutableRefOwnership resolves the mutable ref through local state,
-// which a non-holder does not have). This confronts the attested path
-// through a holder's own verdict, exactly as TestScenarioAggregation does,
-// rather than requiring uniformity across every node the way
-// TestScenarioConsensusBasics deliberately does (and stays red on).
+// A replicated-object mutation's commit verdict is uniform across the
+// cluster: the ownership check reads the object's owner from the attested
+// copy carried in the committed ATX, which every node holds identically,
+// rather than from holder-only local state. This test confirms the mutation
+// through a holder's own verdict and the version-advance sweep over every
+// holding node; the network-wide uniformity of that verdict is asserted
+// directly by TestScenarioConsensusBasics.
 func testSetObjectUpdatesSharded(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, objectID [32]byte) {
 	t.Helper()
 
@@ -256,21 +258,41 @@ func testSetObjectUpdatesSharded(t *testing.T, c *harness.Cluster, cli *client.C
 	requireCommittedSuccess(stepCtx(t), t, holderNode, hash)
 	requireObjectUpdatedEvent(t, c, objectID)
 
+	// Every holder must apply the committed update before the routed read is
+	// asserted: commits land per node, so a routed read racing a lagging holder
+	// legitimately serves the previous version.
+	waitHolderVersionsPast(stepCtx(t), t, c, objectID, before.Version)
+
 	after, err := cli.GetObject(objectID)
 	requireNoErr(t, err)
 	if !bytes.HasSuffix(after.Content, newContent) {
 		t.Fatalf("set_object content: got %q, want a suffix of %q", after.Content, newContent)
 	}
+}
+
+// waitHolderVersionsPast blocks until every alive holding node's local copy of
+// the object carries a version strictly above prev, so a subsequent routed read
+// cannot land on a holder that has not yet applied the committed update.
+func waitHolderVersionsPast(ctx context.Context, t *testing.T, c *harness.Cluster, id [32]byte, prev uint64) {
+	t.Helper()
 
 	for _, n := range c.Alive() {
-		data, err := client.NewQUICTransport(n.QUICAddr).GetObjectLocal(objectID)
-		requireNoErr(t, err)
-		if data == nil {
-			continue // non-holder: nothing to check locally
-		}
+		for {
+			data, err := client.NewQUICTransport(n.QUICAddr).GetObjectLocal(id)
+			requireNoErr(t, err)
+			if data == nil {
+				break // non-holder: nothing to apply locally
+			}
 
-		if local := client.ParseObject(data); local.Version <= before.Version {
-			t.Fatalf("node %d: sharded object version did not advance (%d <= %d)", n.Index, local.Version, before.Version)
+			if client.ParseObject(data).Version > prev {
+				break
+			}
+
+			select {
+			case <-ctx.Done():
+				t.Fatalf("node %d: sharded object version never advanced past %d", n.Index, prev)
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 	}
 }

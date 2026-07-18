@@ -17,6 +17,14 @@ import (
 const (
 	// commitCheckInterval is how often to check for new commits.
 	commitCheckInterval = 50 * time.Millisecond
+
+	// deepGapRangeThreshold is the round gap between the commit cursor and the highest
+	// buffered round beyond which the wait-stall recovery fetches a whole range of
+	// vertices rather than the single missing frontier layer. A gap this deep means a
+	// block of rounds between the cursor and the buffered frontier never arrived, and
+	// forward gossip never re-pushes an old vertex, so the layer-by-layer frontier walk
+	// would close them one round per stalled tick.
+	deepGapRangeThreshold = 10
 )
 
 // commitLoop runs in background and detects committed vertices.
@@ -115,21 +123,29 @@ func (d *DAG) commitNextRound() bool {
 }
 
 // onCausalStall records that the commit cursor's decided anchor is blocked on absent
-// causal history for another tick, and after two consecutive stalled ticks asks mesh
-// peers for the missing ancestry. The two-tick delay first gives gossip and the
-// pending buffer (a passive retry queue) a chance to deliver. It keeps re-requesting
-// each stalled tick thereafter; the fetcher's in-flight dedup bounds that to one
-// outstanding request per hash, so it is a retry, not a storm. Runs under commitMu.
+// causal history and asks mesh peers for the missing ancestry. It fetches after two
+// consecutive stalled ticks — a grace that first lets gossip and the pending buffer (a
+// passive retry queue) deliver — OR immediately when the gap sits behind a buffered
+// cascade: forward gossip never re-pushes an old vertex, so a grace tick there is pure
+// catch-up latency and only a targeted fetch of the roots below the buffer can unblock
+// the cursor. The request surfaces the whole KNOWN depth of the gap in one pass
+// (missingCausalAncestry walks through the pending buffer), so a node rejoining behind a
+// deep gap backfills in a bounded number of round-trips rather than one frontier layer
+// per tick. It keeps re-requesting each stalled tick thereafter; the fetcher's in-flight
+// dedup bounds that to one outstanding request per hash, so it is a retry, not a storm.
+// Runs under commitMu.
 func (d *DAG) onCausalStall(anchor Hash) {
+	missing, behindBacklog := d.missingCausalAncestry(anchor)
+
 	if d.stallAnchor != anchor {
 		d.stallAnchor = anchor
 		d.stallTicks = 1
-		return
+	} else {
+		d.stallTicks++
 	}
 
-	d.stallTicks++
-	if d.stallTicks >= 2 {
-		d.requestMissingAncestors(anchor)
+	if d.stallTicks >= 2 || behindBacklog {
+		d.fetchMissing(missing)
 	}
 }
 
@@ -140,12 +156,19 @@ func (d *DAG) onCausalStall(anchor Hash) {
 // historical vertices in the rounds between its floor and its join round, forward
 // gossip never redelivers them, and the relaxed regime never blames the absent
 // designated producer — so the cursor WAITs forever. Fetching delivers the missing
-// vertices so the UNCHANGED verdict rule can decide (commit or skip). A WAIT is not a
-// decided-anchor causal stall, so the causal-stall accounting is reset here. Runs
-// under commitMu.
+// vertices so the UNCHANGED verdict rule can decide (commit or skip). When a distant
+// frontier sits buffered far above the cursor, the whole span between them is fetched
+// in one range request first, since the single-layer frontier walk would otherwise
+// close that gap one round per tick. A WAIT is not a decided-anchor causal stall, so
+// the causal-stall accounting is reset here. Runs under commitMu.
 func (d *DAG) onWaitStall(round uint64) {
 	d.stallAnchor = Hash{}
 	d.stallTicks = 0
+
+	// A deep buffered frontier is a definite backlog forward gossip will never fill, so
+	// fetch its whole span at once rather than waiting the two-tick grace and surfacing
+	// one round per tick.
+	d.requestDeepGapRange(round)
 
 	if d.waitRound != round {
 		d.waitRound = round
@@ -174,7 +197,15 @@ func (d *DAG) clearStall() {
 // missing. Like requestMissingAncestors it is asynchronous and in-flight
 // deduplicated, so it retries safely each stalled tick; unlike it, it seeds the walk
 // from the whole forward frontier the node holds rather than a single decided anchor,
-// which is what an UNDECIDED wedge needs. Runs under commitMu.
+// which is what an UNDECIDED wedge needs.
+//
+// The stored-frontier walk alone cannot see one class of gap: a validated store is
+// causally closed, so when the missing vertex's descendants are all sitting in the
+// PENDING buffer (their ancestor was cut mid-broadcast and gossip never re-pushes
+// an old vertex), the walk finds nothing while the node's visible frontier thins
+// below quorum and the cursor wedges. The pending buffer knows exactly which parents
+// it is blocked on, so those are fetched too; any peer that stored the vertex can
+// serve it. Runs under commitMu.
 func (d *DAG) requestMissingFrontier(round uint64) {
 	if d.vertexFetcher == nil {
 		return
@@ -184,6 +215,7 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 	// tick with no backoff (the tracked I6 delivery-gap / BFS-cost follow-up); bound
 	// the re-walk cost once the fetch protocol grows a backoff.
 	missing := d.store.missingFrontierAbove(round)
+	missing = append(missing, d.pendingMissingParents()...)
 	if len(missing) == 0 {
 		return
 	}
@@ -191,22 +223,52 @@ func (d *DAG) requestMissingFrontier(round uint64) {
 	d.vertexFetcher.FetchVertices(missing)
 }
 
-// requestMissingAncestors hands the anchor's absent causal frontier to the vertex
-// fetcher. It is a no-op when no fetcher is wired (nil-safe) or nothing is missing.
-// The fetcher is asynchronous, so this returns without blocking the commit loop on
-// network I/O; a fetched vertex re-enters through AddVertex and is picked up on a
-// later tick. Runs under commitMu.
-func (d *DAG) requestMissingAncestors(anchor Hash) {
+// requestDeepGapRange asks peers for the whole span of vertices between the commit
+// cursor and the highest buffered round when that gap is deep. A far-behind validator
+// receives a distant frontier by gossip and buffers it, but the frontier cannot
+// promote until the block of rounds beneath it is filled; those rounds never arrive by
+// gossip (forward gossip does not re-push old vertices) and the single-layer frontier
+// walk surfaces only one round per stalled tick, so a deep gap closes over minutes. One
+// range request closes it in a few round-trips instead. It is a no-op when no fetcher is
+// wired or the gap is shallow; the fetcher deduplicates an identical range already in
+// flight, so it retries safely each stalled tick. Runs under commitMu.
+func (d *DAG) requestDeepGapRange(cursor uint64) {
 	if d.vertexFetcher == nil {
 		return
 	}
 
-	missing := d.store.missingAncestors(anchor)
-	if len(missing) == 0 {
+	highest := d.highestPendingRound()
+	if highest <= cursor || highest-cursor <= deepGapRangeThreshold {
 		return
 	}
 
-	d.vertexFetcher.FetchVertices(missing)
+	d.vertexFetcher.FetchRange(cursor, highest)
+}
+
+// requestMissingAncestors hands the anchor's absent causal ancestry to the vertex
+// fetcher in one pass. It walks the anchor's history through the store AND the pending
+// buffer (missingCausalAncestry), so the whole known depth is requested at once rather
+// than a single frontier layer, and vertices already buffered are never re-requested.
+// The fetcher is asynchronous, so this returns without blocking the commit loop on
+// network I/O; a fetched root re-enters through AddVertex, its cascade flushes the
+// pending buffer, and the completed batch is picked up on a later tick. Runs under
+// commitMu.
+func (d *DAG) requestMissingAncestors(anchor Hash) {
+	missing, _ := d.missingCausalAncestry(anchor)
+	d.fetchMissing(missing)
+}
+
+// fetchMissing hands a set of absent hashes to the vertex fetcher. It is a no-op when
+// no fetcher is wired (nil-safe) or nothing is missing, centralizing both guards for
+// the causal-stall recovery path. Each hash rides its own bounded request message, so
+// the walk's breadth is fetched in parallel with no per-message size limit to chunk.
+// Runs under commitMu.
+func (d *DAG) fetchMissing(hashes []Hash) {
+	if d.vertexFetcher == nil || len(hashes) == 0 {
+		return
+	}
+
+	d.vertexFetcher.FetchVertices(hashes)
 }
 
 // advanceCommitCursor moves the persisted commit cursor past the decided round and,
@@ -220,9 +282,16 @@ func (d *DAG) requestMissingAncestors(anchor Hash) {
 func (d *DAG) advanceCommitCursor(round uint64) {
 	d.lastCommitted = round + 1
 
+	// The LIVE validator set rides every batch, so a restart rebuilds total_bonded and
+	// each validator's stake and reward coin from the last committed round rather than
+	// collapsing to the founder's bare genesis self-stake. A committed bond or delegate
+	// off a boundary mutates the set on an ordinary round, so persisting it only at
+	// boundaries or on a regime change would lose those mutations across a restart.
+	live := d.liveValidatorsKV()
+
 	if d.isEpochBoundary(round) {
 		d.transitionEpoch(round)
-		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.store.saveCommitCursorBatch(d.lastCommitted, append(d.epochStateKVs(), live))
 		d.regimeDirty = false
 		d.producedDirty = false
 		return
@@ -235,7 +304,7 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 	// would make the next freeze derive a different eligible set than the rest of
 	// the network.
 	if d.regimeDirty || d.producedDirty {
-		d.store.saveCommitCursorBatch(d.lastCommitted, d.epochStateKVs())
+		d.store.saveCommitCursorBatch(d.lastCommitted, append(d.epochStateKVs(), live))
 		d.regimeDirty = false
 		d.producedDirty = false
 		return
@@ -246,7 +315,7 @@ func (d *DAG) advanceCommitCursor(round uint64) {
 	// and per-validator liveness, and committed flags prevent re-deriving them by
 	// replay, so persisting them with the cursor keeps a restart's reward mint exact
 	// (C-2). The holder snapshots are unchanged here, so they are not rewritten.
-	d.store.saveCommitCursorBatch(d.lastCommitted, d.accumulatorKVs())
+	d.store.saveCommitCursorBatch(d.lastCommitted, append(d.accumulatorKVs(), live))
 }
 
 // commitAnchorBatch applies the anchor's causal batch in deterministic order and
@@ -345,8 +414,14 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 			continue
 		}
 
-		d.creditLiveness(v, credited)
-		d.epochFees += d.processTransactions(v, h, commitRound, verdicts).Epoch
+		// Attribute liveness and fees to the epoch the vertex's ROUND belongs to, not
+		// the epoch current when this batch commits. A vertex adjacent to a boundary is
+		// committed in different batches on different nodes (as its own anchor, or swept
+		// into a later one), so keying by round is what lands it in the same bucket
+		// everywhere and keeps the eventual settlement identical.
+		epoch := d.commitEpochForRound(v.Round())
+		d.creditLiveness(epoch, v, credited)
+		d.epochFees[epoch] = safeAdd(d.epochFees[epoch], d.processTransactions(v, h, commitRound, verdicts).Epoch)
 		d.store.markVertexCommitted(h)
 
 		// The vertex is now committed history: its producer enters the live produced
@@ -355,18 +430,45 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 	}
 }
 
-// creditLiveness credits a vertex's producer one round of liveness, deduped by
-// (producer, round) within the batch so an equivocating producer's same-round
-// vertices count once. Liveness is per distinct round, not per vertex; a double
-// credit would inflate that producer's effective_stake x liveness reward share.
-func (d *DAG) creditLiveness(v *types.Vertex, credited map[producerRound]bool) {
+// creditLiveness credits a vertex's producer one round of liveness in the given
+// epoch's bucket, deduped by (producer, round) within the batch so an equivocating
+// producer's same-round vertices count once. Liveness is per distinct round, not per
+// vertex; a double credit would inflate that producer's effective_stake x liveness
+// reward share. epoch is the round-owned epoch (commitEpochForRound), so the credit
+// lands in the same bucket regardless of which batch committed the vertex.
+func (d *DAG) creditLiveness(epoch uint64, v *types.Vertex, credited map[producerRound]bool) {
 	key := producerRound{producer: extractProducer(v), round: v.Round()}
 	if credited[key] {
 		return
 	}
 
 	credited[key] = true
-	d.epochRoundsProduced[key.producer]++
+	d.roundsProducedBucket(epoch)[key.producer]++
+}
+
+// roundsProducedBucket returns epoch E's per-producer liveness map, creating an empty
+// one on first use so a caller can increment it directly. The caller holds commitMu.
+func (d *DAG) roundsProducedBucket(epoch uint64) map[Hash]uint64 {
+	bucket := d.epochRoundsProduced[epoch]
+	if bucket == nil {
+		bucket = make(map[Hash]uint64)
+		d.epochRoundsProduced[epoch] = bucket
+	}
+
+	return bucket
+}
+
+// totalEpochFees sums every undistributed epoch fee bucket. It is the pool the fee
+// path debited from coins and has not yet redistributed, so coins_total + total_bonded
+// + deposits + this equals total_supply at every instant — the fingerprint reports it
+// as fees-in-flight. The caller holds commitMu.
+func (d *DAG) totalEpochFees() uint64 {
+	var total uint64
+	for _, fees := range d.epochFees {
+		total = safeAdd(total, fees)
+	}
+
+	return total
 }
 
 // proofVerdicts carries the parallel proof-verification result of a round to the
@@ -572,7 +674,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	// Protocol-level fee deduction (before execution)
-	feeSplit, proceed := d.deductFees(tx, atx, producer)
+	feeSplit, storageDeposit, proceed := d.deductFees(tx, atx, producer)
 
 	// If fee deduction rejected tx (insufficient funds, invalid gas_coin, min_gas violation)
 	if !proceed {
@@ -583,7 +685,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	// Ownership check: sender must own all mutable_ref objects
-	if !d.validateMutableRefOwnership(tx) {
+	if !d.validateMutableRefOwnership(atx, tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
 		d.emitTransaction(tx, false, FailOwner)
 		events.TxCommitted(txHash, vertexHash, commitRound, false, "ownership")
@@ -593,10 +695,27 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// Handle system transactions
 	d.handleRegisterValidator(tx, commitRound)
 	d.handleDeregisterValidator(tx, commitRound)
-	d.handleBond(tx)
+	if d.handleBond(tx) {
+		// A committed bond may complete the bootstrap stake — the last committed member
+		// gaining a non-zero self-stake — so refresh the genesis regime to re-freeze the
+		// snapshot with the new stake and arm the strict latch. The registration path
+		// refreshes on membership; this refreshes on stake, so the latch observes bonds
+		// that land after every member is already registered.
+		d.refreezeGenesisRegime(commitRound)
+	}
 	d.handleUnbond(tx)
 	d.handleDelegate(tx)
 	d.handleUndelegate(tx)
+
+	// Deletion accounting runs here, on EVERY node, before the execution-sharding
+	// skip below: a replicated object lives only on its holders and a non-holder
+	// never executes, so releasing the storage deposit, refunding the gas coin, and
+	// burning the remainder must happen in the commit loop from the declared
+	// deletion set and the network-uniform tracker deposit — exactly as fee
+	// deduction does. Placing it before the skip is what keeps coins_total,
+	// deposits, and total_supply identical across holders and non-holders. Physical
+	// content removal stays holder-only in the execution path.
+	d.settleDeclaredDeletions(tx, txHash)
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
@@ -630,6 +749,12 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 
 	logger.Debug("tx completed", "func", funcName, "success", success)
 
+	// A failed execution created no object, so nothing locks the storage deposit
+	// deductFees already debited; pool it so the debited fee stays accounted.
+	if !success {
+		feeSplit = poolUnlockedStorage(feeSplit, storageDeposit)
+	}
+
 	reason := FailNone
 	if !success {
 		reason = FailRevert
@@ -643,6 +768,141 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	events.TxCommitted(txHash, vertexHash, commitRound, success, commitReason)
 
 	return feeSplit
+}
+
+// poolUnlockedStorage folds a storage deposit that was debited but never locked
+// into a fee split's epoch pool. A created-object transaction pays its storage
+// deposit up front, withheld from the pool in anticipation of locking it against
+// the object the pod creates. When execution fails no object is created, so
+// nothing locks the withheld storage: pooling it like the consumed portion keeps
+// the full debited fee accounted, so the supply identity does not leak the
+// storage component in the deflationary direction. The verdict is
+// network-uniform: a created-object transaction's declared replication forces
+// every validator to execute it, and its pod input is the attested transaction
+// plus the singleton gas coin every node debited identically, so the pod's
+// success or failure is the same on every node.
+func poolUnlockedStorage(split FeeSplit, storage uint64) FeeSplit {
+	split.Total = safeAdd(split.Total, storage)
+	split.Epoch = safeAdd(split.Epoch, storage)
+
+	return split
+}
+
+// settleDeclaredDeletions runs the deposit accounting for every object the
+// transaction declares deleted, once per object, on every node. The declared set
+// (tx.deleted_objects) is intersected with the mutable_refs validateMutableRefOwnership
+// already verified are owned by the sender, so only an owned, referenced object is
+// settled — a tampered ID for an object the sender does not reference is ignored.
+// It is a no-op with no coin store wired.
+func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
+	deleted := declaredDeletedSet(tx)
+	if len(deleted) == 0 || d.coinStore == nil {
+		return
+	}
+
+	gasCoinID, hasGasCoin := txGasCoinID(tx)
+
+	var ref types.ObjectRef
+	for i := 0; i < tx.MutableRefsLength(); i++ {
+		if !tx.MutableRefs(&ref, i) {
+			continue
+		}
+
+		id, ok := mutableRefID(&ref)
+		if !ok || !deleted[id] {
+			continue
+		}
+
+		delete(deleted, id) // single-shot per object within this transaction
+		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
+		events.ObjectDeleted(id, txHash, refund)
+	}
+}
+
+// settleDeletion releases a deleted object's storage deposit from the
+// network-uniform tracker and fully accounts it: refund storageRefundBPS to the
+// gas coin (raising coins_total) and burn the remainder from total_supply, or burn
+// the whole deposit when there is no gas coin. Removing the tracker entry shrinks
+// the deposits term of the supply identity by the same amount on every node, so
+// the identity never overstates the coins backing it. It returns the refunded
+// amount. The burn is gated on the refund landing, so a missing coin burns the
+// whole deposit rather than leaking the refund out of supply.
+func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
+	deposit := d.tracker.getFees(objID)
+	d.tracker.deleteObject(objID)
+
+	if deposit == 0 || d.feeParams == nil {
+		return 0
+	}
+
+	if !hasGasCoin || d.feeParams.StorageRefundBPS == 0 {
+		d.coinStore.SubSupply(deposit) // no recipient: burn the full locked deposit
+		events.SupplyBurned(deposit, "deletion")
+		return 0
+	}
+
+	refund := deposit * d.feeParams.StorageRefundBPS / bpsMax
+	burned := deposit - refund
+
+	// creditCoin also raises coins_total; gate the burn on it landing so a missing
+	// coin burns the whole deposit rather than reducing supply while the refund
+	// never reaches a coin.
+	if err := creditCoin(d.coinStore, gasCoinID, refund); err != nil {
+		d.coinStore.SubSupply(deposit)
+		events.SupplyBurned(deposit, "deletion")
+		return 0
+	}
+
+	d.coinStore.SubSupply(burned)
+	events.DepositRefunded(objID, gasCoinID, refund)
+	events.SupplyBurned(burned, "deletion")
+
+	return refund
+}
+
+// declaredDeletedSet reads the transaction's deleted_objects field (concatenated
+// 32-byte IDs) into a set. Trailing bytes that do not fill a full ID are ignored,
+// matching the tolerant decode the execution path uses.
+func declaredDeletedSet(tx *types.Transaction) map[Hash]bool {
+	data := tx.DeletedObjectsBytes()
+	const idSize = 32
+	if len(data) < idSize {
+		return nil
+	}
+
+	set := make(map[Hash]bool, len(data)/idSize)
+	for i := 0; i+idSize <= len(data); i += idSize {
+		var id Hash
+		copy(id[:], data[i:i+idSize])
+		set[id] = true
+	}
+
+	return set
+}
+
+// mutableRefID returns the 32-byte object ID of a mutable ref, or ok=false for a
+// domain ref (no ID) or a malformed ID.
+func mutableRefID(ref *types.ObjectRef) (Hash, bool) {
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		return Hash{}, false
+	}
+
+	var id Hash
+	copy(id[:], idBytes)
+	return id, true
+}
+
+// txGasCoinID returns the transaction's 32-byte gas coin ID and whether one is set.
+func txGasCoinID(tx *types.Transaction) (Hash, bool) {
+	b := tx.GasCoinBytes()
+	if len(b) != 32 {
+		return Hash{}, false
+	}
+
+	var id Hash
+	copy(id[:], b)
+	return id, true
 }
 
 // proofVerdict returns the proof-verification verdict for one ATX. An ATX with no
@@ -666,13 +926,17 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 }
 
 // deductFees performs protocol-level fee deduction from gas_coin.
-// Returns the fee split and whether the tx should proceed.
+// Returns the fee split, the storage deposit that was debited but withheld from
+// the pool, and whether the tx should proceed. The storage deposit is nonzero
+// only on the fully-covered created-object path, where it is normally locked
+// against the object the pod creates; the caller pools it instead when execution
+// creates no object, so the debited fee never leaks from the supply identity.
 // proceed=true means fees were successfully handled (or fees are disabled).
 // proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
 // insufficient funds).
-func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, bool) {
+func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, uint64, bool) {
 	if d.feeParams == nil || d.coinStore == nil {
-		return FeeSplit{}, true
+		return FeeSplit{}, 0, true
 	}
 
 	// No gas coin: reject, unless this is a validator-set-management action.
@@ -684,10 +948,10 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	gasCoinBytes := tx.GasCoinBytes()
 	if len(gasCoinBytes) != 32 {
 		if d.isRegisterValidatorTx(tx) || d.isDeregisterValidatorTx(tx) {
-			return FeeSplit{}, true
+			return FeeSplit{}, 0, true
 		}
 
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	var gasCoinID [32]byte
@@ -696,13 +960,13 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	// min_gas anti-spam check
 	if tx.MaxGas() < d.feeParams.MinGas {
 		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", d.feeParams.MinGas)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	// Validate gas_coin ownership: must belong to sender
 	if err := d.validateGasCoin(tx, gasCoinID); err != nil {
 		logger.Warn("gas coin validation failed", "error", err)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
@@ -710,14 +974,14 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	consumed, storage := d.calculateTxFeeSplit(tx, atx)
 	fee := consumed + storage
 	if fee == 0 {
-		return FeeSplit{}, true
+		return FeeSplit{}, 0, true
 	}
 
 	// Deduct consumed+storage from gas_coin in one debit.
 	deducted, fullyCovered, err := deductCoinFee(d.coinStore, gasCoinID, fee)
 	if err != nil {
 		logger.Warn("fee deduction failed", "error", err)
-		return FeeSplit{}, false
+		return FeeSplit{}, 0, false
 	}
 
 	txHash, _ := txCommitHash(tx)
@@ -725,13 +989,15 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 	// If insufficient funds: the coin was drained of whatever it held, and that
 	// taken amount left the coin, so it is pooled like any consumed fee instead of
-	// vanishing from the accounted supply. The tx itself is still rejected.
+	// vanishing from the accounted supply. The tx itself is still rejected, and
+	// no object is created, so there is no withheld storage deposit to report.
 	if !fullyCovered {
-		return FeeSplit{Total: fee, Epoch: deducted}, false
+		return FeeSplit{Total: fee, Epoch: deducted}, 0, false
 	}
 
-	// Pool only the consumed portion; the storage deposit stays locked in the object.
-	return SplitFee(consumed, *d.feeParams), true
+	// Pool only the consumed portion; the storage deposit stays withheld, locked
+	// against the created object on success or pooled by the caller on failure.
+	return SplitFee(consumed, *d.feeParams), storage, true
 }
 
 // calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
@@ -820,7 +1086,17 @@ func (d *DAG) validateGasCoin(tx *types.Transaction, gasCoinID [32]byte) error {
 
 // validateMutableRefOwnership checks that all mutable refs are owned by the sender.
 // Returns false if any mutable ref is not owned by the sender.
-func (d *DAG) validateMutableRefOwnership(tx *types.Transaction) bool {
+//
+// The verdict must be identical on every node, so each ref's owner is read from
+// the source every node holds identically at commit. A replicated object
+// (replication > 0) lives only on its holders, so its owner is read from the
+// attested copy every node commits in the ATX. A singleton is held by every
+// node, so its owner is read from local content — unchanged, and still catching
+// a non-owner mutation of a singleton uniformly. This removes the former
+// holdership-dependent split where holders validated a replicated object from
+// local content while non-holders, lacking that content, rejected the same
+// committed transaction.
+func (d *DAG) validateMutableRefOwnership(atx *types.AttestedTransaction, tx *types.Transaction) bool {
 	count := tx.MutableRefsLength()
 	if count == 0 || d.coinStore == nil {
 		return true
@@ -839,41 +1115,106 @@ func (d *DAG) validateMutableRefOwnership(tx *types.Transaction) bool {
 	for i := 0; i < count; i++ {
 		tx.MutableRefs(&ref, i)
 
-		idBytes := ref.IdBytes()
-		if len(idBytes) != 32 {
-			// Domain refs have no ID — skip ownership check
-			if len(ref.Domain()) > 0 {
-				continue
-			}
-			return false
-		}
-
-		var objectID Hash
-		copy(objectID[:], idBytes)
-
-		data := d.coinStore.GetObject(objectID)
-		if data == nil {
-			logger.Warn("mutable ref not found", "id_prefix", objectID[:4])
-			return false
-		}
-
-		owner, err := readCoinOwner(data)
-		if err != nil {
-			logger.Warn("mutable ref invalid owner", "error", err)
-			return false
-		}
-
-		if owner != sender {
-			logger.Warn("mutable ref ownership mismatch",
-				"id_prefix", objectID[:4],
-				"owner_prefix", owner[:4],
-				"sender_prefix", sender[:4],
-			)
+		if !d.mutableRefOwnedBy(atx, &ref, sender) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// mutableRefOwnedBy reports whether one mutable ref is owned by sender. A domain
+// ref carries no object ID and is accepted (its ownership is enforced elsewhere).
+// An object ref is checked against the owner from its network-uniform source.
+func (d *DAG) mutableRefOwnedBy(atx *types.AttestedTransaction, ref *types.ObjectRef, sender Hash) bool {
+	idBytes := ref.IdBytes()
+	if len(idBytes) != 32 {
+		// Domain refs have no ID — nothing to own here.
+		return len(ref.Domain()) > 0
+	}
+
+	var objectID Hash
+	copy(objectID[:], idBytes)
+
+	owner, ok := d.mutableRefOwner(atx, objectID)
+	if !ok {
+		logger.Warn("mutable ref not found", "id_prefix", objectID[:4])
+		return false
+	}
+
+	if owner != sender {
+		logger.Warn("mutable ref ownership mismatch",
+			"id_prefix", objectID[:4],
+			"owner_prefix", owner[:4],
+			"sender_prefix", sender[:4],
+		)
+		return false
+	}
+
+	return true
+}
+
+// mutableRefOwner resolves the owner to validate a mutable ref against, from the
+// source every node reads identically at commit. A replicated object (present in
+// the ATX with replication > 0) is resolved from its attested copy; a singleton
+// is resolved from local content, which every node holds. Returns ok=false when
+// the object is found in neither.
+func (d *DAG) mutableRefOwner(atx *types.AttestedTransaction, objectID Hash) (Hash, bool) {
+	if owner, ok := attestedReplicatedOwner(atx, objectID); ok {
+		return owner, true
+	}
+
+	data := d.coinStore.GetObject(objectID)
+	if data == nil {
+		return Hash{}, false
+	}
+
+	owner, err := readCoinOwner(data)
+	if err != nil {
+		logger.Warn("mutable ref invalid owner", "error", err)
+		return Hash{}, false
+	}
+
+	return owner, true
+}
+
+// attestedReplicatedOwner returns the owner of a replicated object as carried in
+// the ATX's attested Objects vector. Only objects with replication > 0 are
+// matched: singletons are never carried in the ATX and keep the local-content
+// check. Returns ok=false when no such attested object is present.
+//
+// This owner is authenticated: the BLS quorum proof binds it (the attestation
+// hash covers content, version, AND owner), so the proof verified at commit fails
+// unless this owner is the one the holders attested. A submitter therefore cannot
+// rewrite it to steal the object — reading it here is safe.
+func attestedReplicatedOwner(atx *types.AttestedTransaction, objectID Hash) (Hash, bool) {
+	var obj types.Object
+
+	for i := 0; i < atx.ObjectsLength(); i++ {
+		if !atx.Objects(&obj, i) {
+			continue
+		}
+
+		if obj.Replication() == 0 {
+			continue
+		}
+
+		if !bytes.Equal(obj.IdBytes(), objectID[:]) {
+			continue
+		}
+
+		ownerBytes := obj.OwnerBytes()
+		if len(ownerBytes) != 32 {
+			return Hash{}, false
+		}
+
+		var owner Hash
+		copy(owner[:], ownerBytes)
+
+		return owner, true
+	}
+
+	return Hash{}, false
 }
 
 // calculateTxFee computes the total fee from transaction header fields.
@@ -1084,6 +1425,20 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 		copy(blsPubkey[:], blsPubkeyBytes)
 	}
 
+	// Read committed membership BEFORE recordCommittedMember below admits pubkey
+	// to it. A node that optimistically self-added its own registration to the
+	// LIVE validator set (cmd/node/registration.go selfAddToValidatorSet, called
+	// before the registration it just submitted ever commits) sees isNew=false
+	// from validators.Add below for THIS SAME committed transaction, while every
+	// other node sees isNew=true — an asymmetric epochAdditions bookkeeping
+	// (the fingerprint hashes epochAdditions verbatim, so
+	// this alone forks the checksum from the moment a second validator joins).
+	// committedMembers is admitted ONLY through this committed-only path, never
+	// through an optimistic self-add (recordCommittedMember's own guarantee), so
+	// "was already a committed member" is identical on every node and is the
+	// correct gate for epochAdditions instead of the live-set isNew.
+	wasCommittedMember := d.committedMembers[pubkey]
+
 	isNew := d.validators.Add(pubkey, quicAddr, blsPubkey)
 	events.ValidatorRegistered(pubkey, quicAddr)
 
@@ -1094,13 +1449,20 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 
 	d.setRewardCoinFromArgs(tx, pubkey)
 
-	// Track mid-epoch additions for churn limiting
-	if isNew && d.epochLength > 0 {
+	// Track mid-epoch additions for churn limiting. Gated on committed membership
+	// (wasCommittedMember, captured above), not the live-set isNew: every node
+	// agrees on which registrations were already committed, regardless of any
+	// node's own optimistic self-add.
+	if !wasCommittedMember && d.epochLength > 0 {
 		d.epochAdditions = append(d.epochAdditions, pubkey)
 	}
 
 	// Retry pending vertices — some may be from this newly registered producer.
-	// Run async to avoid blocking the commit path.
+	// Run async to avoid blocking the commit path. isNew (the live-set add) is the
+	// right gate here: it fires whenever THIS node's local set actually gained the
+	// producer just now, whether via this commit or (having already gained it
+	// through an earlier optimistic self-add) not at all — a redundant retry on a
+	// node that already knew the producer is harmless, so no symmetry is required.
 	if isNew {
 		go d.processPendingVertices()
 	}
@@ -1113,43 +1475,36 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	}
 }
 
-// setRewardCoinFromArgs designates the validator's reward coin: an explicit
-// reward-coin arg takes priority, else the transaction's gas coin when the
-// validator owns it. If neither is determinable the reward coin is left zero, and
-// the epoch reward split skips that validator's liquid portion with a warning
-// rather than failing the epoch (per spec §6).
+// setRewardCoinFromArgs designates the validator's reward coin from committed,
+// network-uniform transaction data alone: an explicit reward-coin arg when present,
+// else the transaction's declared gas coin. It never reads the live coin store, so
+// every node designates the identical coin regardless of when it applies the
+// registration, and the designation cannot diverge between a live commit and a
+// replay. When neither input is present the reward coin is left zero: the coinless
+// path compounds the validator's reward into its self-stake deterministically (the
+// epoch split skips the liquid credit with a warning rather than failing the epoch).
 func (d *DAG) setRewardCoinFromArgs(tx *types.Transaction, pubkey Hash) {
 	if coin, ok := genesis.DecodeRegisterValidatorRewardCoin(tx.ArgsBytes()); ok {
 		d.validators.SetRewardCoin(pubkey, coin)
 		return
 	}
 
-	if coin, ok := d.ownedGasCoin(tx, pubkey); ok {
+	if coin, ok := declaredGasCoin(tx); ok {
 		d.validators.SetRewardCoin(pubkey, coin)
 	}
 }
 
-// ownedGasCoin returns the transaction's gas coin when it is a 32-byte ID owned
-// by owner. It returns ok=false when there is no gas coin, the coin store is
-// unwired, or the coin is not owned by owner.
-func (d *DAG) ownedGasCoin(tx *types.Transaction, owner Hash) (Hash, bool) {
+// declaredGasCoin returns the transaction's declared gas coin id when it is a full
+// 32-byte id. It reads only committed transaction bytes — never the live coin store —
+// so the reward-coin designation it feeds is identical on every node.
+func declaredGasCoin(tx *types.Transaction) (Hash, bool) {
 	gasCoinBytes := tx.GasCoinBytes()
-	if len(gasCoinBytes) != 32 || d.coinStore == nil {
+	if len(gasCoinBytes) != 32 {
 		return Hash{}, false
 	}
 
 	var coinID Hash
 	copy(coinID[:], gasCoinBytes)
-
-	data := d.coinStore.GetObject(coinID)
-	if data == nil {
-		return Hash{}, false
-	}
-
-	coinOwner, err := readCoinOwner(data)
-	if err != nil || coinOwner != owner {
-		return Hash{}, false
-	}
 
 	return coinID, true
 }

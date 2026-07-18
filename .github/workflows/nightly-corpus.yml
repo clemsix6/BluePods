@@ -1,0 +1,88 @@
+name: Nightly corpus
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            pods/pod-system/target
+            wasm-gas/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('pods/pod-system/Cargo.lock', 'wasm-gas/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build instrumented system pod
+        run: cd pods/pod-system && make release
+
+      # The runners' default kernel limits cap UDP buffers far below what
+      # quic-go asks for, causing packet loss under multi-node load — exactly
+      # the delivery skew the scenarios are sensitive to.
+      - name: Raise UDP buffer limits
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+
+      # The full 17-scenario corpus, one at a time (the testing guide's rule),
+      # every scenario always attempted: a red does not stop the sweep, the
+      # job fails at the end with the verdict table in the summary.
+      - name: Run full corpus
+        run: |
+          set -u
+          scenarios="
+          TestScenarioBootstrap
+          TestScenarioConsensusBasics
+          TestScenarioObjects
+          TestScenarioFees
+          TestScenarioSponsored
+          TestScenarioStake
+          TestScenarioAggregation
+          TestScenarioJoining
+          TestScenarioJoinLoad
+          TestScenarioChurn
+          TestScenarioStress
+          TestScenarioCrash
+          TestScenarioAnchorCrash
+          TestScenarioEpochs
+          TestScenarioEpochCrash
+          TestScenarioColdRestart.*
+          TestScenarioPartition
+          "
+          failed=0
+          {
+            echo "| Scenario | Duration | Verdict |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for s in $scenarios; do
+            start=$(date +%s)
+            if go test ./test/scenarios/ -run "^${s}\$" -v -count=1 -timeout 30m > "/tmp/${s}.log" 2>&1; then
+              verdict=green
+            else
+              verdict=RED
+              failed=1
+              echo "=== FAILURE LOG: ${s} ==="
+              tail -100 "/tmp/${s}.log"
+            fi
+            echo "| ${s} | $(( $(date +%s) - start ))s | ${verdict} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"

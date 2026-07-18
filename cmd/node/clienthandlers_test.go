@@ -10,9 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	flatbuffers "github.com/google/flatbuffers/go"
+
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/network"
+	"BluePods/internal/state"
+	"BluePods/internal/types"
 )
 
 // captureEvents swaps the default slog logger for a JSON handler writing into a
@@ -217,5 +221,135 @@ func TestHandleFaucet_EmitsIngressTxReceived(t *testing.T) {
 	}
 	if rec["tx"] != hex.EncodeToString(resp.Hash) {
 		t.Errorf("tx = %v, want %s", rec["tx"], hex.EncodeToString(resp.Hash))
+	}
+}
+
+// =============================================================================
+// inter-node holder probes (fetchObjectFromHolder / requestObjectFrom)
+// =============================================================================
+
+// =============================================================================
+// routed reads defer to holders for objects this node does not hold (handleGetObject)
+// =============================================================================
+
+// storeReplicatedObject writes an object straight into a node's state, standing
+// in for a copy the node retained locally. version and owner let a test assert
+// which copy a routed read returns; replication drives the holder check.
+func storeReplicatedObject(st *state.State, id, owner [32]byte, version uint64, replication uint16) {
+	b := flatbuffers.NewBuilder(256)
+	idVec := b.CreateByteVector(id[:])
+	ownerVec := b.CreateByteVector(owner[:])
+	contentVec := b.CreateByteVector([]byte{0x01})
+
+	types.ObjectStart(b)
+	types.ObjectAddId(b, idVec)
+	types.ObjectAddVersion(b, version)
+	types.ObjectAddOwner(b, ownerVec)
+	types.ObjectAddReplication(b, replication)
+	types.ObjectAddContent(b, contentVec)
+	types.ObjectAddFees(b, 0)
+	b.Finish(types.ObjectEnd(b))
+
+	st.SetObject(b.FinishedBytes())
+}
+
+// routedGetObject drives handleGetObject with a routed (non-local-only) request
+// and returns the decoded response.
+func routedGetObject(t *testing.T, n *Node, id [32]byte) *network.GetObjectResponse {
+	t.Helper()
+
+	respBytes, err := n.handleGetObject(network.EncodeGetObject(&network.GetObjectRequest{ObjectID: id}))
+	if err != nil {
+		t.Fatalf("handleGetObject: %v", err)
+	}
+
+	resp, err := network.DecodeGetObjectResp(respBytes)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	return resp
+}
+
+// TestHandleGetObject_NonHolderDoesNotServeStaleCopy pins the wedge's root
+// cause: a routed GetObject for a replicated object this node does not currently
+// hold must not be answered from the node's own retained copy. A node that loses
+// holdership keeps its copy lazily past the epoch boundary, so that copy can name
+// a stale owner once a transfer applies on the real holders. The routed read must
+// defer to the holders; here none are reachable (rendezvous unset), so the answer
+// is a definitive not-found rather than the stale local copy.
+func TestHandleGetObject_NonHolderDoesNotServeStaleCopy(t *testing.T) {
+	n := submitTestNode(t)
+	n.isHolder = func(_ [32]byte, _ uint16) bool { return false }
+
+	var id, staleOwner [32]byte
+	id[0] = 0x11
+	staleOwner[0] = 0xAA
+	storeReplicatedObject(n.state, id, staleOwner, 0, 3)
+
+	resp := routedGetObject(t, n, id)
+
+	if resp.Found {
+		t.Fatal("routed read served a non-holder's retained copy; it must defer to the holders")
+	}
+}
+
+// TestHandleGetObject_HolderServesLocalCopy checks the fast path stays intact: a
+// current holder answers a routed read from its own authoritative local copy,
+// without probing, and returns the version it holds.
+func TestHandleGetObject_HolderServesLocalCopy(t *testing.T) {
+	n := submitTestNode(t)
+	n.isHolder = func(_ [32]byte, _ uint16) bool { return true }
+
+	var id, owner [32]byte
+	id[0] = 0x22
+	owner[0] = 0xBB
+	storeReplicatedObject(n.state, id, owner, 5, 3)
+
+	resp := routedGetObject(t, n, id)
+
+	if !resp.Found {
+		t.Fatal("current holder must serve its local copy")
+	}
+	if got := types.GetRootAsObject(resp.Data, 0).Version(); got != 5 {
+		t.Errorf("served version = %d, want 5", got)
+	}
+}
+
+// TestHandleGetObject_SingletonServedLocally checks a singleton (replication 0),
+// which every validator holds, is served from local state on a routed read even
+// when the holder check reports this node holds no replicated objects.
+func TestHandleGetObject_SingletonServedLocally(t *testing.T) {
+	n := submitTestNode(t)
+	n.isHolder = func(_ [32]byte, _ uint16) bool { return false }
+
+	var id, owner [32]byte
+	id[0] = 0x33
+	owner[0] = 0xCC
+	storeReplicatedObject(n.state, id, owner, 1, 0)
+
+	resp := routedGetObject(t, n, id)
+
+	if !resp.Found {
+		t.Fatal("singleton must be served from local state")
+	}
+}
+
+// TestBuildHolderObjectRequest_SetsLocalOnly checks the inter-node GetObject
+// request sent to a computed holder is always LocalOnly. A holder that lacks
+// the object must answer a definitive not-found from its own local state
+// rather than re-entering the non-local path and probing the rest of the
+// mesh itself, which is what stops a globally-absent object from cascading.
+func TestBuildHolderObjectRequest_SetsLocalOnly(t *testing.T) {
+	var id [32]byte
+	id[0] = 0x7a
+
+	req := buildHolderObjectRequest(id)
+
+	if !req.LocalOnly {
+		t.Error("LocalOnly = false, want true: a holder probe must never re-route")
+	}
+	if req.ObjectID != id {
+		t.Errorf("ObjectID = %x, want %x", req.ObjectID, id)
 	}
 }

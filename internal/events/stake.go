@@ -24,3 +24,9 @@ func StakeDelegated(validator, position [32]byte, amount uint64) {
 func StakeUndelegated(validator, position [32]byte, amount uint64) {
 	emit(EvStakeUndelegated, hexAttr("validator", validator), hexAttr("position", position), slog.Uint64("amount", amount))
 }
+
+// StakeReleased marks a deregistered validator's self-stake principal returned to
+// its reward coin as the epoch boundary removes it from the active set.
+func StakeReleased(validator, coin [32]byte, amount uint64) {
+	emit(EvStakeReleased, hexAttr("validator", validator), hexAttr("coin", coin), slog.Uint64("amount", amount))
+}

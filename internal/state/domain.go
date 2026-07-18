@@ -50,7 +50,10 @@ func (d *domainStore) set(name string, objectID Hash) {
 	_ = d.db.Set(key, objectID[:])
 }
 
-// delete removes a domain name mapping.
+// delete removes a domain name mapping. Domain deletion is specified in the
+// whitepaper's Domain Name System section as an owner-driven pod operation,
+// but no system pod function exposes it yet, so this primitive is pre-wired
+// storage-side with no production caller.
 func (d *domainStore) delete(name string) {
 	key := d.makeKey(name)
 	_ = d.db.Delete(key)

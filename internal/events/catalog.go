@@ -65,6 +65,9 @@ const (
 	EvStakeDelegated = "stake.delegated"
 	// EvStakeUndelegated marks a delegation position closed.
 	EvStakeUndelegated = "stake.undelegated"
+	// EvStakeReleased marks a deregistered validator's self-stake returned to its
+	// reward coin at the epoch boundary.
+	EvStakeReleased = "stake.released"
 
 	// EvSupplyIssued marks new supply minted into the reward pool.
 	EvSupplyIssued = "supply.issued"
@@ -132,6 +135,7 @@ var Names = []string{
 	EvStakeUnbonded,
 	EvStakeDelegated,
 	EvStakeUndelegated,
+	EvStakeReleased,
 
 	EvSupplyIssued,
 	EvSupplyBurned,

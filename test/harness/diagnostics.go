@@ -74,6 +74,7 @@ func (c *Cluster) dumpStatus(t *testing.T, n *Node) {
 		return
 	}
 
-	t.Logf("node %d status: round=%d epoch=%d lastCommitted=%d validators=%d",
-		n.Index, status.Round, status.Epoch, status.LastCommitted, status.Validators)
+	t.Logf("node %d status: round=%d epoch=%d lastCommitted=%d validators=%d strictStart=%d latched=%v",
+		n.Index, status.Round, status.Epoch, status.LastCommitted, status.Validators,
+		status.StrictStart, status.StrictLatched)
 }

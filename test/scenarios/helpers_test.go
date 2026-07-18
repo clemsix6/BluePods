@@ -49,18 +49,6 @@ func fundedWallet(ctx context.Context, t *testing.T, cli *client.Client, n *harn
 	return w, coinID
 }
 
-// waitCommitted blocks until n's journal records tx.committed for hash,
-// regardless of outcome, and returns the event so the caller inspects
-// success/reason itself.
-func waitCommitted(ctx context.Context, t *testing.T, n *harness.Node, hash [32]byte) harness.Event {
-	t.Helper()
-
-	ev, err := n.WaitEvent(ctx, "tx.committed", harness.Attr("tx", hex.EncodeToString(hash[:])))
-	requireNoErr(t, err)
-
-	return ev
-}
-
 // requireCommittedSuccess waits for tx.committed(hash) on n and fails the
 // test if it did not succeed.
 func requireCommittedSuccess(ctx context.Context, t *testing.T, n *harness.Node, hash [32]byte) harness.Event {
@@ -68,18 +56,6 @@ func requireCommittedSuccess(ctx context.Context, t *testing.T, n *harness.Node,
 
 	ev, err := n.WaitEvent(ctx, "tx.committed",
 		harness.Attr("tx", hex.EncodeToString(hash[:])), harness.Attr("success", true))
-	requireNoErr(t, err)
-
-	return ev
-}
-
-// requireCommittedReason waits for tx.committed(hash) on n with the given
-// failure reason.
-func requireCommittedReason(ctx context.Context, t *testing.T, n *harness.Node, hash [32]byte, reason string) harness.Event {
-	t.Helper()
-
-	ev, err := n.WaitEvent(ctx, "tx.committed",
-		harness.Attr("tx", hex.EncodeToString(hash[:])), harness.Attr("success", false), harness.Attr("reason", reason))
 	requireNoErr(t, err)
 
 	return ev
@@ -107,18 +83,6 @@ func requireTxStatusMatchesCommit(t *testing.T, cli *client.Client, hash [32]byt
 	if status.State != wantState {
 		t.Fatalf("GetTxStatus(%x) state: got %d, want %d (success=%v, reason=%d)",
 			hash[:4], status.State, wantState, wantSuccess, status.Reason)
-	}
-}
-
-// waitCommittedAll blocks until every alive node in c records tx.committed
-// for hash matching preds, bounded by ctx.
-func waitCommittedAll(ctx context.Context, t *testing.T, c *harness.Cluster, hash [32]byte, preds ...harness.Pred) {
-	t.Helper()
-
-	all := append([]harness.Pred{harness.Attr("tx", hex.EncodeToString(hash[:]))}, preds...)
-	if err := c.WaitAll(ctx, "tx.committed", all...); err != nil {
-		c.Dump(t)
-		t.Fatalf("wait tx.committed(%x) on every node: %v", hash[:4], err)
 	}
 }
 
@@ -157,36 +121,6 @@ func coinBalance(obj *client.ObjectInfo) uint64 {
 	}
 
 	return binary.LittleEndian.Uint64(obj.Content[:8])
-}
-
-// waitOwner polls the routed GetObject until id's owner equals want, bounded
-// by ctx. It is the event-free wait for state that has no per-node event to
-// key on from the observer's side (ownership converges on holders after an
-// attested commit).
-func waitOwner(ctx context.Context, t *testing.T, cli *client.Client, id, want [32]byte) {
-	t.Helper()
-
-	ticker := time.NewTicker(eventPollInterval)
-	defer ticker.Stop()
-
-	for {
-		obj, err := cli.GetObject(id)
-		if err == nil && obj.Owner == want {
-			return
-		}
-
-		select {
-		case <-ticker.C:
-			continue
-		case <-ctx.Done():
-			owner := "unreadable"
-			if err == nil {
-				owner = hex.EncodeToString(obj.Owner[:8])
-			}
-			t.Fatalf("timeout waiting for object %x owner %x (last owner: %s)", id[:4], want[:4], owner)
-			return
-		}
-	}
 }
 
 // countHolders reports how many alive nodes hold id locally (GetObjectLocal
@@ -331,15 +265,10 @@ func waitProgress(ctx context.Context, t *testing.T, progress *atomic.Int64, min
 
 // requireZeroRollback re-derives the harness's own zero-rollback invariant
 // directly from every node's journal (dead or alive, across every
-// process-run segment), independent of CheckInvariants' teardown chain. That
-// chain runs convergence first, and a timeout there calls t.Fatalf inside a
-// t.Cleanup: FailNow's runtime.Goexit unwinds the whole cleanup goroutine, so
-// the rollback check registered after it never runs — exactly what happens
-// on every multi-node scenario, since teardown convergence is expected red
-// per test/BUGS.md entries 1/2. Zero rollback is the property this
-// adversarial corpus exists to stress, so every scenario that kills,
-// restarts, or partitions a node re-proves it here, in-scenario, regardless
-// of convergence's fate.
+// process-run segment), independent of CheckInvariants' teardown chain.
+// Zero rollback is the property this adversarial corpus exists to stress, so
+// every scenario that kills, restarts, or partitions a node re-proves it
+// here, in-scenario, regardless of that chain's outcome.
 func requireZeroRollback(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 

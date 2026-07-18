@@ -3,7 +3,6 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
-	"math"
 	"os"
 	"testing"
 
@@ -335,7 +334,7 @@ func TestApplyCreatedObjectsDeterministicIDs(t *testing.T) {
 	txHash := Hash{0xDE, 0xAD}
 	output := buildPodOutputWithCreated(2, 10) // 2 objects, replication=10
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	// Verify deterministic IDs
 	for i := 0; i < 2; i++ {
@@ -366,7 +365,7 @@ func TestApplyCreatedObjectsHolderSharding(t *testing.T) {
 	expectedID := computeObjectID(txHash, 0)
 	heldID = expectedID // Make isHolder return true for this ID
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	stored := s.GetObject(expectedID)
 	if stored == nil {
@@ -387,7 +386,7 @@ func TestApplyCreatedObjectsNotHolder(t *testing.T) {
 	txHash := Hash{0x51}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	expectedID := computeObjectID(txHash, 0)
 	if s.GetObject(expectedID) != nil {
@@ -404,7 +403,7 @@ func TestApplyCreatedObjectsNoHolderFunc(t *testing.T) {
 	txHash := Hash{0x52}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	expectedID := computeObjectID(txHash, 0)
 	if s.GetObject(expectedID) == nil {
@@ -433,7 +432,7 @@ func TestApplyCreatedObjectsOnObjectCreatedCallback(t *testing.T) {
 	txHash := Hash{0xCB}
 	output := buildPodOutputWithCreated(3, 7) // 3 objects, replication=7
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	if len(calls) != 3 {
 		t.Fatalf("expected 3 callback calls, got %d", len(calls))
@@ -465,7 +464,7 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 	txHash := Hash{0xCC}
 	output := buildPodOutputWithCreated(2, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	// Callback should fire even though we're not a holder (all validators track)
 	if callbackCount != 2 {
@@ -478,6 +477,70 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 		if s.GetObject(id) != nil {
 			t.Errorf("object %d should not be stored by non-holder", i)
 		}
+	}
+}
+
+// TestRegisterValidatorCommitPreservesSupplyIdentity drives the state/commit
+// seam for a fee-exempt registration. A register_validator transaction
+// references no gas coin, so the consensus fee path debits no coin, yet the
+// system pod creates a replication-0 Validator object owned by the joining
+// validator. The storage deposit stamped on that object must be zero: nothing
+// was debited, so nothing is locked. Otherwise the supply identity
+//
+//	coins_total + total_bonded + deposits + fees_in_flight == total_supply
+//
+// inflates by one storage deposit (1000 at the default params) per registration
+// on every node — the deposits term grows while coins_total never moves.
+func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetIsHolder(func([32]byte, uint16) bool { return true }) // singletons: every validator holds it
+	s.SetStorageFees(1000, 9500, 4)                            // singleton deposit == storage_fee == 1000
+
+	// The deposits term of the supply identity is the sum of the storage
+	// deposits the tracker records, fed by the onObjectCreated callback (exactly
+	// what consensus wires to DAG.TrackObject).
+	var deposits uint64
+	s.SetOnObjectCreated(func(_ [32]byte, _ uint64, _ uint16, fees uint64) {
+		deposits += fees
+	})
+
+	// A ledger that holds the identity exactly before the registration.
+	const coinsTotal, totalBonded, feesInFlight = uint64(1_000_000), uint64(0), uint64(0)
+	s.SetTotalSupply(coinsTotal + totalBonded)
+
+	// Commit the registration through the real commit-path entry. The
+	// transaction carries no gas coin (fee-exempt) and permits one created
+	// object; the output creates one replication-0 Validator singleton.
+	regTx := buildTxWithLimits(1, 0)
+	if err := s.processOutput(buildCreatedOutputBytes(1, 0), Hash{0xAA}, regTx); err != nil {
+		t.Fatalf("processOutput: %v", err)
+	}
+
+	// The fee-exempt path debited no coin, so coins_total and fees_in_flight are
+	// unchanged; the identity must still be exact.
+	lhs := coinsTotal + totalBonded + deposits + feesInFlight
+	if lhs != s.TotalSupply() {
+		t.Fatalf("registration broke the supply identity: coins %d + bonded %d + deposits %d + fees %d = %d, want total_supply %d (delta %+d)",
+			coinsTotal, totalBonded, deposits, feesInFlight, lhs, s.TotalSupply(), int64(lhs)-int64(s.TotalSupply()))
+	}
+}
+
+// TestTxLocksDepositsFollowsGasCoin guards the deposit-stamping rule against
+// over-zeroing: a transaction with a gas coin was debited its storage fee, so
+// its created objects must still lock a deposit, while a transaction with no gas
+// coin (the fee-exempt registration path) must lock none.
+func TestTxLocksDepositsFollowsGasCoin(t *testing.T) {
+	if txLocksDeposits(buildTxWithLimits(1, 0)) {
+		t.Error("a transaction with no gas coin (fee-exempt) must lock no deposit")
+	}
+
+	if !txLocksDeposits(buildMinimalTxWithGasCoin(Hash{0x01}, Hash{0xCC})) {
+		t.Error("a transaction with a gas coin must lock its storage deposit")
+	}
+
+	if txLocksDeposits(nil) {
+		t.Error("a nil transaction must lock no deposit")
 	}
 }
 
@@ -525,17 +588,17 @@ func TestApplyDeletedObjects(t *testing.T) {
 		t.Fatal("object should exist before deletion")
 	}
 
-	output := buildPodOutputWithDeleted(objID)
-	tx := buildMinimalTx(Hash{}) // owner is zero hash
+	tx := buildTxWithDeleted(Hash{}, objID[:]) // sender/owner is the zero hash
 
-	s.applyDeletedObjects(output, tx)
+	s.applyDeletedObjects(tx)
 
 	if s.GetObject(objID) != nil {
 		t.Error("object should be deleted")
 	}
 }
 
-// TestApplyDeletedObjectsMalformedData verifies no panic when data is not a multiple of 32.
+// TestApplyDeletedObjectsMalformedData verifies no panic when the declared
+// deleted_objects length is not a multiple of 32 (trailing bytes are ignored).
 func TestApplyDeletedObjectsMalformedData(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
@@ -543,35 +606,13 @@ func TestApplyDeletedObjectsMalformedData(t *testing.T) {
 	objID := Hash{0x71}
 	s.SetObject(buildTestObject(objID, 1, []byte("to delete")))
 
-	// Build output with 33 bytes (32 + 1 trailing byte) - should only delete the first ID
-	builder := flatbuffers.NewBuilder(256)
-
-	// 33 bytes: one full ID + 1 trailing byte
+	// 33 bytes: one full ID + 1 trailing byte — only the first ID is deleted.
 	data := make([]byte, 33)
 	copy(data[:32], objID[:])
 	data[32] = 0xFF // trailing byte
 
-	deletedVec := builder.CreateByteVector(data)
-
-	types.PodExecuteOutputStartUpdatedObjectsVector(builder, 0)
-	updatedVec := builder.EndVector(0)
-
-	types.PodExecuteOutputStartCreatedObjectsVector(builder, 0)
-	createdVec := builder.EndVector(0)
-
-	types.PodExecuteOutputStart(builder)
-	types.PodExecuteOutputAddDeletedObjects(builder, deletedVec)
-	types.PodExecuteOutputAddUpdatedObjects(builder, updatedVec)
-	types.PodExecuteOutputAddCreatedObjects(builder, createdVec)
-	outputOffset := types.PodExecuteOutputEnd(builder)
-
-	builder.Finish(outputOffset)
-
-	output := types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
-
-	// Should not panic and should delete the first ID
-	tx := buildMinimalTx(Hash{}) // owner is zero hash
-	s.applyDeletedObjects(output, tx)
+	tx := buildTxWithDeleted(Hash{}, data) // sender/owner is the zero hash
+	s.applyDeletedObjects(tx)
 
 	if s.GetObject(objID) != nil {
 		t.Error("object should be deleted")
@@ -707,6 +748,13 @@ func buildTxWithMutableRefs(refs []objectRef) *types.Transaction {
 
 // buildPodOutputWithCreated creates a PodExecuteOutput with created objects.
 func buildPodOutputWithCreated(count int, replication uint16) *types.PodExecuteOutput {
+	return types.GetRootAsPodExecuteOutput(buildCreatedOutputBytes(count, replication), 0)
+}
+
+// buildCreatedOutputBytes serializes a PodExecuteOutput carrying count created
+// objects at the given replication, returning the raw bytes so a test can drive
+// the real processOutput commit-path entry.
+func buildCreatedOutputBytes(count int, replication uint16) []byte {
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Build created objects (without real IDs - they get assigned by applyCreatedObjects)
@@ -745,7 +793,7 @@ func buildPodOutputWithCreated(count int, replication uint16) *types.PodExecuteO
 
 	builder.Finish(outputOffset)
 
-	return types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
+	return builder.FinishedBytes()
 }
 
 // buildPodOutputWithUpdated creates a PodExecuteOutput with an updated object.
@@ -1090,10 +1138,9 @@ func TestApplyDeletedObjects_NonOwnerBlocked(t *testing.T) {
 	// Store object owned by 'owner'
 	s.SetObject(buildTestObjectFull(objID, 1, owner, 10, []byte("owned")))
 
-	output := buildPodOutputWithDeleted(objID)
-	tx := buildMinimalTx(sender) // sender != owner
+	tx := buildTxWithDeleted(sender, objID[:]) // sender != owner
 
-	s.applyDeletedObjects(output, tx)
+	s.applyDeletedObjects(tx)
 
 	// Object should NOT be deleted (ownership mismatch)
 	if s.GetObject(objID) == nil {
@@ -1111,144 +1158,20 @@ func TestApplyDeletedObjects_OwnerCanDelete(t *testing.T) {
 
 	s.SetObject(buildTestObjectFull(objID, 1, owner, 10, []byte("owned")))
 
-	output := buildPodOutputWithDeleted(objID)
-	tx := buildMinimalTx(owner) // sender == owner
+	tx := buildTxWithDeleted(owner, objID[:]) // sender == owner
 
-	s.applyDeletedObjects(output, tx)
+	s.applyDeletedObjects(tx)
 
 	if s.GetObject(objID) != nil {
 		t.Error("owner should be able to delete their object")
 	}
 }
 
-// TestApplyDeletedObjects_RefundCredits verifies storage refund is credited to gas_coin.
-func TestApplyDeletedObjects_RefundCredits(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100) // 95% refund
+// The deletion deposit accounting (refund, burn, deposit release, holder/non-holder
+// uniformity) now runs in the commit loop on every node; it is covered by
+// internal/consensus deletion tests. The state layer keeps only physical content
+// removal (above).
 
-	owner := Hash{0xAA}
-	objID := Hash{0x74}
-	gasCoinID := Hash{0xEE}
-
-	// Inject a gas_coin object into state
-	gasCoinData := buildCoinObject(gasCoinID, 5000, owner)
-	s.SetObject(gasCoinData)
-
-	// Object with fees=10000
-	objData := buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 10000)
-	s.SetObject(objData)
-
-	// Build tx with gas_coin and sender=owner
-	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
-
-	output := buildPodOutputWithDeleted(objID)
-	s.applyDeletedObjects(output, tx)
-
-	// Object should be deleted
-	if s.GetObject(objID) != nil {
-		t.Error("object should be deleted")
-	}
-
-	// Gas coin should be credited with refund: 10000 * 9500 / 10000 = 9500
-	coinData := s.GetObject(gasCoinID)
-	if coinData == nil {
-		t.Fatal("gas coin should still exist")
-	}
-
-	obj := types.GetRootAsObject(coinData, 0)
-	content := obj.ContentBytes()
-	if len(content) < 8 {
-		t.Fatal("coin content too short")
-	}
-
-	balance := binary.LittleEndian.Uint64(content[:8])
-	// Original 5000 + refund 9500 = 14500
-	if balance != 14500 {
-		t.Errorf("expected balance 14500, got %d", balance)
-	}
-}
-
-// TestApplyDeletedObjects_BurnsSupply verifies the 5% deletion burn decrements
-// total_supply: the locked deposit's refunded portion moves back to a coin
-// (supply unchanged for it), while the burned portion leaves supply entirely.
-func TestApplyDeletedObjects_BurnsSupply(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100) // 95% refund, 5% burn
-	s.SetTotalSupply(10000)
-
-	owner := Hash{0xAA}
-	objID := Hash{0x75}
-	gasCoinID := Hash{0xEF}
-
-	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
-	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
-
-	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
-	output := buildPodOutputWithDeleted(objID)
-
-	s.applyDeletedObjects(output, tx)
-
-	// fees 1000, refund = 1000*9500/10000 = 950, burned = 50.
-	if got := s.TotalSupply(); got != 9950 {
-		t.Errorf("total supply after burn: got %d, want 9950", got)
-	}
-}
-
-// TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit verifies the locked storage
-// deposit is fully accounted (burned) when there is no gas coin to receive the
-// refund, rather than silently leaking: total_supply must drop by the whole
-// objFees so it never overstates the coins backing it.
-func TestApplyDeletedObjects_NoGasCoinBurnsFullDeposit(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100)
-	s.SetTotalSupply(10000)
-
-	owner := Hash{0xAA}
-	objID := Hash{0x76}
-
-	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
-
-	// tx has sender=owner but NO gas_coin: the deposit has no refund recipient.
-	tx := buildMinimalTx(owner)
-	output := buildPodOutputWithDeleted(objID)
-
-	s.applyDeletedObjects(output, tx)
-
-	// No gas coin → the full 1000 deposit is burned, none leaks.
-	if got := s.TotalSupply(); got != 9000 {
-		t.Errorf("total supply after no-gas-coin deletion: got %d, want 9000", got)
-	}
-}
-
-// TestApplyDeletedObjects_FailedRefundBurnsFullDeposit verifies that when the
-// refund credit cannot land (gas coin missing), the burn falls back to the full
-// deposit so supply is not reduced by only the burned remainder while the refund
-// vanishes.
-func TestApplyDeletedObjects_FailedRefundBurnsFullDeposit(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100)
-	s.SetTotalSupply(10000)
-
-	owner := Hash{0xAA}
-	objID := Hash{0x77}
-	missingGasCoin := Hash{0xEE} // referenced but never stored
-
-	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
-
-	tx := buildMinimalTxWithGasCoin(owner, missingGasCoin)
-	output := buildPodOutputWithDeleted(objID)
-
-	s.applyDeletedObjects(output, tx)
-
-	// Refund cannot land → full 1000 burned (not just the 50 remainder).
-	if got := s.TotalSupply(); got != 9000 {
-		t.Errorf("total supply after failed refund: got %d, want 9000", got)
-	}
-}
 
 // --- computeStorageDeposit ---
 
@@ -1276,104 +1199,11 @@ func TestComputeStorageDeposit(t *testing.T) {
 	}
 }
 
-// --- creditGasCoin overflow ---
-
-// TestCreditGasCoin_Overflow verifies overflow is silently ignored.
-func TestCreditGasCoin_Overflow(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	coinID := Hash{0xDD}
-	owner := Hash{0xAA}
-
-	coinData := buildCoinObject(coinID, math.MaxUint64-10, owner)
-	s.SetObject(coinData)
-
-	// Adding 100 would overflow
-	s.creditGasCoin(coinID, 100)
-
-	// Balance should be unchanged
-	stored := s.GetObject(coinID)
-	obj := types.GetRootAsObject(stored, 0)
-	content := obj.ContentBytes()
-	balance := binary.LittleEndian.Uint64(content[:8])
-
-	if balance != math.MaxUint64-10 {
-		t.Errorf("expected unchanged balance, got %d", balance)
-	}
-}
-
-// TestCreditGasCoin_Success verifies normal credit works.
-func TestCreditGasCoin_Success(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	coinID := Hash{0xDD}
-	owner := Hash{0xAA}
-
-	coinData := buildCoinObject(coinID, 5000, owner)
-	s.SetObject(coinData)
-
-	s.creditGasCoin(coinID, 200)
-
-	stored := s.GetObject(coinID)
-	obj := types.GetRootAsObject(stored, 0)
-	content := obj.ContentBytes()
-	balance := binary.LittleEndian.Uint64(content[:8])
-
-	if balance != 5200 {
-		t.Errorf("expected 5200, got %d", balance)
-	}
-}
+// The gas-coin credit on a deletion refund now runs in the commit loop via the
+// consensus creditCoin primitive (tested in internal/consensus), so its
+// overflow-safe behavior is covered there.
 
 // --- test helpers for coins in state ---
-
-// buildCoinObject creates a serialized Coin object (8-byte LE balance as content).
-func buildCoinObject(id Hash, balance uint64, owner Hash) []byte {
-	builder := flatbuffers.NewBuilder(256)
-
-	content := make([]byte, 8)
-	binary.LittleEndian.PutUint64(content, balance)
-
-	idVec := builder.CreateByteVector(id[:])
-	ownerVec := builder.CreateByteVector(owner[:])
-	contentVec := builder.CreateByteVector(content)
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, 1)
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, 0)
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, 0)
-	offset := types.ObjectEnd(builder)
-
-	builder.Finish(offset)
-
-	return builder.FinishedBytes()
-}
-
-// buildTestObjectFullWithFees creates a serialized Object with all fields including fees.
-func buildTestObjectFullWithFees(id Hash, version uint64, owner Hash, replication uint16, content []byte, fees uint64) []byte {
-	builder := flatbuffers.NewBuilder(256)
-
-	idVec := builder.CreateByteVector(id[:])
-	ownerVec := builder.CreateByteVector(owner[:])
-	contentVec := builder.CreateByteVector(content)
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, version)
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, replication)
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, fees)
-	objOffset := types.ObjectEnd(builder)
-
-	builder.Finish(objOffset)
-
-	return builder.FinishedBytes()
-}
 
 // buildMinimalTxWithGasCoin creates a minimal Transaction with sender and gas_coin.
 func buildMinimalTxWithGasCoin(sender Hash, gasCoin Hash) *types.Transaction {
@@ -1510,47 +1340,26 @@ func buildPodOutputWithDomainsRaw(createdCount int, replication uint16, domains 
 	return builder.FinishedBytes()
 }
 
-// buildPodOutputWithDeleted creates a PodExecuteOutput with a deleted object ID.
-func buildPodOutputWithDeleted(id Hash) *types.PodExecuteOutput {
-	builder := flatbuffers.NewBuilder(256)
-
-	deletedVec := builder.CreateByteVector(id[:])
-
-	types.PodExecuteOutputStartUpdatedObjectsVector(builder, 0)
-	updatedVec := builder.EndVector(0)
-
-	types.PodExecuteOutputStartCreatedObjectsVector(builder, 0)
-	createdVec := builder.EndVector(0)
-
-	types.PodExecuteOutputStart(builder)
-	types.PodExecuteOutputAddDeletedObjects(builder, deletedVec)
-	types.PodExecuteOutputAddUpdatedObjects(builder, updatedVec)
-	types.PodExecuteOutputAddCreatedObjects(builder, createdVec)
-	outputOffset := types.PodExecuteOutputEnd(builder)
-
-	builder.Finish(outputOffset)
-
-	return types.GetRootAsPodExecuteOutput(builder.FinishedBytes(), 0)
-}
-
-// buildMinimalTx creates a minimal Transaction with the given sender.
-// Used for deletion tests that need ownership verification.
-func buildMinimalTx(sender Hash) *types.Transaction {
+// buildTxWithDeleted builds a transaction whose sender declares the deletion of
+// the given raw deleted_objects bytes (concatenated 32-byte IDs). Physical
+// content removal reads its declared deletion set from here.
+func buildTxWithDeleted(sender Hash, deleted []byte) *types.Transaction {
 	builder := flatbuffers.NewBuilder(256)
 
 	senderVec := builder.CreateByteVector(sender[:])
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcName := builder.CreateString("test")
-	argsVec := builder.CreateByteVector([]byte{})
+	deletedVec := builder.CreateByteVector(deleted)
 
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcName)
-	types.TransactionAddArgs(builder, argsVec)
+	types.TransactionAddDeletedObjects(builder, deletedVec)
 	txOffset := types.TransactionEnd(builder)
 
 	builder.Finish(txOffset)
 
 	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
 }
+

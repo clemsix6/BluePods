@@ -74,7 +74,7 @@ func newMockHolder(t *testing.T, objData []byte, negate bool) *mockHolder {
 		}
 
 		obj := types.GetRootAsObject(h.objData, 0)
-		hash := attest.ComputeObjectHash(obj.ContentBytes(), req.Version)
+		hash := attest.ComputeObjectHash(obj.ContentBytes(), req.Version, obj.OwnerBytes())
 
 		return attest.EncodePositiveResponse(&attest.PositiveResponse{
 			Hash:      hash,

@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
+  unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +22,22 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.4"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./internal/... ./pkg/... ./cmd/... -count=1 -timeout 15m
+
+  pods:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,16 +50,78 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            pods/pod-sdk/target
             pods/pod-system/target
             wasm-gas/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('pods/pod-system/Cargo.lock', 'wasm-gas/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('pods/pod-system/Cargo.lock', 'pods/pod-sdk/Cargo.lock', 'wasm-gas/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build system pod
+      - name: Check pod SDK
+        run: cargo check --target wasm32-unknown-unknown --manifest-path pods/pod-sdk/Cargo.toml
+
+      - name: Build instrumented system pod
         run: cd pods/pod-system && make release
 
-      - name: Build node
-        run: go build ./cmd/node
+      - name: Upload system pod
+        uses: actions/upload-artifact@v4
+        with:
+          name: pod-wasm
+          path: pods/pod-system/build/pod.wasm
+          retention-days: 1
 
-      - name: Run unit tests
-        run: go test ./internal/... ./pkg/... ./cmd/...
+  # Scenario smoke: the fast, stable slice of the corpus (measured 7-101 s
+  # locally per scenario), run ONE AT A TIME as the testing guide mandates.
+  # The heavy partition/epoch scenarios run in the nightly corpus instead.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [unit, pods]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+
+      - name: Download system pod
+        uses: actions/download-artifact@v4
+        with:
+          name: pod-wasm
+          path: pods/pod-system/build
+
+      # The runners' default kernel limits cap UDP buffers far below what
+      # quic-go asks for, causing packet loss under multi-node load — exactly
+      # the delivery skew the scenarios are sensitive to.
+      - name: Raise UDP buffer limits
+        run: sudo sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608
+
+      # The harness tests spawn real node processes and need the built pod,
+      # which is why they live here rather than in the unit job.
+      - name: Harness tests
+        run: go test ./test/harness/ -count=1 -timeout 10m
+
+      - name: Bootstrap
+        run: go test ./test/scenarios/ -run '^TestScenarioBootstrap$' -v -count=1 -timeout 8m
+
+      - name: Objects
+        run: go test ./test/scenarios/ -run '^TestScenarioObjects$' -v -count=1 -timeout 8m
+
+      - name: Stress
+        run: go test ./test/scenarios/ -run '^TestScenarioStress$' -v -count=1 -timeout 8m
+
+      - name: Fees
+        run: go test ./test/scenarios/ -run '^TestScenarioFees$' -v -count=1 -timeout 8m
+
+      - name: Stake
+        run: go test ./test/scenarios/ -run '^TestScenarioStake$' -v -count=1 -timeout 8m
+
+      - name: Consensus basics
+        run: go test ./test/scenarios/ -run '^TestScenarioConsensusBasics$' -v -count=1 -timeout 8m
+
+      - name: Crash
+        run: go test ./test/scenarios/ -run '^TestScenarioCrash$' -v -count=1 -timeout 8m
+
+      - name: Churn
+        run: go test ./test/scenarios/ -run '^TestScenarioChurn$' -v -count=1 -timeout 8m

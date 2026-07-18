@@ -170,6 +170,7 @@ impl<'a> Transaction<'a> {
   pub const VT_FEE_PAYER: ::flatbuffers::VOffsetT = 28;
   pub const VT_SPONSOR_SIGNATURE: ::flatbuffers::VOffsetT = 30;
   pub const VT_VALID_UNTIL: ::flatbuffers::VOffsetT = 32;
+  pub const VT_DELETED_OBJECTS: ::flatbuffers::VOffsetT = 34;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -183,6 +184,7 @@ impl<'a> Transaction<'a> {
     let mut builder = TransactionBuilder::new(_fbb);
     builder.add_valid_until(args.valid_until);
     builder.add_max_gas(args.max_gas);
+    if let Some(x) = args.deleted_objects { builder.add_deleted_objects(x); }
     if let Some(x) = args.sponsor_signature { builder.add_sponsor_signature(x); }
     if let Some(x) = args.fee_payer { builder.add_fee_payer(x); }
     if let Some(x) = args.gas_coin { builder.add_gas_coin(x); }
@@ -305,6 +307,13 @@ impl<'a> Transaction<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(Transaction::VT_VALID_UNTIL, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn deleted_objects(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Transaction::VT_DELETED_OBJECTS, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Transaction<'_> {
@@ -328,6 +337,7 @@ impl ::flatbuffers::Verifiable for Transaction<'_> {
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("fee_payer", Self::VT_FEE_PAYER, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("sponsor_signature", Self::VT_SPONSOR_SIGNATURE, false)?
      .visit_field::<u64>("valid_until", Self::VT_VALID_UNTIL, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("deleted_objects", Self::VT_DELETED_OBJECTS, false)?
      .finish();
     Ok(())
   }
@@ -348,6 +358,7 @@ pub struct TransactionArgs<'a> {
     pub fee_payer: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub sponsor_signature: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub valid_until: u64,
+    pub deleted_objects: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
 }
 impl<'a> Default for TransactionArgs<'a> {
   #[inline]
@@ -368,6 +379,7 @@ impl<'a> Default for TransactionArgs<'a> {
       fee_payer: None,
       sponsor_signature: None,
       valid_until: 0,
+      deleted_objects: None,
     }
   }
 }
@@ -438,6 +450,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> TransactionBuilder<'a, 'b, A>
     self.fbb_.push_slot::<u64>(Transaction::VT_VALID_UNTIL, valid_until, 0);
   }
   #[inline]
+  pub fn add_deleted_objects(&mut self, deleted_objects: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Transaction::VT_DELETED_OBJECTS, deleted_objects);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> TransactionBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     TransactionBuilder {
@@ -470,6 +486,7 @@ impl ::core::fmt::Debug for Transaction<'_> {
       ds.field("fee_payer", &self.fee_payer());
       ds.field("sponsor_signature", &self.sponsor_signature());
       ds.field("valid_until", &self.valid_until());
+      ds.field("deleted_objects", &self.deleted_objects());
       ds.finish()
   }
 }

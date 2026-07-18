@@ -117,7 +117,7 @@ func TestDeductFees_PoolsConsumedLocksStorage(t *testing.T) {
 
 	consumed, storage := dag.calculateTxFeeSplit(tx, atx)
 
-	split, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	split, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if !proceed {
 		t.Fatal("deductFees should proceed for a funded gas coin")
 	}

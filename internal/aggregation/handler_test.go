@@ -48,7 +48,7 @@ func setupTestHandler(t *testing.T) (*Handler, *state.State, func()) {
 	st := state.New(db, &podvm.Pool{})
 
 	// Generate BLS key
-	blsKey, err := GenerateBLSKey()
+	blsKey, err := attest.GenerateBLSKey()
 	if err != nil {
 		t.Fatalf("generate BLS key: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 	}
 
 	// Parse response
-	msgType, err := GetMessageType(respData)
+	msgType, err := attest.GetMessageType(respData)
 	if err != nil {
 		t.Fatalf("get message type: %v", err)
 	}
@@ -97,14 +97,14 @@ func TestHandleRequest_ObjectFound(t *testing.T) {
 		t.Fatalf("expected positive response, got type 0x%02x", msgType)
 	}
 
-	resp, err := DecodePositiveResponse(respData)
+	resp, err := attest.DecodePositiveResponse(respData)
 	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	// Verify hash over the object's content bytes (canonical form)
+	// Verify hash over the object's content, version, and owner (canonical form)
 	fbObj := types.GetRootAsObject(objData, 0)
-	expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), version)
+	expectedHash := attest.ComputeObjectHash(fbObj.ContentBytes(), version, fbObj.OwnerBytes())
 	if resp.Hash != expectedHash {
 		t.Error("hash mismatch")
 	}
@@ -134,12 +134,12 @@ func TestHandleRequest_Singleton(t *testing.T) {
 		t.Fatalf("process request: %v", err)
 	}
 
-	msgType, _ := GetMessageType(respData)
+	msgType, _ := attest.GetMessageType(respData)
 	if msgType != msgTypeNegative {
 		t.Fatalf("expected negative response for singleton, got type 0x%02x", msgType)
 	}
 
-	resp, err := DecodeNegativeResponse(respData)
+	resp, err := attest.DecodeNegativeResponse(respData)
 	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestHandleRequest_NotFound(t *testing.T) {
 	}
 
 	// Parse response
-	msgType, err := GetMessageType(respData)
+	msgType, err := attest.GetMessageType(respData)
 	if err != nil {
 		t.Fatalf("get message type: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestHandleRequest_NotFound(t *testing.T) {
 		t.Fatalf("expected negative response, got type 0x%02x", msgType)
 	}
 
-	resp, err := DecodeNegativeResponse(respData)
+	resp, err := attest.DecodeNegativeResponse(respData)
 	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -208,12 +208,12 @@ func TestHandleRequest_WrongVersion(t *testing.T) {
 		t.Fatalf("process request: %v", err)
 	}
 
-	msgType, _ := GetMessageType(respData)
+	msgType, _ := attest.GetMessageType(respData)
 	if msgType != msgTypeNegative {
 		t.Fatalf("expected negative response, got type 0x%02x", msgType)
 	}
 
-	resp, err := DecodeNegativeResponse(respData)
+	resp, err := attest.DecodeNegativeResponse(respData)
 	if err != nil {
 		t.Fatalf("decode response: %v", err)
 	}

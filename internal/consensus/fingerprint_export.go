@@ -20,7 +20,7 @@ type FingerprintCut struct {
 	EpochAdditions    []Hash               // EpochAdditions is the sorted list of validators added this epoch
 	CurrentEpoch      uint64               // CurrentEpoch is the epoch number at the cut
 	IssuanceRateMicro uint64               // IssuanceRateMicro is the thermostat's per-epoch rate in millionths at the cut
-	EpochFees         uint64               // EpochFees is the epoch's accumulated, undistributed consumed fees at the cut
+	EpochFees         uint64               // EpochFees is the sum of every undistributed epoch fee bucket at the cut (fees debited from coins, not yet redistributed)
 	TotalSupply       uint64               // TotalSupply is the protocol total supply at the cut
 	CoinsTotal        uint64               // CoinsTotal is the protocol sum of coin balances at the cut
 	DBSnapshot        *storage.Snapshot    // DBSnapshot is the consistent object/domain view; caller closes it
@@ -45,7 +45,7 @@ func (d *DAG) ExportFingerprintCut() FingerprintCut {
 		EpochAdditions:    sortedAdditions(d.epochAdditions, len(d.epochAdditions)),
 		CurrentEpoch:      d.currentEpoch,
 		IssuanceRateMicro: d.issuanceRateMicro,
-		EpochFees:         d.epochFees,
+		EpochFees:         d.totalEpochFees(),
 		TotalSupply:       d.TotalSupply(),
 		CoinsTotal:        d.CoinsTotal(),
 		DBSnapshot:        d.store.db.Snapshot(),

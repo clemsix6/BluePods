@@ -1152,11 +1152,6 @@ func buildUnknownFunctionInput() []byte {
 // Object Builders
 // =============================================================================
 
-// buildCoinObject creates a Coin object in FlatBuffers format (deprecated, use buildCoinObjectWithOwner).
-func buildCoinObject(builder *flatbuffers.Builder, balance uint64) flatbuffers.UOffsetT {
-	return buildCoinObjectWithOwner(builder, balance, [32]byte{})
-}
-
 // buildCoinObjectWithOwner creates a Coin object with specified owner in FlatBuffers format.
 func buildCoinObjectWithOwner(builder *flatbuffers.Builder, balance uint64, owner [32]byte) flatbuffers.UOffsetT {
 	objContent := builder.CreateByteVector(encodeCoin(balance))

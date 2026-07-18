@@ -92,7 +92,7 @@ func TestUnsignedBodyBindsSponsorship(t *testing.T) {
 	args := []byte{9, 8, 7}
 
 	legacy := BuildUnsignedTxBytesWithRefs(pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil)
-	empty := BuildUnsignedTxBytesSponsored(pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{})
+	empty := BuildUnsignedTxBytesSponsored(pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil)
 
 	// An empty Sponsorship must reproduce the legacy (self-paid) bytes exactly.
 	if !bytes.Equal(legacy, empty) {
@@ -133,11 +133,50 @@ func TestUnsignedBodyBindsSponsorship(t *testing.T) {
 		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(),
 		nil, tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
 		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
+		tx.DeletedObjectsBytes(),
 	)
 	rebuiltHash := blake3.Sum256(rebuilt)
 
 	if !bytes.Equal(rebuiltHash[:], tx.HashBytes()) {
 		t.Error("re-derived body hash does not match the declared hash")
+	}
+}
+
+// TestUnsignedBodyBindsDeletedObjects confirms the canonical unsigned body binds
+// the declared deleted_objects: an absent declaration reproduces the legacy bytes,
+// and two bodies differing only in their declared deletions hash differently. This
+// is what makes a transaction's deletion set covered by the sender's signature, so
+// a tampered deletion cannot ride a valid signature.
+func TestUnsignedBodyBindsDeletedObjects(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var pod, gasCoin [32]byte
+	pod[0] = 0x11
+	gasCoin[0] = 0x22
+
+	del1 := bytes.Repeat([]byte{0xA1}, 32)
+	del2 := bytes.Repeat([]byte{0xB2}, 32)
+
+	none := BuildUnsignedTxBytesSponsored(pub, pod, "delete", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil)
+	legacy := BuildUnsignedTxBytesWithRefs(pub, pod, "delete", nil, nil, 0, 1000, gasCoin[:], nil, nil)
+
+	// No declared deletions must reproduce the legacy (pre-field) bytes exactly.
+	if !bytes.Equal(none, legacy) {
+		t.Error("empty deleted_objects body differs from the legacy body")
+	}
+
+	withDel1 := BuildUnsignedTxBytesSponsored(pub, pod, "delete", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, del1)
+	withDel2 := BuildUnsignedTxBytesSponsored(pub, pod, "delete", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, del2)
+
+	// A declared deletion must change the body, and two different declarations must differ.
+	if bytes.Equal(none, withDel1) {
+		t.Error("declared deletion did not change the canonical body")
+	}
+	if bytes.Equal(withDel1, withDel2) {
+		t.Error("different declared deletions produced identical bodies")
 	}
 }
 
@@ -195,6 +234,7 @@ func TestBuildSponsoredTx(t *testing.T) {
 		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(),
 		[]uint16{1}, 0, tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
 		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
+		tx.DeletedObjectsBytes(),
 	)
 	rebuiltHash := blake3.Sum256(rebuilt)
 
@@ -207,7 +247,7 @@ func TestBuildSponsoredTx(t *testing.T) {
 func sponsoredBody(pub ed25519.PublicKey, pod [32]byte, args []byte, gasCoin [32]byte, feePayer []byte, validUntil uint64) []byte {
 	return BuildUnsignedTxBytesSponsored(
 		pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], nil, nil,
-		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil},
+		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil}, nil,
 	)
 }
 
@@ -220,7 +260,7 @@ func buildSponsoredATX(t *testing.T, pub ed25519.PublicKey, pod [32]byte, args [
 	dummySig := make([]byte, ed25519.SignatureSize)
 	txOff := BuildTxTableSponsored(
 		builder, pub, pod, "transfer", args, nil, 0, 1000, gasCoin[:], hash, dummySig, nil, nil,
-		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil}, dummySig,
+		Sponsorship{FeePayer: feePayer, ValidUntil: validUntil}, dummySig, nil,
 	)
 
 	return finishAttestedTx(builder, txOff)

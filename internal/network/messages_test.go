@@ -370,3 +370,68 @@ func TestGetVertexRespRoundTrip(t *testing.T) {
 		t.Fatal("expected Found=false")
 	}
 }
+
+// TestGetVertexRangeRoundTrip verifies the deep-catch-up range request encodes,
+// classifies as a client request, and round-trips its round span.
+func TestGetVertexRangeRoundTrip(t *testing.T) {
+	enc := EncodeGetVertexRange(&GetVertexRangeRequest{From: 152, To: 207})
+
+	if enc[0] != MsgTagGetVertexRange {
+		t.Fatalf("get-vertex-range tag missing: got 0x%02x", enc[0])
+	}
+
+	if !IsClientMessage(enc) {
+		t.Fatal("get-vertex-range request must classify as a client request, or it never routes")
+	}
+
+	decoded, err := DecodeGetVertexRange(enc)
+	if err != nil {
+		t.Fatalf("DecodeGetVertexRange: %v", err)
+	}
+
+	if decoded.From != 152 || decoded.To != 207 {
+		t.Fatalf("span round-trip mismatch: got [%d, %d], want [152, 207]", decoded.From, decoded.To)
+	}
+}
+
+// TestGetVertexRangeRespRoundTrip verifies the range response round-trips a multi-vertex
+// chunk in order and tolerates a truncated payload by returning the clean prefix.
+func TestGetVertexRangeRespRoundTrip(t *testing.T) {
+	vertices := [][]byte{{0xAA}, {0xBB, 0xCC}, {0xDD, 0xEE, 0xFF}}
+
+	enc := EncodeGetVertexRangeResp(&GetVertexRangeResponse{Vertices: vertices})
+
+	decoded, err := DecodeGetVertexRangeResp(enc)
+	if err != nil {
+		t.Fatalf("DecodeGetVertexRangeResp: %v", err)
+	}
+
+	if len(decoded.Vertices) != len(vertices) {
+		t.Fatalf("count mismatch: got %d, want %d", len(decoded.Vertices), len(vertices))
+	}
+
+	for i := range vertices {
+		if string(decoded.Vertices[i]) != string(vertices[i]) {
+			t.Fatalf("vertex %d mismatch: got %x, want %x", i, decoded.Vertices[i], vertices[i])
+		}
+	}
+
+	// A payload truncated mid-vertex yields the clean prefix, never a panic.
+	truncated, err := DecodeGetVertexRangeResp(enc[:len(enc)-1])
+	if err != nil {
+		t.Fatalf("DecodeGetVertexRangeResp truncated: %v", err)
+	}
+
+	if len(truncated.Vertices) != len(vertices)-1 {
+		t.Fatalf("truncated decode returned %d vertices, want the %d-vertex clean prefix", len(truncated.Vertices), len(vertices)-1)
+	}
+
+	empty, err := DecodeGetVertexRangeResp(EncodeGetVertexRangeResp(&GetVertexRangeResponse{}))
+	if err != nil {
+		t.Fatalf("DecodeGetVertexRangeResp empty: %v", err)
+	}
+
+	if len(empty.Vertices) != 0 {
+		t.Fatalf("empty response decoded %d vertices, want 0", len(empty.Vertices))
+	}
+}

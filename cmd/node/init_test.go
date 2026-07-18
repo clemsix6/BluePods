@@ -176,3 +176,50 @@ func TestSeedGenesisState_RestartDoesNotReseedLedger(t *testing.T) {
 		t.Errorf("founder self-stake after restart = %d, want %d (genesis stake, re-installed)", info.SelfStake, is.SelfStake)
 	}
 }
+
+// TestSeedGenesisState_TracksReserveCoin verifies that seeding the genesis
+// ledger registers the reserve coin in the object tracker, exactly like every
+// transaction-driven object-creation path does (state.applyCreatedObjects
+// notifies the tracker for every created object). Tracker-derived aggregates
+// (locked deposits, tracked-object counts) and the fingerprint's
+// singleton-content hashing both key off tracker membership, so an untracked
+// reserve coin silently drops out of both.
+func TestSeedGenesisState_TracksReserveCoin(t *testing.T) {
+	dir := t.TempDir()
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	n, db := bootstrapTestNode(t, dir, privKey)
+	defer db.Close()
+	defer n.dag.Close()
+
+	n.seedGenesisState()
+
+	owner := deriveOwner(privKey)
+	coinID := genesis.GenesisCoinID(owner)
+
+	var found *consensus.ObjectTrackerEntry
+	for _, e := range n.dag.ExportTrackerEntries() {
+		if e.ID == consensus.Hash(coinID) {
+			entry := e
+			found = &entry
+
+			break
+		}
+	}
+
+	if found == nil {
+		t.Fatalf("reserve coin %x not present in the object tracker after genesis seeding", coinID[:4])
+	}
+	if found.Version != 0 {
+		t.Errorf("reserve coin tracked version = %d, want 0", found.Version)
+	}
+	if found.Replication != 0 {
+		t.Errorf("reserve coin tracked replication = %d, want 0 (singleton)", found.Replication)
+	}
+	if found.Fees != 0 {
+		t.Errorf("reserve coin tracked fees = %d, want 0 (no storage deposit)", found.Fees)
+	}
+}

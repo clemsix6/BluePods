@@ -18,10 +18,10 @@ const sponsoredScenarioSize = 5
 // operation, the sponsor's co-signature binds fee_payer/valid_until), and the
 // commit-time valid_until rejection when a sponsorship carries no bound.
 //
-// Expected red, per test/BUGS.md: teardown's automatic convergence check
-// fails against entry 1, and entry 8 keeps the supply term inflated by the
-// default stake setup's non-founder registrations — the same circumstance as
-// every other 5-node functional scenario in this corpus.
+// Teardown is still red on the per-node supply identity: the default stake
+// setup's non-founder registrations each stamp a storage deposit no coin
+// pays (+1000 per registration), inflating the supply term — the same
+// circumstance as every other 5-node functional scenario in this corpus.
 func TestScenarioSponsored(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

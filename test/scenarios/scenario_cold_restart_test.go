@@ -9,6 +9,16 @@ import (
 )
 
 const (
+	// coldRestartEpochsSize is the validator count for
+	// TestScenarioColdRestartEpochs.
+	coldRestartEpochsSize = 5
+
+	// coldRestartEpochsLength keeps epoch boundaries frequent enough that the
+	// scenario crosses one before the restart and another after it within budget.
+	coldRestartEpochsLength = 50
+)
+
+const (
 	// coldRestartScenarioSize is the validator count for TestScenarioColdRestart.
 	coldRestartScenarioSize = 5
 
@@ -23,8 +33,9 @@ const (
 	// genesis self-stake, before extinction. Without this step the founder's
 	// live self-stake never diverges from its genesis value in the first
 	// place, and a restart re-seeding it back to that SAME value would be
-	// indistinguishable from correct behavior: this is what turns BUGS.md
-	// entry 10 from a latent defect into an observable one.
+	// indistinguishable from correct behavior: the bond gives the restart a
+	// live divergence it must preserve, so founder_stake_preserved tests the
+	// durable restore rather than a tautology.
 	coldRestartFounderBondAmount = uint64(7_000_000)
 
 	// coldRestartFounderFundAmount funds the founder's own extra bond coin:
@@ -43,8 +54,9 @@ const (
 // start. No other scenario ever restarts the bootstrap: TestScenarioCrash
 // explicitly kills a non-bootstrap victim instead, because bootstrap's
 // restart takes a different code path (cmd/node's seedGenesisState /
-// consensus.DAG.SeedGenesisValidator), and that path is exactly where
-// BUGS.md entry 10 lives.
+// consensus.DAG.SeedGenesisValidator), and this scenario exercises that
+// path: rebuilding the live validator set from durable state and re-seeding
+// the founder merge-safely.
 //
 // Phase A gives the founder's self-stake a live divergence from its genesis
 // value (an extra bond on top of the genesis self-stake) before stopping
@@ -55,34 +67,26 @@ const (
 // bootstrap node back first, in bootstrap mode, over its own data directory,
 // then resyncs the other four against it. Phase D confirms the cardinal
 // properties hold across the cold restart, with founder_stake_preserved as
-// the discriminating sub-test for entry 10.
+// the discriminating sub-test for the durable validator-set restore.
 //
-// Expected red at teardown, per test/BUGS.md: entry 1 (checksum divergence,
-// here also showing up as the five nodes disagreeing on the validator
-// COUNT itself once four non-founders re-register against the freshly
-// cold-started bootstrap) and entry 8's own small per-registration leak.
-// But the dominant teardown supply-identity failure observed here is much
-// larger than entry 8 alone accounts for (a ~4*10^11 gap, not entry 8's few
-// thousand): that gap is entry 10's own mechanism at cluster scale — see
-// founder_stake_preserved below and the entry's updated evidence.
+// The restart rebuilds the live validator set from the snapshot persisted
+// with the commit cursor (buildValidatorSet loads it), so every validator's
+// stake comes back and totalBonded no longer collapses to the founder's bare
+// genesis self-stake. Any residual per-node supply-identity gap at teardown
+// is the small per-registration storage-deposit leak from this cluster's
+// four non-founder registrations (a separate, still-open issue), a few
+// thousand units — not the cluster-scale validator-set loss.
 //
-// founder_stake_preserved is ALSO expected red, in the body, not just at
-// teardown: it asserts the CORRECT behavior (the founder's totalBonded and
-// coinsTotal survive a bootstrap restart unchanged), and BUGS.md entry 10
-// predicts this node re-seeds its self-stake to genesis on every bootstrap
-// start, discarding the bond applied in Phase A while the coin debit that
-// paid for it persists. A red result here is the intended live reproduction
-// of that entry, not a defect in this scenario. The observed magnitude goes
-// beyond the entry's original founder-only claim: totalBonded does not just
-// lose the founder's extra bond, it collapses all the way down to the
-// founder's bare genesis self-stake, confirming the entry's own "suspected
-// ... missing validator-set persistence path" co-factor is real and not
-// founder-specific — buildValidatorSet (cmd/node/init.go) starts every
-// process run, restart included, from an in-memory validator set with
-// nothing but the local identity, and nothing outside SeedGenesisValidator
-// restores anyone into it. See the sub-test for the exact before/after
-// numbers logged as evidence, and test/BUGS.md entry 10 for the full
-// analysis.
+// founder_stake_preserved asserts the CORRECT behavior and holds: the
+// founder's totalBonded and coinsTotal survive a bootstrap restart
+// unchanged. The bootstrap start rebuilds the live validator set from
+// durable state — buildValidatorSet (cmd/node/init.go) restores the set
+// persisted with the commit cursor rather than starting from the bare local
+// identity — and SeedGenesisValidator is merge-safe, so it never regresses
+// the founder's live self-stake or reward coin back to genesis. The bond
+// applied in Phase A therefore stays bonded, and the coin debited to fund it
+// stays debited. See the sub-test for the exact before/after numbers logged
+// as evidence.
 func TestScenarioColdRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -207,8 +211,8 @@ func coldRestartPhaseC(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
 // coldRestartPhaseD runs Phase D's five sub-tests: zero rollback across the
 // restart, the wallet's coin surviving unchanged, the committed round
 // resuming past its pre-extinction value, the founder's stake/coin
-// conservation (the discriminating sub-test for BUGS.md entry 10), and
-// ordinary traffic committing on all five nodes again.
+// conservation (the discriminating sub-test for the durable validator-set
+// restore), and ordinary traffic committing on all five nodes again.
 func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cli0 *client.Client, w *client.Wallet, coin [32]byte, preRound uint64, preFingerprints map[int]*network.FingerprintResponse) {
 	t.Helper()
 
@@ -246,14 +250,14 @@ func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cl
 			preFp.CoinsTotal, postFp.CoinsTotal, int64(postFp.CoinsTotal)-int64(preFp.CoinsTotal))
 
 		if postFp.TotalBonded != preFp.TotalBonded {
-			t.Fatalf("BUGS.md entry 10 reproduced: node 0 totalBonded not conserved across a bootstrap restart: pre=%d post=%d "+
-				"(SeedGenesisValidator re-seeds the founder's self-stake to its genesis value on every bootstrap start, "+
-				"discarding the %d bonded on top of it before extinction)",
+			t.Fatalf("node 0 totalBonded not conserved across a bootstrap restart: pre=%d post=%d "+
+				"(the restart must rebuild the live validator set from durable state and re-seed the founder merge-safely, "+
+				"preserving the %d bonded on top of its genesis self-stake before extinction)",
 				preFp.TotalBonded, postFp.TotalBonded, coldRestartFounderBondAmount)
 		}
 		if postFp.CoinsTotal != preFp.CoinsTotal {
-			t.Fatalf("BUGS.md entry 10 reproduced: node 0 coinsTotal not conserved across a bootstrap restart: pre=%d post=%d "+
-				"(the coin debited to fund the founder's extra bond does not come back, while totalBonded above may already show the bonded amount was discarded)",
+			t.Fatalf("node 0 coinsTotal not conserved across a bootstrap restart: pre=%d post=%d "+
+				"(the coin debited to fund the founder's extra bond stays debited, matching the preserved totalBonded above)",
 				preFp.CoinsTotal, postFp.CoinsTotal)
 		}
 	})
@@ -265,4 +269,64 @@ func coldRestartPhaseD(t *testing.T, c *harness.Cluster, node0 *harness.Node, cl
 		requireNoErr(t, err)
 		requireVerdictAll(stepCtx(t), t, c, hash, true, "")
 	})
+}
+
+// TestScenarioColdRestartEpochs restarts the bootstrap node past the genesis
+// epoch and confirms it refreezes the SAME committee the rest of the cluster
+// does at the next boundary. With epochs enabled the committee is frozen at
+// every boundary from the committed member set, so that set must survive the
+// bootstrap restart: otherwise the restarted node re-seeds a founder-only set
+// and freezes a divergent committee, a durable fork of the execution shard,
+// routed reads, and BLS quorum resolution.
+//
+// TestScenarioColdRestart runs with epochs disabled and never crosses a
+// boundary, so it cannot exercise the boundary freeze after a restart. This
+// leg fills that gap: it reaches epoch >= 1, restarts the bootstrap node over
+// its own data directory, crosses another boundary, and relies on the
+// automatic teardown convergence check (registered by NewCluster) to assert
+// every node — the restarted bootstrap included — agrees on the committed
+// (round, fingerprint) after the post-restart boundary.
+func TestScenarioColdRestartEpochs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scenario")
+	}
+
+	c := harness.NewCluster(t, coldRestartEpochsSize, harness.WithEpochLength(coldRestartEpochsLength))
+	node0 := c.Node(0)
+
+	// Reach epoch >= 1 before restarting, so the restart happens past the
+	// genesis epoch, where the committed-set restore used to be skipped.
+	waitNextBoundary(t, node0)
+
+	coldRestartEpochsRestartBootstrap(t, c, node0)
+
+	// Cross another boundary after the restart: this is the freeze that forks
+	// if the committed member set did not survive the restart.
+	waitNextBoundary(t, node0)
+}
+
+// coldRestartEpochsRestartBootstrap restarts the bootstrap node over its own
+// data directory in bootstrap mode (the syncFrom argument is irrelevant for the
+// bootstrap identity — see test/harness/node.go) and waits for it to become
+// ready in its new journal segment, mirroring coldRestartPhaseC's bootstrap
+// handling.
+func coldRestartEpochsRestartBootstrap(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
+	t.Helper()
+
+	var preSeg int
+	if ready := node0.Journal().Events("node.ready"); len(ready) > 0 {
+		preSeg = ready[len(ready)-1].Seg
+	}
+	nextSeg := preSeg + 1
+	inNewSegment := func(e harness.Event) bool { return e.Seg >= nextSeg }
+
+	// Restart spawns a new process without stopping the old one (its contract
+	// delegates that to the caller); stop first, or the new process loses the
+	// storage lock to the still-live old one and dies at boot.
+	requireNoErr(t, node0.Stop())
+	requireNoErr(t, node0.Restart(""))
+	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", inNewSegment); err != nil {
+		c.Dump(t)
+		t.Fatalf("bootstrap node did not become ready after restart past a boundary: %v", err)
+	}
 }

@@ -349,8 +349,17 @@ func (n *Node) buildValidatorSetFromSnapshot(validators []*consensus.ValidatorIn
 	// would refreeze a zero-stake committee — its capped stake total collapses to zero
 	// and the joiner can never reach the production or strict-commit quorum, wedging
 	// the relaxed bootstrap on a committed member that can never produce.
+	//
+	// RewardCoin must also be carried explicitly: AddWithStake doubles as the
+	// epoch-holder-snapshot constructor, which intentionally omits RewardCoin (see
+	// epoch_persist.go), so dropping it here would zero the founder's reward-coin
+	// designation on every syncing node forever — the founder never re-registers to
+	// repair it the way a non-founder does, so any epoch credit targeting it lands
+	// on the bootstrap node but is silently skipped everywhere else, forking the
+	// state fingerprint.
 	for _, v := range validators {
 		vs.AddWithStake(v.Pubkey, v.QUICAddr, v.BLSPubkey, v.SelfStake, v.DelegatedTotal, v.Jailed)
+		vs.SetRewardCoin(v.Pubkey, v.RewardCoin)
 		logger.Debug("added validator from snapshot",
 			"pubkey", hex.EncodeToString(v.Pubkey[:8]),
 			"quic", v.QUICAddr,

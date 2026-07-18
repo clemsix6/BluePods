@@ -34,17 +34,25 @@ const (
 	// delegateAmount is the amount delegated, and (delegate never being
 	// partial) also the exact principal undelegate later returns.
 	delegateAmount = uint64(1_000_000)
+
+	// deregWithDelegatorsSize is the validator count for
+	// TestScenarioDeregisterWithDelegators.
+	deregWithDelegatorsSize = 5
+
+	// deregWithDelegatorsEpochLength makes boundaries land often enough that the
+	// scenario crosses the one that would apply the queued removal within budget.
+	deregWithDelegatorsEpochLength = 50
 )
 
 // stakeDelta captures one stake operation's fingerprint terms immediately
-// before and after it commits, both queried from the SAME node (cli's), so the
-// comparison never crosses the cluster's own known checksum-divergence bug
-// (BUGS.md entry 1): each snapshot is one node's own locally-evaluable view,
-// and the delta between two of them cancels any constant cross-scenario
-// baseline (like entry 8's per-registration inflation) that never changes
-// across the single operation being measured. amount is the operation's signed
-// effect on TotalBonded (positive for delegate, negative for unbond/
-// undelegate); fee is the tx's own fees.deducted amount.
+// before and after it commits, both queried from the SAME node (cli's): each
+// snapshot is one node's own locally-evaluable view, and the delta between
+// two of them cancels any constant cross-scenario baseline (like the
+// per-registration supply-identity inflation from this cluster's own
+// non-founder registrations) that never changes across the single operation
+// being measured. amount is the operation's signed effect on TotalBonded
+// (positive for delegate, negative for unbond/undelegate); fee is the tx's
+// own fees.deducted amount.
 type stakeDelta struct {
 	op     string
 	amount int64
@@ -65,25 +73,17 @@ type stakeDelta struct {
 // state, never on the epoch-snapshotted consensus weight that would make a
 // weight assertion racy.
 //
-// supply_delta_conserved is the discriminating sub-test: instead of the raw
-// per-node supply identity (polluted by BUGS.md entry 8's +4000-per-
-// registration leak baked into this cluster's own 4 non-founder setup
-// registrations), it captures the fingerprint's coins/bonded/deposits/fees
-// terms immediately before and after each operation and checks the DELTA
-// conserves exactly, with the bonded<->coins transfer equal to the amount
-// moved and the residual accounted for by that operation's own fee.
+// supply_delta_conserved is the discriminating sub-test: it captures the
+// fingerprint's coins/bonded/deposits/fees terms immediately before and after
+// each operation and checks the DELTA conserves exactly, with the
+// bonded<->coins transfer equal to the amount moved and the residual accounted
+// for by that operation's own fee. It is a delta check by design; the raw
+// per-node identity holds too, as the next paragraph explains.
 //
-// Expected red at teardown, per test/BUGS.md: entry 1 (checksum divergence
-// from this cluster's 4 non-founder registrations) and entry 8 (+4000 raw
-// supply identity) — the same circumstance as every other 5-node functional
-// scenario in this corpus.
-//
-// undelegate_returns_principal is also expected red IN THE BODY, per BUGS.md
-// entry 11: confirming the deleted delegation position is no longer readable
-// calls cli.GetObject (routed, non-local) on an object no node holds, which
-// this scenario is the first to exercise, and that path cascades across the
-// mesh instead of returning a prompt not-found, timing out the client. Every
-// other sub-test is expected green.
+// Teardown's per-node supply identity holds as well: this cluster's 4
+// non-founder setup registrations each stamp a zero deposit rather than an
+// unpaid one, so the raw identity is exact, the same as every other 5-node
+// functional scenario in this corpus.
 func TestScenarioStake(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -118,6 +118,55 @@ func TestScenarioStake(t *testing.T) {
 	t.Run("supply_delta_conserved", func(t *testing.T) {
 		requireDeltasConserved(t, deltas)
 	})
+}
+
+// TestScenarioDeregisterWithDelegators drives the deregistration path for a
+// validator that still carries a live delegation across an epoch boundary: a fresh
+// wallet delegates to a non-founder validator, that validator deregisters, and the
+// cluster crosses the boundary that would otherwise apply the queued removal. The
+// removal is deferred while the delegated stake is bonded, so the delegated total
+// never leaves total_bonded uncredited and the per-node supply identity stays exact
+// across the boundary — the accounting the unguarded path drops by exactly the
+// delegated amount. Teardown re-checks convergence and the identity cluster-wide;
+// this scenario only has to exercise the boundary while the delegation is live.
+func TestScenarioDeregisterWithDelegators(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scenario")
+	}
+
+	c := harness.NewCluster(t, deregWithDelegatorsSize, harness.WithEpochLength(deregWithDelegatorsEpochLength))
+	node0 := c.Node(0)
+	cli := c.Client(0)
+
+	validator := walletFromNodeKey(t, c.Node(1))
+	validatorPub := validator.Pubkey()
+
+	// A fresh wallet delegates to the validator through the real delegate path,
+	// opening a position bonded behind it.
+	delegator, coinID := fundedWallet(stepCtx(t), t, cli, node0, delegateFunding)
+
+	posID, hash, err := delegator.Delegate(cli, coinID, delegator.GetCoin(coinID).Version, validatorPub, delegateAmount)
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+
+	_, err = node0.WaitEvent(stepCtx(t), "stake.delegated",
+		harness.Attr("validator", hexID(validatorPub)),
+		harness.Attr("position", hexID(posID)),
+		harness.Attr("amount", delegateAmount))
+	requireNoErr(t, err)
+
+	// The validator deregisters; the removal is queued for the next epoch boundary.
+	requireNoErr(t, validator.DeregisterValidator(cli))
+
+	_, err = node0.WaitEvent(stepCtx(t), "epoch.validator.deregistered",
+		harness.Attr("validator", hexID(validatorPub)))
+	requireNoErr(t, err)
+
+	// Cross the boundary that would apply the removal, then assert the supply
+	// identity holds on every node: the delegated stake stayed bonded because the
+	// removal is deferred while the delegation is outstanding.
+	waitNextBoundary(t, node0)
+	requireSupplyIdentity(t, c)
 }
 
 // testUnbondCreditsCoin has validator (a non-founder validator whose wallet is
@@ -293,14 +342,11 @@ func requireDelegationPosition(t *testing.T, cli *client.Client, posID, delegato
 // than "not found" is reported distinctly, so a real connectivity problem is
 // never mistaken for confirmation that the position was destroyed.
 //
-// Expected red, per test/BUGS.md entry 11: cli.GetObject routes to every
-// other holder when this node lacks the object, and the inter-node request
-// omits LocalOnly, so a holder that also lacks it (every node, here) cascades
-// into probing further instead of answering not-found directly. The call
-// times out at the QUIC client's own 8s request deadline instead of erroring
-// "not found", so this assertion fails on the deadline, not a stale owner
-// read — that failure IS the reproduction and must not be relaxed (a longer
-// timeout would only hide the cascade, not confirm not-found any sooner).
+// cli.GetObject routes to every other holder when this node lacks the
+// object; the inter-node request is LocalOnly, so a holder that also lacks
+// it (every node, here) answers a direct not-found instead of cascading into
+// probing further. The call returns promptly with "not found" well inside
+// the QUIC client's 8s request deadline.
 func requirePositionGone(t *testing.T, cli *client.Client, posID [32]byte) {
 	t.Helper()
 

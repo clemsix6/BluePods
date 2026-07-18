@@ -68,7 +68,7 @@ func (w *Wallet) SubmitSponsored(c *Client, signed SignedSponsoredOp) ([32]byte,
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
 		builder, signed.Sender, signed.Op.Pod, signed.Op.FuncName, signed.Op.Args, signed.Op.CreatedReps,
-		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, sponsor, sponsorSig,
+		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, sponsor, sponsorSig, nil,
 	)
 	builder.Finish(txOff)
 
@@ -86,6 +86,6 @@ func sponsoredBody(sender ed25519.PublicKey, op SponsoredOp, sponsorPubkey [32]b
 	sponsor := genesis.Sponsorship{FeePayer: sponsorPubkey[:], ValidUntil: validUntil}
 
 	return genesis.BuildUnsignedTxBytesSponsored(
-		sender, op.Pod, op.FuncName, op.Args, op.CreatedReps, 0, clientMaxGas, gasCoin[:], op.MutableRefs, op.ReadRefs, sponsor,
+		sender, op.Pod, op.FuncName, op.Args, op.CreatedReps, 0, clientMaxGas, gasCoin[:], op.MutableRefs, op.ReadRefs, sponsor, nil,
 	)
 }

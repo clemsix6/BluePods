@@ -71,9 +71,9 @@ func TestSettlementAccumulatorsSurviveRestart(t *testing.T) {
 
 	dag1.commitMu.Lock()
 	dag1.lastCommitted = 3
-	dag1.epochFees = feePool
-	dag1.epochRoundsProduced = map[Hash]uint64{
-		vals[0].pubKey: 3, vals[1].pubKey: 2, vals[2].pubKey: 1, vals[3].pubKey: 1,
+	dag1.epochFees = map[uint64]uint64{0: feePool}
+	dag1.epochRoundsProduced = map[uint64]map[Hash]uint64{
+		0: {vals[0].pubKey: 3, vals[1].pubKey: 2, vals[2].pubKey: 1, vals[3].pubKey: 1},
 	}
 	dag1.epochAdditions = []Hash{vals[2].pubKey}
 	dag1.pendingRemovals = map[Hash]bool{vals[3].pubKey: true}
@@ -96,8 +96,8 @@ func TestSettlementAccumulatorsSurviveRestart(t *testing.T) {
 	defer dag2.Close()
 	setEqualStake(dag2, vals, 25)
 
-	if dag2.epochFees != feePool {
-		t.Fatalf("epochFees not restored: got %d, want %d", dag2.epochFees, feePool)
+	if dag2.epochFees[0] != feePool {
+		t.Fatalf("epochFees not restored: got %d, want %d", dag2.epochFees[0], feePool)
 	}
 	if !reflect.DeepEqual(dag2.epochRoundsProduced, wantProduced) {
 		t.Fatalf("epochRoundsProduced not restored: got %v, want %v", dag2.epochRoundsProduced, wantProduced)
@@ -116,7 +116,7 @@ func TestSettlementAccumulatorsSurviveRestart(t *testing.T) {
 	coins := seedRewardCoins(dag2, coinStore, vals)
 
 	dag2.commitMu.Lock()
-	dag2.distributeEpochRewards(0)
+	dag2.distributeEpochRewards(0, 0)
 	dag2.commitMu.Unlock()
 
 	credited := sumRewardBalances(coinStore, coins)
@@ -141,9 +141,9 @@ func TestSyncBlobCarriesSettlementAccumulators(t *testing.T) {
 	setEqualStake(src, vals, 25)
 
 	src.commitMu.Lock()
-	src.epochFees = feePool
-	src.epochRoundsProduced = map[Hash]uint64{
-		vals[0].pubKey: 4, vals[1].pubKey: 3, vals[2].pubKey: 2, vals[3].pubKey: 1,
+	src.epochFees = map[uint64]uint64{0: feePool}
+	src.epochRoundsProduced = map[uint64]map[Hash]uint64{
+		0: {vals[0].pubKey: 4, vals[1].pubKey: 3, vals[2].pubKey: 2, vals[3].pubKey: 1},
 	}
 	wantProduced := src.epochRoundsProduced
 	src.commitMu.Unlock()
@@ -155,8 +155,8 @@ func TestSyncBlobCarriesSettlementAccumulators(t *testing.T) {
 		WithSyncedRegimeState(blob))
 	t.Cleanup(func() { joiner.Close() })
 
-	if joiner.epochFees != feePool {
-		t.Fatalf("joiner epochFees not carried: got %d, want %d", joiner.epochFees, feePool)
+	if joiner.epochFees[0] != feePool {
+		t.Fatalf("joiner epochFees not carried: got %d, want %d", joiner.epochFees[0], feePool)
 	}
 	if !reflect.DeepEqual(joiner.epochRoundsProduced, wantProduced) {
 		t.Fatalf("joiner epochRoundsProduced not carried: got %v, want %v", joiner.epochRoundsProduced, wantProduced)
@@ -172,7 +172,7 @@ func TestSyncBlobCarriesSettlementAccumulators(t *testing.T) {
 	coins := seedRewardCoins(joiner, coinStore, vals)
 
 	joiner.commitMu.Lock()
-	joiner.distributeEpochRewards(0)
+	joiner.distributeEpochRewards(0, 0)
 	joiner.commitMu.Unlock()
 
 	if credited := sumRewardBalances(coinStore, coins); credited != feePool {
@@ -183,7 +183,7 @@ func TestSyncBlobCarriesSettlementAccumulators(t *testing.T) {
 	// zero pool — exactly the near-zero fork the carried accumulators prevent.
 	bare := New(newTestStorage(t), NewValidatorSet(pubkeys), nil, testSystemPod, 0, vals[0].privKey, nil)
 	t.Cleanup(func() { bare.Close() })
-	if bare.epochFees != 0 {
-		t.Fatalf("bare joiner unexpectedly has fees: %d", bare.epochFees)
+	if bare.totalEpochFees() != 0 {
+		t.Fatalf("bare joiner unexpectedly has fees: %d", bare.totalEpochFees())
 	}
 }

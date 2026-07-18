@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"BluePods/internal/network"
 	"BluePods/pkg/client"
 )
 
@@ -65,6 +66,52 @@ func (c *Cluster) setupStakes() {
 
 	c.t.Logf("stake setup: founder self-stake %d, %d non-founder(s) bonded %d each",
 		c.opts.initialMint/10, nonFounders, stake)
+
+	c.waitStrictRegime()
+}
+
+// strictRegimeTimeout bounds the post-bond wait for the strict latch to arm and
+// every commit cursor to pass strictStartRound.
+const strictRegimeTimeout = 90 * time.Second
+
+// waitStrictRegime blocks until every node reports the strict latch armed and its
+// commit cursor past strictStartRound, so the scenario's traffic runs entirely
+// under strict quorum decisions. The relaxed bootstrap certificate is
+// view-dependent under delivery skew: a transaction committed inside its window
+// can be swept on one node and skipped on another, permanently forking derived
+// state at equal totals. The default setup just bonded every validator and
+// minValidators defaults to the cluster size, so the latch is guaranteed to arm;
+// not reaching it within the bound is a hard failure, never silently tolerated.
+func (c *Cluster) waitStrictRegime() {
+	c.t.Helper()
+
+	deadline := time.Now().Add(strictRegimeTimeout)
+
+	for _, n := range c.Nodes() {
+		for {
+			status, err := c.nodeStatus(n)
+			if err == nil && status.StrictLatched && status.LastCommitted >= status.StrictStart {
+				break
+			}
+
+			if time.Now().After(deadline) {
+				c.t.Fatalf("node %d never entered the strict regime: status=%+v err=%v", n.Index, status, err)
+			}
+
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+}
+
+// nodeStatus fetches one node's status tolerantly: any client or transport error
+// is returned for the caller to retry rather than failing the test.
+func (c *Cluster) nodeStatus(n *Node) (*network.StatusResponse, error) {
+	cli, err := c.newClientFor(n)
+	if err != nil {
+		return nil, err
+	}
+
+	return cli.Status()
 }
 
 // defaultStakeTarget aims for a stake equal to the founder's genesis

@@ -147,3 +147,35 @@ func TestRequestAndApplySnapshot_EmitsSnapshotApplied(t *testing.T) {
 		t.Errorf("objects = %v, want 0 (empty snapshot)", recs[0]["objects"])
 	}
 }
+
+// TestBuildValidatorSetFromSnapshot_CarriesRewardCoin guards against a
+// fingerprint-forking regression: buildValidatorSetFromSnapshot calling only
+// vs.AddWithStake per validator, never vs.SetRewardCoin, so RewardCoin is silently
+// dropped rebuilding the live validator set from a synced snapshot, even
+// though the snapshot wire format carries it correctly. A non-founder's own
+// RewardCoin gets repaired later by its own register_validator replay, but
+// the founder never re-registers — so on every synced (non-bootstrap) node
+// the founder's RewardCoin stays zero forever, and any epoch-boundary credit
+// that targets it lands on the bootstrap node but is silently skipped
+// everywhere else, forking the fingerprint.
+func TestBuildValidatorSetFromSnapshot_CarriesRewardCoin(t *testing.T) {
+	n := &Node{}
+
+	var founder, rewardCoin consensus.Hash
+	founder[0] = 0xAA
+	rewardCoin[0] = 0xBB
+
+	synced := []*consensus.ValidatorInfo{
+		{Pubkey: founder, QUICAddr: "quic://founder:9000", SelfStake: 1000, RewardCoin: rewardCoin},
+	}
+
+	vs := n.buildValidatorSetFromSnapshot(synced)
+
+	got := vs.Get(founder)
+	if got == nil {
+		t.Fatal("founder missing from rebuilt validator set")
+	}
+	if got.RewardCoin != rewardCoin {
+		t.Errorf("RewardCoin dropped rebuilding validator set from snapshot: got %x, want %x", got.RewardCoin, rewardCoin)
+	}
+}

@@ -63,7 +63,7 @@ func TestApplyCreatedObjects_EmitsObjectCreatedAndDepositLocked(t *testing.T) {
 	txHash := Hash{0xAA}
 	output := buildPodOutputWithCreated(2, 10) // 2 objects, replication=10
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 2 {
@@ -113,7 +113,7 @@ func TestApplyCreatedObjects_NoDepositEventWhenFeesZero(t *testing.T) {
 	txHash := Hash{0xBB}
 	output := buildPodOutputWithCreated(1, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 1 {
@@ -139,7 +139,7 @@ func TestApplyCreatedObjects_ObjectCreatedFiresEvenIfNotHolder(t *testing.T) {
 	txHash := Hash{0xCC}
 	output := buildPodOutputWithCreated(2, 10)
 
-	s.applyCreatedObjects(output, txHash)
+	s.applyCreatedObjects(output, txHash, true)
 
 	created := eventsNamed(t, buf, events.EvObjectCreated)
 	if len(created) != 2 {
@@ -178,109 +178,9 @@ func TestApplyUpdatedObjects_EmitsObjectUpdated(t *testing.T) {
 	}
 }
 
-// TestApplyDeletedObjects_RefundEmitsDepositRefundedAndSupplyBurned verifies
-// that a deletion with a landed refund emits fees.deposit.refunded (the
-// refunded amount) and supply.burned (only the burned remainder), plus
-// state.object.deleted carrying the refund.
-func TestApplyDeletedObjects_RefundEmitsDepositRefundedAndSupplyBurned(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100) // 95% refund
-
-	owner := Hash{0xAA}
-	objID := Hash{0x74}
-	gasCoinID := Hash{0xEE}
-
-	s.SetObject(buildCoinObject(gasCoinID, 5000, owner))
-	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 10000))
-
-	tx := buildMinimalTxWithGasCoin(owner, gasCoinID)
-	output := buildPodOutputWithDeleted(objID)
-
-	buf := captureEvents(t)
-
-	s.applyDeletedObjects(output, tx)
-
-	refunded := eventsNamed(t, buf, events.EvDepositRefunded)
-	if len(refunded) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvDepositRefunded, len(refunded))
-	}
-	if refunded[0]["object"] != hex.EncodeToString(objID[:]) {
-		t.Errorf("refunded object = %v, want %s", refunded[0]["object"], hex.EncodeToString(objID[:]))
-	}
-	if refunded[0]["coin"] != hex.EncodeToString(gasCoinID[:]) {
-		t.Errorf("refunded coin = %v, want %s", refunded[0]["coin"], hex.EncodeToString(gasCoinID[:]))
-	}
-	// refund = 10000 * 9500 / 10000 = 9500
-	if refunded[0]["amount"] != float64(9500) {
-		t.Errorf("refunded amount = %v, want 9500", refunded[0]["amount"])
-	}
-
-	burned := eventsNamed(t, buf, events.EvSupplyBurned)
-	if len(burned) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvSupplyBurned, len(burned))
-	}
-	// burned = 10000 - 9500 = 500
-	if burned[0]["amount"] != float64(500) {
-		t.Errorf("burned amount = %v, want 500", burned[0]["amount"])
-	}
-	if burned[0]["reason"] != "deletion" {
-		t.Errorf("burned reason = %v, want deletion", burned[0]["reason"])
-	}
-
-	deleted := eventsNamed(t, buf, events.EvObjectDeleted)
-	if len(deleted) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvObjectDeleted, len(deleted))
-	}
-	if deleted[0]["refund"] != float64(9500) {
-		t.Errorf("deleted refund = %v, want 9500", deleted[0]["refund"])
-	}
-}
-
-// TestApplyDeletedObjects_NoGasCoinBurnsFullAmountNoRefundEvent verifies that
-// a deletion with no gas coin to receive the refund burns the WHOLE deposit
-// (supply.burned with the full amount) and never emits fees.deposit.refunded,
-// and state.object.deleted carries a zero refund.
-func TestApplyDeletedObjects_NoGasCoinBurnsFullAmountNoRefundEvent(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-	s.SetStorageFees(1000, 9500, 100)
-	s.SetTotalSupply(10000)
-
-	owner := Hash{0xAA}
-	objID := Hash{0x76}
-
-	s.SetObject(buildTestObjectFullWithFees(objID, 1, owner, 10, []byte("data"), 1000))
-
-	// tx has sender=owner but NO gas_coin.
-	tx := buildMinimalTx(owner)
-	output := buildPodOutputWithDeleted(objID)
-
-	buf := captureEvents(t)
-
-	s.applyDeletedObjects(output, tx)
-
-	refunded := eventsNamed(t, buf, events.EvDepositRefunded)
-	if len(refunded) != 0 {
-		t.Fatalf("want 0 %s events when there is no gas coin, got %d: %v", events.EvDepositRefunded, len(refunded), refunded)
-	}
-
-	burned := eventsNamed(t, buf, events.EvSupplyBurned)
-	if len(burned) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvSupplyBurned, len(burned))
-	}
-	if burned[0]["amount"] != float64(1000) {
-		t.Errorf("burned amount = %v, want 1000 (full deposit)", burned[0]["amount"])
-	}
-
-	deleted := eventsNamed(t, buf, events.EvObjectDeleted)
-	if len(deleted) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvObjectDeleted, len(deleted))
-	}
-	if deleted[0]["refund"] != float64(0) {
-		t.Errorf("deleted refund = %v, want 0", deleted[0]["refund"])
-	}
-}
+// The deletion accounting events (fees.deposit.refunded, supply.burned,
+// state.object.deleted) now fire from the commit loop on every node; they are
+// covered by the deletion tests in internal/consensus.
 
 // TestApplyRegisteredDomains_EmitsDomainRegistered verifies the event carries
 // the domain name, its resolved object id, and the tx hash.

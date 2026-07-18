@@ -34,7 +34,10 @@ func DomainUpdated(name string, object, tx [32]byte) {
 	emit(EvDomainUpdated, slog.String("name", name), hexAttr("object", object), hexAttr("tx", tx))
 }
 
-// DomainDeleted marks a domain name removed from the registry.
+// DomainDeleted marks a domain name removed from the registry. Domain
+// deletion is specified in the whitepaper's Domain Name System section as an
+// owner-driven pod operation, but no system pod function exposes it yet, so
+// this constructor has no production caller.
 func DomainDeleted(name string, tx [32]byte) {
 	emit(EvDomainDeleted, slog.String("name", name), hexAttr("tx", tx))
 }

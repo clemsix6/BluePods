@@ -29,11 +29,12 @@ const (
 // amount at this cluster size, so liveness afterward is guaranteed by
 // arithmetic, not tuning.
 //
-// Expected red, per test/BUGS.md: teardown's automatic convergence check
-// fails against entries 1/2 (and likely 8, given the register_validator
-// traffic the default stake setup generates). Epoch-counter agreement and
-// zero rollback are asserted in-scenario (requireEpochConvergence,
-// requireZeroRollback), independent of that teardown chain.
+// Teardown is still red on the per-node supply identity: the
+// register_validator traffic the default stake setup generates stamps a
+// storage deposit no coin pays (+1000 per registration), inflating the
+// supply term. Epoch-counter agreement and zero rollback are asserted
+// in-scenario (requireEpochConvergence, requireZeroRollback), independent of
+// that teardown chain.
 func TestScenarioEpochCrash(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")

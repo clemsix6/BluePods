@@ -73,6 +73,16 @@ table Transaction {
     // may commit. Bounds a sponsor's exposure to a stale signed artifact. Only
     // meaningful when fee_payer is present; absent (0) for a self-paid transaction.
     valid_until:uint64;
+
+    // deleted_objects declares the 32-byte IDs of objects this transaction
+    // removes, concatenated (length is a multiple of 32). It is the network-uniform
+    // source of a deletion: every node reads it from the committed transaction, so
+    // the deposit-release/refund/burn accounting runs identically on holders and
+    // non-holders in the commit loop, without executing the pod. Each ID must also
+    // appear in mutable_refs (ownership-validated at commit). This mirrors
+    // created_objects_replication, the declared field that drives creation-side
+    // accounting the same way.
+    deleted_objects:[ubyte];
 }
 
 root_type Transaction;

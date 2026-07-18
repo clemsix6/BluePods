@@ -47,6 +47,12 @@ func (d *DAG) encodeRegimeState() []byte {
 	buf = appendMemberBlob(buf, d.prevEligibleHolders)
 	buf = appendMemberBlob(buf, d.nextEligibleHolders)
 
+	// The committed member set drives the boundary committee freeze, so a joiner past
+	// the genesis epoch must adopt the source's set — reconstructing it locally from
+	// the first committed registration it happens to see yields a partial set and a
+	// joiner-only committee at the next boundary.
+	buf = appendMemberBlob(buf, d.committedMembers)
+
 	// Epoch settlement accumulators: a joiner landing mid-epoch must reach the
 	// boundary with the same fees and liveness as the source, or the reward mint
 	// forks (C-2). Length-prefixed, so the tail is append-only safe.
@@ -128,8 +134,9 @@ func WithSyncedRegimeState(blob []byte) Option {
 }
 
 // applyRegimeState decodes and installs the epoch and latch state, replacing whatever
-// restoreEpochState loaded. It rebuilds the committed member set during the genesis
-// epoch so a node synced mid-bootstrap keeps refreezing from the full committee.
+// restoreEpochState loaded. It adopts the source's committed member set from the blob
+// at any epoch, so a node synced past the genesis epoch refreezes the same committee
+// as the network instead of rebuilding a partial set locally.
 func (d *DAG) applyRegimeState(blob []byte) {
 	if len(blob) < 17 {
 		return
@@ -149,12 +156,15 @@ func (d *DAG) applyRegimeState(blob []byte) {
 	d.prevEligibleHolders, rest = readMemberBlob(rest)
 	d.nextEligibleHolders, rest = readMemberBlob(rest)
 
+	// Adopt the source's committed member set directly, so the joiner freezes the same
+	// committee at the next boundary as the rest of the network rather than one filtered
+	// through a partial set it would rebuild from the registrations it observes.
+	d.committedMembers, rest = readMemberBlob(rest)
+
 	// Install the carried settlement accumulators so the joiner mints identically at
 	// the next boundary. An older, shorter blob leaves rest empty and keeps the zero
 	// accumulators.
 	d.readEpochAccumulators(rest)
-
-	d.restoreCommittedMembers()
 }
 
 // appendHolderBlob appends a length-prefixed encoded holder snapshot to buf. A nil

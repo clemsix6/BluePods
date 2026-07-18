@@ -100,14 +100,6 @@ func verdictString(success bool, reason string) string {
 // daemon's attestation path), confirms every commit lands identically on
 // every node, and exercises the three commit-path security rejections:
 // replay, a tampered hash, and a non-owner mutation attempt.
-//
-// This cluster registers 5 validators (the founder plus 4 non-founder bonds
-// from the default stake setup), which reliably reproduces BUGS.md entry 1
-// (and, once an epoch boundary is crossed, entry 2): teardown's automatic
-// CheckInvariants is expected to fail convergence here. That failure is the
-// registered bug reproducing itself, not a defect in this scenario's own
-// assertions — see test/BUGS.md before treating a red run here as a
-// regression to chase.
 func TestScenarioConsensusBasics(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -411,11 +403,11 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]
 // source coin must read back at a zero balance everywhere rather than being
 // deleted (pods/pod-system/src/functions/merge/execute.rs empties every
 // source coin via with_updated, never a deletion) — checked with
-// GetObjectLocal on every node rather than a routed GetObject. BUGS.md entry
-// 11 documents a routed GetObject cascading to a client timeout for an
-// object no node holds; that is not this case (the coin is a singleton every
-// node still holds after merge), but the local-only read is both cheaper and
-// immune to that failure mode regardless.
+// GetObjectLocal on every node rather than a routed GetObject: a routed
+// GetObject can cascade to a client timeout for an object no node holds,
+// which is not this case (the coin is a singleton every node still holds
+// after merge), but the local-only read is both cheaper and immune to that
+// failure mode regardless.
 func testMergeCombinesCoins(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
@@ -482,9 +474,9 @@ func requireCoinBalanceEverywhere(t *testing.T, c *harness.Cluster, coinID [32]b
 // touches BLS cryptography or any node-local state; with that vector empty
 // the lookup fails identically everywhere ("object not found in ATX"), so
 // every alive node derives the SAME proof_failed verdict from the gossiped
-// bytes alone. Unlike BUGS.md entry 7 (the ownership check), this path runs
-// BEFORE any node-local, holdership-dependent check, so there is no
-// holder/non-holder split to reproduce here.
+// bytes alone. This proof gate reads only the ATX's own bytes and runs BEFORE
+// the mutable-ref ownership check, so its verdict is uniform by construction —
+// there is no node-local state to consult and no holder/non-holder split.
 //
 // This is the deterministic external analogue of "no valid attestation
 // proof": a legitimate BLS quorum signature cannot be forged from outside the

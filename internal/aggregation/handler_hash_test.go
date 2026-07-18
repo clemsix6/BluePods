@@ -11,8 +11,9 @@ import (
 )
 
 // TestHandlerHashAgreement verifies that the signature produced by the handler
-// is over attest.ComputeObjectHash(ContentBytes(), version) and verifies under
-// the holder's BLS public key. This pins signer and verifier to the same hash.
+// is over attest.ComputeObjectHash(ContentBytes(), version, OwnerBytes()) and
+// verifies under the holder's BLS public key. This pins signer and verifier to
+// the same hash.
 func TestHandlerHashAgreement(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.New(dir)
@@ -23,7 +24,7 @@ func TestHandlerHashAgreement(t *testing.T) {
 
 	st := state.New(db, &podvm.Pool{})
 
-	blsKey, err := GenerateBLSKey()
+	blsKey, err := attest.GenerateBLSKey()
 	if err != nil {
 		t.Fatalf("generate BLS key: %v", err)
 	}
@@ -45,14 +46,15 @@ func TestHandlerHashAgreement(t *testing.T) {
 		t.Fatalf("process request: %v", err)
 	}
 
-	resp, err := DecodePositiveResponse(respData)
+	resp, err := attest.DecodePositiveResponse(respData)
 	if err != nil {
 		t.Fatalf("decode positive response: %v", err)
 	}
 
-	// The handler must hash the content bytes, not the full object bytes.
+	// The handler must hash the content bytes, not the full object bytes, and
+	// bind the object's owner.
 	fbObj := types.GetRootAsObject(objData, 0)
-	expected := attest.ComputeObjectHash(fbObj.ContentBytes(), version)
+	expected := attest.ComputeObjectHash(fbObj.ContentBytes(), version, fbObj.OwnerBytes())
 	if resp.Hash != expected {
 		t.Fatalf("handler hash mismatch:\n got %x\nwant %x", resp.Hash, expected)
 	}

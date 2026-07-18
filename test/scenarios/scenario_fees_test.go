@@ -16,15 +16,12 @@ import (
 // three gas-coin validation rejections (missing, not owned, not a
 // singleton).
 //
-// Expected red, per test/BUGS.md: the execution_error step's before/after
-// Fingerprint delta check fails against entry 12 (a failed execution debits
-// the fee's storage component from the coin but credits it nowhere), the
-// underfunded step's supply-identity assertion fails against entry 8
-// (validator registration stamps a deposit no coin pays, inflating the
-// identity by 1000 per registration) compounded with entry 12's own
-// deflation from the step before it (the partial-fee pooling itself is
-// conserving, proven on a single node), and teardown's automatic
-// convergence check fails against entry 1.
+// The execution_error step's before/after Fingerprint delta holds, because a
+// failed created-object transaction pools its already-debited storage
+// portion into the epoch fee pool instead of dropping it. The underfunded
+// step's per-node supply identity also holds: the four non-founder
+// registrations stamp a zero deposit rather than inflating it, and the
+// execution_error step pools its storage fee rather than deflating it.
 func TestScenarioFees(t *testing.T) {
 	if testing.Short() {
 		t.Skip("scenario")
@@ -145,38 +142,31 @@ func testSplitExceedsBalance(t *testing.T, c *harness.Cluster, cli *client.Clien
 
 	// The fee's storage component (calculateTxFeeSplit, sized off the tx's
 	// DECLARED created_objects_replication regardless of outcome) is debited
-	// from the coin unconditionally, before execution, but deductFees pools
-	// only the "consumed" portion (SplitFee(consumed, ...)); the storage
-	// portion is meant to become a locked deposit, credited only inside
-	// applyCreatedObjects (internal/state/state.go), which state.Execute
-	// never reaches on a failed pod execution. So on THIS scenario's
-	// execution_error path, what left the coin must exceed what
-	// deposits+feesInFlight gained by exactly that storage component: a
-	// deflationary supply leak, the mirror image of BUGS.md entry 8's
-	// inflationary one. See test/BUGS.md entry 12 (RED ON PURPOSE: the
-	// underlying leak is not fixed as part of adding this coverage).
+	// from the coin unconditionally, before execution. On success it becomes a
+	// locked deposit inside applyCreatedObjects (internal/state/state.go); on
+	// this failed pod execution no object is created, so the commit fee path
+	// pools the storage portion into the epoch fee pool like the consumed
+	// portion instead of dropping it. So what left the coin equals what
+	// deposits+feesInFlight gained: the identity is exact on the execution_error
+	// path.
 	after, err := cli.Fingerprint()
 	requireNoErr(t, err)
 
 	coinsLost := before.CoinsTotal - after.CoinsTotal
 	accountedFor := (after.Deposits - before.Deposits) + (after.FeesInFlight - before.FeesInFlight)
 	if accountedFor != coinsLost {
-		t.Fatalf("failed-execution fee not fully accounted: coin lost %d, deposits+fees_in_flight only gained %d (BUGS.md entry 12)",
+		t.Fatalf("failed-execution fee not fully accounted: coin lost %d, deposits+fees_in_flight only gained %d",
 			coinsLost, accountedFor)
 	}
 }
 
 // testUnderfundedGasCoin funds a coin with 1 unit (below any fee), attempts a
 // split, and asserts the typed fee_rejected verdict on every node, the
-// partial (covered=false) deduction event, and the supply identity intact on
-// every node afterwards: the drained unit must enter the epoch pool instead
-// of vanishing (the Task 3 fix). The identity assertion is RED against
-// BUGS.md entry 8: registration-stamped deposits inflate it by 1000 per
-// non-founder validator before this step even runs. On this cluster the
-// observed delta is entry 8's +4000 (four non-founder registrations)
-// compounded with entry 12's own -1000 (the execution_error step just before
-// this one silently drops one created-object transaction's storage fee), net
-// +3000 — both leaks superimposed on the same ledger, not a new discrepancy.
+// partial (covered=false) deduction event, and the supply identity on every
+// node afterwards: the drained unit must enter the epoch pool instead of
+// vanishing. The identity holds: the four non-founder registrations stamp a
+// zero deposit rather than inflating it, and the execution_error step just
+// before this one pools its storage fee rather than deflating it.
 func testUnderfundedGasCoin(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 

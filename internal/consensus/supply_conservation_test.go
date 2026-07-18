@@ -34,7 +34,7 @@ func TestPartialFeeCoveragePooled(t *testing.T) {
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
-	split, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	split, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if proceed {
 		t.Fatal("expected proceed=false: the fee is not fully covered")
 	}
@@ -52,12 +52,15 @@ func TestPartialFeeCoveragePooled(t *testing.T) {
 	}
 }
 
-// TestEpochTransitionCarriesUncreditableRemainder verifies that when the epoch
-// reward pool cannot be credited anywhere (the sole, top-weight validator
-// designates no reward coin), transitionEpoch carries the uncreditable amount
-// forward into the next epoch's pool instead of zeroing it at clearEpochState:
-// a reward that cannot be delivered must stay accounted, never vanish.
-func TestEpochTransitionCarriesUncreditableRemainder(t *testing.T) {
+// TestEpochTransitionCarriesUndistributablePool verifies that when the epoch
+// reward pool has no reward weight to land on (no validator produced a round this
+// epoch, so total reward weight is zero), transitionEpoch carries the pool
+// forward into the next epoch's pool instead of zeroing it at clearEpochState: a
+// reward that cannot be delivered must stay accounted, never vanish. A coinless
+// validator WITH weight is no longer this case — its share now compounds into its
+// self-stake (see creditValidatorReward); the genuine carry is a pool with no
+// weight to distribute at all.
+func TestEpochTransitionCarriesUndistributablePool(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(1)
 	pk := validators[0].pubKey
@@ -72,15 +75,17 @@ func TestEpochTransitionCarriesUncreditableRemainder(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
-	// Nonzero reward weight, but NO reward coin designated: the validator's
-	// liquid share and the remainder both land on an undesignated recipient.
+	// A funded pool but zero reward weight: the settled epoch has no committed
+	// production (epochRoundsProduced unset), so totalRewardWeight is 0 and the pool has
+	// no weight to distribute against. Settlement is deferred one boundary, so drive it
+	// from epoch 1 with epoch 0's pool pending.
+	dag.currentEpoch = 1
 	dag.validators.SetSelfStake(pk, 100)
-	dag.epochRoundsProduced[pk] = 1
-	dag.epochFees = 500
+	dag.epochFees[0] = 500
 
-	dag.transitionEpoch(10)
+	dag.transitionEpoch(20)
 
-	if dag.epochFees != 500 {
-		t.Errorf("epochFees after boundary = %d, want 500 (uncreditable pool carried over, not lost)", dag.epochFees)
+	if dag.totalEpochFees() != 500 {
+		t.Errorf("in-flight pool after boundary = %d, want 500 (undistributable pool carried over, not lost)", dag.totalEpochFees())
 	}
 }

@@ -24,46 +24,9 @@ func WithEpochLength(n uint64) Option {
 	return func(o *clusterOpts) { o.epochLength = n }
 }
 
-// WithMinValidators sets the consensus threshold.
-func WithMinValidators(n int) Option {
-	return func(o *clusterOpts) { o.minValidators = n }
-}
-
-// WithGossipFanout sets the gossip fanout (peers per vertex).
-func WithGossipFanout(n int) Option {
-	return func(o *clusterOpts) { o.gossipFanout = n }
-}
-
-// WithSyncBuffer sets the sync buffer in seconds.
-func WithSyncBuffer(n int) Option {
-	return func(o *clusterOpts) { o.syncBuffer = n }
-}
-
-// WithInitialMint sets the bootstrap mint amount.
-func WithInitialMint(n uint64) Option {
-	return func(o *clusterOpts) { o.initialMint = n }
-}
-
-// WithTransitionGrace sets the grace rounds after minValidators is reached.
-func WithTransitionGrace(n int) Option {
-	return func(o *clusterOpts) { o.transitionGrace = n }
-}
-
-// WithTransitionBuffer sets the buffer rounds after the grace period.
-func WithTransitionBuffer(n int) Option {
-	return func(o *clusterOpts) { o.transitionBuffer = n }
-}
-
 // WithMaxChurn sets the max validator changes per epoch.
 func WithMaxChurn(n int) Option {
 	return func(o *clusterOpts) { o.maxChurn = n }
-}
-
-// WithStake overrides the default equal per-validator bond amount (for
-// example 1_000_000), bypassing the reserve-fitted computation NewCluster
-// otherwise derives from InitialMint.
-func WithStake(amount uint64) Option {
-	return func(o *clusterOpts) { o.stake = amount }
 }
 
 // WithoutStakeSetup skips NewCluster's default equal-stake bonding, leaving

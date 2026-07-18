@@ -85,7 +85,10 @@ func (d *Daemon) collectOne(ctx context.Context, ref objectRef) (attestationResu
 		return attestationResult{}, fmt.Errorf("singleton must not be collected")
 	}
 
-	hash := attest.ComputeObjectHash(obj.ContentBytes(), version)
+	// Bind the fetched object's owner into the hash the holders sign and this
+	// collector verifies against, matching the commit-time recompute. A quorum is
+	// then only assembled for the owner the holders actually attest.
+	hash := attest.ComputeObjectHash(obj.ContentBytes(), version, obj.OwnerBytes())
 
 	vs := d.Validators()
 	holders := attest.ComputeHolders(vs, ref.ID, replication)

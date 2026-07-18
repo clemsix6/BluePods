@@ -65,7 +65,10 @@ func (h *Handler) processRequest(req *AttestationRequest) ([]byte, error) {
 		return buildNegativeResponse(reasonWrongVersion), nil
 	}
 
-	hash := attest.ComputeObjectHash(fbObj.ContentBytes(), req.Version)
+	// Sign the owner from the local copy every node holds for this object, never
+	// an owner taken from the request: the holder attests who its authoritative
+	// copy says the object belongs to, so a request cannot steer the signed owner.
+	hash := attest.ComputeObjectHash(fbObj.ContentBytes(), req.Version, fbObj.OwnerBytes())
 
 	sig, ok := h.signatureForCurrent(req.ObjectID, req.Version, fbObj, hash)
 	if !ok {

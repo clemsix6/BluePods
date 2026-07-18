@@ -63,6 +63,7 @@ type DAG struct {
 	lastProducedRound atomic.Uint64 // lastProducedRound tracks sequential production during transition
 	roundMu           sync.Mutex
 	pendingTxs        [][]byte
+	lastRebroadcast   time.Time // lastRebroadcast is when the frontier leaf was last re-announced; throttles the cannot-produce re-broadcast to one per liveness interval (guarded by roundMu)
 
 	// Output channel for committed transactions
 	committed chan CommittedTx
@@ -165,9 +166,14 @@ type DAG struct {
 	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
 	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
-	// Epoch rewards: accumulated fees and round tracking per validator.
-	epochFees           uint64          // epochFees accumulates total_epoch from all committed vertices this epoch
-	epochRoundsProduced map[Hash]uint64 // epochRoundsProduced counts vertices produced per validator this epoch
+	// Epoch rewards: pooled fees and per-validator liveness, both bucketed by the
+	// epoch a vertex's ROUND belongs to (commitEpochForRound), not the epoch current
+	// when its anchor batch commits. Bucketing by round is what makes a
+	// boundary-straddling vertex land in the same epoch on every node regardless of
+	// which batch sweeps it up; settlement of a bucket is deferred one boundary past
+	// the epoch's close so every node has committed all of it first. Guarded by commitMu.
+	epochFees           map[uint64]uint64          // epochFees[E] pools total_epoch of every committed vertex whose round is in epoch E, awaiting E's deferred settlement
+	epochRoundsProduced map[uint64]map[Hash]uint64 // epochRoundsProduced[E][producer] counts the distinct rounds producer produced in epoch E
 
 	// Thermostat: per-epoch adaptive issuance. When thermostat is the zero value
 	// (WithThermostat unset) every parameter is 0, so adjustRate holds the rate at
@@ -227,16 +233,6 @@ func WithMinValidators(n int) Option {
 func WithMinStake(stake uint64) Option {
 	return func(d *DAG) {
 		d.minStake = stake
-	}
-}
-
-// WithCommissionBPS sets the fixed delegation commission in basis points. This
-// is a single governed parameter for the whole network (not per-validator), so
-// it avoids a commission field, rate-limited change mechanics, and rug-pull risk.
-// Default is 1000 (10%).
-func WithCommissionBPS(bps uint64) Option {
-	return func(d *DAG) {
-		d.commissionBPS = bps
 	}
 }
 
@@ -354,7 +350,8 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		committed:           make(chan CommittedTx, channelBuffer),
 		pendingVertices:     make(map[Hash][]byte),
 		pendingRemovals:     make(map[Hash]bool),
-		epochRoundsProduced: make(map[Hash]uint64),
+		epochFees:           make(map[uint64]uint64),
+		epochRoundsProduced: make(map[uint64]map[Hash]uint64),
 		commissionBPS:       defaultCommissionBPS,
 		votingCapMille:      defaultVotingCapMille,
 		verifyTxAuth:        verifyTxAuthenticity,
@@ -560,6 +557,15 @@ type VertexFetcher interface {
 	// immediately; a fetched vertex re-enters through AddVertex and is picked up by
 	// the commit loop on a later tick.
 	FetchVertices(hashes []Hash)
+
+	// FetchRange requests every vertex a peer holds in the round span [from, to]. It
+	// backs deep catch-up: when a far-behind node has buffered a distant frontier but
+	// lacks the whole block of rounds beneath it (which forward gossip never re-pushes),
+	// one range request closes the gap in a few round-trips instead of one round per
+	// stalled tick. Like FetchVertices it must return immediately, deduplicate an
+	// identical range already in flight, and let fetched vertices re-enter through
+	// AddVertex.
+	FetchRange(from, to uint64)
 }
 
 // SetVertexFetcher installs the fetcher the commit loop uses to recover a decided
@@ -590,6 +596,15 @@ func (d *DAG) VertexFetcherWired() bool {
 // single requested vertex and enumerates nothing else.
 func (d *DAG) VertexBytes(hash Hash) []byte {
 	return d.store.getRaw(hash)
+}
+
+// VertexRange returns the raw bytes of the vertices this node holds in the round span
+// [from, to], ordered by round ascending and capped at limit. It backs the mesh
+// range-catch-up handler, serving a bounded chunk of a peer's requested span so a
+// far-behind node can bridge a deep gap in a few round-trips instead of one round per
+// stalled tick.
+func (d *DAG) VertexRange(from, to uint64, limit int) [][]byte {
+	return d.store.rawRange(from, to, limit)
 }
 
 // TrackObject registers a created object in the tracker.
@@ -661,33 +676,47 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	// founder's self-stake is locked OUT of the coin by BuildInitialState, so it
 	// is bonded (counted as total_bonded), not sitting in a coin balance.
 	d.coinStore.SetCoinsTotal(is.Supply - is.SelfStake)
+
+	// The reserve coin is tracked like every transaction-created object
+	// (state.applyCreatedObjects tracks each one it processes): the tracker
+	// feeds the deposit and object-count aggregates and selects which
+	// singletons get their content hashed into the convergence fingerprint, so
+	// an untracked reserve coin would keep its balance outside the checksum
+	// entirely.
+	coin := types.GetRootAsObject(is.Coin, 0)
+	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
 }
 
-// SeedGenesisValidator seeds the founding validator into the validator set:
+// SeedGenesisValidator installs the founding validator into the validator set:
 // its network address, its bonded self-stake, and its reward coin (its own
 // genesis coin — without a designation the founder's liquid epoch reward share
 // has nowhere to land and silently vanishes at every boundary with a non-zero
-// pool). It then admits the founder to the committed member set and freezes
+// pool). It then admits the founder to the committed member set, which refreezes
 // the genesis holder snapshot so the anchor path resolves epoch 0 without ever
 // reading the live set.
 //
-// Every step here is idempotent (Add/SetSelfStake/SetRewardCoin overwrite,
-// recordCommittedMember is a set-add), so unlike SeedGenesisLedger this MUST
-// run on every bootstrap start, restart included: nothing else restores the
-// live validator set in bootstrap mode, and skipping it on restart would leave
-// the founder with zero live self-stake and a broken total_bonded.
-//
-// Known limitation (test/BUGS.md entry 10): SetSelfStake/SetRewardCoin
-// overwrite rather than merge, so a restart re-seeds these fields to their
-// GENESIS values even if the founder's live self-stake or reward coin has
-// since diverged from genesis.
+// It runs on every bootstrap start, restart included, and is merge-safe: the
+// self-stake and reward-coin seed fires ONLY on a fresh chain, when the founder
+// has no live self-stake yet. On a restart the live validator set is already
+// rebuilt from durable state (LoadLiveValidators, via buildValidatorSet) with the
+// founder's post-genesis self-stake and reward coin, so overwriting them here
+// would regress total_bonded and the reward-coin designation to their genesis
+// values while the coin debits that funded the divergence persist in the ledger.
+// Address back-fill and committed-member admission stay idempotent, so they run
+// unconditionally.
 func (d *DAG) SeedGenesisValidator(is genesis.InitialState) {
 	var bls [48]byte
 	copy(bls[:], is.BLS)
 
-	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder is already in the set; Add back-fills addresses
-	d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
-	d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
+	d.validators.Add(is.Pubkey, is.QUIC, bls) // founder may already be in the set; Add back-fills addresses
+
+	// Seed the genesis stake and reward coin only when the founder carries no live
+	// self-stake — a fresh chain. A restart restores these from durable state before
+	// this runs, and must be trusted rather than regressed to genesis.
+	if existing := d.validators.Get(is.Pubkey); existing == nil || existing.SelfStake == 0 {
+		d.validators.SetSelfStake(is.Pubkey, is.SelfStake)
+		d.validators.SetRewardCoin(is.Pubkey, is.CoinID)
+	}
 
 	// Under commitMu because the commit loop is already running.
 	d.commitMu.Lock()
@@ -888,6 +917,7 @@ func (d *DAG) tryProduceVertex() {
 		if round%20 == 0 {
 			d.debugRoundVertices(prevRound)
 		}
+		d.rebroadcastFrontierLeaf()
 		return
 	}
 
@@ -916,6 +946,43 @@ func (d *DAG) tryProduceVertex() {
 	d.sendVertex(data)
 	d.lastProducedRound.Store(round)
 	d.updateRound(round + 1)
+}
+
+// rebroadcastFrontierLeaf re-gossips this node's own latest produced vertex while
+// the node cannot advance for lack of quorum. Forward gossip sends a vertex once,
+// at production, so a node stuck at its frontier round never re-announces the leaf
+// its stalled peers are missing. When two sides of a symmetric freeze reconnect,
+// each holds only its own subset of the frozen round's vertices and forward gossip
+// is silent about exactly the leaves the other needs to reach quorum there; walking
+// parent links backward can never reach the other side's childless sibling leaves.
+// Re-announcing the own leaf on the liveness tick carries it across: an
+// already-signed vertex is idempotent on receipt (peers deduplicate) and neutral
+// for safety. The re-gossip is throttled to at most once per liveness interval so a
+// production trigger firing faster than the tick cannot turn it into a storm. The
+// caller holds roundMu.
+func (d *DAG) rebroadcastFrontierLeaf() {
+	lastRound := d.lastProducedRound.Load()
+	if lastRound == 0 {
+		return
+	}
+
+	now := time.Now()
+	if !d.lastRebroadcast.IsZero() && now.Sub(d.lastRebroadcast) < livenessTimeout {
+		return
+	}
+
+	hashes, ok := d.store.getByRoundProducer(lastRound, d.pubKey)
+	if !ok {
+		return
+	}
+
+	d.lastRebroadcast = now
+
+	for _, h := range hashes {
+		if data := d.store.getRaw(h); data != nil {
+			d.sendVertex(data)
+		}
+	}
 }
 
 // nextProductionRound returns the round to produce at.
@@ -963,17 +1030,6 @@ func (d *DAG) effectiveBuffer() uint64 {
 		return uint64(d.bufferRounds)
 	}
 	return transitionBufferRounds
-}
-
-// isInTransition returns true if we're in the grace period after minValidators was reached.
-// During this period, quorum checks are relaxed to let the network converge.
-func (d *DAG) isInTransition() bool {
-	tr := d.transitionRound.Load()
-	if tr < 0 {
-		return false // minValidators not yet reached
-	}
-
-	return d.round.Load() < uint64(tr)+d.effectiveGrace()
 }
 
 // isInTransitionOrBuffer returns true during transition OR the buffer period after.
@@ -1276,6 +1332,86 @@ func (d *DAG) bufferPendingVertex(hash Hash, data []byte) {
 		"producer", hex.EncodeToString(producer[:8]),
 		"pending", len(d.pendingVertices),
 	)
+}
+
+// pendingMissingParents returns the parent hashes the pending buffer is blocked
+// on: every parent of a buffered vertex that is neither stored nor itself
+// buffered. These are the roots of buffered cascades — a vertex cut mid-broadcast
+// is never re-pushed by gossip, its descendants from the peers that hold it pile
+// up here, and the stored frontier stays causally closed, so no store walk can
+// surface the gap. Only an explicit fetch of these hashes can. Deduplicated;
+// order is not significant (the fetcher deduplicates in flight).
+func (d *DAG) pendingMissingParents() []Hash {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	seen := make(map[Hash]bool)
+	var missing []Hash
+
+	for _, data := range d.pendingVertices {
+		vertex := types.GetRootAsVertex(data, 0)
+
+		for _, parent := range appendParentHashes(nil, vertex) {
+			if seen[parent] {
+				continue
+			}
+			seen[parent] = true
+
+			if _, buffered := d.pendingVertices[parent]; buffered || d.store.has(parent) {
+				continue
+			}
+
+			missing = append(missing, parent)
+		}
+	}
+
+	return missing
+}
+
+// highestPendingRound returns the greatest round among the buffered pending
+// vertices, or 0 when the buffer is empty. It measures how far ahead of the commit
+// cursor the received-but-unpromotable frontier sits, so the wait-stall recovery can
+// tell a deep catch-up gap (a block of rounds never delivered, sitting below a far
+// buffered frontier) from an ordinary one-layer wait.
+func (d *DAG) highestPendingRound() uint64 {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	var highest uint64
+
+	for _, data := range d.pendingVertices {
+		if r := types.GetRootAsVertex(data, 0).Round(); r > highest {
+			highest = r
+		}
+	}
+
+	return highest
+}
+
+// pendingParentSnapshot copies each buffered vertex's parent links into a plain map
+// (hash -> parent hashes) under pendingMu, so a causal walk can consult the pending
+// buffer without holding the pending lock across the store lock. Order is not
+// significant; the walk deduplicates.
+func (d *DAG) pendingParentSnapshot() map[Hash][]Hash {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+
+	snapshot := make(map[Hash][]Hash, len(d.pendingVertices))
+	for hash, data := range d.pendingVertices {
+		vertex := types.GetRootAsVertex(data, 0)
+		snapshot[hash] = appendParentHashes(nil, vertex)
+	}
+
+	return snapshot
+}
+
+// missingCausalAncestry surfaces the anchor's absent causal ancestry across the store
+// and the pending buffer in one pass. It returns the truly-absent roots to fetch and
+// whether the gap sits behind a buffered cascade, composing a pending-parent snapshot
+// with the store walk so a deep gap is requested whole rather than one frontier layer
+// per stalled tick.
+func (d *DAG) missingCausalAncestry(anchor Hash) ([]Hash, bool) {
+	return d.store.missingCausalRoots(anchor, d.pendingParentSnapshot())
 }
 
 // processPendingVertices retries vertices whose parents may now be available.

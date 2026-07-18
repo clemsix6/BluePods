@@ -59,10 +59,14 @@ func hashDomains(h *blake3.Hasher, entries []state.DomainEntry) {
 }
 
 // hashValidators writes the validators sorted by pubkey (pubkey, selfStake,
-// delegatedTotal, jailed) and returns the unconditional sum of self plus
-// delegated stake — jailed validators are included, since jailed stake has not
+// delegatedTotal, jailed, rewardCoin) and returns the unconditional sum of self
+// plus delegated stake — jailed validators are included, since jailed stake has not
 // returned to coins (unlike EffectiveStake, a consensus weight that zeroes a
-// jailed validator's vote).
+// jailed validator's vote). RewardCoin is hashed because it steers where each
+// epoch's liquid reward is credited: two nodes that designate different reward
+// coins for the same validator will credit different coins at the boundary, so the
+// designation must be part of the convergence digest for that split to surface here
+// rather than silently, as diverging coin bytes an epoch later.
 func hashValidators(h *blake3.Hasher, validators []*consensus.ValidatorInfo) uint64 {
 	sorted := make([]*consensus.ValidatorInfo, len(validators))
 	copy(sorted, validators)
@@ -86,6 +90,8 @@ func hashValidators(h *blake3.Hasher, validators []*consensus.ValidatorInfo) uin
 			jailedByte[0] = 1
 		}
 		h.Write(jailedByte[:])
+
+		h.Write(v.RewardCoin[:])
 
 		totalBonded += v.SelfStake + v.DelegatedTotal
 	}

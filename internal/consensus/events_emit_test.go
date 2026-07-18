@@ -443,7 +443,7 @@ func TestDeductFees_EmitsFeesDeducted_Covered(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	buf := captureEvents(t)
-	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	_, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if !proceed {
 		t.Fatal("fee deduction should proceed: gas coin fully covers the fee")
 	}
@@ -487,7 +487,7 @@ func TestDeductFees_EmitsFeesDeducted_Partial(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	buf := captureEvents(t)
-	_, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
+	_, _, proceed := dag.deductFees(tx, atx, validators[0].pubKey)
 	if proceed {
 		t.Fatal("fee deduction should reject: gas coin does not fully cover the fee")
 	}
@@ -791,19 +791,19 @@ func TestDistributeEpochRewards_EmitsRewardsDistributed(t *testing.T) {
 
 	dag.validators.SetSelfStake(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
-	dag.epochRoundsProduced[pk] = 5
-	dag.epochFees = 1000
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
+	dag.epochFees[0] = 1000
 
 	buf := captureEvents(t)
-	dag.distributeEpochRewards(0)
+	dag.distributeEpochRewards(0, 0)
 
 	recs := eventsNamed(t, buf, events.EvRewardsDistributed)
 	if len(recs) != 1 {
 		t.Fatalf("want 1 %s event, got %d: %v", events.EvRewardsDistributed, len(recs), recs)
 	}
 	rec := recs[0]
-	if rec["epoch"] != float64(dag.Epoch()) {
-		t.Errorf("epoch = %v, want %d (the ending epoch)", rec["epoch"], dag.Epoch())
+	if rec["epoch"] != float64(0) {
+		t.Errorf("epoch = %v, want 0 (the settled epoch)", rec["epoch"])
 	}
 	if rec["pool"] != float64(1000) {
 		t.Errorf("pool = %v, want 1000", rec["pool"])
@@ -824,7 +824,7 @@ func TestDistributeEpochRewards_NoFeeSystem_NoRewardsEvent(t *testing.T) {
 	// No SetFeeSystem call: feeParams and coinStore stay nil.
 
 	buf := captureEvents(t)
-	dag.distributeEpochRewards(0)
+	dag.distributeEpochRewards(0, 0)
 
 	if recs := eventsNamed(t, buf, events.EvRewardsDistributed); len(recs) != 0 {
 		t.Fatalf("no fee system wired: want 0 %s events, got %d", events.EvRewardsDistributed, len(recs))
@@ -877,7 +877,7 @@ func TestRunThermostat_EmitsSupplyIssued(t *testing.T) {
 	defer dag.Close()
 
 	dag.validators.SetSelfStake(pk, 10_000) // far below the target band
-	dag.epochRoundsProduced[pk] = 5
+	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 
 	buf := captureEvents(t)
 	issuance := dag.runThermostat(true)

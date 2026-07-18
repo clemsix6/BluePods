@@ -27,7 +27,7 @@ The node is written in Go; pods are written in Rust and compiled to WebAssembly.
 - `types/` — generated FlatBuffers types shared across the node.
 - `pods/` — the Rust side: `pod-sdk` (dispatcher, Context, serialization) and `pod-system` (the system pod).
 - `wasm-gas/` — Rust tool that instruments a pod's WASM with gas metering (at the root, not under `pods/`).
-- `test/` — the scenario harness (`harness/`), the scenario corpus (`scenarios/`), and the environment's documents of record, `TESTING.md` and `BUGS.md`.
+- `test/` — the scenario harness (`harness/`), the scenario corpus (`scenarios/`), and the environment's document of record, `TESTING.md`.
 - `docs/superpowers/specs/` and `docs/superpowers/plans/` — the specs and plans of the development workflow below.
 
 @~/Skills/general.md

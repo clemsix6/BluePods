@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 )
 
 // format selects which slog.Handler backs the default logger: "text" (human
@@ -180,9 +179,4 @@ func Error(msg string, args ...any) {
 // With returns a logger with the given attributes.
 func With(args ...any) *slog.Logger {
 	return slog.Default().With(args...)
-}
-
-// Timed returns elapsed time since start for logging duration.
-func Timed(start time.Time) slog.Attr {
-	return slog.Duration("elapsed", time.Since(start))
 }

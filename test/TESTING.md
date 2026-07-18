@@ -258,6 +258,7 @@ must be called out in the commit that does it.
 | `stake.unbonded` | validator, coin, amount |
 | `stake.delegated` | validator, position, amount |
 | `stake.undelegated` | validator, position, amount |
+| `stake.released` | validator, coin, amount |
 | `supply.issued` | epoch, amount, rate |
 | `supply.burned` | amount, reason |
 | `epoch.transitioned` | epoch, added, removed |
@@ -304,23 +305,20 @@ by the journal rather than left in `Event.Attrs`.
 ## Bug triage protocol
 
 A scenario failing against otherwise-correct harness behavior has found a
-project bug, not a test bug. `test/BUGS.md` is the living register: one
-entry per bug, never a TODO list or a backlog.
+project bug, not a test bug.
 
-Before registering anything, the burden of proof is on the harness:
+Before treating a red as the project's, the burden of proof is on the
+harness:
 
-1. Rule out a race or a timeout in the test itself. Rerun the scenario; check
-   whether a longer bound or a harness fix removes the failure.
-2. A flaky scenario is a harness defect: always in scope to fix directly,
-   never registered in `test/BUGS.md`.
-3. Once a failure is confirmed as the project's, add an entry with a short
-   title, the suspected subsystem (file/function), the scenario(s) that
-   reproduce it, and the event-journal (or other) evidence that pins it
-   down.
-4. The scenario stays red as the living reproduction. It is never skipped,
-   weakened, or worked around, and the underlying defect is not fixed as
-   part of adding the entry.
-5. If a later scenario reproduces an already-registered bug, annotate the
-   existing entry instead of duplicating it.
-
-See `test/BUGS.md` for the current register and its full protocol text.
+1. Rule out a race or a timeout in the test itself. Rerun the scenario;
+   check whether a longer bound or a harness fix removes the failure.
+2. A flaky scenario is a harness defect: always in scope to fix directly.
+3. Once a failure is confirmed as the project's, it is fixed on a
+   dedicated branch — root cause first, a failing test that pins the
+   mechanism, then the fix — or, when it cannot be fixed now, filed as a
+   GitHub issue carrying the suspected subsystem, the reproducing
+   scenario(s), and the event-journal evidence.
+4. Until its fix lands, the scenario stays red as the living
+   reproduction. It is never skipped, weakened, or worked around.
+5. A later scenario reproducing a known open issue is added to that
+   issue, not filed as a new one.

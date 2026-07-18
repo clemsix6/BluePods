@@ -315,3 +315,29 @@ func TestVertexHashIs_MalformedPayloadNeverPanics(t *testing.T) {
 		}
 	}
 }
+
+// TestVertexRangeFetch_RealWiring_DeliversSpan drives the range fetcher over real QUIC
+// against the real serving handler (handleClientMessage -> handleGetVertexRange): a
+// client missing a vertex requests the round span holding it, receives the chunk, and
+// ingests it through AddVertex. This exercises the deep-catch-up path end to end.
+func TestVertexRangeFetch_RealWiring_DeliversSpan(t *testing.T) {
+	_, producer, _ := ed25519.GenerateKey(rand.Reader)
+	vertex, want := buildRound0Vertex(t, producer)
+
+	server := startServingNode(t, producer, vertex)
+	client := newListenerClient(t, producer)
+
+	if client.dag.VertexBytes(want) != nil {
+		t.Fatal("client already holds the vertex; scenario is void")
+	}
+
+	if _, err := client.network.Connect(server.network.Addr()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	client.newVertexFetcher().FetchRange(0, 0)
+
+	if !waitForVertex(client, want) {
+		t.Fatal("client never received the vertex through the real range-fetch wiring")
+	}
+}

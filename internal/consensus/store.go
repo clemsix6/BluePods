@@ -164,6 +164,35 @@ func (s *store) getByRoundProducer(round uint64, producer Hash) ([]Hash, bool) {
 	return matches, len(matches) > 0
 }
 
+// rawRange returns the raw bytes of every stored vertex in the round span [from, to],
+// ordered by round ascending and capped at limit vertices. The ascending order and the
+// cap let a catch-up requester march up a deep gap over successive chunked responses:
+// the lowest absent rounds arrive first and bridge the cursor upward. A non-positive
+// limit or an inverted span returns nothing.
+func (s *store) rawRange(from, to uint64, limit int) [][]byte {
+	if limit <= 0 || to < from {
+		return nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out [][]byte
+
+	for round := from; round <= to; round++ {
+		for _, hash := range s.byRound[round] {
+			if data := s.getRaw(hash); data != nil {
+				out = append(out, data)
+				if len(out) >= limit {
+					return out
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 // producerAt reads the producer recorded for a vertex in the round index. It
 // returns the zero hash when the round-index entry is missing or malformed.
 func (s *store) producerAt(round uint64, hash Hash) Hash {
@@ -176,6 +205,23 @@ func (s *store) producerAt(round uint64, hash Hash) Hash {
 
 	copy(producer[:], data)
 	return producer
+}
+
+// producersInRange returns the set of producers with at least one stored vertex
+// at any round in [from, to]. Producers are read from the round index, so the
+// result reflects exactly the locally stored frontier.
+func (s *store) producersInRange(from, to uint64) map[Hash]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[Hash]bool)
+	for r := from; r <= to; r++ {
+		for _, hash := range s.byRound[r] {
+			seen[s.producerAt(r, hash)] = true
+		}
+	}
+
+	return seen
 }
 
 // highestRound returns the greatest round for which any vertex is stored. It

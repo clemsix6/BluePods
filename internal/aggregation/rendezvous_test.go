@@ -3,6 +3,7 @@ package aggregation
 import (
 	"testing"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 )
 
@@ -155,7 +156,7 @@ func TestQuorumSize(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := QuorumSize(tc.replication)
+		got := attest.QuorumSize(tc.replication)
 		if got != tc.expected {
 			t.Errorf("QuorumSize(%d) = %d, want %d", tc.replication, got, tc.expected)
 		}

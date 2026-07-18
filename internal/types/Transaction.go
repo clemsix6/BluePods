@@ -423,8 +423,42 @@ func (rcv *Transaction) MutateValidUntil(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(32, n)
 }
 
+func (rcv *Transaction) DeletedObjects(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(34))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *Transaction) DeletedObjectsLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(34))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *Transaction) DeletedObjectsBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(34))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *Transaction) MutateDeletedObjects(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(34))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
 func TransactionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(15)
+	builder.StartObject(16)
 }
 func TransactionAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(hash), 0)
@@ -503,6 +537,12 @@ func TransactionStartSponsorSignatureVector(builder *flatbuffers.Builder, numEle
 }
 func TransactionAddValidUntil(builder *flatbuffers.Builder, validUntil uint64) {
 	builder.PrependUint64Slot(14, validUntil, 0)
+}
+func TransactionAddDeletedObjects(builder *flatbuffers.Builder, deletedObjects flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(15, flatbuffers.UOffsetT(deletedObjects), 0)
+}
+func TransactionStartDeletedObjectsVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
 }
 func TransactionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

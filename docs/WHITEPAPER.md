@@ -88,7 +88,7 @@ Domains follow a hierarchical convention using `.` as separator. The `system.*` 
 
 Registration happens through pod execution. A pod declares domains to register in its `PodExecuteOutput`, specifying for each entry a domain name and either an `object_index` (referencing a newly created object from the same transaction) or a direct `object_id` (for an existing object). After execution, the protocol resolves any index reference into the computed ObjectID, checks uniqueness in Pebble, and inserts the mapping. If a domain already exists, the transaction reverts, the same pattern as version conflicts. Domain resolution is a purely local operation: a direct lookup in the validator's Pebble store with no network communication, exposed to clients via the `GET /domain/{name}` endpoint.
 
-A domain can be updated to point to a different object, or deleted entirely, by its owner through the same pod execution mechanism. To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee.
+A domain can be updated to point to a different object, or deleted entirely, by its owner through the same pod execution mechanism. To prevent squatting, domain registration carries a fee significantly higher than a simple transaction (currently 100x the base compute cost). Updates and deletions pay only the standard compute fee. No system pod currently exposes these operations, so domain registration, update, and deletion are specified here but not yet reachable in the running node.
 
 ---
 
@@ -389,6 +389,10 @@ Since the scarcity burn was removed, `total_burned` is always zero. The field is
 ### Storage Deposits and Refunds
 
 Every created object locks a storage deposit in its `fees` field, computed as `storage_fee × effective_rep(replication) / total_validators`. The deposit is debited from the gas coin at creation but is never pooled: it stays locked in the object as a deposit, not a fee. The two formulas that compute it (the debit at creation and the amount stamped on the object) read the same live validator count, so the debited storage equals the stamped deposit and total supply is unchanged at creation.
+
+A deposit is locked only against a coin that was actually debited. A fee-exempt transaction is the exception: `register_validator` and `deregister_validator` carry no gas coin (Section 10), so nothing is debited and the objects they create, such as the Validator singleton a registration produces, lock a zero deposit. This keeps the locked deposit equal to what was paid, so a registration leaves total supply and the supply identity (Section 10) exact rather than inflating the deposits term by an unpaid amount.
+
+A deposit is also locked only when the object is actually created. A created-object transaction pays its storage portion up front, before execution, and fees are always deducted even when a transaction later fails (Section 7). When such a transaction's pod execution fails, no object is created, so nothing locks the already-debited storage portion; it is pooled into the epoch reward pool like the consumed part instead. The full declared fee is still charged and fully accounted, so the supply identity (Section 10) stays exact rather than leaking the storage component.
 
 On deletion, 95% of the deposit is refunded and 5% is burned. The burn prevents spam through rapid creation/deletion cycles, and the burned remainder leaves total supply (Section 10). The refund follows the gas coin of the delete transaction: a self-paid delete refunds the owner, and a sponsored delete refunds that delete's sponsor. The 5% deletion burn is the only burn in the protocol.
 
