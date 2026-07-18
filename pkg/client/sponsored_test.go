@@ -80,7 +80,7 @@ func assembleSponsored(sponsor *Wallet, signed SignedSponsoredOp) []byte {
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
 		builder, signed.Sender, signed.Op.Pod, signed.Op.FuncName, signed.Op.Args, signed.Op.CreatedReps,
-		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, s, sponsorSig, nil, nil,
+		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, s, sponsorSig, nil, signed.Op.Operations,
 	)
 	builder.Finish(txOff)
 
