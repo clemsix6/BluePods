@@ -41,6 +41,19 @@ table ObjectVersion {
 
     // fees is the storage deposit for this object.
     fees:uint64;
+
+    // parent_kind is keyRootKind (0, parent is an Ed25519 key) or
+    // objectParentKind (1, parent is another tracked object's ID). Matches
+    // parent_kind in types/object.fbs and internal/consensus/tracker.go.
+    parent_kind:ubyte;
+
+    // parent is the parent reference: a key under KeyRoot, an object ID
+    // under ObjectParent (32 bytes).
+    parent:[ubyte];
+
+    // child_count is the number of ObjectParent children currently tracked
+    // under this object.
+    child_count:uint32;
 }
 
 // ObjectSig carries a holder's eager BLS attestation for an object's current

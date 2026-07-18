@@ -18,7 +18,7 @@ import (
 
 const (
 	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 13
+	snapshotVersion = 14
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -229,16 +229,20 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	}
 	verticesVector := builder.EndVector(len(vertexOffsets))
 
-	// Build object versions vector (with replication and fees)
+	// Build object versions vector (with replication, fees, and parent/child-count)
 	versionOffsets := make([]flatbuffers.UOffsetT, len(trackerEntries))
 	for i, entry := range trackerEntries {
 		idOffset := builder.CreateByteVector(entry.ID[:])
+		parentOffset := builder.CreateByteVector(entry.Parent[:])
 
 		types.ObjectVersionStart(builder)
 		types.ObjectVersionAddId(builder, idOffset)
 		types.ObjectVersionAddVersion(builder, entry.Version)
 		types.ObjectVersionAddReplication(builder, entry.Replication)
 		types.ObjectVersionAddFees(builder, entry.Fees)
+		types.ObjectVersionAddParentKind(builder, entry.ParentKind)
+		types.ObjectVersionAddParent(builder, parentOffset)
+		types.ObjectVersionAddChildCount(builder, entry.ChildCount)
 		versionOffsets[i] = types.ObjectVersionEnd(builder)
 	}
 
@@ -469,6 +473,10 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(buf[:2])
 		binary.BigEndian.PutUint64(buf[:], entry.Fees)
 		hasher.Write(buf[:])
+		hasher.Write([]byte{entry.ParentKind})
+		hasher.Write(entry.Parent[:])
+		binary.BigEndian.PutUint32(buf[:4], entry.ChildCount)
+		hasher.Write(buf[:4])
 	}
 
 	// Write domain entries (already sorted)
@@ -782,10 +790,15 @@ func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEn
 			continue
 		}
 
-		var id consensus.Hash
+		var id, parent consensus.Hash
 		idBytes := v.IdBytes()
 		if len(idBytes) == 32 {
 			copy(id[:], idBytes)
+		}
+
+		parentBytes := v.ParentBytes()
+		if len(parentBytes) == 32 {
+			copy(parent[:], parentBytes)
 		}
 
 		entries[i] = consensus.ObjectTrackerEntry{
@@ -793,6 +806,9 @@ func ExtractTrackerEntries(snapshot *types.Snapshot) []consensus.ObjectTrackerEn
 			Version:     v.Version(),
 			Replication: v.Replication(),
 			Fees:        v.Fees(),
+			ParentKind:  v.ParentKind(),
+			Parent:      parent,
+			ChildCount:  v.ChildCount(),
 		}
 	}
 

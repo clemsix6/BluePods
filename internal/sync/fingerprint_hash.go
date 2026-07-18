@@ -12,8 +12,11 @@ import (
 )
 
 // hashTrackerEntries writes the tracker entries sorted by object ID (id,
-// version, replication, fees) and returns the sum of their fees: the running
-// total of locked storage deposits.
+// version, replication, fees, parent kind, parent, child count) and returns
+// the sum of their fees: the running total of locked storage deposits. The
+// parent kind, parent reference, and child count are hashed so a divergence
+// in the object parent hierarchy — not just in version, replication, or fees
+// — surfaces in the convergence fingerprint.
 func hashTrackerEntries(h *blake3.Hasher, entries []consensus.ObjectTrackerEntry) uint64 {
 	sorted := make([]consensus.ObjectTrackerEntry, len(entries))
 	copy(sorted, entries)
@@ -33,6 +36,10 @@ func hashTrackerEntries(h *blake3.Hasher, entries []consensus.ObjectTrackerEntry
 		h.Write(buf[:2])
 		binary.BigEndian.PutUint64(buf[:], e.Fees)
 		h.Write(buf[:])
+		h.Write([]byte{e.ParentKind})
+		h.Write(e.Parent[:])
+		binary.BigEndian.PutUint32(buf[:4], e.ChildCount)
+		h.Write(buf[:4])
 		deposits += e.Fees
 	}
 
