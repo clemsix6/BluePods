@@ -23,13 +23,13 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	db              *storage.Storage                                                      // db is the underlying storage, retained for protocol-counter persistence
-	objects         *objectStore                                                          // objects is the object storage
-	domains         *domainStore                                                          // domains stores domain name → ObjectID mappings
-	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
-	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
-	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
-	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) // signObject eagerly attests a held object at the version actually persisted
+	db              *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
+	objects         *objectStore                                                                                         // objects is the object storage
+	domains         *domainStore                                                                                         // domains stores domain name → ObjectID mappings
+	pods            *podvm.Pool                                                                                          // pods is the WASM runtime pool
+	isHolder        func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
+	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
+	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
@@ -96,8 +96,11 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 }
 
 // SetOnObjectCreated sets a callback that fires when a new object is created.
-// Used by the consensus tracker to register created objects.
-func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
+// Used by the consensus tracker to register created objects, threading
+// through the object's declared parent (kind + bytes, read from the object
+// body's owner and parent_kind fields) so the tracker can maintain
+// parent/child-count bookkeeping from the moment the object is created.
+func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte)) {
 	s.onObjectCreated = fn
 }
 
@@ -521,19 +524,23 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 			fees = s.computeStorageDeposit(obj.Replication())
 		}
 
+		// owner doubles as the parent reference (parent_kind selects how to read
+		// it: an Ed25519 key under KeyRoot, another object's ID under
+		// ObjectParent).
+		var owner Hash
+		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
+			copy(owner[:], ownerBytes)
+		}
+
 		// Notify tracker (all validators track all objects regardless of holding)
 		if s.onObjectCreated != nil {
-			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees)
+			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees, obj.ParentKind(), owner)
 		}
 
 		// state.object.created and fees.deposit.locked describe the tracker-level
 		// mutation and protocol deposit, not the local storage write below, so they
 		// fire for every created object regardless of whether this node holds it
 		// (all validators track all objects).
-		var owner Hash
-		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
-			copy(owner[:], ownerBytes)
-		}
 		events.ObjectCreated(id, txHash, obj.Version(), obj.Replication(), owner)
 		if fees > 0 {
 			events.DepositLocked(id, fees)

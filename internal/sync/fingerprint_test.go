@@ -85,8 +85,8 @@ func TestComputeFingerprint_SingletonContentHashedStandardNot(t *testing.T) {
 	singletonID[0] = 0x01
 	standardID[0] = 0x02
 
-	dag.TrackObject(singletonID, 1, 0, 0)
-	dag.TrackObject(standardID, 1, 5, 0)
+	dag.TrackObject(singletonID, 1, 0, 0, 0, [32]byte{})
+	dag.TrackObject(standardID, 1, 5, 0, 0, [32]byte{})
 
 	st.SetObject(buildTestObjectWithReplication(singletonID, 1, []byte("v1"), 0))
 	st.SetObject(buildTestObjectWithReplication(standardID, 1, []byte("v1"), 5))

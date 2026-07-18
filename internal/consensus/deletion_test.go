@@ -64,7 +64,7 @@ func TestExecuteTx_ReplicatedDeletionAccountsUniformly(t *testing.T) {
 		coinStore.SetObject(buildTestCoinObject(gasCoinID, initialBal, owner, 0))
 
 		// Every node's tracker records the replicated object's storage deposit.
-		dag.tracker.trackObject(objID, 0, replication, deposit)
+		dag.tracker.trackObject(objID, 0, replication, deposit, 0, Hash{})
 
 		atxBytes := buildDeletionATX(owner, gasCoinID, 500, objID, replication, owner)
 		atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
@@ -130,7 +130,7 @@ func TestSettleDeclaredDeletions_RefundEmitsEvents(t *testing.T) {
 	objID := Hash{0x74}
 	gasCoinID := Hash{0xEE}
 	coinStore.SetObject(buildTestCoinObject(gasCoinID, 5000, owner, 0))
-	dag.tracker.trackObject(objID, 0, 3, 10000)
+	dag.tracker.trackObject(objID, 0, 3, 10000, 0, Hash{})
 
 	tx := buildDeletionTx(owner, &gasCoinID, objID)
 
@@ -187,7 +187,7 @@ func TestSettleDeclaredDeletions_NoGasCoinBurnsFullDeposit(t *testing.T) {
 
 	owner := Hash{0xAA}
 	objID := Hash{0x76}
-	dag.tracker.trackObject(objID, 0, 3, 1000)
+	dag.tracker.trackObject(objID, 0, 3, 1000, 0, Hash{})
 
 	tx := buildDeletionTx(owner, nil, objID) // no gas coin: no refund recipient
 

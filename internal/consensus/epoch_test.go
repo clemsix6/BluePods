@@ -1020,9 +1020,9 @@ func TestEpochTransition_ScannerSeesNewHolders(t *testing.T) {
 	obj1 := Hash{0x10}
 	obj2 := Hash{0x20}
 	obj3 := Hash{0x30}
-	dag.tracker.trackObject(obj1, 1, 2, 0)
-	dag.tracker.trackObject(obj2, 1, 2, 0)
-	dag.tracker.trackObject(obj3, 1, 2, 0)
+	dag.tracker.trackObject(obj1, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj2, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj3, 1, 2, 0, 0, Hash{})
 
 	// Epoch 1: initial state with 3 validators
 	dag.transitionEpoch(10)
@@ -1087,8 +1087,8 @@ func TestEpochTransition_ScannerWithSingletons(t *testing.T) {
 	// Track a singleton and a standard object
 	singleton := Hash{0xAA}
 	standard := Hash{0xBB}
-	dag.tracker.trackObject(singleton, 1, 0, 0) // replication=0 → singleton
-	dag.tracker.trackObject(standard, 1, 3, 0)  // replication=3 → standard
+	dag.tracker.trackObject(singleton, 1, 0, 0, 0, Hash{}) // replication=0 → singleton
+	dag.tracker.trackObject(standard, 1, 3, 0, 0, Hash{})  // replication=3 → standard
 
 	// isHolder: singletons always held (replication=0 → true), standard NOT held
 	isHolder := func(id [32]byte, rep uint16) bool {
@@ -1141,9 +1141,9 @@ func TestScannerReplicationPassedCorrectly(t *testing.T) {
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
 	obj3 := Hash{0x03}
-	dag.tracker.trackObject(obj1, 1, 0, 0)  // singleton
-	dag.tracker.trackObject(obj2, 1, 3, 0)  // replication=3
-	dag.tracker.trackObject(obj3, 1, 10, 0) // replication=10
+	dag.tracker.trackObject(obj1, 1, 0, 0, 0, Hash{})  // singleton
+	dag.tracker.trackObject(obj2, 1, 3, 0, 0, Hash{})  // replication=3
+	dag.tracker.trackObject(obj3, 1, 10, 0, 0, Hash{}) // replication=10
 
 	// Record what replication values isHolder receives
 	receivedRep := make(map[Hash]uint16)
@@ -1182,8 +1182,8 @@ func TestEpochTransition_ValidatorLeaves_ObjectsRedistributed(t *testing.T) {
 	// Track objects
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
-	dag.tracker.trackObject(obj1, 1, 2, 0)
-	dag.tracker.trackObject(obj2, 1, 2, 0)
+	dag.tracker.trackObject(obj1, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj2, 1, 2, 0, 0, Hash{})
 
 	// Initialize epoch holders
 	dag.InitEpochHolders()
@@ -1595,7 +1595,7 @@ func TestFullEpochHappyPath_ObjectRedistribution(t *testing.T) {
 	objects := make([]Hash, 50)
 	for i := range objects {
 		objects[i] = Hash{0xC0, byte(i)}
-		dag.tracker.trackObject(objects[i], 1, 2, 0)
+		dag.tracker.trackObject(objects[i], 1, 2, 0, 0, Hash{})
 	}
 
 	// Epoch 1: initial snapshot

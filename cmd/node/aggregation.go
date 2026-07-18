@@ -49,9 +49,10 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	// for objects it holds at their current version.
 	n.attHandler = aggregation.NewHandler(n.state, n.blsKey, n.storage, isHolder)
 
-	// Wire object creation callback to tracker
-	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
-		n.dag.TrackObject(id, version, replication, fees)
+	// Wire object creation callback to tracker, threading the created object's
+	// declared parent through to the tracker's child-count bookkeeping.
+	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
+		n.dag.TrackObject(id, version, replication, fees, parentKind, parent)
 	})
 
 	// Eager signing: at execution, a holder signs the persisted version and

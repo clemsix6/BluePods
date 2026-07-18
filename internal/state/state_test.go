@@ -425,7 +425,7 @@ func TestApplyCreatedObjectsOnObjectCreatedCallback(t *testing.T) {
 	}
 	var calls []callbackCall
 
-	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
 		calls = append(calls, callbackCall{id: id, version: version, replication: replication})
 	})
 
@@ -457,7 +457,7 @@ func TestApplyCreatedObjectsCallbackFiresEvenIfNotHolder(t *testing.T) {
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return false })
 
 	callbackCount := 0
-	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
+	s.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
 		callbackCount++
 	})
 
@@ -501,7 +501,7 @@ func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
 	// deposits the tracker records, fed by the onObjectCreated callback (exactly
 	// what consensus wires to DAG.TrackObject).
 	var deposits uint64
-	s.SetOnObjectCreated(func(_ [32]byte, _ uint64, _ uint16, fees uint64) {
+	s.SetOnObjectCreated(func(_ [32]byte, _ uint64, _ uint16, fees uint64, _ byte, _ [32]byte) {
 		deposits += fees
 	})
 

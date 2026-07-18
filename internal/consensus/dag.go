@@ -607,12 +607,16 @@ func (d *DAG) VertexRange(from, to uint64, limit int) [][]byte {
 	return d.store.rawRange(from, to, limit)
 }
 
-// TrackObject registers a created object in the tracker.
+// TrackObject registers a created object in the tracker, threading through its
+// declared parent reference (kind + bytes, read from the object body's owner
+// and parent_kind fields) so the tracker's child-count bookkeeping stays
+// current from the moment the object is created.
 // Called by the state layer when a new object is created during execution.
-func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64) {
-	var h Hash
+func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
+	var h, p Hash
 	copy(h[:], id[:])
-	d.tracker.trackObject(h, version, replication, fees)
+	copy(p[:], parent[:])
+	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
 }
 
 // SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
@@ -684,7 +688,16 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	// an untracked reserve coin would keep its balance outside the checksum
 	// entirely.
 	coin := types.GetRootAsObject(is.Coin, 0)
-	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
+
+	// The reserve coin's parent is a KeyRoot: the genesis owner key it was
+	// created for (buildGenesisCoin never sets parent_kind, so it defaults to
+	// KeyRoot).
+	var parent [32]byte
+	if ownerBytes := coin.OwnerBytes(); len(ownerBytes) == 32 {
+		copy(parent[:], ownerBytes)
+	}
+
+	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees(), coin.ParentKind(), parent)
 }
 
 // SeedGenesisValidator installs the founding validator into the validator set:
