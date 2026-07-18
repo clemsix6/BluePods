@@ -77,8 +77,8 @@ func validateFieldSizes(tx *types.Transaction) error {
 		return fmt.Errorf("invalid pod size: got %d, want %d", len(tx.PodBytes()), podSize)
 	}
 
-	if len(tx.FunctionName()) == 0 {
-		return fmt.Errorf("empty function name")
+	if err := validateShape(tx); err != nil {
+		return err
 	}
 
 	// gas_coin must be 0 (absent) or 32 bytes
@@ -88,6 +88,47 @@ func validateFieldSizes(tx *types.Transaction) error {
 	}
 
 	return nil
+}
+
+// validateShape enforces that a transaction is exactly one of a pod call
+// (non-empty function name) or a declared-ops transaction (tx.operations
+// non-empty — reparent/transfer/delete applied at commit without pod
+// execution, so the function name and pod stay empty/zero by design). A
+// transaction carrying neither is malformed; one carrying both is rejected
+// here too, mirroring internal/consensus/ops.go's txHasPodCall/
+// commitDeclaredOps mutual-exclusion rule so a mixed submission fails at
+// ingress instead of paying a fee only to fail deterministically at commit.
+func validateShape(tx *types.Transaction) error {
+	hasFunc := len(tx.FunctionName()) > 0
+	hasOps := tx.OperationsLength() > 0
+
+	if !hasFunc && !hasOps {
+		return fmt.Errorf("transaction has neither a function name nor declared operations")
+	}
+
+	if hasOps && txHasPodCall(tx) {
+		return fmt.Errorf("transaction carries both declared operations and a pod call")
+	}
+
+	return nil
+}
+
+// txHasPodCall reports whether a transaction carries a pod call: a non-empty
+// function name, or a non-zero pod ID. Mirrors internal/consensus/ops.go's
+// txHasPodCall exactly, so ingress and commit agree on the boundary between a
+// pod call and a declared-ops transaction.
+func txHasPodCall(tx *types.Transaction) bool {
+	if len(tx.FunctionName()) > 0 {
+		return true
+	}
+
+	for _, b := range tx.PodBytes() {
+		if b != 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validateObjectRefs checks that object references are well-formed and within limits.

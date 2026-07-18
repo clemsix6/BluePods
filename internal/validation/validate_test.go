@@ -155,18 +155,20 @@ func TestValidateTx_ValidWithObjects(t *testing.T) {
 	}
 }
 
-// TestValidateTx_WithOperations confirms a transaction carrying a declared
-// operation validates: rebuildUnsignedTx must include the operations field so
-// the recomputed hash matches the declared hash and the sender signature
-// verifies.
+// TestValidateTx_WithOperations confirms a genuine declared-ops transaction —
+// the shape pkg/client's Wallet.Transfer/TransferObject/buildSignedOpsTx
+// build: zero pod, empty function name, one or more operations, applied at
+// commit without pod execution — passes ingress validation. This used to be
+// rejected outright by validateFieldSizes's unconditional non-empty function
+// name check; it also doubles as coverage that rebuildUnsignedTx includes the
+// operations field, since a mismatch there would fail the hash check below.
 func TestValidateTx_WithOperations(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	var pod, gasCoin, newParent [32]byte
-	pod[0] = 0x11
+	var zeroPod, gasCoin, newParent [32]byte
 	gasCoin[0] = 0x22
 	newParent[0] = 0x33
 
@@ -178,19 +180,98 @@ func TestValidateTx_WithOperations(t *testing.T) {
 	}}
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops,
+		pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 
 	if err := ValidateTx(builder.FinishedBytes()); err != nil {
-		t.Fatalf("valid tx with operations rejected: %v", err)
+		t.Fatalf("declared-ops transaction rejected at ingress: %v", err)
+	}
+}
+
+// TestValidateTx_OpsWithFunctionNameRejected confirms a transaction carrying
+// both a pod call (non-empty function name) and declared operations is
+// rejected at ingress. This mirrors internal/consensus/ops.go's
+// commitDeclaredOps, which already treats this mix as a guaranteed failure
+// (ops and a pod call are mutually exclusive) — rejecting it here is cheaper
+// than letting it pay a fee only to fail deterministically at commit.
+func TestValidateTx_OpsWithFunctionNameRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var pod, newParent [32]byte
+	pod[0] = 0x11
+	newParent[0] = 0x33
+
+	ops := []genesis.DeclaredOp{{
+		Kind:       0,
+		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
+		TargetKind: 0,
+		Target:     newParent[:],
+	}}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
+		pub, pod, "noop", nil, nil, 0, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableSponsored(
+		builder, pub, pod, "noop", nil, nil, 0, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+	)
+	builder.Finish(txOffset)
+
+	if err := ValidateTx(builder.FinishedBytes()); err == nil {
+		t.Fatal("expected error for transaction carrying both function name and operations")
+	}
+}
+
+// TestValidateTx_OpsWithNonZeroPodRejected confirms a transaction carrying
+// declared operations and a non-zero pod ID (but an empty function name) is
+// also rejected at ingress. internal/consensus/ops.go's txHasPodCall treats a
+// non-zero pod as a pod call even without a function name, so this mirrors
+// that predicate exactly rather than checking the function name alone.
+func TestValidateTx_OpsWithNonZeroPodRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var pod, newParent [32]byte
+	pod[0] = 0x11
+	newParent[0] = 0x33
+
+	ops := []genesis.DeclaredOp{{
+		Kind:       0,
+		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
+		TargetKind: 0,
+		Target:     newParent[:],
+	}}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
+		pub, pod, "", nil, nil, 0, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableSponsored(
+		builder, pub, pod, "", nil, nil, 0, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+	)
+	builder.Finish(txOffset)
+
+	if err := ValidateTx(builder.FinishedBytes()); err == nil {
+		t.Fatal("expected error for transaction carrying both a non-zero pod and operations")
 	}
 }
 
