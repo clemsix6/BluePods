@@ -1113,6 +1113,57 @@ it. The retry budget already exists; no oracle weakening.
 `TestScenarioAggregation` (×2 runs), `TestScenarioJoinLoad` (regression
 guard for the sync protocol change).
 
+### Batch R14 — the relaxed regime must not survive the bootstrap (Opus)
+
+Found by the CI smoke on slow hardware, reproduced locally under CPU
+load with the exact CI signature AND a zero-rollback contradiction
+(round 155 committed with two different anchors on different camps).
+Mechanism, traced end to end: the harness forces grace=100/buffer=100
+on clusters >= 10 (`bigClusterTransition`), pushing strictStartRound to
+~244 while every bond commits by ~round 100 — the whole traffic phase
+runs in the relaxed single-supporter regime, where the commit-vs-skip
+verdict is view-dependent under delivery skew. Transient splits then
+become permanent state forks through measured channels: a gossip-
+duplicated tx first-committed in different epochs on different camps
+(fees land in different settlement buckets → same pool total, different
+coin bytes), a backlog swept across a boundary (frozen producedMembers
+differ → anchor designation forks → the double anchor). Fast local
+hardware never opens the window, which is why the whole campaign
+validated green.
+
+- [ ] **Step 1 — failing test:** at the unit seam, a relaxed-window DAG
+  where one camp receives a laggard's backlog before deciding a round
+  and the other decides first must NOT reach opposite commit-vs-skip
+  verdicts once the fix holds (encode the run-1 interleaving; must fail
+  today). Reuse the diagnosis artifacts in the scratchpad
+  (`run1.log`, `run3.log`, tmpdir copies) for the exact shape.
+- [ ] **Step 2 — stake-aware strict latch** (`internal/consensus/regime.go`):
+  arm `strictStartRound` from COMMITTED state — the round where the
+  minValidators committed members all hold non-zero committed stake —
+  plus the node-default grace/buffer (20+10), instead of a fixed margin.
+  The inflated margins exist only because pre-bond strict would wedge on
+  zero stakes; a stake-aware latch removes the dead window without that
+  wedge. Keep the latch's epoch-0 evaluation scope unchanged (the
+  cross-epoch limitation stays issue #8).
+- [ ] **Step 3 — harness margins** (`test/harness/cluster.go`,
+  `bigClusterTransition`): drop the forced 100/100 to the node defaults
+  now that the latch arms itself on committed stake; scenarios must
+  still pass their own bootstrap.
+- [ ] **Step 4 — relaxed resolveIndirect never skips a resolvable round**
+  (`internal/consensus/anchor_decision.go`): in the relaxed regime,
+  WAIT instead of skipping when the queried round's candidate is absent
+  locally but the producer is not span-silent, and when the candidate is
+  stored but omitted by the resolver while a single supporter remains
+  possible. (Validated under load by the diagnosis: reduces the run-1
+  catastrophe to one residual split; defense in depth under fix 2.)
+- [ ] **Step 5:** full suite green including the R9 dead-pair wedge test
+  and the R4 fork sim; one commit per concern (latch+margins, resolver
+  hardening) or one combined — implementer's judgment, called out.
+
+**Orchestrator validation:** Stress under CI (the goal loop), plus local
+`TestScenarioStress`, `TestScenarioJoinLoad`, `TestScenarioChurn`,
+`TestScenarioPartition`.
+
 ### Final batch — full-corpus validation (orchestrator)
 
 - [ ] Re-run the FULL corpus, one scenario at a time with the bounds table
