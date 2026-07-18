@@ -119,6 +119,19 @@ func (d *DAG) latchStrictRegime(atRound uint64) {
 	d.regimeDirty = true
 }
 
+// StrictRegime reports the strict-latch state: the round strict decisions start at
+// and whether the latch has armed. The relaxed bootstrap certificate is
+// view-dependent under delivery skew, so callers that need view-independent
+// decisions (a client gating traffic on the regime, a harness quiescing its
+// bootstrap) read this to know when the strict quorum governs. Locked because the
+// latch is mutated by the commit loop.
+func (d *DAG) StrictRegime() (start uint64, latched bool) {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	return d.strictStartRound, d.strictLatched
+}
+
 // freezeGenesisHolders builds a frozen holder snapshot from the committed member
 // set, reading each member's committed stake from the live validator set. Stakes
 // are only ever set by genesis, committed bonds, and epoch rewards, so the snapshot

@@ -406,6 +406,8 @@ func (n *Node) handleStatus() ([]byte, error) {
 		return nil, fmt.Errorf("consensus not available")
 	}
 
+	strictStart, strictLatched := n.dag.StrictRegime()
+
 	return network.EncodeStatusResp(&network.StatusResponse{
 		Round:          n.dag.Round(),
 		EpochLength:    n.dag.EpochLength(),
@@ -417,6 +419,8 @@ func (n *Node) handleStatus() ([]byte, error) {
 		TotalTx:        n.stats.TotalTx(),
 		TPSMilli:       uint32(n.stats.TPS() * 1000),
 		ConnectedPeers: uint32(n.network.ConnectedPeers()),
+		StrictStart:    strictStart,
+		StrictLatched:  strictLatched,
 	}), nil
 }
 

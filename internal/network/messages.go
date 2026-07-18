@@ -412,14 +412,16 @@ type StatusResponse struct {
 	TotalTx        uint64   // TotalTx is the total committed transactions seen
 	TPSMilli       uint32   // TPSMilli is the current transactions-per-second times 1000
 	ConnectedPeers uint32   // ConnectedPeers is the count of connected mesh peers
+	StrictStart    uint64   // StrictStart is the round strict quorum decisions start at (0 until latched)
+	StrictLatched  bool     // StrictLatched reports whether the strict-regime latch has armed
 }
 
 // EncodeStatusResp encodes a status response.
 // Format: [1B tag] [8B round] [8B epochLength] [8B epoch] [8B lastCommitted]
 // [4B validators] [4B epochHolders] [32B systemPod] [8B totalTx] [4B tpsMilli]
-// [4B connectedPeers].
+// [4B connectedPeers] [8B strictStart] [1B strictLatched].
 func EncodeStatusResp(resp *StatusResponse) []byte {
-	buf := make([]byte, 89)
+	buf := make([]byte, 98)
 	buf[0] = MsgTagStatusResp
 	binary.BigEndian.PutUint64(buf[1:9], resp.Round)
 	binary.BigEndian.PutUint64(buf[9:17], resp.EpochLength)
@@ -431,6 +433,10 @@ func EncodeStatusResp(resp *StatusResponse) []byte {
 	binary.BigEndian.PutUint64(buf[73:81], resp.TotalTx)
 	binary.BigEndian.PutUint32(buf[81:85], resp.TPSMilli)
 	binary.BigEndian.PutUint32(buf[85:89], resp.ConnectedPeers)
+	binary.BigEndian.PutUint64(buf[89:97], resp.StrictStart)
+	if resp.StrictLatched {
+		buf[97] = 1
+	}
 
 	return buf
 }
@@ -459,6 +465,11 @@ func DecodeStatusResp(data []byte) (*StatusResponse, error) {
 		resp.TotalTx = binary.BigEndian.Uint64(data[73:81])
 		resp.TPSMilli = binary.BigEndian.Uint32(data[81:85])
 		resp.ConnectedPeers = binary.BigEndian.Uint32(data[85:89])
+	}
+
+	if len(data) >= 98 {
+		resp.StrictStart = binary.BigEndian.Uint64(data[89:97])
+		resp.StrictLatched = data[97] == 1
 	}
 
 	return resp, nil
