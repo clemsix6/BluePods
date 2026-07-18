@@ -544,6 +544,15 @@ func membersInSet(set *ValidatorSet, producers map[Hash]bool) int {
 // anchor's causal history, and skips when none does. A certified anchor's causal
 // history is agreed across nodes, so the resolution is deterministic; it waits when
 // that history is not fully present locally.
+//
+// Both skip paths are view-dependent in the RELAXED bootstrap regime, where a single
+// supporter certifies: a node that decided before a straggler's backlog arrived would
+// skip a round a better-informed peer commits. So in the relaxed regime the two skips
+// become WAITs while the round is still resolvable — the candidate could still arrive,
+// or a single supporter could still certify it — and settle only on evidence every
+// node shares (the producer proven span-silent, or no possible supporter left). The
+// STRICT regime keeps its immediate skips: its blame and silence guards fire upstream
+// (scanPastUndecided), so a certified anchor here already resolves the round for good.
 func (d *DAG) resolveIndirect(round uint64, certified Hash) anchorDecision {
 	producer, ok := d.anchorProducerFor(round)
 	if !ok {
@@ -552,6 +561,13 @@ func (d *DAG) resolveIndirect(round uint64, certified Hash) anchorDecision {
 
 	candidates, ok := d.store.getByRoundProducer(round, producer)
 	if !ok {
+		// Candidate absent locally. In the relaxed regime it may simply not have
+		// arrived: skip only once the producer is provably span-silent, so a node that
+		// decided before the backlog landed WAITs rather than skip a round a peer
+		// certifies from the same producer's delivered vertex.
+		if d.roundIsRelaxed(round) && !d.deadDesignatedProducer(round) {
+			return anchorDecision{kind: anchorWait}
+		}
 		return anchorDecision{kind: anchorSkip}
 	}
 
@@ -560,7 +576,44 @@ func (d *DAG) resolveIndirect(round uint64, certified Hash) anchorDecision {
 		return anchorDecision{kind: anchorWait}
 	}
 
-	return decideMembership(candidates, history)
+	dec := decideMembership(candidates, history)
+	if dec.kind == anchorSkip && d.roundIsRelaxed(round) && d.relaxedSupporterStillPossible(round, producer) {
+		// The resolving anchor omits every candidate, but the relaxed regime certifies
+		// on a single member supporter: while a holder that could still cite the
+		// candidate remains (neither a stored blamer nor span-silent), the round may
+		// yet certify directly, so WAIT rather than skip on a view that merely lacks
+		// that holder's citation.
+		return anchorDecision{kind: anchorWait}
+	}
+
+	return dec
+}
+
+// relaxedSupporterStillPossible reports whether an undecided relaxed round could still
+// certify directly: a single holder that has not been seen to blame the candidate and
+// is not span-silent could still produce a round-N+1 vertex citing it, and the relaxed
+// regime needs exactly one member supporter to certify. While such a holder remains,
+// resolving the round by a later anchor that omits the candidate would fork against a
+// peer that receives that holder's citation. A holder is ruled out only by evidence
+// every node shares: a stored round-N+1 vertex that cites no candidate (a blamer,
+// fixed at production) or absence across the deep silence span. The caller holds
+// commitMu (the commit path).
+func (d *DAG) relaxedSupporterStillPossible(round uint64, producer Hash) bool {
+	set, ok := d.HoldersForEpoch(d.commitEpochForRound(round + 1))
+	if !ok {
+		return false
+	}
+
+	blamers := d.tallyCitations(round, producer).blamers
+	silent := d.silentHolders(set, round+1)
+
+	for _, v := range set.All() {
+		if !blamers[v.Pubkey] && !silent[v.Pubkey] {
+			return true // a holder that could still cite the candidate remains
+		}
+	}
+
+	return false
 }
 
 // decideMembership commits the first candidate that appears in the anchor's causal
