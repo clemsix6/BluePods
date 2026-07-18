@@ -52,29 +52,36 @@ func (d *DAG) recordCommittedMember(pubkey Hash, atRound uint64) {
 }
 
 // refreezeGenesisRegime rebuilds the epoch-0 genesis holder snapshot from the
-// committed member set and fires the strict latch once minValidators committed
-// members each hold a committed non-zero self-stake. It is called from both the
+// committed member set and arms the strict latch. It is called from both the
 // registration path (a new committed member) and the bond path (a committed member
 // gaining stake), so the snapshot always carries the latest committed stakes and the
-// latch observes the moment the bootstrap committee is fully bonded. It is a no-op
-// once latched or past the genesis epoch: after the latch the genesis committee and
-// its stakes are frozen until the first epoch boundary. It marks the regime dirty so
-// the change is persisted atomically with the commit cursor. The caller holds commitMu.
+// latch observes the moment the bootstrap committee is fully bonded. The SNAPSHOT
+// rebuild is genesis-epoch-only (past epoch 0 holder committees freeze at
+// boundaries), but the LATCH is evaluated in every epoch: a slow bootstrap whose
+// bonds commit past the first boundary must still turn strict the moment the
+// committee is fully bonded, or the cluster stays in the view-dependent relaxed
+// regime forever (issue #8). It marks the regime dirty so the change is persisted
+// atomically with the commit cursor. The caller holds commitMu.
 func (d *DAG) refreezeGenesisRegime(atRound uint64) {
-	if d.strictLatched || d.currentEpoch != 0 {
+	if d.strictLatched {
 		return
 	}
 
-	d.epochHolders = d.freezeGenesisHolders()
+	if d.currentEpoch == 0 {
+		d.epochHolders = d.freezeGenesisHolders()
 
-	// Freeze designation eligibility WITH the snapshot: the members holding a
-	// committed vertex at this committed point. A member registered before it
-	// produces is frozen ineligible and becomes designatable at the next freeze
-	// that observes its first committed vertex.
-	d.eligibleHolders = d.snapshotProduced()
+		// Freeze designation eligibility WITH the snapshot: the members holding a
+		// committed vertex at this committed point. A member registered before it
+		// produces is frozen ineligible and becomes designatable at the next freeze
+		// that observes its first committed vertex.
+		d.eligibleHolders = d.snapshotProduced()
 
-	d.regimeDirty = true
+		d.regimeDirty = true
+	}
 
+	// The bootstrap-complete signal is a pure function of the committed log
+	// (committed members and their committed stakes), so arming here is
+	// network-uniform in any epoch.
 	if d.minValidators > 0 && d.committedStakedMemberCount() >= d.minValidators {
 		d.latchStrictRegime(atRound)
 	}

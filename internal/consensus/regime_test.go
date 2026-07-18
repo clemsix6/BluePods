@@ -199,6 +199,55 @@ func TestStrictLatchWaitsForCommittedStake(t *testing.T) {
 	}
 }
 
+// TestStrictLatchArmsPastGenesisEpoch: a slow bootstrap whose bonds commit after the
+// first epoch boundary must still arm the strict latch (issue #8's forever-relaxed
+// limb). The bootstrap-complete signal — every committed member holding a committed
+// non-zero self-stake — is a pure function of the committed log, identical on every
+// node in any epoch, so arming late is network-uniform. Only the genesis holder
+// SNAPSHOT rebuild is epoch-0 scoped, never the latch.
+func TestStrictLatchArmsPastGenesisEpoch(t *testing.T) {
+	const minV = 3
+	members := make([]testValidator, minV)
+	for i := range members {
+		members[i] = newTestValidator()
+	}
+
+	dag := New(newTestStorage(t), NewValidatorSet(nil), nil, testSystemPod, 0, members[0].privKey, nil,
+		WithMinValidators(minV), WithTransitionGrace(2), WithTransitionBuffer(1))
+	t.Cleanup(func() { dag.Close() })
+
+	// Register every member during epoch 0, stakeless: the latch must not arm.
+	dag.commitMu.Lock()
+	for i, m := range members {
+		dag.validators.Add(m.pubKey, "", [48]byte{})
+		dag.recordCommittedMember(m.pubKey, uint64(2+i))
+	}
+	dag.commitMu.Unlock()
+
+	if dag.strictLatched {
+		t.Fatal("latch armed before any committed stake")
+	}
+
+	// The bootstrap outlives epoch 0: boundaries pass before the bonds commit.
+	dag.commitMu.Lock()
+	dag.currentEpoch = 2
+
+	// The bonds complete in epoch 2, exactly as the commit path reports them.
+	const bondRound = 120
+	for _, m := range members {
+		dag.validators.SetSelfStake(m.pubKey, 10)
+	}
+	dag.refreezeGenesisRegime(bondRound)
+	dag.commitMu.Unlock()
+
+	if !dag.strictLatched {
+		t.Fatal("latch must arm when the committee completes its committed stake past epoch 0")
+	}
+	if want := uint64(bondRound + 2 + 1); dag.strictStartRound != want {
+		t.Fatalf("strictStartRound = %d, want %d", dag.strictStartRound, want)
+	}
+}
+
 // TestGenesisFreezeExcludesUncommittedSelfAdd_I7 is the I7 boundary regression: two
 // epoch-0-tail nodes with different in-flight (uncommitted) registration states decide
 // the boundary round identically, because the anchor decision reads the committed-only
