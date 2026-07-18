@@ -187,6 +187,10 @@ func validateParentImmutability(output *types.PodExecuteOutput, inputs []*types.
 			return fmt.Errorf("updated object %d has no attested input copy", i)
 		}
 
+		// The parent_kind comparison is defense-in-depth: no production path writes
+		// parent_kind into a stored object body today (it lives in the consensus
+		// tracker), so this half of the clause currently compares 0 to 0. It stays
+		// in place for the day a stored body does carry the field.
 		if obj.ParentKind() != input.ParentKind() || !bytes.Equal(obj.OwnerBytes(), input.OwnerBytes()) {
 			return fmt.Errorf("updated object %d changed its parent", i)
 		}
@@ -197,15 +201,20 @@ func validateParentImmutability(output *types.PodExecuteOutput, inputs []*types.
 
 // validateOutputDeletions rejects a pod output that deletes objects unless the
 // transaction is globally executed, so the deletion is applied uniformly on
-// every node. Global execution holds when the transaction creates objects or
-// when every mutable reference is a singleton (the merge carve-out); a sharded
-// deletion in any other transaction is rejected.
+// every node. Global execution holds when the transaction creates objects,
+// registers domains, or when every mutable reference is a singleton (the merge
+// carve-out); a sharded deletion in any other transaction is rejected. This
+// condition mirrors the commit-path global-execution guard at
+// internal/consensus/commit.go (the CreatedObjectsReplicationLength/
+// MaxCreateDomains skip check) and must evolve alongside it: a term added there
+// that widens which transactions execute on every node needs the matching term
+// added here.
 func validateOutputDeletions(output *types.PodExecuteOutput, tx *types.Transaction, inputs []*types.Object) error {
 	if output.DeletedObjectsLength() == 0 {
 		return nil
 	}
 
-	if tx.CreatedObjectsReplicationLength() > 0 || allMutableRefsSingletons(tx, inputs) {
+	if tx.CreatedObjectsReplicationLength() > 0 || tx.MaxCreateDomains() > 0 || allMutableRefsSingletons(tx, inputs) {
 		return nil
 	}
 
