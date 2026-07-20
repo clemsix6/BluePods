@@ -26,7 +26,21 @@ func (n *Node) initIndex() {
 		domainLeaves(n.state.ExportDomains()),
 		n.dag.ValidatorLeaves(n.dag.EpochHolders().All()),
 	)
-	mgr.SetFrontier(n.dag.LastCommittedRound())
+
+	// Seed the boot frontier at the last DECIDED round, the round whose
+	// committed state the backfill above just rebuilt. The commit cursor is
+	// the NEXT round to decide, NOT the last committed (advanceCommitCursor
+	// sets it to round+1; this exact next-vs-last confusion caused batch 0's
+	// I4 bug), so the seed round is cursor-1. Seeding at the cursor itself
+	// would record a pre-batch root under the cursor round's key, and
+	// SetFrontier's non-advancing guard would then drop that round's real
+	// root when the resumed commit loop decides it — forking RootAt against
+	// a never-restarted twin. A fresh chain (cursor 0) has decided nothing,
+	// so there is no round to seed: the commit loop is the sole frontier
+	// writer from round 0 on.
+	if cursor := n.dag.LastCommittedRound(); cursor > 0 {
+		mgr.SetFrontier(cursor - 1)
+	}
 
 	n.idxManager = mgr
 	n.dag.SetIndexer(mgr)

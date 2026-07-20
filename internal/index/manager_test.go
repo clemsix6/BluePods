@@ -129,11 +129,10 @@ func TestManager_RootAt_WindowAndEpochCheckpoint(t *testing.T) {
 }
 
 // TestManager_SetFrontier_IgnoresNonAdvancingRound verifies SetFrontier drops a
-// round at or before the last recorded one: the genesis round-0 double set
-// (cmd/node's boot-time backfill call and that same round's own later commit
-// both call SetFrontier(0)) must not push the round onto the FIFO order
-// twice, and a pending checkpoint from a RebuildValidators call preceding the
-// ignored call is retained for the next round that does get recorded.
+// round at or before the last recorded one, keeping the FIFO order strictly
+// monotonic and a round's first-recorded root authoritative, and that a
+// pending checkpoint from a RebuildValidators call preceding the ignored call
+// is retained for the next round that does get recorded.
 func TestManager_SetFrontier_IgnoresNonAdvancingRound(t *testing.T) {
 	m := NewManager()
 
