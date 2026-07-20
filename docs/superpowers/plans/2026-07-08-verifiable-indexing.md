@@ -258,6 +258,10 @@ table DeclaredOp {
 - [ ] **Run, expect FAIL → implement → PASS;** full package + fast gate.
 - [ ] **Commit:** title `Incremental SMT: dirty-path rehash behind the unchanged API`. **Push the batch.**
 
+---
+
+# Batch 3 — Detached header, anchoring, three-stage enforcement
+
 **Spec:** §5, §7.
 
 **Context (verified against main @ 397d6f9):** `buildVertex` (`internal/consensus/build.go:18-34`) signs `hashVertex(unsigned)` = BLAKE3 of the whole unsigned vertex (`hash.go:10`); `validateSignature` (`validate.go:117`) verifies over `HashBytes()`. The vertex `epoch` field is populated from the STATIC `d.epoch` construction-time field (`build.go:49/:77`; `cmd/node/init.go` passes 0) and `validateEpoch` (`validate.go:90`) compares against the same static field — while the `d.Epoch()` accessor returns the live `d.currentEpoch` (`dag.go:743`); this divergence is what Task 3.1 fixes. The vertex table (`types/vertex.fbs:61-92`) is hash/round/producer/signature/parents/transactions/epoch/fee_summary/timestamp. Parents link by vertex hash; gossip dedup hashes whole message bytes (`network/dedup.go:44`), so the identity change is contained to consensus. `buildFeeSummary` is in `build.go:89`, `validateFeeSummary` in `validate.go:257`.
