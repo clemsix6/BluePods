@@ -16,6 +16,13 @@ var errTruncatedProof = errors.New("index: truncated or malformed proof")
 // subtree; for an absence proof against a position already occupied by a different key it
 // holds that key's keyHash || valueHash (64 bytes), letting the verifier recompute the
 // occupying leaf and confirm it is genuinely a different key.
+//
+// NORMATIVE wire contract for any external verifier (e.g. a client-side reimplementation
+// of Verify): Siblings MUST be ordered deepest-first, index 0 nearest the leaf, folding
+// toward the root as the index grows. The other-leaf occupant encoding MUST be exactly
+// keyHash (32 bytes) followed by valueHash (32 bytes), 64 bytes total, no separator. A
+// verifier that reorders siblings or swaps the occupant field order will silently
+// disagree with this package's roots rather than fail loudly.
 type Proof struct {
 	Siblings [][32]byte // Siblings are the path's sibling hashes, deepest first
 	Leaf     []byte     // Leaf carries the occupying leaf for the other-leaf absence case, else empty
@@ -126,6 +133,12 @@ func foldPath(target, keyHash [32]byte, siblings [][32]byte) [32]byte {
 // Serialize encodes the proof as a schema-free, length-prefixed byte string clients can
 // decode without FlatBuffers: a uint32 sibling count, each 32-byte sibling, then a uint32
 // leaf length and the leaf bytes. All integers are big-endian.
+//
+// NORMATIVE wire format for any external verifier: uint32(len(Siblings)) big-endian, then
+// len(Siblings)*32 raw sibling bytes in Siblings order (deepest-first), then
+// uint32(len(Leaf)) big-endian, then the raw Leaf bytes. There is no version byte and no
+// other framing; a verifier must reproduce this layout exactly to decode proofs produced
+// by this package.
 func (p Proof) Serialize() []byte {
 	buf := make([]byte, 0, 4+len(p.Siblings)*32+4+len(p.Leaf))
 	buf = binary.BigEndian.AppendUint32(buf, uint32(len(p.Siblings)))

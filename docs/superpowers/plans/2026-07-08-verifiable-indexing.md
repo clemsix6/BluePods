@@ -43,7 +43,7 @@ The old `test/integration` `TestSim*` suite is gone. Validation runs on the scen
 | Batch | Subsystem | Spec § | Tasks |
 |---|---|---|---|
 | 1 | Parent in model + tracker; declared operations; pod-output lockdown | 3, 6 | 9 |
-| 2 | SMT primitive; domain/parent/children/validator trees; index manager | 4 | 5 |
+| 2 | SMT primitive; domain/parent/children/validator trees; index manager | 4 | 6 |
 | 3 | Detached provable header; anchoring; three-stage enforcement | 5, 7 | 6 |
 | 4 | Domain declared ops; rental + term cap; expiry sweep; deposit term | 8 | 5 |
 | 5 | Sync: index rebuild, fail-closed verification, join scenarios | 9 | 3 |
@@ -244,11 +244,19 @@ table DeclaredOp {
 
 - [ ] **Test:** applying a synthetic committed stream vs `BuildFromState` on the final state → identical root; `RootAt` returns historical roots inside the window and `false` outside; restart rebuild matches the never-restarted twin.
 - [ ] **Run, expect FAIL → implement → PASS;** `go build ./... && go vet ./...`; fast gate `go test -short ./... -timeout 120s`.
-- [ ] **Commit:** title `Index manager fed by the commit path`. **Push the batch.**
+- [ ] **Commit:** title `Index manager fed by the commit path`.
 
----
+### Task 2.6: Incremental SMT behind the same API
 
-# Batch 3 — Detached header, anchoring, three-stage enforcement
+**Why (review-mandated, 2026-07-20):** the task-2.1 core computes `Root()` as a full O(n) functional recompute; spec §7 promises "each committed batch rehashes only the SMT paths its transactions touched (a few thousand BLAKE3 hashes, sub-millisecond)". The manager cannot reduce the complexity class from outside the tree, and batch 3 puts `Root()` on the consensus hot path (every committed batch). The functional core stays — it is the differential oracle.
+
+**Files:** Extend `internal/index/smt.go` (or a sibling `smt_inc.go` under the 300-line rule); Test `internal/index/smt_diff_test.go`.
+
+**Interfaces — unchanged:** the public API (`Insert/Delete/Get/Root/Prove/Verify`) does not move; callers never change. Internally the tree materializes non-empty paths and memoizes subtree hashes so a mutation dirties only its root-to-leaf path; `Root()` rehashes dirty paths only; `Prove` reuses the materialized path (no full-set re-sort per call — the anchor handler generates proofs on the query path).
+
+- [ ] **Test (differential, the real "incremental == rebuild"):** a seeded randomized sequence of insert/overwrite/delete (≥5k steps) asserting after EVERY step that the incremental root equals a from-scratch functional recompute (the 2.1 oracle, kept callable from tests); the 2.1/2.2 suite passes unchanged; a benchmark demonstrating a single-key update at 100k entries costs O(log n) hashes (assert a hash-count or wall bound, not vibes); the negative absence-proof and oversized-proof guards still pass.
+- [ ] **Run, expect FAIL → implement → PASS;** full package + fast gate.
+- [ ] **Commit:** title `Incremental SMT: dirty-path rehash behind the unchanged API`. **Push the batch.**
 
 **Spec:** §5, §7.
 

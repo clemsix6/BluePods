@@ -232,6 +232,55 @@ func TestDeserializeRejectsTruncated(t *testing.T) {
 	}
 }
 
+// TestAbsenceRejectsSelfLeaf checks the one soundness check that the path fold alone does
+// not provide: an absence proof forged from a present key's own honest inclusion path,
+// relabeled as an other-leaf occupant equal to the queried key itself. The forged proof
+// reuses the honest siblings and sets Leaf to the queried key's own keyHash || valueHash;
+// its fold target is then identical to the honest inclusion proof's leaf hash, so without
+// the otherKey == keyHash guard in absenceTarget (proof.go) it would fold to the real root
+// and falsely prove a present key absent.
+func TestAbsenceRejectsSelfLeaf(t *testing.T) {
+	tr, keys, vals := buildRandomTree(11, 300)
+	root := tr.Root()
+	k, v := keys[42], vals[42]
+
+	honest := tr.Prove(k)
+	if len(honest.Leaf) != 0 {
+		t.Fatal("sanity: a present key should yield an inclusion proof with an empty Leaf")
+	}
+	if !Verify(root, k, v, honest) {
+		t.Fatal("sanity: honest inclusion proof should verify")
+	}
+
+	keyHash := blake3.Sum256(k)
+	valueHash := blake3.Sum256(v)
+	forged := Proof{
+		Siblings: honest.Siblings,
+		Leaf:     append(append([]byte{}, keyHash[:]...), valueHash[:]...),
+	}
+	if Verify(root, k, nil, forged) {
+		t.Fatal("forged absence proof for a present key's own leaf verified")
+	}
+}
+
+// TestOversizedSiblingsRejected checks the bounds guard at the top of Verify: a proof
+// carrying more siblings than the tree is deep must be rejected outright, before any
+// indexing into defaultHashes (which is sized treeDepth+1 and would be indexed out of
+// range by an absence proof this long), and without panicking.
+func TestOversizedSiblingsRejected(t *testing.T) {
+	tr, keys, vals := buildRandomTree(12, 50)
+	root := tr.Root()
+	k, v := keys[0], vals[0]
+
+	oversized := Proof{Siblings: make([][32]byte, treeDepth+1)}
+	if Verify(root, k, v, oversized) {
+		t.Fatal("oversized inclusion proof verified")
+	}
+	if Verify(root, k, nil, oversized) {
+		t.Fatal("oversized absence proof verified")
+	}
+}
+
 // absenceCase pairs a missing key with its absence proof.
 type absenceCase struct {
 	key   []byte

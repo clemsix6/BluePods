@@ -24,6 +24,11 @@ const (
 // null value, chosen here because the brief fixes the leaf and internal hashes but not
 // the empty base); each shallower level is the internal hash of two empty children, so
 // defaultHashes[0] is the root of an empty tree.
+//
+// NORMATIVE for any external verifier: defaultHashes[treeDepth] (treeDepth = 256) is
+// exactly 32 zero bytes ([32]byte{}), not the hash of anything. A client-side verifier
+// must start from that same all-zero base and fold upward with internalHash(d, d) at
+// each shallower depth, or its roots will never agree with this package's.
 var defaultHashes = computeDefaultHashes()
 
 // computeDefaultHashes precomputes the empty-subtree hash for every depth 0..treeDepth.
