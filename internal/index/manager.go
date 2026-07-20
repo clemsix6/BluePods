@@ -91,10 +91,18 @@ func (m *Manager) Root() [32]byte {
 }
 
 // SetFrontier records the current combined root as the anchor for round,
-// called once per round the commit loop decides. It bounds retained history
-// to the last historyWindow rounds, except a round marked pending by a
+// called once per round the commit loop decides. A round at or before the
+// last recorded round is ignored: the boot-time backfill call and that same
+// round's own later commit both call SetFrontier(0) for the genesis round,
+// and recording it twice would push it onto the FIFO order twice, breaking
+// evictOldRounds' monotonic-rounds assumption. It bounds retained history to
+// the last historyWindow rounds, except a round marked pending by a
 // preceding RebuildValidators call, which is retained indefinitely.
 func (m *Manager) SetFrontier(round uint64) {
+	if len(m.order) > 0 && round <= m.order[len(m.order)-1] {
+		return
+	}
+
 	root := m.Root()
 
 	m.history[round] = root

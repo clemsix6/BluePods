@@ -128,6 +128,49 @@ func TestManager_RootAt_WindowAndEpochCheckpoint(t *testing.T) {
 	}
 }
 
+// TestManager_SetFrontier_IgnoresNonAdvancingRound verifies SetFrontier drops a
+// round at or before the last recorded one: the genesis round-0 double set
+// (cmd/node's boot-time backfill call and that same round's own later commit
+// both call SetFrontier(0)) must not push the round onto the FIFO order
+// twice, and a pending checkpoint from a RebuildValidators call preceding the
+// ignored call is retained for the next round that does get recorded.
+func TestManager_SetFrontier_IgnoresNonAdvancingRound(t *testing.T) {
+	m := NewManager()
+
+	m.ApplyDomain("round.pod", [32]byte{0x01}, [32]byte{0x01}, 0)
+	m.SetFrontier(0)
+	firstRoot := m.Root()
+
+	// A duplicate call for the same round: state changes underneath it, but the
+	// call must be ignored, not overwrite history[0] with the new root.
+	m.ApplyDomain("round.pod", [32]byte{0x02}, [32]byte{0x01}, 0)
+	m.SetFrontier(0)
+
+	if got, _ := m.RootAt(0); got != firstRoot {
+		t.Errorf("RootAt(0) = %x, want the first-recorded root %x (duplicate SetFrontier(0) must not overwrite it)", got, firstRoot)
+	}
+
+	// An out-of-order call (round behind the last recorded one) is ignored too.
+	m.SetFrontier(1)
+	afterOne := m.Root()
+	m.ApplyDomain("round.pod", [32]byte{0x03}, [32]byte{0x01}, 0)
+	m.SetFrontier(0)
+
+	if got, ok := m.RootAt(1); !ok || got != afterOne {
+		t.Errorf("RootAt(1) = %x, ok=%v; an out-of-order SetFrontier(0) must not disturb round 1", got, ok)
+	}
+
+	// A pending checkpoint set right before an ignored call must survive to the
+	// next round that actually gets recorded, not be silently dropped.
+	m.RebuildValidators([]ValidatorLeaf{{Pubkey: [32]byte{0x09}, CappedStake: 1, Status: ValidatorActive}})
+	m.SetFrontier(1) // ignored: 1 <= last recorded (1)
+	m.SetFrontier(2)
+
+	if _, ok := m.RootAt(2); !ok {
+		t.Error("RootAt(2) should be true: the pending checkpoint from the ignored call must attach to the next recorded round")
+	}
+}
+
 // TestManager_ApplyDomainRemoveDomainRoundTrip verifies the domain feed
 // points reach the underlying tree.
 func TestManager_ApplyDomainRemoveDomainRoundTrip(t *testing.T) {

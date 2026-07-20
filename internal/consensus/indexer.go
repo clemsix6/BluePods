@@ -36,6 +36,12 @@ type indexer interface {
 // SetIndexer wires the verifiable-index manager so object creation, reparent,
 // deletion, epoch validator snapshots, and committed frontiers all feed it.
 // Left unset, every feed point is a no-op.
+//
+// idx must never be a nil-typed concrete pointer (e.g. a nil *index.Manager)
+// wrapped in the interface: `d.indexer != nil` is a check on the interface
+// value, and an interface holding a nil concrete pointer is itself non-nil, so
+// every nil-guarded feed site would call through to a nil receiver and panic.
+// Only omitting the call at all leaves indexer correctly unset.
 func (d *DAG) SetIndexer(idx indexer) {
 	d.indexer = idx
 }
