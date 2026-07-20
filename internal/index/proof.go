@@ -30,40 +30,59 @@ type Proof struct {
 
 // Prove returns a proof for key against the tree's current root. A present key yields an
 // inclusion proof; a missing key yields an absence proof, either against the empty subtree
-// at its position or against the different leaf that already occupies it.
+// at its position or against the different leaf that already occupies it. It walks the
+// materialized path in O(log n), reading each sibling's memoized hash, rather than
+// re-sorting the whole entry set.
 func (t *SMT) Prove(key []byte) Proof {
-	siblings, leaf := prove(0, t.sortedEntries(), blake3.Sum256(key))
+	keyHash := blake3.Sum256(key)
+	siblings, leaf := provePath(t.root, keyHash)
 	return Proof{Siblings: siblings, Leaf: leaf}
 }
 
-// prove walks the key's path through the subtree at depth over entries (sorted by keyHash),
-// collecting sibling hashes deepest first. It returns the occupying leaf's keyHash||valueHash
-// when the path ends on a different compressed leaf, and nil otherwise (inclusion, or absence
-// against an empty subtree).
-func prove(depth int, entries []entry, keyHash [32]byte) ([][32]byte, []byte) {
-	if len(entries) == 0 {
-		return nil, nil
-	}
-	if len(entries) == 1 {
-		if entries[0].keyHash == keyHash {
-			return nil, nil
+// provePath walks keyHash's path down the materialized tree from the root, collecting each
+// step's sibling hash. It returns the siblings deepest first (matching the wire contract)
+// and the occupying leaf's keyHash||valueHash when the path ends on a different compressed
+// leaf, nil otherwise (inclusion, or absence against an empty subtree). Sibling hashes come
+// from nodeHash, which recomputes any node a mutation dirtied before reading it.
+func provePath(root *node, keyHash [32]byte) ([][32]byte, []byte) {
+	var siblings [][32]byte // collected shallowest first, reversed to deepest first below
+	n, depth := root, 0
+	for n != nil && !n.isLeaf {
+		if bit(keyHash, depth) == 0 {
+			siblings = append(siblings, nodeHash(n.right, depth+1))
+			n = n.left
+		} else {
+			siblings = append(siblings, nodeHash(n.left, depth+1))
+			n = n.right
 		}
-		return nil, otherLeaf(entries[0])
+		depth++
 	}
-	mid := splitOnBit(entries, depth)
-	if bit(keyHash, depth) == 0 {
-		sib, leaf := prove(depth+1, entries[:mid], keyHash)
-		return append(sib, hashSubtree(depth+1, entries[mid:])), leaf
+	reverseHashes(siblings)
+	return siblings, pathLeaf(n, keyHash)
+}
+
+// pathLeaf returns the other-leaf occupant bytes when the walk ended on a different
+// compressed leaf, and nil for an inclusion or an empty-subtree absence.
+func pathLeaf(n *node, keyHash [32]byte) []byte {
+	if n == nil || n.keyHash == keyHash {
+		return nil
 	}
-	sib, leaf := prove(depth+1, entries[mid:], keyHash)
-	return append(sib, hashSubtree(depth+1, entries[:mid])), leaf
+	return otherLeaf(n.keyHash, n.valueHash)
+}
+
+// reverseHashes reverses siblings in place, turning the shallowest-first order the walk
+// produces into the deepest-first order the proof wire contract requires.
+func reverseHashes(siblings [][32]byte) {
+	for i, j := 0, len(siblings)-1; i < j; i, j = i+1, j-1 {
+		siblings[i], siblings[j] = siblings[j], siblings[i]
+	}
 }
 
 // otherLeaf encodes an occupying entry as keyHash || valueHash for an absence proof.
-func otherLeaf(e entry) []byte {
+func otherLeaf(keyHash, valueHash [32]byte) []byte {
 	out := make([]byte, 0, 64)
-	out = append(out, e.keyHash[:]...)
-	return append(out, e.valueHash[:]...)
+	out = append(out, keyHash[:]...)
+	return append(out, valueHash[:]...)
 }
 
 // Verify reports whether proof authenticates key against root. With value non-nil it checks
