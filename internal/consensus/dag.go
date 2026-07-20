@@ -154,6 +154,12 @@ type DAG struct {
 	// onObjectDeleted in the same reverse direction (consensus notifying state).
 	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte, version uint64)
 
+	// indexer is the verifiable-index feed (indexer.go): nil-safe, wired
+	// post-construction by cmd/node via SetIndexer. Every call site checks it
+	// for nil before calling, so a DAG built without an indexer behaves
+	// exactly as it did before this package existed.
+	indexer indexer
+
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
 	// Used as the inline fallback when no batch verifier is set (such as direct
@@ -631,6 +637,10 @@ func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees 
 	copy(h[:], id[:])
 	copy(p[:], parent[:])
 	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
+
+	if d.indexer != nil {
+		d.indexer.ApplyEdge(h, parentKind, p)
+	}
 }
 
 // ControlsParent reports whether sender is authorized to attach a newly created

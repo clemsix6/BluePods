@@ -2,6 +2,8 @@ package state
 
 import (
 	"testing"
+
+	"BluePods/internal/types"
 )
 
 // TestDomainStore_SetGet verifies set stores and get retrieves the correct ObjectID.
@@ -105,6 +107,45 @@ func TestDomainStore_ExportImport(t *testing.T) {
 	got2, found2 := store2.get("beta.pod")
 	if !found2 || got2 != id2 {
 		t.Errorf("beta.pod: expected %x found=%v, got %x found=%v", id2, true, got2, found2)
+	}
+}
+
+// TestSetOnDomainRegistered_FiresOnRegisterAndUpdate verifies the callback
+// wired through SetOnDomainRegistered fires once per name applied by
+// applyRegisteredDomains, both for a first-time binding and a rebind — the
+// same two cases that emit DomainRegistered and DomainUpdated — carrying the
+// name and the resolved object ID. This is the domain store's only writer
+// today, so it is the sole feed point a derived domain index has until
+// domain writes become a declared operation.
+func TestSetOnDomainRegistered_FiresOnRegisterAndUpdate(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+
+	type call struct {
+		name     string
+		objectID Hash
+	}
+	var calls []call
+	s.SetOnDomainRegistered(func(name string, objectID [32]byte) {
+		calls = append(calls, call{name: name, objectID: objectID})
+	})
+
+	firstID := Hash{0x01}
+	first := buildPodOutputWithDomainsRaw(0, 10, []testDomain{{name: "cb.pod", objectID: firstID}})
+	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(first, 0), Hash{0xAA})
+
+	secondID := Hash{0x02}
+	second := buildPodOutputWithDomainsRaw(0, 10, []testDomain{{name: "cb.pod", objectID: secondID}})
+	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(second, 0), Hash{0xBB})
+
+	if len(calls) != 2 {
+		t.Fatalf("callback fired %d times, want 2", len(calls))
+	}
+	if calls[0].name != "cb.pod" || calls[0].objectID != firstID {
+		t.Errorf("first call = %+v, want name=cb.pod objectID=%x", calls[0], firstID)
+	}
+	if calls[1].name != "cb.pod" || calls[1].objectID != secondID {
+		t.Errorf("second call = %+v, want name=cb.pod objectID=%x", calls[1], secondID)
 	}
 }
 

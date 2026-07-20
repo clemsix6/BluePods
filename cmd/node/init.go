@@ -104,6 +104,7 @@ func (n *Node) initConsensus() error {
 	n.setupValidatorCallback()
 	n.initAggregation(validators)
 	n.seedGenesisState()
+	n.initIndex()
 
 	return nil
 }

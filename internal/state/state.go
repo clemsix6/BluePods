@@ -23,14 +23,15 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	db              *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
-	objects         *objectStore                                                                                         // objects is the object storage
-	domains         *domainStore                                                                                         // domains stores domain name → ObjectID mappings
-	pods            *podvm.Pool                                                                                          // pods is the WASM runtime pool
-	isHolder        func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
-	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
-	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
-	parentValidator func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
+	db                 *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
+	objects            *objectStore                                                                                         // objects is the object storage
+	domains            *domainStore                                                                                         // domains stores domain name → ObjectID mappings
+	pods               *podvm.Pool                                                                                          // pods is the WASM runtime pool
+	isHolder           func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
+	onObjectCreated    func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
+	signObject         func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
+	parentValidator    func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
+	onDomainRegistered func(name string, objectID [32]byte)                                                                 // onDomainRegistered fires whenever a domain name is (re)bound to an object
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
@@ -123,6 +124,16 @@ func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uin
 // consensus.
 func (s *State) SetParentValidator(fn func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool) {
 	s.parentValidator = fn
+}
+
+// SetOnDomainRegistered sets a callback that fires whenever a domain name is
+// bound or rebound to an object — the same moment applyRegisteredDomains
+// emits DomainRegistered or DomainUpdated. This is the domain store's only
+// writer today, so it is the single feed point for a derived domain index
+// until domain writes become a declared operation. Holding only the func
+// keeps state from importing whatever consumes it.
+func (s *State) SetOnDomainRegistered(fn func(name string, objectID [32]byte)) {
+	s.onDomainRegistered = fn
 }
 
 // SetStorageFees configures protocol-level storage deposits and refunds.
@@ -406,6 +417,10 @@ func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [3
 			events.DomainUpdated(name, objectID, txHash)
 		} else {
 			events.DomainRegistered(name, objectID, txHash)
+		}
+
+		if s.onDomainRegistered != nil {
+			s.onDomainRegistered(name, objectID)
 		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
 	"BluePods/internal/events"
+	"BluePods/internal/index"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/podvm"
@@ -32,6 +33,7 @@ type Node struct {
 	state       *state.State
 	network     *network.Node
 	dag         *consensus.DAG
+	idxManager  *index.Manager
 	snapManager *sync.SnapshotManager
 	syncBuffer  atomic.Pointer[sync.VertexBuffer] // syncBuffer holds vertices during sync
 	systemPod   [32]byte

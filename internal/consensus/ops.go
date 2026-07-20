@@ -101,6 +101,10 @@ func (d *DAG) applyReparent(txHash Hash, op genesis.DeclaredOp) {
 	d.tracker.setParent(objID, op.TargetKind, parent)
 	d.rewriteBodyOwner(objID, op.TargetKind, parent, version)
 	events.ObjectReparented(objID, txHash, op.TargetKind, parent, version)
+
+	if d.indexer != nil {
+		d.indexer.ApplyEdge(objID, op.TargetKind, parent)
+	}
 }
 
 // rewriteBodyOwner rewrites a reparented object's stored body owner bytes,

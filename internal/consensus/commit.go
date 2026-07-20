@@ -119,7 +119,18 @@ func (d *DAG) commitNextRound() bool {
 
 	d.clearStall()
 	d.advanceCommitCursor(round)
+	d.setIndexFrontier(round)
 	return true
+}
+
+// setIndexFrontier records round's combined index root once the commit cursor
+// has fully decided it (a commit OR a skip), so the anchored root already
+// reflects any epoch-boundary validator rebuild advanceCommitCursor triggered
+// for this same round. No-op when no indexer is wired.
+func (d *DAG) setIndexFrontier(round uint64) {
+	if d.indexer != nil {
+		d.indexer.SetFrontier(round)
+	}
 }
 
 // onCausalStall records that the commit cursor's decided anchor is blocked on absent
@@ -875,10 +886,17 @@ func ownedDeletedRefs(tx *types.Transaction) []Hash {
 // the deposits term of the supply identity by the same amount on every node, so
 // the identity never overstates the coins backing it. It returns the refunded
 // amount. The burn is gated on the refund landing, so a missing coin burns the
-// whole deposit rather than leaking the refund out of supply.
+// whole deposit rather than leaking the refund out of supply. This is the single
+// settlement point for both deletion channels (the declared op and the
+// pod-driven carve-out), so it is also the single point that feeds the index's
+// RemoveObject.
 func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
 	deposit := d.tracker.getFees(objID)
 	d.tracker.deleteObject(objID)
+
+	if d.indexer != nil {
+		d.indexer.RemoveObject(objID)
+	}
 
 	if deposit == 0 || d.feeParams == nil {
 		return 0
