@@ -58,6 +58,7 @@ runs the corpus. The current corpus:
 | functional | `TestScenarioObjects` | 12 |
 | functional | `TestScenarioAggregation` | 5 |
 | functional | `TestScenarioSponsored` | 5 |
+| functional | `TestScenarioHierarchy` | 5 |
 | functional | `TestScenarioStake` | 5 |
 | functional | `TestScenarioJoining` | 5+ |
 | functional | `TestScenarioStress` | 12 |
@@ -248,6 +249,7 @@ must be called out in the commit that does it.
 | `state.object.created` | object, tx, version, replication, owner |
 | `state.object.updated` | object, tx, version |
 | `state.object.deleted` | object, tx, refund |
+| `state.object.reparented` | object, tx, kind, parent, version |
 | `state.domain.registered` | name, object, tx |
 | `state.domain.updated` | name, object, tx |
 | `state.domain.deleted` | name, tx |
@@ -276,7 +278,8 @@ must be called out in the commit that does it.
 `tx.committed`'s `reason` attribute is always present: an empty string on
 success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
-`duplicate`, `expired_sponsorship`, `execution_error`.
+`duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
+`delete_has_children`.
 
 `consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
 `bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,

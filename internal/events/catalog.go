@@ -43,6 +43,9 @@ const (
 	EvObjectUpdated = "state.object.updated"
 	// EvObjectDeleted marks an object removed from state.
 	EvObjectDeleted = "state.object.deleted"
+	// EvObjectReparented marks an object's parent edge changed by a declared
+	// reparent operation (a transfer is a reparent to a KeyRoot).
+	EvObjectReparented = "state.object.reparented"
 	// EvDomainRegistered marks a new domain name bound to an object.
 	EvDomainRegistered = "state.domain.registered"
 	// EvDomainUpdated marks a domain name rebound to a different object.
@@ -123,6 +126,7 @@ var Names = []string{
 	EvObjectCreated,
 	EvObjectUpdated,
 	EvObjectDeleted,
+	EvObjectReparented,
 	EvDomainRegistered,
 	EvDomainUpdated,
 	EvDomainDeleted,

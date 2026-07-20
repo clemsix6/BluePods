@@ -77,6 +77,19 @@ func (d *DAG) refreezeGenesisRegime(atRound uint64) {
 		d.eligibleHolders = d.snapshotProduced()
 
 		d.regimeDirty = true
+
+		// Feed the index's validator tree from this SAME committed snapshot (spec
+		// §4). Epoch 0 freezes no epoch-boundary snapshot, so transitionEpoch's
+		// RebuildValidators call never runs until the first boundary; without this,
+		// the tree stays frozen at whatever it observed once at boot, and a
+		// restarted node (which rebuilds it from the current committed holders)
+		// anchors a different root than its never-restarted twin the moment a
+		// genesis registration or bond commits. The value fed is a pure function of
+		// committed history (committed members, committed stakes), so every node
+		// converges regardless of restart timing. No-op when no indexer is wired.
+		if d.indexer != nil {
+			d.indexer.RebuildValidators(d.ValidatorLeaves(d.epochHolders.All()))
+		}
 	}
 
 	// The bootstrap-complete signal is a pure function of the committed log

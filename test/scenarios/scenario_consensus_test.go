@@ -27,6 +27,17 @@ const (
 	stepTimeout = 90 * time.Second
 )
 
+const (
+	// reparentOpKind mirrors internal/consensus's reparentOp and pkg/client's
+	// reparentOpKind: DeclaredOp.kind=0 rebinds an object's parent edge. A
+	// transfer is a reparent to a KeyRoot.
+	reparentOpKind byte = 0
+
+	// keyRootKind mirrors internal/consensus's keyRootKind: the reparent
+	// target is an Ed25519 public key (that IS a transfer).
+	keyRootKind byte = 0
+)
+
 // stepCtx returns a fresh bounded context for one scenario step.
 func stepCtx(t *testing.T) context.Context {
 	t.Helper()
@@ -108,7 +119,6 @@ func TestScenarioConsensusBasics(t *testing.T) {
 	c := harness.NewCluster(t, consensusScenarioSize)
 	node0 := c.Node(0)
 	cli := c.Client(0)
-	systemPod := cli.SystemPod()
 
 	w, coinID := fundedWallet(stepCtx(t), t, cli, node0, 2_000_000)
 
@@ -134,6 +144,14 @@ func TestScenarioConsensusBasics(t *testing.T) {
 		hash, err := w.Transfer(cli, coinID, recipient.Pubkey())
 		requireNoErr(t, err)
 		requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+
+		// The transfer rewrites the coin's stored body owner, so a GetObject
+		// read serves the recipient, not the stale sender.
+		obj, err := cli.GetObject(coinID)
+		requireNoErr(t, err)
+		if obj.Owner != recipient.Pubkey() {
+			t.Fatalf("transferred coin owner mismatch: body owner is not the recipient")
+		}
 	})
 
 	t.Run("object_create_transfer", func(t *testing.T) {
@@ -162,16 +180,16 @@ func TestScenarioConsensusBasics(t *testing.T) {
 
 	t.Run("security_rejects", func(t *testing.T) {
 		t.Run("replay_is_duplicate", func(t *testing.T) {
-			testReplayRejected(t, c, systemPod)
+			testReplayRejected(t, c)
 		})
 		t.Run("tampered_hash_is_authenticity_failed", func(t *testing.T) {
-			testTamperedHashRejected(t, c, systemPod)
+			testTamperedHashRejected(t, c)
 		})
-		t.Run("wrong_owner_is_ownership", func(t *testing.T) {
-			testWrongOwnerRejected(t, c, systemPod)
+		t.Run("wrong_owner_is_declared_ops", func(t *testing.T) {
+			testWrongOwnerRejected(t, c)
 		})
 		t.Run("sharded_mutation_without_valid_proof_is_proof_failed", func(t *testing.T) {
-			testProofFailedRejected(t, c, systemPod)
+			testProofFailedRejected(t, c)
 		})
 	})
 }
@@ -180,7 +198,7 @@ func TestScenarioConsensusBasics(t *testing.T) {
 // successfully on every node), then resubmits the identical bytes: the
 // commit-once guard must mark the second occurrence a duplicate rather than
 // re-applying it.
-func testReplayRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
+func testReplayRejected(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 
 	node0 := c.Node(0)
@@ -197,7 +215,7 @@ func testReplayRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
 
 	recipient := randomID(t)
 
-	txBytes, hash := buildSignedTransferTx(priv, systemPod, coinID, obj.Version, recipient)
+	txBytes, hash := buildSignedTransferTx(priv, coinID, obj.Version, recipient)
 
 	transport := client.NewQUICTransport(node0.QUICAddr)
 
@@ -229,7 +247,7 @@ func testReplayRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
 // (zero proofs, as a singleton-only transaction needs none): the ATX shape
 // bypasses ingress's raw-transaction hash/signature check, so the tamper
 // only surfaces at commit-time authenticity verification.
-func testTamperedHashRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
+func testTamperedHashRejected(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 
 	node0 := c.Node(0)
@@ -246,7 +264,7 @@ func testTamperedHashRejected(t *testing.T, c *harness.Cluster, systemPod [32]by
 
 	recipient := randomID(t)
 
-	rawTx, tamperedHash := buildTamperedHashTransferTx(priv, systemPod, coinID, obj.Version, recipient)
+	rawTx, tamperedHash := buildTamperedHashTransferTx(priv, coinID, obj.Version, recipient)
 	atxBytes := genesis.WrapInATX(rawTx)
 
 	transport := client.NewQUICTransport(node0.QUICAddr)
@@ -258,12 +276,16 @@ func testTamperedHashRejected(t *testing.T, c *harness.Cluster, systemPod [32]by
 	requireVerdictAll(stepCtx(t), t, c, tamperedHash, false, "authenticity_failed")
 }
 
-// testWrongOwnerRejected has an attacker submit a "transfer" of a victim's
-// coin, paying gas from the attacker's own (validly owned) coin. The
-// transaction is fully self-consistent (the attacker's own valid signature),
-// so it passes authenticity and fee-deduction; only the mutable-ref
-// ownership check catches it.
-func testWrongOwnerRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
+// testWrongOwnerRejected has an attacker submit a transfer (a declared
+// reparent op) of a victim's coin, paying gas from the attacker's own
+// (validly owned) coin. The transaction is fully self-consistent (the
+// attacker's own valid signature), so it passes authenticity and
+// fee-deduction; a declared op never reaches the generic mutable-ref
+// ownership check (internal/consensus/commit.go routes declared operations
+// before it) — instead staged reparent validation's own controller check
+// (internal/consensus/staged.go's stagedView.controls) rejects it, which
+// surfaces as the "declared_ops" commit reason.
+func testWrongOwnerRejected(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 
 	node0 := c.Node(0)
@@ -285,7 +307,7 @@ func testWrongOwnerRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte
 
 	newOwner := randomID(t)
 
-	txBytes, hash := buildSignedTransferTxWithGasCoin(attackerPriv, systemPod, victimCoin, victimObj.Version, attackerCoin, newOwner)
+	txBytes, hash := buildSignedTransferTxWithGasCoin(attackerPriv, victimCoin, victimObj.Version, attackerCoin, newOwner)
 
 	transport := client.NewQUICTransport(node0.QUICAddr)
 
@@ -293,7 +315,7 @@ func testWrongOwnerRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte
 	requireNoErr(t, err) // structurally valid and self-consistent; accepted at ingress
 	assertHash(t, returnedHash, hash)
 
-	requireVerdictAll(stepCtx(t), t, c, hash, false, "ownership")
+	requireVerdictAll(stepCtx(t), t, c, hash, false, "declared_ops")
 
 	after, err := cli.GetObject(victimCoin)
 	requireNoErr(t, err)
@@ -341,47 +363,47 @@ func assertHash(t *testing.T, got []byte, want [32]byte) {
 	}
 }
 
-// buildSignedTransferTx builds a signed "transfer" tx spending coinID as its
-// own gas coin (mirroring the wallet's self-funding transfer shape), signed
-// by priv. Returns the tx bytes and hash.
-func buildSignedTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]byte, version uint64, newOwner [32]byte) ([]byte, [32]byte) {
-	return buildSignedTransferTxWithGasCoin(priv, systemPod, coinID, version, coinID, newOwner)
+// buildSignedTransferTx builds a signed transfer (a declared reparent op to a
+// KeyRoot) spending coinID as its own gas coin (mirroring the wallet's
+// self-funding transfer shape), signed by priv. Returns the tx bytes and hash.
+func buildSignedTransferTx(priv ed25519.PrivateKey, coinID [32]byte, version uint64, newOwner [32]byte) ([]byte, [32]byte) {
+	return buildSignedTransferTxWithGasCoin(priv, coinID, version, coinID, newOwner)
 }
 
-// buildSignedTransferTxWithGasCoin builds a signed "transfer" tx mutating
-// coinID (at version) to newOwner, paying gas from gasCoin (which may be a
-// different coin than the one transferred). The commit path is what
-// enforces ownership of each; construction does not. Returns the tx bytes
-// and hash.
-func buildSignedTransferTxWithGasCoin(priv ed25519.PrivateKey, systemPod, coinID [32]byte, version uint64, gasCoin, newOwner [32]byte) ([]byte, [32]byte) {
+// buildSignedTransferTxWithGasCoin builds a signed transfer (a declared
+// reparent op to a KeyRoot) moving coinID (at version) to newOwner, paying
+// gas from gasCoin (which may be a different coin than the one transferred).
+// The commit path is what enforces control of each; construction does not.
+// Returns the tx bytes and hash.
+func buildSignedTransferTxWithGasCoin(priv ed25519.PrivateKey, coinID [32]byte, version uint64, gasCoin, newOwner [32]byte) ([]byte, [32]byte) {
 	pub := priv.Public().(ed25519.PublicKey)
-	args := make([]byte, 32)
-	copy(args, newOwner[:])
+	var zeroPod [32]byte
 	refs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
+	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "transfer", args, nil, 0, 1000, gasCoin[:], refs, nil)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "transfer", args, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), hash
 }
 
-// buildTamperedHashTransferTx builds a "transfer" tx identical to
-// buildSignedTransferTx, but with its declared hash corrupted after signing:
-// the signature verifies against the ORIGINAL hash, not the declared,
-// corrupted one. Returns the tx bytes and the corrupted (declared) hash,
-// which is what tx.committed reports for it.
-func buildTamperedHashTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]byte, version uint64, newOwner [32]byte) ([]byte, [32]byte) {
+// buildTamperedHashTransferTx builds a transfer (a declared reparent op)
+// identical to buildSignedTransferTx, but with its declared hash corrupted
+// after signing: the signature verifies against the ORIGINAL hash, not the
+// declared, corrupted one. Returns the tx bytes and the corrupted (declared)
+// hash, which is what tx.committed reports for it.
+func buildTamperedHashTransferTx(priv ed25519.PrivateKey, coinID [32]byte, version uint64, newOwner [32]byte) ([]byte, [32]byte) {
 	pub := priv.Public().(ed25519.PublicKey)
-	args := make([]byte, 32)
-	copy(args, newOwner[:])
+	var zeroPod [32]byte
 	refs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
+	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "transfer", args, nil, 0, 1000, coinID[:], refs, nil)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, coinID[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
@@ -389,7 +411,7 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, systemPod, coinID [32]
 	bad[0] ^= 0xFF
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "transfer", args, nil, 0, 1000, coinID[:], bad, sig, refs, nil)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, coinID[:], bad, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), bad
@@ -484,7 +506,7 @@ func requireCoinBalanceEverywhere(t *testing.T, c *harness.Cluster, coinID [32]b
 // attaches is exactly what proofVerdict must reject, and it is reachable
 // without any cooperation from consensus internals — the reason this is
 // written as a scenario rather than left undone.
-func testProofFailedRejected(t *testing.T, c *harness.Cluster, systemPod [32]byte) {
+func testProofFailedRejected(t *testing.T, c *harness.Cluster) {
 	t.Helper()
 
 	node0 := c.Node(0)
@@ -509,7 +531,7 @@ func testProofFailedRejected(t *testing.T, c *harness.Cluster, systemPod [32]byt
 	status, err := cli.Status()
 	requireNoErr(t, err)
 
-	rawTx, hash := buildSignedTransferObjectTx(priv, systemPod, objID, obj.Version, gasCoin, randomID(t))
+	rawTx, hash := buildSignedTransferObjectTx(priv, objID, obj.Version, gasCoin, randomID(t))
 	atxBytes := buildATXWithBogusProof(rawTx, objID, status.Epoch)
 
 	transport := client.NewQUICTransport(node0.QUICAddr)
@@ -520,22 +542,23 @@ func testProofFailedRejected(t *testing.T, c *harness.Cluster, systemPod [32]byt
 	requireVerdictAll(stepCtx(t), t, c, hash, false, "proof_failed")
 }
 
-// buildSignedTransferObjectTx builds a signed "transfer_object" tx mutating
-// objID (at version) to newOwner, paying gas from a separately owned gasCoin
-// (mirroring TransferObject's shape: the mutated object is not itself a coin,
-// so gas comes from a distinct owned singleton). Returns the tx bytes and hash.
-func buildSignedTransferObjectTx(priv ed25519.PrivateKey, systemPod, objID [32]byte, version uint64, gasCoin, newOwner [32]byte) ([]byte, [32]byte) {
+// buildSignedTransferObjectTx builds a signed transfer_object (a declared
+// reparent op to a KeyRoot) moving objID (at version) to newOwner, paying gas
+// from a separately owned gasCoin (mirroring TransferObject's shape: the
+// mutated object is not itself a coin, so gas comes from a distinct owned
+// singleton). Returns the tx bytes and hash.
+func buildSignedTransferObjectTx(priv ed25519.PrivateKey, objID [32]byte, version uint64, gasCoin, newOwner [32]byte) ([]byte, [32]byte) {
 	pub := priv.Public().(ed25519.PublicKey)
-	args := make([]byte, 32)
-	copy(args, newOwner[:])
+	var zeroPod [32]byte
 	refs := []genesis.ObjectRefData{{ID: objID, Version: version}}
+	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: objID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "transfer_object", args, nil, 0, 1000, gasCoin[:], refs, nil)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "transfer_object", args, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), hash

@@ -263,7 +263,7 @@ func TestExecuteTx_EmitsTxCommitted_VersionConflict(t *testing.T) {
 	disableTxAuth(dag)
 
 	objID := Hash{0x10}
-	dag.tracker.trackObject(objID, 3, 0, 0) // current version 3
+	dag.tracker.trackObject(objID, 3, 0, 0, 0, Hash{}) // current version 3
 
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)

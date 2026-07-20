@@ -818,6 +818,96 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 	}
 }
 
+// TestSnapshot_ParentAndChildCountRoundtrip confirms a tracker entry's parent
+// kind, parent reference, and child count survive a CreateSnapshot ->
+// ExtractTrackerEntries round-trip unchanged. Without this, a joined node's
+// tracker would diverge from the founder's the moment any object declares a
+// parent, since the joiner's Import writes whatever the snapshot shipped.
+func TestSnapshot_ParentAndChildCountRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	parentID := consensus.Hash{0xAA}
+	childID := consensus.Hash{0xBB}
+
+	tracker := []consensus.ObjectTrackerEntry{
+		{ID: parentID, Version: 1, ParentKind: 0, Parent: consensus.Hash{}, ChildCount: 2},
+		{ID: childID, Version: 1, ParentKind: 1, Parent: parentID, ChildCount: 0},
+	}
+
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+	entries := ExtractTrackerEntries(snapshot)
+	if len(entries) != 2 {
+		t.Fatalf("extracted %d tracker entries, want 2", len(entries))
+	}
+
+	byID := make(map[consensus.Hash]consensus.ObjectTrackerEntry, len(entries))
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+
+	parent := byID[parentID]
+	if parent.ParentKind != 0 || parent.ChildCount != 2 {
+		t.Errorf("parent entry = %+v, want ParentKind=0 ChildCount=2", parent)
+	}
+
+	child := byID[childID]
+	if child.ParentKind != 1 || child.Parent != parentID || child.ChildCount != 0 {
+		t.Errorf("child entry = %+v, want ParentKind=1 Parent=%x ChildCount=0", child, parentID)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+	if _, err := ApplySnapshot(db2, data); err != nil {
+		t.Fatalf("ApplySnapshot should succeed with valid checksum: %v", err)
+	}
+}
+
+// TestSnapshot_ParentFieldsAffectChecksum confirms the checksum covers the
+// tracker entry's parent kind, parent reference, and child count: a snapshot
+// that differs only in one of these fields must produce a different checksum,
+// otherwise a tampered or divergent parent edge would pass verification.
+func TestSnapshot_ParentFieldsAffectChecksum(t *testing.T) {
+	base := consensus.ObjectTrackerEntry{ID: consensus.Hash{1}, Version: 1, ParentKind: 0, Parent: consensus.Hash{0xAA}, ChildCount: 3}
+
+	cases := []struct {
+		name    string
+		variant consensus.ObjectTrackerEntry
+	}{
+		{"parent_kind", func() consensus.ObjectTrackerEntry { e := base; e.ParentKind = 1; return e }()},
+		{"parent", func() consensus.ObjectTrackerEntry { e := base; e.Parent = consensus.Hash{0xBB}; return e }()},
+		{"child_count", func() consensus.ObjectTrackerEntry { e := base; e.ChildCount = 4; return e }()},
+	}
+
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	baseData, err := CreateSnapshot(db, 0, nil, nil, []consensus.ObjectTrackerEntry{base}, nil, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	baseSnap := types.GetRootAsSnapshot(baseData, 0)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			variantData, err := CreateSnapshot(db, 0, nil, nil, []consensus.ObjectTrackerEntry{tc.variant}, nil, 0, 0, 0, nil)
+			if err != nil {
+				t.Fatalf("CreateSnapshot variant: %v", err)
+			}
+			variantSnap := types.GetRootAsSnapshot(variantData, 0)
+
+			if bytes.Equal(baseSnap.ChecksumBytes(), variantSnap.ChecksumBytes()) {
+				t.Errorf("%s: checksum unchanged despite differing tracker entry", tc.name)
+			}
+		})
+	}
+}
+
 func TestSnapshot_WithDomains(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()

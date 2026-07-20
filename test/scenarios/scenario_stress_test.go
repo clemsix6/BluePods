@@ -162,7 +162,7 @@ func testDoubleSpendStorm(t *testing.T, c *harness.Cluster, cli *client.Client, 
 
 	var wg sync.WaitGroup
 	for i := 0; i < stressDoubleSpenders; i++ {
-		txBytes, hash := buildSignedTransferTx(priv, cli.SystemPod(), coinID, obj.Version, randomID(t))
+		txBytes, hash := buildSignedTransferTx(priv, coinID, obj.Version, randomID(t))
 		hashes[i] = hash
 
 		target := c.Node(i % stressScenarioSize)

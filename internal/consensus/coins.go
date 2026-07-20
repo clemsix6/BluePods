@@ -125,6 +125,37 @@ func writeCoinBalance(data []byte, newBalance uint64) []byte {
 	return builder.FinishedBytes()
 }
 
+// writeObjectOwner rebuilds an object with a new owner (its parent bytes), a
+// new parent kind, and the tracker's already-bumped version, preserving every
+// other field (ID, replication, content, fees). A reparent rewrites the
+// stored body's owner to mirror the tracker's new parent reference, restoring
+// the invariant that body owner bytes equal the current parent bytes; the
+// version is stamped from the caller (the tracker's post-checkAndUpdate
+// version) so the held copy GetObject serves never falls behind the
+// version-conflict check a follow-up mutation is validated against.
+func writeObjectOwner(data []byte, newOwner Hash, newParentKind byte, newVersion uint64) []byte {
+	obj := types.GetRootAsObject(data, 0)
+	builder := flatbuffers.NewBuilder(256)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(newOwner[:])
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, newVersion)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
+	types.ObjectAddParentKind(builder, newParentKind)
+
+	offset := types.ObjectEnd(builder)
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
 // deductCoinFee reads a coin, deducts the fee, and writes back.
 // Returns the actual amount deducted and whether the full fee was covered.
 // If balance < fee, the entire balance is taken and fullyCovered = false.

@@ -130,8 +130,8 @@ func TestTrackerExportImport(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	obj1, obj2 := Hash{0x01}, Hash{0x02}
-	ot.trackObject(obj1, 5, 10, 0)
-	ot.trackObject(obj2, 10, 20, 0)
+	ot.trackObject(obj1, 5, 10, 0, 0, Hash{})
+	ot.trackObject(obj2, 10, 20, 0, 0, Hash{})
 
 	entries := ot.Export()
 	if len(entries) != 2 {
@@ -165,7 +165,7 @@ func TestTrackerDeleteObject(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x03}
-	ot.trackObject(objID, 5, 10, 0)
+	ot.trackObject(objID, 5, 10, 0, 0, Hash{})
 
 	// Verify it exists
 	if v := ot.getVersion(objID); v != 5 {
@@ -210,7 +210,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	objID := Hash{0x10}
 
 	// Pre-set version to 3
-	dag.tracker.trackObject(objID, 3, 0, 0)
+	dag.tracker.trackObject(objID, 3, 0, 0, 0, Hash{})
 
 	// Build ATX expecting version 0 (stale)
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)

@@ -85,8 +85,8 @@ func TestComputeFingerprint_SingletonContentHashedStandardNot(t *testing.T) {
 	singletonID[0] = 0x01
 	standardID[0] = 0x02
 
-	dag.TrackObject(singletonID, 1, 0, 0)
-	dag.TrackObject(standardID, 1, 5, 0)
+	dag.TrackObject(singletonID, 1, 0, 0, 0, [32]byte{})
+	dag.TrackObject(standardID, 1, 5, 0, 0, [32]byte{})
 
 	st.SetObject(buildTestObjectWithReplication(singletonID, 1, []byte("v1"), 0))
 	st.SetObject(buildTestObjectWithReplication(standardID, 1, []byte("v1"), 5))
@@ -110,6 +110,60 @@ func TestComputeFingerprint_SingletonContentHashedStandardNot(t *testing.T) {
 	afterStandardEdit := ComputeFingerprint(dag, st)
 	if afterStandardEdit.Checksum != base.Checksum {
 		t.Error("checksum changed after mutating a standard object's content with its tracker entry unchanged")
+	}
+}
+
+// TestComputeFingerprint_IdenticalTrackersSameFingerprint verifies two
+// independent nodes that track the exact same objects — including parent
+// kind, parent reference, and child count — converge on identical
+// fingerprints. This is the join-scenario invariant the convergence check
+// relies on: a founder and a joiner with the same tracker state must not
+// diverge merely because they are different DAG/State instances.
+func TestComputeFingerprint_IdenticalTrackersSameFingerprint(t *testing.T) {
+	dagA, stA := newFingerprintTestPair(t)
+	dagB, stB := newFingerprintTestPair(t)
+
+	var parentID, childID [32]byte
+	parentID[0] = 0x01
+	childID[0] = 0x02
+
+	for _, dag := range []*consensus.DAG{dagA, dagB} {
+		dag.TrackObject(parentID, 1, 5, 100, 0, [32]byte{})
+		dag.TrackObject(childID, 1, 5, 0, 1, parentID)
+	}
+
+	fpA := ComputeFingerprint(dagA, stA)
+	fpB := ComputeFingerprint(dagB, stB)
+
+	if fpA.Checksum != fpB.Checksum {
+		t.Errorf("identical trackers produced different fingerprints: %x vs %x", fpA.Checksum, fpB.Checksum)
+	}
+}
+
+// TestComputeFingerprint_ParentBitFlipChangesFingerprint verifies that
+// re-pointing one tracked object's parent reference — a single bit flipped in
+// the 32-byte parent, same object ID, version, replication, and fees before
+// and after — changes the fingerprint. The object ID set and count never
+// change here, isolating the parent bytes as the only varying term. Without
+// this, the parent hierarchy could silently diverge between nodes while every
+// other convergence-checked term stayed equal.
+func TestComputeFingerprint_ParentBitFlipChangesFingerprint(t *testing.T) {
+	dag, st := newFingerprintTestPair(t)
+
+	var parentA, parentB, childID [32]byte
+	parentA[0] = 0x01
+	parentB = parentA
+	parentB[31] ^= 0x01 // flip one bit in the last byte
+	childID[0] = 0x02
+
+	dag.TrackObject(childID, 1, 5, 0, 1, parentA)
+	before := ComputeFingerprint(dag, st)
+
+	dag.TrackObject(childID, 1, 5, 0, 1, parentB)
+	after := ComputeFingerprint(dag, st)
+
+	if before.Checksum == after.Checksum {
+		t.Error("one-bit parent difference did not change the fingerprint")
 	}
 }
 

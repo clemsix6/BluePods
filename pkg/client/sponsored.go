@@ -15,12 +15,13 @@ import (
 // its fee_payer binding, signs the same body, and submits. The two signatures
 // cover one shared body hash, so neither can be lifted onto another body.
 type SponsoredOp struct {
-	Pod         [32]byte                // Pod is the executing pod ID.
-	FuncName    string                  // FuncName is the pod function to call.
+	Pod         [32]byte                // Pod is the executing pod ID (zero for a declared-op transaction).
+	FuncName    string                  // FuncName is the pod function to call (empty for a declared-op transaction).
 	Args        []byte                  // Args is the serialized function arguments.
 	CreatedReps []uint16                // CreatedReps is the replication of each created object.
 	MutableRefs []genesis.ObjectRefData // MutableRefs are the mutated/deleted object references.
 	ReadRefs    []genesis.ObjectRefData // ReadRefs are the read-only object references.
+	Operations  []genesis.DeclaredOp    // Operations are protocol-declared ops (reparent, delete) in place of a pod call.
 }
 
 // SignedSponsoredOp is a sender-signed operation awaiting a sponsor. It carries
@@ -68,7 +69,7 @@ func (w *Wallet) SubmitSponsored(c *Client, signed SignedSponsoredOp) ([32]byte,
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
 		builder, signed.Sender, signed.Op.Pod, signed.Op.FuncName, signed.Op.Args, signed.Op.CreatedReps,
-		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, sponsor, sponsorSig, nil,
+		0, clientMaxGas, signed.GasCoin[:], hash, signed.SenderSig, signed.Op.MutableRefs, signed.Op.ReadRefs, sponsor, sponsorSig, nil, signed.Op.Operations,
 	)
 	builder.Finish(txOff)
 
@@ -86,6 +87,6 @@ func sponsoredBody(sender ed25519.PublicKey, op SponsoredOp, sponsorPubkey [32]b
 	sponsor := genesis.Sponsorship{FeePayer: sponsorPubkey[:], ValidUntil: validUntil}
 
 	return genesis.BuildUnsignedTxBytesSponsored(
-		sender, op.Pod, op.FuncName, op.Args, op.CreatedReps, 0, clientMaxGas, gasCoin[:], op.MutableRefs, op.ReadRefs, sponsor, nil,
+		sender, op.Pod, op.FuncName, op.Args, op.CreatedReps, 0, clientMaxGas, gasCoin[:], op.MutableRefs, op.ReadRefs, sponsor, nil, op.Operations,
 	)
 }

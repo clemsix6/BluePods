@@ -24,6 +24,19 @@ func ObjectDeleted(object, tx [32]byte, refund uint64) {
 	emit(EvObjectDeleted, hexAttr("object", object), hexAttr("tx", tx), slog.Uint64("refund", refund))
 }
 
+// ObjectReparented marks an object's parent edge changed by a protocol-declared
+// reparent operation (a transfer is a reparent to a KeyRoot). kind selects how
+// to read parent: 0 = KeyRoot (an Ed25519 key), 1 = ObjectParent (another
+// object's ID). version is the object's post-operation version.
+func ObjectReparented(object, tx [32]byte, kind byte, parent [32]byte, version uint64) {
+	emit(EvObjectReparented,
+		hexAttr("object", object),
+		hexAttr("tx", tx),
+		slog.Uint64("kind", uint64(kind)),
+		hexAttr("parent", parent),
+		slog.Uint64("version", version))
+}
+
 // DomainRegistered marks a new domain name bound to object.
 func DomainRegistered(name string, object, tx [32]byte) {
 	emit(EvDomainRegistered, slog.String("name", name), hexAttr("object", object), hexAttr("tx", tx))

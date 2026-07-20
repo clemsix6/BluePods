@@ -55,6 +55,7 @@ const (
 	FailAuth    FailReason = 4 // FailAuth is a failed proof, signature, or hash check
 	FailRevert  FailReason = 5 // FailRevert is a pod execution error
 	FailExpired FailReason = 6 // FailExpired is an expired or unbounded sponsored transaction
+	FailOps     FailReason = 7 // FailOps is a rejected declared-operation list, or a declared deletion of a parented object
 )
 
 // String returns a short human-readable label for the reason.
@@ -74,6 +75,8 @@ func (r FailReason) String() string {
 		return "revert"
 	case FailExpired:
 		return "expired"
+	case FailOps:
+		return "ops"
 	default:
 		return "unknown"
 	}

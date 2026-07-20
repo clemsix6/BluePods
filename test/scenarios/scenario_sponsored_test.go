@@ -30,14 +30,13 @@ func TestScenarioSponsored(t *testing.T) {
 	c := harness.NewCluster(t, sponsoredScenarioSize)
 	node0 := c.Node(0)
 	cli := c.Client(0)
-	systemPod := cli.SystemPod()
 
 	t.Run("sponsored_success", func(t *testing.T) {
-		testSponsoredSuccess(t, c, cli, node0, systemPod)
+		testSponsoredSuccess(t, c, cli, node0)
 	})
 
 	t.Run("expired_sponsorship_rejected", func(t *testing.T) {
-		testExpiredSponsorshipRejected(t, c, cli, node0, systemPod)
+		testExpiredSponsorshipRejected(t, c, cli, node0)
 	})
 }
 
@@ -48,7 +47,7 @@ func TestScenarioSponsored(t *testing.T) {
 // sponsor's coin balance drops by exactly the deducted fee, and that the
 // sender's coin carries only the transfer's effect (new owner, untouched
 // balance) with no fee trace on it at all.
-func testSponsoredSuccess(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node, systemPod [32]byte) {
+func testSponsoredSuccess(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
 	const funding = uint64(1_000_000)
@@ -59,9 +58,7 @@ func testSponsoredSuccess(t *testing.T, c *harness.Cluster, cli *client.Client, 
 	recipientPub := recipient.Pubkey()
 
 	op := client.SponsoredOp{
-		Pod:         systemPod,
-		FuncName:    "transfer",
-		Args:        sponsoredTransferArgs(recipientPub),
+		Operations:  []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: recipientPub[:]}},
 		MutableRefs: []genesis.ObjectRefData{{ID: coinID, Version: sender.GetCoin(coinID).Version}},
 	}
 
@@ -115,7 +112,7 @@ func testSponsoredSuccess(t *testing.T, c *harness.Cluster, cli *client.Client, 
 // that neither the sender's coin nor the sponsor's gas coin was touched: the
 // check runs before fee deduction, so an expired sponsorship never charges
 // anyone.
-func testExpiredSponsorshipRejected(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node, systemPod [32]byte) {
+func testExpiredSponsorshipRejected(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
 	const funding = uint64(1_000_000)
@@ -123,11 +120,10 @@ func testExpiredSponsorshipRejected(t *testing.T, c *harness.Cluster, cli *clien
 	sender, coinID := fundedWallet(stepCtx(t), t, cli, node0, funding)
 	sponsor, gasCoin := fundedWallet(stepCtx(t), t, cli, node0, funding)
 	recipient := client.NewWallet()
+	recipientPub := recipient.Pubkey()
 
 	op := client.SponsoredOp{
-		Pod:         systemPod,
-		FuncName:    "transfer",
-		Args:        sponsoredTransferArgs(recipient.Pubkey()),
+		Operations:  []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: recipientPub[:]}},
 		MutableRefs: []genesis.ObjectRefData{{ID: coinID, Version: sender.GetCoin(coinID).Version}},
 	}
 
@@ -151,14 +147,4 @@ func testExpiredSponsorshipRejected(t *testing.T, c *harness.Cluster, cli *clien
 	if got := sponsor.GetCoin(gasCoin).Balance; got != funding {
 		t.Fatalf("rejected sponsored tx charged the sponsor's gas coin: got %d, want unchanged %d", got, funding)
 	}
-}
-
-// sponsoredTransferArgs encodes a sponsored "transfer" op's arguments in the
-// same Borsh format pkg/client's own (unexported) encodeTransferArgs uses:
-// the 32-byte new owner, nothing else.
-func sponsoredTransferArgs(newOwner [32]byte) []byte {
-	args := make([]byte, 32)
-	copy(args, newOwner[:])
-
-	return args
 }

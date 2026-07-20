@@ -140,6 +140,26 @@ type DAG struct {
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
 
+	// onObjectDeleted fires when a declared-operation delete settles, so the
+	// holder of the object drops its stored body; a node that never held the
+	// object no-ops. It is the reverse-direction mirror of the state's
+	// SetOnObjectCreated wiring (consensus notifying state), keeping consensus
+	// free of any import of the state package.
+	onObjectDeleted func(id [32]byte)
+
+	// onObjectReparented fires when a declared reparent settles, so the holder
+	// of the object rewrites its stored body's owner bytes, parent kind, and
+	// version to the new parent reference and the tracker's already-bumped
+	// version; a node that never held the object no-ops. It mirrors
+	// onObjectDeleted in the same reverse direction (consensus notifying state).
+	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte, version uint64)
+
+	// indexer is the verifiable-index feed (indexer.go): nil-safe, wired
+	// post-construction by cmd/node via SetIndexer. Every call site checks it
+	// for nil before calling, so a DAG built without an indexer behaves
+	// exactly as it did before this package existed.
+	indexer indexer
+
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
 	// Used as the inline fallback when no batch verifier is set (such as direct
@@ -607,12 +627,58 @@ func (d *DAG) VertexRange(from, to uint64, limit int) [][]byte {
 	return d.store.rawRange(from, to, limit)
 }
 
-// TrackObject registers a created object in the tracker.
+// TrackObject registers a created object in the tracker, threading through its
+// declared parent reference (kind + bytes, read from the object body's owner
+// and parent_kind fields) so the tracker's child-count bookkeeping stays
+// current from the moment the object is created.
 // Called by the state layer when a new object is created during execution.
-func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64) {
-	var h Hash
+func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
+	var h, p Hash
 	copy(h[:], id[:])
-	d.tracker.trackObject(h, version, replication, fees)
+	copy(p[:], parent[:])
+	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
+
+	if d.indexer != nil {
+		d.indexer.ApplyEdge(h, parentKind, p)
+	}
+}
+
+// ControlsParent reports whether sender is authorized to attach a newly created
+// object under the given parent reference. A KeyRoot parent is authorized only
+// when it is the sender's own key; an ObjectParent is authorized when the
+// sender's key terminates the parent's cascade walk. It backs the state layer's
+// creation-permission rule without state importing consensus.
+func (d *DAG) ControlsParent(kind byte, parent [32]byte, sender [32]byte) bool {
+	var p, s Hash
+	copy(p[:], parent[:])
+	copy(s[:], sender[:])
+
+	if kind == keyRootKind {
+		return p == s
+	}
+
+	return d.tracker.controls(s, p)
+}
+
+// SetOnObjectDeleted wires the callback consensus invokes when a declared
+// deletion settles, so the node drops the deleted object's stored body. A node
+// that never held the object no-ops. It mirrors State.SetOnObjectCreated in the
+// reverse direction (consensus notifying state), so state keeps its content
+// storage authoritative while consensus stays free of the state package.
+func (d *DAG) SetOnObjectDeleted(fn func(id [32]byte)) {
+	d.onObjectDeleted = fn
+}
+
+// SetOnObjectReparented wires the callback consensus invokes when a declared
+// reparent settles, so a node holding the object rewrites its stored body's
+// owner bytes, parent kind, and version to the new parent reference and the
+// tracker's already-bumped version. A node that never held the object no-ops.
+// It mirrors SetOnObjectDeleted, keeping the state-held body's owner and
+// version fields (which GetObject serves, pod execution reads, and the
+// daemon's attestation collection re-derives its hash from) consistent with
+// the tracker's new parent, while consensus stays free of the state package.
+func (d *DAG) SetOnObjectReparented(fn func(id [32]byte, newKind byte, newParent [32]byte, version uint64)) {
+	d.onObjectReparented = fn
 }
 
 // SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
@@ -684,7 +750,16 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	// an untracked reserve coin would keep its balance outside the checksum
 	// entirely.
 	coin := types.GetRootAsObject(is.Coin, 0)
-	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
+
+	// The reserve coin's parent is a KeyRoot: the genesis owner key it was
+	// created for (buildGenesisCoin never sets parent_kind, so it defaults to
+	// KeyRoot).
+	var parent [32]byte
+	if ownerBytes := coin.OwnerBytes(); len(ownerBytes) == 32 {
+		copy(parent[:], ownerBytes)
+	}
+
+	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees(), coin.ParentKind(), parent)
 }
 
 // SeedGenesisValidator installs the founding validator into the validator set:

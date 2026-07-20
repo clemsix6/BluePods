@@ -5,6 +5,7 @@ import (
 	"BluePods/internal/attest"
 	"BluePods/internal/consensus"
 	"BluePods/internal/logger"
+	"BluePods/internal/types"
 )
 
 // initAggregation initializes the aggregation subsystem.
@@ -49,9 +50,34 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 	// for objects it holds at their current version.
 	n.attHandler = aggregation.NewHandler(n.state, n.blsKey, n.storage, isHolder)
 
-	// Wire object creation callback to tracker
-	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64) {
-		n.dag.TrackObject(id, version, replication, fees)
+	// Wire object creation callback to tracker, threading the created object's
+	// declared parent through to the tracker's child-count bookkeeping.
+	n.state.SetOnObjectCreated(func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
+		n.dag.TrackObject(id, version, replication, fees, parentKind, parent)
+	})
+
+	// Reverse direction: when a declared deletion settles in the commit loop,
+	// the holder drops the object's stored body (a node that never held it
+	// no-ops on a missing key).
+	n.dag.SetOnObjectDeleted(func(id [32]byte) {
+		n.state.DeleteObject(id)
+	})
+
+	// Same reverse direction for a declared reparent: the holder rewrites its
+	// stored body's owner bytes, parent kind, and version to the new parent and
+	// the tracker's already-bumped version, so every body-reading site
+	// (GetObject, pod execution, the daemon's attestation collection) sees the
+	// new owner and current version (a node that never held it no-ops on a
+	// missing key).
+	n.dag.SetOnObjectReparented(func(id [32]byte, newKind byte, newParent [32]byte, version uint64) {
+		n.state.ReparentObject(id, newKind, newParent, version)
+	})
+
+	// Creation-permission walk: the state layer asks consensus whether the tx
+	// sender controls a created object's declared object-parent, resolved through
+	// the global cascade walk over tracker metadata.
+	n.state.SetParentValidator(func(kind byte, parent [32]byte, sender [32]byte, _ *types.Transaction) bool {
+		return n.dag.ControlsParent(kind, parent, sender)
 	})
 
 	// Eager signing: at execution, a holder signs the persisted version and

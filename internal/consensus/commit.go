@@ -119,7 +119,18 @@ func (d *DAG) commitNextRound() bool {
 
 	d.clearStall()
 	d.advanceCommitCursor(round)
+	d.setIndexFrontier(round)
 	return true
+}
+
+// setIndexFrontier records round's combined index root once the commit cursor
+// has fully decided it (a commit OR a skip), so the anchored root already
+// reflects any epoch-boundary validator rebuild advanceCommitCursor triggered
+// for this same round. No-op when no indexer is wired.
+func (d *DAG) setIndexFrontier(round uint64) {
+	if d.indexer != nil {
+		d.indexer.SetFrontier(round)
+	}
 }
 
 // onCausalStall records that the commit cursor's decided anchor is blocked on absent
@@ -684,6 +695,15 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return feeSplit
 	}
 
+	// Declared protocol operations (reparent, transfer, delete) apply here, on
+	// every node, without pod execution, and never fall through to a pod call.
+	// Routing before the ownership check is deliberate: these operations answer
+	// to the cascade control model (controls/wouldCycle over parent metadata),
+	// not to the direct owner field validateMutableRefOwnership reads.
+	if tx.OperationsLength() > 0 {
+		return d.commitDeclaredOps(tx, txHash, vertexHash, commitRound, feeSplit)
+	}
+
 	// Ownership check: sender must own all mutable_ref objects
 	if !d.validateMutableRefOwnership(atx, tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
@@ -714,8 +734,15 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// deletion set and the network-uniform tracker deposit — exactly as fee
 	// deduction does. Placing it before the skip is what keeps coins_total,
 	// deposits, and total_supply identical across holders and non-holders. Physical
-	// content removal stays holder-only in the execution path.
-	d.settleDeclaredDeletions(tx, txHash)
+	// content removal stays holder-only in the execution path. A declared
+	// deletion of an object that still has tracked children is rejected here,
+	// so the pod carve-out channel can never orphan a child either.
+	if !d.settleDeclaredDeletions(tx, txHash) {
+		logger.Debug("declared deletion of a parented object rejected", "func", funcName)
+		d.emitTransaction(tx, false, FailOps)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "delete_has_children")
+		return feeSplit
+	}
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
 	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
@@ -793,15 +820,47 @@ func poolUnlockedStorage(split FeeSplit, storage uint64) FeeSplit {
 // (tx.deleted_objects) is intersected with the mutable_refs validateMutableRefOwnership
 // already verified are owned by the sender, so only an owned, referenced object is
 // settled — a tampered ID for an object the sender does not reference is ignored.
-// It is a no-op with no coin store wired.
-func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
-	deleted := declaredDeletedSet(tx)
-	if len(deleted) == 0 || d.coinStore == nil {
-		return
+// Every such object must have no tracked children: a pod-driven delete of a
+// parented object rejects the whole transaction, exactly as the declared-operation
+// delete would, so neither channel can orphan a child. It returns false when a
+// parented object is present (nothing is settled) and true otherwise (including
+// the no-op cases: nothing declared, or no coin store wired).
+func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) bool {
+	targets := ownedDeletedRefs(tx)
+	if len(targets) == 0 {
+		return true
+	}
+
+	for _, id := range targets {
+		if d.tracker.childCount(id) != 0 {
+			return false
+		}
+	}
+
+	if d.coinStore == nil {
+		return true
 	}
 
 	gasCoinID, hasGasCoin := txGasCoinID(tx)
+	for _, id := range targets {
+		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
+		events.ObjectDeleted(id, txHash, refund)
+	}
 
+	return true
+}
+
+// ownedDeletedRefs returns the IDs a transaction both declares deleted and
+// references mutably, deduplicated and in mutable-ref order. Intersecting the
+// declared set with the mutable refs (already verified sender-owned) drops a
+// tampered ID for an object the sender does not reference.
+func ownedDeletedRefs(tx *types.Transaction) []Hash {
+	deleted := declaredDeletedSet(tx)
+	if len(deleted) == 0 {
+		return nil
+	}
+
+	var targets []Hash
 	var ref types.ObjectRef
 	for i := 0; i < tx.MutableRefsLength(); i++ {
 		if !tx.MutableRefs(&ref, i) {
@@ -814,9 +873,10 @@ func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
 		}
 
 		delete(deleted, id) // single-shot per object within this transaction
-		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
-		events.ObjectDeleted(id, txHash, refund)
+		targets = append(targets, id)
 	}
+
+	return targets
 }
 
 // settleDeletion releases a deleted object's storage deposit from the
@@ -826,10 +886,17 @@ func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
 // the deposits term of the supply identity by the same amount on every node, so
 // the identity never overstates the coins backing it. It returns the refunded
 // amount. The burn is gated on the refund landing, so a missing coin burns the
-// whole deposit rather than leaking the refund out of supply.
+// whole deposit rather than leaking the refund out of supply. This is the single
+// settlement point for both deletion channels (the declared op and the
+// pod-driven carve-out), so it is also the single point that feeds the index's
+// RemoveObject.
 func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
 	deposit := d.tracker.getFees(objID)
 	d.tracker.deleteObject(objID)
+
+	if d.indexer != nil {
+		d.indexer.RemoveObject(objID)
+	}
 
 	if deposit == 0 || d.feeParams == nil {
 		return 0

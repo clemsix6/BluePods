@@ -22,6 +22,12 @@ table Object {
 
     // fees is the storage deposit set by the protocol at object creation (read-only for pods).
     fees:uint64;
+
+    // parent_kind identifies what owner encodes: 0 = KeyRoot (owner is an
+    // Ed25519 public key), 1 = ObjectParent (owner is the 32-byte ID of the
+    // parent object). Absent (0, KeyRoot) on objects created before this
+    // field existed, so pre-existing owner bytes keep their meaning.
+    parent_kind:ubyte;
 }
 
 root_type Object;
