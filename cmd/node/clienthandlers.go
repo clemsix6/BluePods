@@ -56,6 +56,8 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleGetVertex(data)
 	case network.MsgTagGetVertexRange:
 		return n.handleGetVertexRange(data)
+	case network.MsgTagGetIndexAnchor:
+		return n.handleGetIndexAnchor()
 	case network.MsgTagStateFingerprint:
 		return n.handleStateFingerprint()
 	case network.MsgTagTestControl:

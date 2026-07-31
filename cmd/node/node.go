@@ -57,6 +57,10 @@ type Node struct {
 	// splits so sequential requests carry V, V+1, V+2 in submission order.
 	faucetMu          gosync.Mutex // faucetMu serializes faucet request handling
 	faucetNextVersion uint64       // faucetNextVersion is the reserve coin version the next split will reference
+
+	// anchorCache holds the most recently assembled GetIndexAnchor quorum
+	// bundle, reassembled only when this node's own committed frontier advances.
+	anchorCache indexAnchorCache
 }
 
 // NewNode creates and initializes a new node.

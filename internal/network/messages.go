@@ -100,6 +100,15 @@ const (
 	// MsgTagGetVertexRangeResp carries the vertices in the requested span, bounded to
 	// one chunk.
 	MsgTagGetVertexRangeResp = 0x1C
+
+	// MsgTagGetIndexAnchor requests the serving node's cached quorum-attested
+	// index anchor bundle: the highest recent frontier for which producer-signed
+	// headers reach the capped-stake quorum. It carries no payload.
+	MsgTagGetIndexAnchor = 0x1D
+
+	// MsgTagGetIndexAnchorResp carries the quorum bundle, or Found=false when the
+	// serving node has no quorate frontier to serve yet.
+	MsgTagGetIndexAnchorResp = 0x1E
 )
 
 // EncodeGossipTx wraps a transaction body for gossip on the one-way message
@@ -140,6 +149,7 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagGetVertexRange:   {},
 	MsgTagStateFingerprint: {},
 	MsgTagTestControl:      {},
+	MsgTagGetIndexAnchor:   {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
@@ -851,6 +861,95 @@ func DecodeGetVertexRangeResp(data []byte) (*GetVertexRangeResponse, error) {
 		copy(v, data[off:off+n])
 		resp.Vertices = append(resp.Vertices, v)
 		off += n
+	}
+
+	return resp, nil
+}
+
+// IndexAnchorHeaderSize is the fixed width of one header record in a
+// GetIndexAnchor response: the 120-byte NORMATIVE vertex header (see the
+// wire-layout comment on headerSize in internal/consensus/header.go) followed
+// by the producer's 64-byte Ed25519 signature over that header's hash. Every
+// record in a response is exactly this many bytes, so there is no per-header
+// length prefix — a fixed width needs none.
+const IndexAnchorHeaderSize = 120 + 64
+
+// EncodeGetIndexAnchor encodes an index-anchor bundle request.
+// Format: [1B tag].
+func EncodeGetIndexAnchor() []byte {
+	return []byte{MsgTagGetIndexAnchor}
+}
+
+// GetIndexAnchorResponse carries the quorum-attested anchor bundle a light
+// client verifies without downloading the index: the highest frontier the
+// serving node found a capped-stake quorum for, that frontier's index root,
+// the epoch naming the validator tree the quorum is weighed against, and one
+// IndexAnchorHeaderSize-byte header record per quorum member. Found is false
+// when the serving node has no quorate frontier yet (for instance, before its
+// first committed round), and every other field is then zero.
+type GetIndexAnchorResponse struct {
+	Found         bool     // Found reports whether a quorate bundle exists
+	FrontierRound uint64   // FrontierRound is the committed round IndexRoot anchors
+	IndexRoot     [32]byte // IndexRoot is the verifiable index root at FrontierRound
+	Epoch         uint64   // Epoch names the validator tree the quorum is weighed against
+	Headers       [][]byte // Headers are the quorum's header records, each IndexAnchorHeaderSize bytes: 120B header ‖ 64B signature
+}
+
+// EncodeGetIndexAnchorResp encodes an index-anchor bundle response.
+// Format: [1B tag] [1B found] [8B frontierRound] [32B indexRoot] [8B epoch]
+// [4B headerCount] then headerCount fixed-width IndexAnchorHeaderSize records
+// back to back, with no per-record length prefix: every record is the same
+// size, so one is unambiguous.
+func EncodeGetIndexAnchorResp(resp *GetIndexAnchorResponse) []byte {
+	size := 1 + 1 + 8 + 32 + 8 + 4 + len(resp.Headers)*IndexAnchorHeaderSize
+
+	buf := make([]byte, size)
+	buf[0] = MsgTagGetIndexAnchorResp
+
+	if resp.Found {
+		buf[1] = 1
+	}
+
+	binary.BigEndian.PutUint64(buf[2:10], resp.FrontierRound)
+	copy(buf[10:42], resp.IndexRoot[:])
+	binary.BigEndian.PutUint64(buf[42:50], resp.Epoch)
+	binary.BigEndian.PutUint32(buf[50:54], uint32(len(resp.Headers)))
+
+	off := 54
+	for _, h := range resp.Headers {
+		copy(buf[off:off+IndexAnchorHeaderSize], h)
+		off += IndexAnchorHeaderSize
+	}
+
+	return buf
+}
+
+// DecodeGetIndexAnchorResp decodes an index-anchor bundle response. It
+// tolerates a truncated payload by returning the header records that parse
+// cleanly and stopping at the first short one, so a Byzantine or
+// mid-upgrade peer cannot crash the requester.
+func DecodeGetIndexAnchorResp(data []byte) (*GetIndexAnchorResponse, error) {
+	if len(data) < 54 || data[0] != MsgTagGetIndexAnchorResp {
+		return nil, fmt.Errorf("not a get-index-anchor response")
+	}
+
+	resp := &GetIndexAnchorResponse{Found: data[1] == 1}
+	resp.FrontierRound = binary.BigEndian.Uint64(data[2:10])
+	copy(resp.IndexRoot[:], data[10:42])
+	resp.Epoch = binary.BigEndian.Uint64(data[42:50])
+
+	count := int(binary.BigEndian.Uint32(data[50:54]))
+	off := 54
+
+	for i := 0; i < count; i++ {
+		if off+IndexAnchorHeaderSize > len(data) {
+			break
+		}
+
+		record := make([]byte, IndexAnchorHeaderSize)
+		copy(record, data[off:off+IndexAnchorHeaderSize])
+		resp.Headers = append(resp.Headers, record)
+		off += IndexAnchorHeaderSize
 	}
 
 	return resp, nil

@@ -435,3 +435,82 @@ func TestGetVertexRangeRespRoundTrip(t *testing.T) {
 		t.Fatalf("empty response decoded %d vertices, want 0", len(empty.Vertices))
 	}
 }
+
+// TestGetIndexAnchorRoundTrip verifies the bundle request encodes and
+// classifies as a client request, or GetIndexAnchor would never route.
+func TestGetIndexAnchorRoundTrip(t *testing.T) {
+	enc := EncodeGetIndexAnchor()
+
+	if enc[0] != MsgTagGetIndexAnchor {
+		t.Fatalf("get-index-anchor tag missing: got 0x%02x", enc[0])
+	}
+
+	if !IsClientMessage(enc) {
+		t.Fatal("get-index-anchor request must classify as a client request, or it never routes")
+	}
+}
+
+// TestGetIndexAnchorRespRoundTrip verifies the bundle response round-trips a
+// quorate bundle carrying several fixed-width header records, and a
+// not-found response carrying none.
+func TestGetIndexAnchorRespRoundTrip(t *testing.T) {
+	h1 := bytes.Repeat([]byte{0x11}, IndexAnchorHeaderSize)
+	h2 := bytes.Repeat([]byte{0x22}, IndexAnchorHeaderSize)
+
+	in := &GetIndexAnchorResponse{
+		Found:         true,
+		FrontierRound: 42,
+		Epoch:         3,
+		Headers:       [][]byte{h1, h2},
+	}
+	in.IndexRoot[0] = 0xAB
+
+	out, err := DecodeGetIndexAnchorResp(EncodeGetIndexAnchorResp(in))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !out.Found || out.FrontierRound != 42 || out.Epoch != 3 || out.IndexRoot[0] != 0xAB {
+		t.Fatalf("scalar fields lost: %+v", out)
+	}
+
+	if len(out.Headers) != 2 || !bytes.Equal(out.Headers[0], h1) || !bytes.Equal(out.Headers[1], h2) {
+		t.Fatalf("headers lost or reordered: %d headers", len(out.Headers))
+	}
+
+	notFound, err := DecodeGetIndexAnchorResp(EncodeGetIndexAnchorResp(&GetIndexAnchorResponse{}))
+	if err != nil {
+		t.Fatalf("decode not-found: %v", err)
+	}
+
+	if notFound.Found || len(notFound.Headers) != 0 {
+		t.Fatalf("expected an empty not-found response, got %+v", notFound)
+	}
+}
+
+// TestGetIndexAnchorRespTruncatedHeaderStopsCleanly mirrors the vertex-range
+// response's truncation tolerance: a payload cut mid-header returns the
+// clean prefix instead of erroring or panicking, so a Byzantine or
+// mid-upgrade peer cannot crash the requester. Every header record is the
+// same fixed width, so a truncated final record is simply dropped.
+func TestGetIndexAnchorRespTruncatedHeaderStopsCleanly(t *testing.T) {
+	h1 := bytes.Repeat([]byte{0x11}, IndexAnchorHeaderSize)
+	h2 := bytes.Repeat([]byte{0x22}, IndexAnchorHeaderSize)
+
+	enc := EncodeGetIndexAnchorResp(&GetIndexAnchorResponse{
+		Found:         true,
+		FrontierRound: 1,
+		Headers:       [][]byte{h1, h2},
+	})
+
+	truncated := enc[:len(enc)-10] // cuts into the second header record
+
+	out, err := DecodeGetIndexAnchorResp(truncated)
+	if err != nil {
+		t.Fatalf("decode truncated: %v", err)
+	}
+
+	if len(out.Headers) != 1 || !bytes.Equal(out.Headers[0], h1) {
+		t.Fatalf("truncated decode returned %d headers, want the clean 1-header prefix", len(out.Headers))
+	}
+}
