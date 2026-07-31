@@ -327,10 +327,11 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 		t.Fatalf("a vertex from an epoch ahead of the receiver must validate: %v", err)
 	}
 
-	// Epoch 3 is impossible at round 25: no producer commits round 30 before it.
-	forged := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 3), 0)
+	// Epoch 3 is the top of the window at round 25 (a producer that committed
+	// round 30 and resumed production below it), epoch 4 is beyond any honest skew.
+	forged := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 4), 0)
 	if err := dag.validateEpoch(forged); !errors.Is(err, errWrongEpoch) {
-		t.Fatalf("an epoch above the round's own epoch must be rejected, got: %v", err)
+		t.Fatalf("an epoch two above the round's own epoch must be rejected, got: %v", err)
 	}
 }
 

@@ -86,13 +86,19 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 	return nil
 }
 
-// validateEpoch checks the epoch a vertex's header claims against the only bound
-// a receiver can hold it to: the epoch its own round belongs to.
+// validateEpoch checks the epoch a vertex's header claims against a
+// receiver-independent window derived from the vertex's OWN round: the epoch that
+// round commits in (commitEpochForRound), plus or minus one.
 //
-// A producer transitions to epoch E when its COMMIT CURSOR reaches round
-// E*epochLength, and it produces strictly above its cursor, so an honest header at
-// round R never claims more than R/epochLength. Anything above that is provably
-// forged and is rejected.
+// The window is exactly the two honest skews. A producer transitions to epoch E
+// when its COMMIT CURSOR reaches round E*epochLength, so a producer whose commit
+// lags stamps the round's epoch minus one, and a producer that has transitioned
+// but resumes production below the boundary (production restarts at
+// lastProducedRound+1, which sits below the commit cursor after a stall) stamps
+// the round's epoch plus one. Nothing else is reachable honestly, and the field
+// must be bounded on BOTH sides: from the quorum-bundle work on it names the
+// validator tree a header's quorum is weighed against, so an unbounded-below claim
+// is a stale-validator-set attack.
 //
 // The receiver's own currentEpoch is deliberately NOT the reference. It is not
 // network-uniform at any instant: the producer of a vertex in flight across a
@@ -103,21 +109,37 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 // buffer, trigger deep-gap recovery and catch up at all. Comparing against
 // currentEpoch in either direction would reject them and wedge the node.
 //
-// Epochs disabled (epochLength 0) leaves the field unconstrained: no boundary
-// exists to bound it with.
+// With epochs disabled (epochLength 0) no boundary is ever crossed, so the only
+// epoch any header may claim is 0.
 func (d *DAG) validateEpoch(v *types.Vertex) error {
 	if d.epochLength == 0 {
+		if v.Epoch() != 0 {
+			return fmt.Errorf("epoch mismatch: epochs disabled, only epoch 0 is valid, got %d:\n%w",
+				v.Epoch(), errWrongEpoch)
+		}
+
 		return nil
 	}
 
-	maxEpoch := v.Round() / d.epochLength
+	low, high := epochWindow(d.commitEpochForRound(v.Round()))
 
-	if v.Epoch() > maxEpoch {
-		return fmt.Errorf("epoch mismatch: round %d allows at most epoch %d, got %d:\n%w",
-			v.Round(), maxEpoch, v.Epoch(), errWrongEpoch)
+	if v.Epoch() < low || v.Epoch() > high {
+		return fmt.Errorf("epoch mismatch: round %d allows epochs %d..%d, got %d:\n%w",
+			v.Round(), low, high, v.Epoch(), errWrongEpoch)
 	}
 
 	return nil
+}
+
+// epochWindow returns the inclusive epoch window around the epoch a round commits
+// in: one below (a producer that has not transitioned yet) to one above (a
+// producer filling a round below the boundary it just crossed), clamped at 0.
+func epochWindow(roundEpoch uint64) (low, high uint64) {
+	if roundEpoch > 0 {
+		low = roundEpoch - 1
+	}
+
+	return low, roundEpoch + 1
 }
 
 // validateProducer checks the producer is in the validator set.

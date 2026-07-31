@@ -143,7 +143,7 @@ func TestAddVertex(t *testing.T) {
 	defer dag.Close()
 
 	// Build a valid round 0 vertex
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 
 	if !dag.AddVertex(data) {
 		t.Fatal("AddVertex should return true for new valid vertex")
@@ -158,7 +158,7 @@ func TestAddVertexUnknownProducer(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, unknown, 0, nil, 1)
+	data := buildTestVertex(t, unknown, 0, nil, 0)
 
 	if dag.AddVertex(data) {
 		t.Error("AddVertex should return false for unknown producer")
@@ -172,7 +172,7 @@ func TestAddVertexDuplicate(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 
 	if !dag.AddVertex(data) {
 		t.Fatal("first AddVertex should return true")
@@ -238,7 +238,7 @@ func TestRoundProgression(t *testing.T) {
 
 	// Add round 0 vertices from quorum of validators (not including validator 0)
 	for i := 1; i < 4; i++ {
-		data := buildTestVertex(t, validators[i], 0, nil, 1)
+		data := buildTestVertex(t, validators[i], 0, nil, 0)
 		if !dag.AddVertex(data) {
 			t.Fatalf("AddVertex failed for validator %d", i)
 		}

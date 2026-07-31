@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"strings"
 	"testing"
 
@@ -62,6 +63,102 @@ func TestValidateEpoch_Mismatch(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "epoch mismatch") {
 		t.Errorf("expected 'epoch mismatch', got: %v", err)
+	}
+}
+
+// TestValidateEpoch_Window pins the two-sided, receiver-independent window a
+// header's epoch must fall in: the epoch the vertex's OWN round commits in, or
+// that value plus or minus one. The window tolerates the two honest skews (a
+// producer that has not transitioned yet, and one filling a round below the
+// boundary it just crossed) and nothing else, so the field a light client reads
+// to pick a validator tree can neither run ahead nor be dragged back to a stale
+// validator set.
+//
+// The receiver's own currentEpoch is left at 0 throughout: every case is decided
+// from the vertex's round alone.
+func TestValidateEpoch_Window(t *testing.T) {
+	tests := []struct {
+		name        string // name describes the skew being pinned
+		epochLength uint64 // epochLength is the receiver's configured epoch length
+		round       uint64 // round is the round the vertex claims
+		epoch       uint64 // epoch is the epoch the vertex's header claims
+		wantReject  bool   // wantReject is true when the claim must be rejected
+	}{
+		{
+			// Production resumes at lastProducedRound+1, which can sit BELOW the
+			// commit cursor after a stall: the node commits round 1000, moves to
+			// epoch 1, and stamps epoch 1 on the round-998 vertex it produces next.
+			name:        "post-stall production one epoch above its round",
+			epochLength: 1000,
+			round:       998,
+			epoch:       1,
+		},
+		{
+			name:        "the round's own epoch",
+			epochLength: 1000,
+			round:       998,
+			epoch:       0,
+		},
+		{
+			name:        "two epochs above the round is forged",
+			epochLength: 1000,
+			round:       998,
+			epoch:       2,
+			wantReject:  true,
+		},
+		{
+			name:        "one epoch below the round (producer has not transitioned)",
+			epochLength: 1000,
+			round:       5500,
+			epoch:       4,
+		},
+		{
+			name:        "two epochs below the round is a stale validator set",
+			epochLength: 1000,
+			round:       5500,
+			epoch:       3,
+			wantReject:  true,
+		},
+		{
+			name:        "one epoch above the round",
+			epochLength: 1000,
+			round:       5500,
+			epoch:       6,
+		},
+		{
+			name:        "epochs disabled: epoch 0 is the only claim",
+			epochLength: 0,
+			round:       5500,
+			epoch:       0,
+		},
+		{
+			name:        "epochs disabled: a nonzero epoch is rejected",
+			epochLength: 0,
+			round:       5500,
+			epoch:       1,
+			wantReject:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTestStorage(t)
+			validators, vs := newTestValidatorSet(4)
+
+			dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(tt.epochLength))
+			defer dag.Close()
+
+			data := buildTestVertex(t, validators[1], tt.round, nil, tt.epoch)
+			err := dag.validateEpoch(types.GetRootAsVertex(data, 0))
+
+			if tt.wantReject && !errors.Is(err, errWrongEpoch) {
+				t.Fatalf("epoch %d at round %d must be rejected, got: %v", tt.epoch, tt.round, err)
+			}
+
+			if !tt.wantReject && err != nil {
+				t.Fatalf("epoch %d at round %d must validate: %v", tt.epoch, tt.round, err)
+			}
+		})
 	}
 }
 

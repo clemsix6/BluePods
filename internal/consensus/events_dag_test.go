@@ -58,7 +58,7 @@ func TestAddVertex_EmitsVertexReceived(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 	vertex := types.GetRootAsVertex(data, 0)
 	var hash Hash
 	copy(hash[:], vertex.HashBytes())
@@ -94,7 +94,7 @@ func TestAddVertex_TerminalRejection_BadSignature(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	// SignatureBytes aliases data's backing array, so mutating it in place
@@ -145,7 +145,7 @@ func TestAddVertex_TerminalRejection_ParentRound(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertexWithParentLinks(t, validators[1], 1, 1, nil)
+	data := buildTestVertexWithParentLinks(t, validators[1], 1, 0, nil)
 	vertex := types.GetRootAsVertex(data, 0)
 	var hash Hash
 	copy(hash[:], vertex.HashBytes())
@@ -170,7 +170,7 @@ func TestAddVertex_TerminalRejection_ParentQuorum(t *testing.T) {
 	defer dag.Close()
 
 	stranger := newTestValidator()
-	data := buildTestVertexWithParentLinks(t, validators[1], 1, 1,
+	data := buildTestVertexWithParentLinks(t, validators[1], 1, 0,
 		[]parentLink{{hash: Hash{0xAB}, producer: stranger.pubKey}},
 	)
 	vertex := types.GetRootAsVertex(data, 0)
@@ -202,7 +202,7 @@ func TestAddVertex_TerminalRejection_FeeSummary(t *testing.T) {
 	atxBytes := buildFeeTestATX(t, sender, gasCoin, 500, []uint16{0})
 
 	// Deliberately wrong total_fees so validateFeeSummary rejects it.
-	data := buildVertexWithFeeSummary(t, validators[0], 0, 1,
+	data := buildVertexWithFeeSummary(t, validators[0], 0, 0,
 		&feeSummaryValues{totalFees: 999_999},
 		[][]byte{atxBytes},
 	)
@@ -228,7 +228,7 @@ func TestAddVertex_BufferedMissingParent_EmitsNothing(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertexWithParentLinks(t, validators[1], 1, 1,
+	data := buildTestVertexWithParentLinks(t, validators[1], 1, 0,
 		[]parentLink{{hash: Hash{0xDE, 0xAD}, producer: validators[0].pubKey}},
 	)
 
@@ -251,7 +251,7 @@ func TestAddVertex_BufferedUnknownProducer_EmitsNothing(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, unknown, 0, nil, 1)
+	data := buildTestVertex(t, unknown, 0, nil, 0)
 
 	buf := captureEvents(t)
 	if dag.AddVertex(data) {
