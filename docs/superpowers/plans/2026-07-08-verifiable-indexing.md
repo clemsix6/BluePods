@@ -280,7 +280,7 @@ table DeclaredOp {
 
 ### Task 3.2: Producers anchor their committed frontier
 
-**Files:** Modify `internal/consensus/build.go` (read `Manager.Root()` + frontier from the indexer interface at production; zero values when indexer unset); Test.
+**Files:** Modify `internal/consensus/build.go` (anchor the pair from the indexer seam's `CommittedFrontier()` — added as-built to `internal/consensus/indexer.go` and `internal/index/manager.go`, returning `(frontier, root-at-frontier)` atomically under its own leaf lock, because no read seam existed and the commit loop mutates trees between `SetFrontier` calls. `Manager.Root()` is the LIVE uncommitted root: it must never be anchored into a vertex nor compared against a received one — 3.4 in particular must not reach for it; zero values when indexer unset); Test.
 
 - [ ] **Test:** two nodes at the same committed frontier produce vertices carrying identical `(frontier_round, index_root)`.
 - [ ] **Run, expect FAIL → implement → PASS.**
@@ -290,7 +290,7 @@ table DeclaredOp {
 
 **Files:** Create `internal/consensus/rootcheck.go`; modify `internal/consensus/validate.go` (`validateVertex`: if `v.FrontierRound() <= lastCommitted` and the indexer is set, require `RootAt(frontier) == index_root`; unverifiable-yet vertices pass); Test `internal/consensus/rootcheck_test.go`.
 
-- [ ] **Test:** a wrong-root vertex whose frontier the receiver has committed is rejected; a vertex anchoring a future frontier is accepted; a frontier older than the retention window (no `RootAt` entry, no epoch checkpoint) is treated as unverifiable and passes (parents are always recent, so production never depends on stale roots); a zero-root vertex passes during the genesis epoch ONLY and is rejected like a wrong root from the first epoch boundary on (spec §5). The new rejection reason joins `consensus.vertex.rejected`'s fixed reason set (new value, e.g. `index_root` — update the catalog comment and `test/TESTING.md`'s reason list in the same commit).
+- [ ] **Test:** a wrong-root vertex whose frontier the receiver has committed is rejected; a vertex anchoring a future frontier is accepted; a frontier older than the retention window (no `RootAt` entry, no epoch checkpoint) is treated as unverifiable and passes (parents are always recent, so production never depends on stale roots); a zero-root vertex passes during the genesis epoch ONLY and is rejected like a wrong root from the first epoch boundary on (spec §5) — and the genesis tolerance keys on the VERTEX's own round (`commitEpochForRound(v.Round()) == 0`), never on the receiver's current epoch: receiver-relative rules are the unsoundness class the 3.1 adjudication removed (a genesis vertex buffered across the first boundary by deep-gap recovery or late gossip must not be terminally rejected). The new rejection reason joins `consensus.vertex.rejected`'s fixed reason set (new value, e.g. `index_root` — update the catalog comment and `test/TESTING.md`'s reason list in the same commit).
 - [ ] **Run, expect FAIL → implement → PASS.**
 - [ ] **Commit:** title `Ingress root verification when the frontier is local`.
 
