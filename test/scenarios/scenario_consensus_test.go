@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/zeebo/blake3"
 
 	"BluePods/internal/genesis"
+	"BluePods/internal/network"
 	"BluePods/internal/types"
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
@@ -191,6 +193,13 @@ func TestScenarioConsensusBasics(t *testing.T) {
 		t.Run("sharded_mutation_without_valid_proof_is_proof_failed", func(t *testing.T) {
 			testProofFailedRejected(t, c)
 		})
+	})
+
+	// Anchored last: it needs committed traffic to already exist (every
+	// earlier subtest supplies that), and it queries every node's own
+	// GetIndexAnchor view rather than driving new consensus behavior.
+	t.Run("index_anchor_quorum", func(t *testing.T) {
+		testIndexAnchorQuorum(t, c, node0)
 	})
 }
 
@@ -604,4 +613,116 @@ func buildATXWithBogusProof(rawTx []byte, objID [32]byte, attestationEpoch uint6
 	builder.Finish(atxOffset)
 
 	return builder.FinishedBytes()
+}
+
+const (
+	// indexAnchorHeaderTag is the domain-separation byte a light client
+	// prefixes to a raw header before hashing it, mirroring
+	// internal/consensus/header.go's headerDomainTag: a header's signature is
+	// taken over BLAKE3(indexAnchorHeaderTag || header), never over the
+	// header bytes alone.
+	indexAnchorHeaderTag = 0x01
+
+	// indexAnchorHeaderBytes is the width of the normative vertex header
+	// inside a GetIndexAnchor record (internal/consensus/header.go's
+	// headerSize), before the trailing Ed25519 signature.
+	indexAnchorHeaderBytes = 120
+)
+
+// testIndexAnchorQuorum drives one more commit (so every node's committed
+// frontier is freshly advanced) and then calls GetIndexAnchor on every alive
+// node: the light-client surface a peer outside consensus uses to verify the
+// index root without downloading the index itself.
+//
+// "Agree" here does not mean every node reports the identical frontier —
+// each node serves its own committed frontier's quorum window
+// (internal/consensus/anchorbundle.go's bundleWindow), and ordinary round
+// skew across 5 producers can leave two nodes a few rounds apart. What must
+// hold, and is load-bearing, is narrower: for any two nodes whose bundles
+// name the SAME frontier, the index root they report for it must be
+// identical — two honest nodes deriving the same tree from the same
+// committed history can never disagree on its root at a shared frontier.
+func testIndexAnchorQuorum(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
+	t.Helper()
+
+	cli := c.Client(0)
+
+	w, coinID := fundedWallet(stepCtx(t), t, cli, node0, 1_000_000)
+	recipient := client.NewWallet()
+
+	hash, err := w.Transfer(cli, coinID, recipient.Pubkey())
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+
+	bundles := make(map[int]*network.GetIndexAnchorResponse)
+	for _, n := range c.Alive() {
+		bundle, err := c.Client(n.Index).GetIndexAnchor()
+		requireNoErr(t, err)
+		if !bundle.Found {
+			t.Fatalf("node %d: no quorate index anchor bundle", n.Index)
+		}
+		if len(bundle.Headers) == 0 {
+			t.Fatalf("node %d: index anchor bundle carries no headers", n.Index)
+		}
+		bundles[n.Index] = bundle
+	}
+
+	rootsByFrontier := make(map[uint64][32]byte)
+	for idx, bundle := range bundles {
+		prevRoot, seen := rootsByFrontier[bundle.FrontierRound]
+		if !seen {
+			rootsByFrontier[bundle.FrontierRound] = bundle.IndexRoot
+			continue
+		}
+
+		if prevRoot != bundle.IndexRoot {
+			t.Fatalf("frontier %d: index root disagreement, node %d reports %x, an earlier node reports %x",
+				bundle.FrontierRound, idx, bundle.IndexRoot[:4], prevRoot[:4])
+		}
+	}
+
+	for idx, bundle := range bundles {
+		for _, record := range bundle.Headers {
+			verifyIndexAnchorHeaderRecord(t, idx, bundle, record)
+		}
+	}
+}
+
+// verifyIndexAnchorHeaderRecord decodes one GetIndexAnchor header record the
+// way a light client must: positionally, per the as-built wire layout
+// (producer@0:32, round@32:40, epoch@40:48, frontier@48:56, root@56:88,
+// bodyHash@88:120, signature@120:184), with no length prefix and no
+// FlatBuffers involved. It asserts the header's own frontier and root match
+// the bundle it was served in, and that the Ed25519 signature verifies over
+// the tagged header hash under the producer key the record itself carries —
+// mirroring internal/consensus/anchorbundle_test.go's verifyHeaderRecord from
+// outside the consensus package. No external key source is needed: the
+// producer key is self-describing in every record.
+func verifyIndexAnchorHeaderRecord(t *testing.T, nodeIdx int, bundle *network.GetIndexAnchorResponse, record []byte) {
+	t.Helper()
+
+	if len(record) != network.IndexAnchorHeaderSize {
+		t.Fatalf("node %d: header record is %d bytes, want %d", nodeIdx, len(record), network.IndexAnchorHeaderSize)
+	}
+
+	header := record[:indexAnchorHeaderBytes]
+	signature := record[indexAnchorHeaderBytes:]
+
+	producer := header[0:32]
+	frontier := binary.BigEndian.Uint64(header[48:56])
+
+	var root [32]byte
+	copy(root[:], header[56:88])
+
+	if frontier != bundle.FrontierRound {
+		t.Fatalf("node %d: header frontier %d does not match bundle frontier %d", nodeIdx, frontier, bundle.FrontierRound)
+	}
+	if root != bundle.IndexRoot {
+		t.Fatalf("node %d: header root %x does not match bundle root %x", nodeIdx, root[:4], bundle.IndexRoot[:4])
+	}
+
+	identity := blake3.Sum256(append([]byte{indexAnchorHeaderTag}, header...))
+	if !ed25519.Verify(producer, identity[:], signature) {
+		t.Fatalf("node %d: header signature does not verify for producer %x", nodeIdx, producer[:4])
+	}
 }

@@ -193,6 +193,12 @@ func (c *Client) Fingerprint() (*network.FingerprintResponse, error) {
 	return c.transport.Fingerprint()
 }
 
+// GetIndexAnchor returns the node's cached quorum-attested index anchor
+// bundle (see QUICTransport.GetIndexAnchor).
+func (c *Client) GetIndexAnchor() (*network.GetIndexAnchorResponse, error) {
+	return c.transport.GetIndexAnchor()
+}
+
 // SetPartition replaces the node's blocklist with blocked, dropping mesh
 // traffic to and from every one of them until cleared. It requires the node
 // to have been started with --test-hooks; otherwise it errors with the

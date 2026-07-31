@@ -212,6 +212,26 @@ func (t *QUICTransport) Fingerprint() (*network.FingerprintResponse, error) {
 	return parsed, nil
 }
 
+// GetIndexAnchor fetches the node's cached quorum-attested index anchor
+// bundle over QUIC: the highest recent committed frontier for which enough
+// producer-signed vertex headers agree with this node's own index root to
+// reach the epoch's capped-stake quorum, together with those raw header
+// records. This verb only performs the wire round-trip and decode — each
+// record is network.IndexAnchorHeaderSize (184) bytes, the normative 120-byte
+// vertex header (see internal/consensus/header.go's wire-layout comment)
+// followed by the producer's 64-byte Ed25519 signature over
+// BLAKE3(0x01 || header); decoding the record's fields and verifying the
+// signature is left to the caller, exactly as a light client would. Found is
+// false when the node has no quorate frontier yet.
+func (t *QUICTransport) GetIndexAnchor() (*network.GetIndexAnchorResponse, error) {
+	resp, err := t.roundTrip(network.EncodeGetIndexAnchor())
+	if err != nil {
+		return nil, fmt.Errorf("get index anchor:\n%w", err)
+	}
+
+	return network.DecodeGetIndexAnchorResp(resp)
+}
+
 // TestControl sends a test-only network-control operation over QUIC. It
 // errors on a node started without --test-hooks (the refusal in the response).
 func (t *QUICTransport) TestControl(req *network.TestControlRequest) error {
