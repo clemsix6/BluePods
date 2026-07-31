@@ -100,8 +100,12 @@ func (m *Manager) RebuildValidators(entries []ValidatorLeaf) {
 	m.pendingCheckpoint = true
 }
 
-// Root returns the current combined index root over the four trees' current
-// contents.
+// Root returns the current combined index root over the four trees' current,
+// possibly uncommitted, contents — it can differ from the root at the last
+// committed frontier whenever a tree has been mutated since the most recent
+// SetFrontier call. Never anchor this value into a vertex, and never compare
+// it against a received vertex's index_root: use CommittedFrontier for both,
+// which returns the root AT the committed frontier, not the live one.
 func (m *Manager) Root() [32]byte {
 	return CombinedRoot(m.domain.Root(), m.hierarchy.Parent.Root(), m.hierarchy.Children.Root(), m.validator.Root())
 }

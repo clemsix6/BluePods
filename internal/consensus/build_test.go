@@ -341,9 +341,14 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 // edit stream and SetFrontier round, produce vertices carrying byte-identical
 // (frontier_round, index_root) — the plan's determinism requirement: the
 // anchor must depend on nothing node-local, only on the committed frontier
-// itself.
+// itself. Each manager also applies one more edge AFTER SetFrontier(7) with
+// no follow-up SetFrontier call, so Root() (the live tree) and RootAt(7) (the
+// committed frontier) diverge: an implementation that anchored the live root
+// instead of the cached committed one would still pass the determinism check
+// above (both managers get the same live root too) but fails the two
+// assertions below, which is the point of mutating after the frontier.
 func TestBuildVertex_AnchorsCommittedFrontier(t *testing.T) {
-	buildAt := func(t *testing.T) *types.Vertex {
+	buildAt := func(t *testing.T) (*types.Vertex, *index.Manager) {
 		db := newTestStorage(t)
 		validators, vs := newTestValidatorSet(1)
 
@@ -351,15 +356,20 @@ func TestBuildVertex_AnchorsCommittedFrontier(t *testing.T) {
 		mgr.ApplyEdge([32]byte{0x11}, index.KeyRootKind, [32]byte{0x01})
 		mgr.SetFrontier(7)
 
+		// Mutate the trees again without a follow-up SetFrontier: production
+		// must still anchor the root AT round 7, not whatever Root() returns
+		// now.
+		mgr.ApplyEdge([32]byte{0x22}, index.KeyRootKind, [32]byte{0x02})
+
 		dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 		defer dag.Close()
 		dag.SetIndexer(mgr)
 
-		return types.GetRootAsVertex(dag.buildVertex(8, nil, nil), 0)
+		return types.GetRootAsVertex(dag.buildVertex(8, nil, nil), 0), mgr
 	}
 
-	v1 := buildAt(t)
-	v2 := buildAt(t)
+	v1, mgr1 := buildAt(t)
+	v2, _ := buildAt(t)
 
 	if v1.FrontierRound() != 7 {
 		t.Fatalf("frontier_round = %d, want 7", v1.FrontierRound())
@@ -375,6 +385,19 @@ func TestBuildVertex_AnchorsCommittedFrontier(t *testing.T) {
 
 	if !bytes.Equal(v1.IndexRootBytes(), v2.IndexRootBytes()) {
 		t.Fatalf("index_root mismatch: %x != %x", v1.IndexRootBytes(), v2.IndexRootBytes())
+	}
+
+	rootAtFrontier, ok := mgr1.RootAt(7)
+	if !ok {
+		t.Fatal("RootAt(7) not retained")
+	}
+	if !bytes.Equal(v1.IndexRootBytes(), rootAtFrontier[:]) {
+		t.Fatalf("index_root %x != RootAt(7) %x: buildVertex must anchor the committed frontier, not the live root", v1.IndexRootBytes(), rootAtFrontier)
+	}
+
+	liveRoot := mgr1.Root()
+	if bytes.Equal(v1.IndexRootBytes(), liveRoot[:]) {
+		t.Fatal("index_root equals Manager.Root() (the live, post-frontier-mutation root) — buildVertex anchored the live tree instead of the committed frontier")
 	}
 }
 

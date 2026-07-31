@@ -1,6 +1,9 @@
 package index
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // TestManager_StreamVsBuildFromState_IdenticalRoot applies a synthetic
 // committed stream (creates, a reparent, a delete, domain register/update,
@@ -189,5 +192,94 @@ func TestManager_ApplyDomainRemoveDomainRoundTrip(t *testing.T) {
 func TestManager_NewManagerRootIsEmpty(t *testing.T) {
 	if NewManager().Root() != NewManager().Root() {
 		t.Error("two fresh managers disagree on the empty root")
+	}
+}
+
+// TestManager_CommittedFrontier_ConcurrentWithApply exercises frontierMu
+// under -race: a single writer goroutine hammers ApplyEdge+SetFrontier —
+// mirroring the commit path's own serialization under its own lock — while
+// several reader goroutines call CommittedFrontier concurrently, thousands of
+// times over. A dropped or misplaced frontierMu would show up here as a data
+// race even on a run where every individual assertion still happens to pass.
+//
+// Every pair a reader observes during the race window is only recorded, not
+// checked, there: history/order are unguarded fields the writer is free to
+// mutate concurrently, so calling RootAt while the writer is still running
+// would race on those, not on frontierMu — a false positive unrelated to
+// what this test targets. Verification happens after the writer goroutine
+// finishes (synchronized through the closed done channel plus the readers'
+// WaitGroup), when it is safe to call RootAt from the test goroutine alone:
+// a torn read would pair one SetFrontier call's round with a different
+// call's root, which RootAt(pair.round) == pair.root then catches.
+func TestManager_CommittedFrontier_ConcurrentWithApply(t *testing.T) {
+	m := NewManager()
+
+	// Stay within historyWindow so every round this test anchors is still
+	// retained by RootAt at verification time -- eviction is not what this
+	// test is about.
+	const rounds = historyWindow - 1
+
+	type pair struct {
+		round uint64
+		root  [32]byte
+	}
+
+	var pairsMu sync.Mutex
+	var pairs []pair
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for round := uint64(1); round <= rounds; round++ {
+			m.ApplyEdge([32]byte{byte(round), byte(round >> 8)}, KeyRootKind, [32]byte{0x01})
+			m.SetFrontier(round)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				round, root := m.CommittedFrontier()
+
+				pairsMu.Lock()
+				pairs = append(pairs, pair{round, root})
+				pairsMu.Unlock()
+
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(pairs) == 0 {
+		t.Fatal("no pairs observed")
+	}
+
+	checked := 0
+	for _, p := range pairs {
+		if p.round == 0 {
+			continue // observed before the writer's first SetFrontier call
+		}
+
+		want, ok := m.RootAt(p.round)
+		if !ok {
+			t.Fatalf("RootAt(%d) not retained, expected it inside the history window", p.round)
+		}
+		if want != p.root {
+			t.Fatalf("torn read: CommittedFrontier paired round %d with root %x, but RootAt(%d) = %x", p.round, p.root, p.round, want)
+		}
+		checked++
+	}
+
+	if checked == 0 {
+		t.Fatal("every observed pair had round 0 -- readers never overlapped the writer")
 	}
 }
