@@ -10,10 +10,15 @@ import (
 	"BluePods/internal/types"
 )
 
-// Sentinel errors for the terminal (non-buffer) validateVertex failure paths.
+// Sentinel errors for the non-buffer validateVertex failure paths.
 // classifyRejection maps each to its consensus.vertex.rejected reason code via
 // errors.Is, rather than fragile error-string prefix matching (which is used
 // only for the two BUFFER cases: isMissingParentError/isUnknownProducerError).
+//
+// errIndexRoot is the one sentinel that is NOT a rejection: it carries the
+// quarantine verdict (the vertex is stored, withheld from relay and reference),
+// so it never reaches classifyRejection — isQuarantineVerdict intercepts it at
+// both admission sites first.
 var (
 	errBadSignature = errors.New("bad_signature")
 	errWrongEpoch   = errors.New("wrong_epoch")
@@ -26,8 +31,8 @@ var (
 // classifyRejection maps a terminal validateVertex error to its
 // consensus.vertex.rejected reason code. It must only be called on an error
 // that is NOT a buffer case (isMissingParentError/isUnknownProducerError were
-// already checked and returned false) — every remaining validateVertex error
-// path wraps exactly one of the sentinels below.
+// already checked and returned false) and NOT the quarantine verdict — every
+// remaining validateVertex error path wraps exactly one of the sentinels below.
 func classifyRejection(err error) string {
 	switch {
 	case errors.Is(err, errBadSignature):
@@ -40,8 +45,6 @@ func classifyRejection(err error) string {
 		return "parent_quorum"
 	case errors.Is(err, errFeeSummary):
 		return "fee_summary"
-	case errors.Is(err, errIndexRoot):
-		return "index_root"
 	default:
 		return "unknown" // defensive fallback; unreachable in practice — a forgotten case must surface as "unknown", never masquerade as a real reason such as "fee_summary"
 	}
@@ -65,14 +68,7 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		return err
 	}
 
-	// 4. The anchored index root must match this node's own history, when this
-	// node has the history to check it against (stage 1; unverifiable anchors
-	// pass untouched).
-	if err := d.validateIndexAnchor(v); err != nil {
-		return err
-	}
-
-	// 5. Parents must exist and form quorum.
+	// 4. Parents must exist and form quorum.
 	// Use the vertex's round (not the node's current round) to determine if
 	// validation should be relaxed. A vertex produced during the transition/buffer
 	// window must always be accepted, even if it arrives via gossip after the
@@ -83,17 +79,27 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		}
 	}
 
-	// 6. Parents must represent quorum of validators from round-1
+	// 5. Parents must represent quorum of validators from round-1
 	if err := d.validateParentsQuorum(v); err != nil {
 		return err
 	}
 
-	// 7. Fee summary must match recalculation from tx headers
+	// 6. Fee summary must match recalculation from tx headers
 	if err := d.validateFeeSummary(v); err != nil {
 		return err
 	}
 
-	return nil
+	// 7. The anchored index root must match this node's own history, when this
+	// node has the history to check it against (stage 1; unverifiable anchors
+	// pass untouched).
+	//
+	// It runs LAST because its verdict is the only one that does not stop the
+	// vertex from being STORED: a proven liar is quarantined, not dropped. Every
+	// other check must therefore have passed before it is reached, or the
+	// quarantine door would be a way to put structurally invalid vertices into
+	// every honest node's store. A vertex that is both wrong-root and malformed
+	// comes back with the malformed verdict and stays terminally rejected.
+	return d.validateIndexAnchor(v)
 }
 
 // validateEpoch checks the epoch a vertex's header claims against a

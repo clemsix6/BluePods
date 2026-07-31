@@ -241,6 +241,7 @@ must be called out in the commit that does it.
 | `consensus.vertex.produced` | vertex, round, txs |
 | `consensus.vertex.received` | vertex, round, producer |
 | `consensus.vertex.rejected` | vertex, reason |
+| `consensus.vertex.quarantined` | vertex, producer, round, frontier |
 | `consensus.round.advanced` | round, designated |
 | `consensus.anchor.committed` | round, anchor, producer, vertices |
 | `consensus.round.skipped` | round |
@@ -284,9 +285,23 @@ success, and one of a fixed set when `success` is false: `version_conflict`,
 
 `consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
 `bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,
-`fee_summary`, `index_root`, or `unknown` (a defensive fallback for a
-validation failure path that does not map to any of the above; should not
-occur in practice).
+`fee_summary`, or `unknown` (a defensive fallback for a validation failure
+path that does not map to any of the above; should not occur in practice).
+A rejected vertex is dropped: not stored, not served, not relayed.
+
+`consensus.vertex.quarantined` is the verdict for a vertex whose anchored
+index root the receiving node disproved against its own committed history at
+`frontier`. It is not a rejection: the vertex IS stored and IS served to a
+peer that asks for it by hash, so any causal batch containing it stays
+completable — a vertex a node refuses to store wedges that node's commit
+cursor forever, which is a partition lever. What quarantine withholds is
+relay (this node never amplifies it) and reference (its production never
+builds on it). Like `consensus.anchor.fault` the event is node-local: whether
+a node could disprove the anchor depends on how far its own commit had
+advanced when the vertex arrived, so two honest nodes legitimately quarantine
+different sets and must still converge on identical state. The mark is
+persisted outside every convergence-checked structure, so a scenario that
+provokes a quarantine still passes the teardown convergence check.
 
 `consensus.anchor.fault` is emitted from the commit path when a vertex that
 reached committed history anchored an index root the emitting node's own

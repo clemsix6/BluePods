@@ -418,8 +418,13 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 }
 
 // AddVertex validates and adds a vertex received from the network.
-// Returns true if the vertex was new and added, false if duplicate or invalid.
+// Returns true if the vertex was new, added and fit to RELAY, false otherwise.
 // Vertices with missing parents are buffered and retried when parents arrive.
+//
+// The return value is the relay gate, not a storage report: a vertex whose
+// anchored index root this node proved wrong is quarantined — stored, so every
+// causal batch containing it can still complete, and served on request, but
+// reported as not-for-relay so this node never amplifies it.
 func (d *DAG) AddVertex(data []byte) bool {
 	vertex := types.GetRootAsVertex(data, 0)
 
@@ -439,7 +444,9 @@ func (d *DAG) AddVertex(data []byte) bool {
 	}
 
 	err := d.validateVertex(vertex, data)
-	if err != nil {
+	quarantined := isQuarantineVerdict(err)
+
+	if err != nil && !quarantined {
 		// Buffer vertex if parents are missing or producer is unknown.
 		// Missing parents arrive later via gossip.
 		// Unknown producers become known when their register_validator tx commits.
@@ -460,14 +467,23 @@ func (d *DAG) AddVertex(data []byte) bool {
 		return false // already exists
 	}
 
-	events.VertexReceived(hash, producer, round)
+	if quarantined {
+		d.quarantineVertex(vertex, hash, producer, round)
+	} else {
+		events.VertexReceived(hash, producer, round)
+	}
 
+	// A quarantined vertex counts everywhere a vertex counts: it was signed, its
+	// producer is accountable for it, and every node that could not disprove it
+	// holds it as an ordinary vertex. Making the round cursor, the round's
+	// producer set or the commit rule see a different DAG here is precisely the
+	// divergence that forks the committed log.
 	d.onVertexAdded(round)
 
 	// Try to process any pending vertices that might now have their parents
 	d.processPendingVertices()
 
-	return true
+	return !quarantined
 }
 
 // SubmitTx adds a transaction to be included in the next vertex.
@@ -1538,7 +1554,9 @@ func (d *DAG) tryProcessPending() int {
 		vertex := types.GetRootAsVertex(entry.data, 0)
 
 		err := d.validateVertex(vertex, entry.data)
-		if err != nil {
+		quarantined := isQuarantineVerdict(err)
+
+		if err != nil && !quarantined {
 			// Keep in buffer if parents are missing or producer is unknown.
 			// These conditions resolve when parents arrive or producer registers.
 			if d.isMissingParentError(err) || d.isUnknownProducerError(err) {
@@ -1551,10 +1569,15 @@ func (d *DAG) tryProcessPending() int {
 			continue
 		}
 
-		// Validation passed, add to store
+		// Validation passed (or the anchor was disproved, which quarantines rather
+		// than rejects), add to store.
 		producer := extractProducer(vertex)
 
 		if d.store.add(entry.data, entry.hash, entry.round, producer) {
+			if quarantined {
+				d.quarantineVertex(vertex, entry.hash, producer, entry.round)
+			}
+
 			d.onVertexAdded(entry.round)
 			processed++
 			logger.Debug("processed pending vertex", "round", entry.round)

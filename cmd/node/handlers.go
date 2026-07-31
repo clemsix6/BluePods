@@ -56,7 +56,10 @@ func (n *Node) ingestGossipedTx(body, tagged []byte) {
 }
 
 // handleVertexMessage processes a vertex received over gossip and relays it on
-// first sight so vertices propagate across the mesh even without full connectivity.
+// first sight so vertices propagate across the mesh even without full
+// connectivity. AddVertex's verdict is the relay gate, not a storage report: a
+// vertex whose anchored index root this node disproved is stored and served on
+// request but comes back false here, so this node never amplifies it.
 func (n *Node) handleVertexMessage(peer *network.Peer, data []byte) {
 	v := types.GetRootAsVertex(data, 0)
 	logger.Debug("received vertex",

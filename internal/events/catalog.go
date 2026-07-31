@@ -24,6 +24,9 @@ const (
 	EvVertexReceived = "consensus.vertex.received"
 	// EvVertexRejected marks a vertex terminally rejected during validation.
 	EvVertexRejected = "consensus.vertex.rejected"
+	// EvVertexQuarantined marks a vertex stored but withheld from relay and
+	// reference because the receiver disproved its anchored index root.
+	EvVertexQuarantined = "consensus.vertex.quarantined"
 	// EvRoundAdvanced marks the production round observed from the commit loop
 	// (NOT the commit cursor) advancing.
 	EvRoundAdvanced = "consensus.round.advanced"
@@ -119,6 +122,7 @@ var Names = []string{
 	EvVertexProduced,
 	EvVertexReceived,
 	EvVertexRejected,
+	EvVertexQuarantined,
 	EvRoundAdvanced,
 	EvAnchorCommitted,
 	EvRoundSkipped,

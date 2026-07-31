@@ -72,9 +72,19 @@ func (d *DAG) anchorLie(v *types.Vertex) (claimed, computed Hash, lying bool) {
 // (stage 2), and convicted after the fact by the commit-side recheck (stage 3).
 // Ingress is the cheap 32-byte filter, not the guarantee.
 //
-// A mismatch is a terminal rejection, like a bad fee summary. It is NOT fault
-// evidence: attributing the lie is the commit path's job, over vertices that
-// actually entered committed history.
+// A mismatch is a QUARANTINE, not a rejection: the vertex is stored and served
+// on request, and withheld only from relay and from reference. Dropping it
+// outright was a partition lever. A vertex some nodes refuse to store, smuggled
+// into committed causal history through a reference from a node that could not
+// check it, leaves the refusing nodes unable to complete that causal batch:
+// their walk aborts on the vertex they lack, the fetcher re-requests it, ingress
+// refuses it again, and the commit cursor — hence the root history retention
+// that would ever let them re-decide — never moves again. Any node's causal
+// batch must remain completable from its own store, so storage is not where a
+// lie is punished. Relay and reference are.
+//
+// It is NOT fault evidence either: attributing the lie is the commit path's job,
+// over vertices that actually entered committed history.
 func (d *DAG) validateIndexAnchor(v *types.Vertex) error {
 	claimed, computed, lying := d.anchorLie(v)
 	if !lying {
@@ -120,10 +130,6 @@ func (d *DAG) validateIndexAnchor(v *types.Vertex) error {
 // same reason: a parent link it cannot resolve carries no producer, so it is
 // worth nothing to the peers that receive it.
 func (d *DAG) referenceableParents(candidates []Hash) []Hash {
-	if d.indexer == nil {
-		return candidates
-	}
-
 	kept := make([]Hash, 0, len(candidates))
 
 	for _, h := range candidates {
@@ -132,7 +138,7 @@ func (d *DAG) referenceableParents(candidates []Hash) []Hash {
 			continue
 		}
 
-		if _, _, lying := d.anchorLie(v); lying {
+		if d.provenLiar(h, v) {
 			logger.Warn("excluding wrong-root parent from production",
 				"parent", hex.EncodeToString(h[:8]), "frontier", v.FrontierRound())
 			continue
@@ -142,6 +148,30 @@ func (d *DAG) referenceableParents(candidates []Hash) []Hash {
 	}
 
 	return kept
+}
+
+// provenLiar reports whether this node has proved the candidate wrong about its
+// anchor, by either route: the quarantine mark ingress persisted when the vertex
+// arrived, or a fresh verdict from the current history.
+//
+// The mark is consulted FIRST, and outside the indexer guard, because it is the
+// only one of the two that survives. The root history behind anchorLie is a
+// bounded window and a restart rebuilds the index without it, so a node that
+// asked only the live verdict would start referencing, after a reboot or a long
+// enough run, exactly the vertex it had proved wrong. A verdict reached once is
+// not un-reached by forgetting the evidence.
+func (d *DAG) provenLiar(h Hash, v *types.Vertex) bool {
+	if d.store.isQuarantined(h) {
+		return true
+	}
+
+	if d.indexer == nil {
+		return false
+	}
+
+	_, _, lying := d.anchorLie(v)
+
+	return lying
 }
 
 // recheckCommittedAnchor is stage 3, the record: as the commit cursor passes a

@@ -171,8 +171,9 @@ func (s *store) putFault(hash Hash, evidence []byte) {
 
 // makeFaultKey creates the storage key holding a vertex's fault evidence.
 func makeFaultKey(hash Hash) []byte {
-	key := make([]byte, 0, len(prefixFault)+32)
-	key = append(key, prefixFault...)
+	key := make([]byte, len(prefixFault)+32)
+	copy(key, prefixFault)
+	copy(key[len(prefixFault):], hash[:])
 
-	return append(key, hash[:]...)
+	return key
 }

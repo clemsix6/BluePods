@@ -29,6 +29,10 @@ type store struct {
 	// committedVertices is the set of vertex hashes already folded into a commit
 	// batch, loaded from storage at boot so a restart never re-applies them.
 	committedVertices map[Hash]bool
+	// quarantinedVertices is the set of vertex hashes this node proved wrong about
+	// their anchored index root, loaded from storage at boot so the verdict outlives
+	// the bounded root history that proved it (see prefixQuarantine).
+	quarantinedVertices map[Hash]bool
 	// commitFloor is the snapshot round at or below which vertices are treated as
 	// already committed; it guards a freshly synced node against re-applying its
 	// imported history.
@@ -41,14 +45,16 @@ type store struct {
 // newStore creates a vertex store backed by the given storage.
 func newStore(db *storage.Storage) *store {
 	s := &store{
-		db:                db,
-		byRound:           make(map[uint64][]Hash),
-		committedVertices: make(map[Hash]bool),
+		db:                  db,
+		byRound:             make(map[uint64][]Hash),
+		committedVertices:   make(map[Hash]bool),
+		quarantinedVertices: make(map[Hash]bool),
 	}
 
 	s.loadLatestRound()
 	s.loadByRound()
 	s.loadCommittedFlags()
+	s.loadQuarantineFlags()
 	s.loadCommitFloor()
 
 	return s

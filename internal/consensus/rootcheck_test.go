@@ -39,9 +39,8 @@ func (a *anchorIndexer) RootAt(round uint64) ([32]byte, bool) { return [32]byte{
 // (buildVertex) over a controllable seam. Building the flatbuffer by hand
 // instead would let a test drift from what a producer actually emits. The
 // serialized bytes come back with the identity, so a test can put the vertex
-// straight into a store — the only way a wrong-root vertex ever reaches another
-// node's commit path, since stage 1 rejects it at the door.
-func newAnchoredVertices(t *testing.T, producer testValidator) func(round, frontier uint64, root Hash, parents []Hash) ([]byte, Hash) {
+// straight into a store, or feed it through a receiver's real ingress.
+func newAnchoredVertices(t *testing.T, producer testValidator) func(round, frontier uint64, root Hash, parents []Hash, txs ...[]byte) ([]byte, Hash) {
 	t.Helper()
 
 	seam := &anchorIndexer{}
@@ -50,10 +49,10 @@ func newAnchoredVertices(t *testing.T, producer testValidator) func(round, front
 	t.Cleanup(func() { dag.Close() })
 	dag.SetIndexer(seam)
 
-	return func(round, frontier uint64, root Hash, parents []Hash) ([]byte, Hash) {
+	return func(round, frontier uint64, root Hash, parents []Hash, txs ...[]byte) ([]byte, Hash) {
 		seam.frontier, seam.root = frontier, root
 
-		data := dag.buildVertex(round, parents, nil)
+		data := dag.buildVertex(round, parents, txs)
 
 		return data, hashFrom(types.GetRootAsVertex(data, 0).HashBytes())
 	}
@@ -101,9 +100,14 @@ func newAnchorReceiver(t *testing.T, vs *ValidatorSet, key testValidator, opts .
 
 // TestValidateIndexAnchor_WrongRootAtCommittedFrontier is the core of stage 1:
 // a vertex anchoring a frontier the receiver has itself committed is checked
-// against the receiver's retained root, and a mismatch is a terminal rejection
-// carrying the index_root reason — never a fault record (that is the commit
-// path's job) and never a buffer.
+// against the receiver's retained root, and a mismatch yields the QUARANTINE
+// verdict — never a fault record (that is the commit path's job) and never a
+// buffer.
+//
+// The verdict is deliberately not a rejection reason. A rejected vertex is
+// dropped; a quarantined one is stored, so reporting it through
+// classifyRejection would tell every consumer of consensus.vertex.rejected that
+// a vertex was discarded when it was not.
 func TestValidateIndexAnchor_WrongRootAtCommittedFrontier(t *testing.T) {
 	validators, vs := newTestValidatorSet(2)
 	receiver, committed := newAnchorReceiver(t, vs, validators[0])
@@ -119,11 +123,15 @@ func TestValidateIndexAnchor_WrongRootAtCommittedFrontier(t *testing.T) {
 
 	err := receiver.validateIndexAnchor(produce(5, receiverFrontier, lying))
 	if !errors.Is(err, errIndexRoot) {
-		t.Fatalf("a wrong root at a committed frontier must be rejected with errIndexRoot, got: %v", err)
+		t.Fatalf("a wrong root at a committed frontier must yield errIndexRoot, got: %v", err)
 	}
 
-	if got := classifyRejection(err); got != "index_root" {
-		t.Fatalf("classifyRejection = %q, want %q", got, "index_root")
+	if !isQuarantineVerdict(err) {
+		t.Fatal("the wrong-root verdict must be recognized as a quarantine, or the vertex is dropped and its causal batch can never complete")
+	}
+
+	if got := classifyRejection(err); got != "unknown" {
+		t.Fatalf("classifyRejection = %q: the quarantine verdict must not masquerade as a rejection reason", got)
 	}
 }
 
@@ -229,8 +237,14 @@ func TestValidateIndexAnchor_ZeroRootGenesisEpochOnly(t *testing.T) {
 
 // TestValidateVertex_WiresIndexAnchorCheck verifies the check is reachable
 // from the single validation entry point, not merely callable in isolation,
-// and that it runs BEFORE the parent checks: a lying vertex is rejected on its
-// root even when its parents would have failed (or buffered) first.
+// and that it runs LAST — after every check whose failure is terminal.
+//
+// The ordering flipped when the verdict became a quarantine. The anchor verdict
+// is now the one verdict that still puts the vertex in the store, so it must be
+// reached only by a vertex that is valid in every other respect; otherwise a
+// wrong root would be a way to smuggle structurally invalid vertices into every
+// honest node's store. A vertex that is both wrong-root and malformed comes back
+// with the malformed verdict and stays terminally rejected.
 func TestValidateVertex_WiresIndexAnchorCheck(t *testing.T) {
 	validators, vs := newTestValidatorSet(2)
 	receiver, committed := newAnchorReceiver(t, vs, validators[0])
@@ -245,14 +259,19 @@ func TestValidateVertex_WiresIndexAnchorCheck(t *testing.T) {
 	lying[1] ^= 0xFF
 
 	if err := receiver.validateVertex(produce(0, receiverFrontier, lying), nil); !errors.Is(err, errIndexRoot) {
-		t.Fatalf("validateVertex must reject a wrong anchor, got: %v", err)
+		t.Fatalf("validateVertex must surface the quarantine verdict for a wrong anchor, got: %v", err)
 	}
 
-	// Round 5 with no parents fails the parent checks too; the anchor verdict
-	// must be the one that comes back, so a liar can never be buffered and
-	// retried instead of rejected.
-	if err := receiver.validateVertex(produce(5, receiverFrontier, lying), nil); !errors.Is(err, errIndexRoot) {
-		t.Fatalf("the anchor check must precede the parent checks, got: %v", err)
+	// Round 5 with no parents fails a structural check too. That verdict must be
+	// the one that comes back: a vertex the node would refuse on its own structure
+	// must never be stored just because its anchor is also wrong.
+	err := receiver.validateVertex(produce(5, receiverFrontier, lying), nil)
+	if !errors.Is(err, errParentRound) {
+		t.Fatalf("a structural failure must preempt the quarantine verdict, got: %v", err)
+	}
+
+	if isQuarantineVerdict(err) {
+		t.Fatal("a structurally invalid vertex must not be admitted through the quarantine door")
 	}
 }
 

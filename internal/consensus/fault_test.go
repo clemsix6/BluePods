@@ -1,7 +1,7 @@
 package consensus
 
 import (
-	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"testing"
 
@@ -101,9 +101,12 @@ func TestRecheckCommittedAnchor_RecordsFaultForCommittedLiar(t *testing.T) {
 // TestRecheckCommittedAnchor_FaultRecordVerifiesStandalone is what makes the
 // evidence slashing-grade: a third party holding the record alone — no vertex,
 // no DAG, no access to this node — reproduces the conviction. It recomputes the
-// vertex identity from the normative 120-byte header, checks the producer's own
-// signature over it, and reads the claimed root out of the same header. Nothing
-// in the record is taken on trust.
+// vertex identity as BLAKE3(0x01 || the stored bytes' first 120) exactly as the
+// normative layout specifies, checks the producer's own signature over it, and
+// reads the claimed root out of the same bytes at the pinned offset. Nothing in
+// the record is taken on trust, and nothing is routed back through this
+// package's own header encoder — a round-trip through the encoder would prove
+// only that the encoder is self-consistent.
 func TestRecheckCommittedAnchor_FaultRecordVerifiesStandalone(t *testing.T) {
 	validators, vs := newTestValidatorSet(2)
 	node, committed := newAnchorReceiver(t, vs, validators[0])
@@ -118,37 +121,32 @@ func TestRecheckCommittedAnchor_FaultRecordVerifiesStandalone(t *testing.T) {
 		evidence = value
 	}
 
+	// Everything below is read positionally out of the stored bytes, at the
+	// offsets header.go pins as the normative wire contract.
+	assertEvidenceVerifies(t, evidence, committed)
+
+	if got := hashFrom(evidence[:32]); got != validators[1].pubKey {
+		t.Fatalf("evidence names producer %x, want the liar", got[:8])
+	}
+
+	if got := hashFrom(evidence[56:88]); got != claimed {
+		t.Fatalf("evidence claims root %x, want the anchored root %x", got[:8], claimed[:8])
+	}
+
+	if got := binary.BigEndian.Uint64(evidence[32:40]); got != 5 {
+		t.Fatalf("evidence carries round %d, want 5", got)
+	}
+
+	// This package's own decoder must land on the same offsets. It is the reader
+	// slashing tooling will grow from, and a decoder that drifted from the layout
+	// above would make every stored record unreadable exactly when it matters.
 	record, ok := decodeFaultRecord(evidence)
 	if !ok {
 		t.Fatalf("stored fault evidence does not decode: %d bytes", len(evidence))
 	}
 
-	producer := record.producer()
-	if producer != validators[1].pubKey {
-		t.Fatalf("evidence names producer %x, want the liar", producer[:8])
-	}
-
-	header := record.identity()
-	identity := header.hash()
-
-	if !ed25519.Verify(producer[:], identity[:], record.signature) {
-		t.Fatal("the producer's signature does not verify over the header the evidence carries")
-	}
-
-	if got := record.claimed(); got != claimed {
-		t.Fatalf("evidence claims root %x, want the anchored root %x", got[:8], claimed[:8])
-	}
-
-	if record.computed != committed {
-		t.Fatalf("evidence computes root %x, want this node's own root %x", record.computed[:8], committed[:8])
-	}
-
-	if record.claimed() == record.computed {
-		t.Fatal("evidence that does not exhibit a mismatch convicts nobody")
-	}
-
-	if got := record.round(); got != 5 {
-		t.Fatalf("evidence carries round %d, want 5", got)
+	if record.producer() != validators[1].pubKey || record.claimed() != claimed || record.round() != 5 || record.computed != committed {
+		t.Fatal("the decoder disagrees with the normative offsets the evidence was read at")
 	}
 }
 
