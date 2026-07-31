@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	// snapshotVersion is the current snapshot format version.
-	snapshotVersion = 14
+	// snapshotVersion is the current snapshot format version. Bumped to 15 with
+	// the detached vertex header: the vertex identity is now the header hash, so
+	// vertices carried by an older snapshot can no longer validate.
+	snapshotVersion = 15
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32

@@ -42,15 +42,16 @@ func TestValidateSignature_InvalidSig(t *testing.T) {
 	}
 }
 
-// TestValidateEpoch_Mismatch verifies epoch mismatch is rejected.
+// TestValidateEpoch_Mismatch verifies an epoch the vertex's own round cannot have
+// reached is rejected.
 func TestValidateEpoch_Mismatch(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)
 
-	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
-	// Build vertex with epoch=2 while DAG is at epoch=1
+	// Round 0 belongs to epoch 0: no producer can claim epoch 2 there.
 	data := buildTestVertex(t, validators[1], 0, nil, 2)
 	vertex := types.GetRootAsVertex(data, 0)
 
@@ -464,10 +465,10 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	parentOffsets = make([]flatbuffers.UOffsetT, len(parents))
@@ -491,6 +492,7 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	txsVec = builder.EndVector(0)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -502,6 +504,7 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)
@@ -514,16 +517,16 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 func buildVertexWithFeeSummary(t *testing.T, v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte) []byte {
 	t.Helper()
 
-	// Two-pass build: first unsigned for hash, then signed.
-	data := buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, nil, nil)
-	hash := hashVertex(data)
+	// Two-pass build: first unsigned for the header hash, then signed.
+	data := buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, nil, nil, nil)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(data, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	return buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, hash[:], sig)
+	return buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, hash[:], bodyHash[:], sig)
 }
 
-// buildVertexWithFeeSummaryInner builds a vertex with optional hash/sig.
-func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte, hash, sig []byte) []byte {
+// buildVertexWithFeeSummaryInner builds a vertex with optional hash/body hash/sig.
+func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte, hash, bodyHash, sig []byte) []byte {
 	builder := flatbuffers.NewBuilder(8192)
 
 	// Rebuild all ATXs inside the builder
@@ -555,9 +558,12 @@ func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64,
 
 	producerVec := builder.CreateByteVector(v.pubKey[:])
 
-	var hashVec, sigVec flatbuffers.UOffsetT
+	var hashVec, bodyHashVec, sigVec flatbuffers.UOffsetT
 	if hash != nil {
 		hashVec = builder.CreateByteVector(hash)
+	}
+	if bodyHash != nil {
+		bodyHashVec = builder.CreateByteVector(bodyHash)
 	}
 	if sig != nil {
 		sigVec = builder.CreateByteVector(sig)
@@ -582,6 +588,10 @@ func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64,
 
 	if feeSummaryOff != 0 {
 		types.VertexAddFeeSummary(builder, feeSummaryOff)
+	}
+
+	if bodyHashVec != 0 {
+		types.VertexAddBodyHash(builder, bodyHashVec)
 	}
 
 	vertexOff := types.VertexEnd(builder)

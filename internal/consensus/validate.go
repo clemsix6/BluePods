@@ -86,11 +86,37 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 	return nil
 }
 
-// validateEpoch checks the vertex epoch matches current epoch.
+// validateEpoch checks the epoch a vertex's header claims against the only bound
+// a receiver can hold it to: the epoch its own round belongs to.
+//
+// A producer transitions to epoch E when its COMMIT CURSOR reaches round
+// E*epochLength, and it produces strictly above its cursor, so an honest header at
+// round R never claims more than R/epochLength. Anything above that is provably
+// forged and is rejected.
+//
+// The receiver's own currentEpoch is deliberately NOT the reference. It is not
+// network-uniform at any instant: the producer of a vertex in flight across a
+// boundary is one epoch behind a receiver that already transitioned (the boundary
+// window the anchor rule already tolerates in HoldersForEpoch), and a node that
+// crashed, joined, or stalled trails the live epoch by however far its commit
+// cursor trails — while it needs exactly those ahead-of-its-epoch tip vertices to
+// buffer, trigger deep-gap recovery and catch up at all. Comparing against
+// currentEpoch in either direction would reject them and wedge the node.
+//
+// Epochs disabled (epochLength 0) leaves the field unconstrained: no boundary
+// exists to bound it with.
 func (d *DAG) validateEpoch(v *types.Vertex) error {
-	if v.Epoch() != d.epoch {
-		return fmt.Errorf("epoch mismatch: expected %d, got %d:\n%w", d.epoch, v.Epoch(), errWrongEpoch)
+	if d.epochLength == 0 {
+		return nil
 	}
+
+	maxEpoch := v.Round() / d.epochLength
+
+	if v.Epoch() > maxEpoch {
+		return fmt.Errorf("epoch mismatch: round %d allows at most epoch %d, got %d:\n%w",
+			v.Round(), maxEpoch, v.Epoch(), errWrongEpoch)
+	}
+
 	return nil
 }
 
@@ -113,7 +139,10 @@ func (d *DAG) validateProducer(v *types.Vertex) error {
 	return nil
 }
 
-// validateSignature verifies the Ed25519 signature.
+// validateSignature verifies the Ed25519 signature over the vertex identity, and
+// first re-derives that identity from the vertex's own content: a valid signature
+// over a hash nothing binds to the body would let a producer sign one vertex and
+// ship another.
 func (d *DAG) validateSignature(v *types.Vertex) error {
 	sig := v.SignatureBytes()
 	if len(sig) != ed25519.SignatureSize {
@@ -130,8 +159,38 @@ func (d *DAG) validateSignature(v *types.Vertex) error {
 		return fmt.Errorf("invalid hash size: %d:\n%w", len(hashBytes), errBadSignature)
 	}
 
+	if err := validateVertexHash(v); err != nil {
+		return err
+	}
+
 	if !ed25519.Verify(pubkey, hashBytes, sig) {
 		return fmt.Errorf("invalid signature:\n%w", errBadSignature)
+	}
+
+	return nil
+}
+
+// validateVertexHash re-derives the vertex identity from the body it carries and
+// the header it declares, and requires both to match what the vertex claims. It is
+// what binds the detached header to the body: the declared body_hash must be the
+// body's real hash (or the header a light verifier is served would describe a
+// different vertex), and the identity must be the hash of the declared header (or
+// the parent links and store keys would point at something else entirely).
+func validateVertexHash(v *types.Vertex) error {
+	identity, bodyHash := vertexIdentity(v)
+
+	if bodyHash == malformedBody {
+		return fmt.Errorf("unreadable vertex body:\n%w", errBadSignature)
+	}
+
+	if declared := hashFrom(v.BodyHashBytes()); declared != bodyHash {
+		return fmt.Errorf("body_hash mismatch: declared %x, computed %x:\n%w",
+			declared[:8], bodyHash[:8], errBadSignature)
+	}
+
+	if declared := hashFrom(v.HashBytes()); declared != identity {
+		return fmt.Errorf("header hash mismatch: declared %x, computed %x:\n%w",
+			declared[:8], identity[:8], errBadSignature)
 	}
 
 	return nil

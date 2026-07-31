@@ -2061,10 +2061,10 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	atxOffset = rebuildATXInBuilder(builder, atxBytes)
@@ -2091,6 +2091,7 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	txsVec = builder.EndVector(1)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -2102,6 +2103,7 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)

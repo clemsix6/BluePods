@@ -89,6 +89,22 @@ table Vertex {
     // branch that ships the first time-using pod; for now the field is carried,
     // signed, and ignored by everything (money never reads it).
     timestamp:uint64;
+
+    // frontier_round is the round of the committed frontier index_root anchors.
+    // Header field: covered by hash and signature, never by body_hash.
+    frontier_round:uint64;
+
+    // index_root is the 32-byte root of the verifiable index at frontier_round.
+    // Header field: covered by hash and signature, never by body_hash.
+    index_root:[ubyte];
+
+    // body_hash is the 32-byte BLAKE3 of the vertex body (parents, transactions,
+    // fee summary, timestamp). It detaches the header from the body: hash is
+    // BLAKE3(producer || round || epoch || frontier_round || index_root ||
+    // body_hash), so a verifier holding the header alone checks the signature
+    // without downloading the body, and a full node recomputes body_hash to bind
+    // the body back to the signed header.
+    body_hash:[ubyte];
 }
 
 root_type Vertex;

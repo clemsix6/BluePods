@@ -1,15 +1,8 @@
 package consensus
 
 import (
-	"github.com/zeebo/blake3"
-
 	"BluePods/internal/types"
 )
-
-// hashVertex computes the blake3 hash of vertex data.
-func hashVertex(data []byte) Hash {
-	return blake3.Sum256(data)
-}
 
 // extractProducer extracts the producer hash from a vertex.
 func extractProducer(v *types.Vertex) Hash {

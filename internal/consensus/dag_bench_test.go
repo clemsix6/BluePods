@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/zeebo/blake3"
 
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
@@ -74,14 +75,14 @@ func BenchmarkAddVertexParallel(b *testing.B) {
 	})
 }
 
-func BenchmarkHashVertex(b *testing.B) {
+func BenchmarkVertexIdentity(b *testing.B) {
 	validators, _ := newBenchValidatorSet(1)
-	data := buildBenchVertex(validators[0], 0, nil, 1)
+	vertex := types.GetRootAsVertex(buildBenchVertex(validators[0], 0, nil, 1), 0)
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = hashVertex(data)
+		_, _ = vertexIdentity(vertex)
 	}
 }
 
@@ -113,7 +114,7 @@ func BenchmarkStoreAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		v := validators[i%len(validators)]
 		vertices[i] = buildBenchVertex(v, uint64(i), nil, 1)
-		hashes[i] = hashVertex(vertices[i])
+		hashes[i] = blake3.Sum256(vertices[i])
 		producers[i] = v.pubKey
 	}
 
@@ -134,7 +135,7 @@ func BenchmarkStoreGet(b *testing.B) {
 	for i := 0; i < 10000; i++ {
 		v := validators[i%len(validators)]
 		data := buildBenchVertex(v, uint64(i), nil, 1)
-		hashes[i] = hashVertex(data)
+		hashes[i] = blake3.Sum256(data)
 		s.add(data, hashes[i], uint64(i%100), v.pubKey)
 	}
 
@@ -155,7 +156,7 @@ func BenchmarkStoreGetByRound(b *testing.B) {
 		for i := 0; i < 100; i++ {
 			v := validators[i%len(validators)]
 			data := buildBenchVertex(v, round, nil, 1)
-			hash := hashVertex(data)
+			hash := blake3.Sum256(data)
 			s.add(data, hash, round, v.pubKey)
 		}
 	}
@@ -188,7 +189,7 @@ func BenchmarkBuildVertex(b *testing.B) {
 
 	parents := make([]Hash, 67)
 	for i := range parents {
-		parents[i] = hashVertex([]byte{byte(i)})
+		parents[i] = blake3.Sum256([]byte{byte(i)})
 	}
 
 	b.ResetTimer()
@@ -255,12 +256,13 @@ func buildBenchVertex(v testValidator, round uint64, parents []Hash, epoch uint6
 	builder.Finish(vertexOffset)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
 	builder.Reset()
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -292,6 +294,7 @@ func buildBenchVertex(v testValidator, round uint64, parents []Hash, epoch uint6
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOffset = types.VertexEnd(builder)
 
 	builder.Finish(vertexOffset)

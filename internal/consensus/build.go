@@ -11,44 +11,81 @@ import (
 	"BluePods/internal/types"
 )
 
-// buildVertex creates a new vertex with the given parameters. The timestamp is
-// read once from the local clock and threaded into BOTH the unsigned body (so
-// it feeds the hash) and the signed body (with the identical value), so the
-// signed field matches exactly what was hashed and signed.
+// vertexParts is the material both build passes assemble a vertex from. The
+// timestamp and epoch are read once and threaded into BOTH passes with the
+// identical value, so the signed fields match exactly what was hashed and signed.
+type vertexParts struct {
+	round         uint64   // round is the DAG round being produced
+	epoch         uint64   // epoch is the producer's live epoch at production
+	timestamp     uint64   // timestamp is the producer's local wall-clock (Unix nanoseconds)
+	frontierRound uint64   // frontierRound is the committed round indexRoot anchors
+	indexRoot     Hash     // indexRoot is the verifiable index root at frontierRound
+	parents       []Hash   // parents are the round-1 vertices this vertex references
+	txs           [][]byte // txs are the serialized AttestedTransactions to include
+	bodyHash      Hash     // bodyHash is the body commitment (second pass only)
+	hash          Hash     // hash is the header hash, the vertex identity (second pass only)
+	sig           []byte   // sig is the Ed25519 signature over hash (second pass only)
+}
+
+// buildVertex creates a new vertex with the given parameters. The producer signs
+// the HEADER hash: the body is hashed once into bodyHash and the identity is
+// BLAKE3 over {producer, round, epoch, frontier_round, index_root, bodyHash}, so
+// the signature can be checked against the 120-byte header alone.
 func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 	builder := flatbuffers.NewBuilder(4096 + len(txs)*1024)
 
-	timestamp := uint64(time.Now().UnixNano())
+	parts := vertexParts{
+		round:     round,
+		epoch:     d.productionEpoch(),
+		timestamp: uint64(time.Now().UnixNano()),
+		parents:   parents,
+		txs:       txs,
+	}
 
-	// Build unsigned vertex first (includes transactions and timestamp for hash)
-	unsigned := d.buildUnsignedVertex(builder, round, parents, txs, timestamp)
+	// Build the unsigned vertex first: its body is what bodyHash commits to.
+	unsigned := d.buildUnsignedVertex(builder, parts)
 
-	// Compute hash and signature
-	hash := hashVertex(unsigned)
-	sig := ed25519.Sign(d.privKey, hash[:])
+	parts.hash, parts.bodyHash = vertexIdentity(types.GetRootAsVertex(unsigned, 0))
+	parts.sig = ed25519.Sign(d.privKey, parts.hash[:])
 
-	// Rebuild with hash and signature, reusing the same timestamp
+	// Rebuild with the header hash, body hash and signature.
 	builder.Reset()
 
-	return d.buildSignedVertex(builder, round, parents, txs, hash, sig, timestamp)
+	return d.buildSignedVertex(builder, parts)
 }
 
-// buildUnsignedVertex creates a vertex without hash and signature. The timestamp
-// is part of this body so it is covered by the vertex hash (and thus signed).
-func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, timestamp uint64) []byte {
-	txsVec := d.buildTxVector(builder, txs)
-	feeSummaryOff := d.buildFeeSummary(builder, txs)
-	parentsVec := d.buildParentsVector(builder, parents)
+// productionEpoch returns the epoch a vertex produced now is stamped with: the
+// LIVE epoch the commit path maintains, read under commitMu. The construction-time
+// epoch field is a vestigial hint (every node is built with 0) and must never be
+// used here — a header claiming epoch 0 forever would name the wrong validator
+// tree for every quorum weighed against it.
+func (d *DAG) productionEpoch() uint64 {
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	return d.currentEpoch
+}
+
+// buildUnsignedVertex creates a vertex without hash, body hash and signature. Its
+// body (parents, transactions, fee summary, timestamp) is what bodyHash is
+// computed over; the header fields it carries are the ones the identity folds in.
+func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, parts vertexParts) []byte {
+	txsVec := d.buildTxVector(builder, parts.txs)
+	feeSummaryOff := d.buildFeeSummary(builder, parts.txs)
+	parentsVec := d.buildParentsVector(builder, parts.parents)
 	producerVec := builder.CreateByteVector(d.pubKey[:])
+	indexRootVec := builder.CreateByteVector(parts.indexRoot[:])
 
 	types.VertexStart(builder)
-	types.VertexAddRound(builder, round)
+	types.VertexAddRound(builder, parts.round)
 	types.VertexAddProducer(builder, producerVec)
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
-	types.VertexAddEpoch(builder, d.epoch)
+	types.VertexAddEpoch(builder, parts.epoch)
 	types.VertexAddFeeSummary(builder, feeSummaryOff)
-	types.VertexAddTimestamp(builder, timestamp)
+	types.VertexAddTimestamp(builder, parts.timestamp)
+	types.VertexAddFrontierRound(builder, parts.frontierRound)
+	types.VertexAddIndexRoot(builder, indexRootVec)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
@@ -56,27 +93,32 @@ func (d *DAG) buildUnsignedVertex(builder *flatbuffers.Builder, round uint64, pa
 	return builder.FinishedBytes()
 }
 
-// buildSignedVertex creates a complete vertex with hash and signature. The
-// timestamp must be the identical value passed to buildUnsignedVertex so the
-// signed field matches what was hashed and signed.
-func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, round uint64, parents []Hash, txs [][]byte, hash Hash, sig []byte, timestamp uint64) []byte {
-	txsVec := d.buildTxVector(builder, txs)
-	feeSummaryOff := d.buildFeeSummary(builder, txs)
-	hashVec := builder.CreateByteVector(hash[:])
-	sigVec := builder.CreateByteVector(sig)
+// buildSignedVertex creates a complete vertex with its header hash, body hash and
+// signature. Every other field must carry the identical value passed to
+// buildUnsignedVertex, or the vertex no longer matches what was hashed and signed.
+func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, parts vertexParts) []byte {
+	txsVec := d.buildTxVector(builder, parts.txs)
+	feeSummaryOff := d.buildFeeSummary(builder, parts.txs)
+	hashVec := builder.CreateByteVector(parts.hash[:])
+	sigVec := builder.CreateByteVector(parts.sig)
 	producerVec := builder.CreateByteVector(d.pubKey[:])
-	parentsVec := d.buildParentsVector(builder, parents)
+	parentsVec := d.buildParentsVector(builder, parts.parents)
+	indexRootVec := builder.CreateByteVector(parts.indexRoot[:])
+	bodyHashVec := builder.CreateByteVector(parts.bodyHash[:])
 
 	types.VertexStart(builder)
 	types.VertexAddHash(builder, hashVec)
-	types.VertexAddRound(builder, round)
+	types.VertexAddRound(builder, parts.round)
 	types.VertexAddProducer(builder, producerVec)
 	types.VertexAddSignature(builder, sigVec)
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
-	types.VertexAddEpoch(builder, d.epoch)
+	types.VertexAddEpoch(builder, parts.epoch)
 	types.VertexAddFeeSummary(builder, feeSummaryOff)
-	types.VertexAddTimestamp(builder, timestamp)
+	types.VertexAddTimestamp(builder, parts.timestamp)
+	types.VertexAddFrontierRound(builder, parts.frontierRound)
+	types.VertexAddIndexRoot(builder, indexRootVec)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
@@ -213,36 +255,36 @@ func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (o
 		return 0, false
 	}
 
+	return rebuildAttestedTx(builder, atx), true
+}
+
+// rebuildAttestedTx re-serializes a parsed AttestedTransaction into the builder
+// and returns its offset. It is the single canonical rewrap: vertex production
+// runs it over submitted transactions, and the body hash runs it over the parsed
+// vertex, so producer and receiver serialize identical content identically.
+func rebuildAttestedTx(builder *flatbuffers.Builder, atx *types.AttestedTransaction) flatbuffers.UOffsetT {
 	// Rebuild inner Transaction
-	txOffset := d.rebuildTransaction(builder, atx.Transaction(nil))
+	txOffset := rebuildTransaction(builder, atx.Transaction(nil))
 
 	// Rebuild Objects vector
 	objOffsets := make([]flatbuffers.UOffsetT, atx.ObjectsLength())
 	for i := 0; i < atx.ObjectsLength(); i++ {
 		var obj types.Object
 		atx.Objects(&obj, i)
-		objOffsets[i] = d.rebuildObject(builder, &obj)
+		objOffsets[i] = rebuildObject(builder, &obj)
 	}
 
-	types.AttestedTransactionStartObjectsVector(builder, len(objOffsets))
-	for i := len(objOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(objOffsets[i])
-	}
-	objectsVec := builder.EndVector(len(objOffsets))
+	objectsVec := endOffsetVector(builder, objOffsets, types.AttestedTransactionStartObjectsVector)
 
 	// Rebuild Proofs vector
 	proofOffsets := make([]flatbuffers.UOffsetT, atx.ProofsLength())
 	for i := 0; i < atx.ProofsLength(); i++ {
 		var proof types.QuorumProof
 		atx.Proofs(&proof, i)
-		proofOffsets[i] = d.rebuildQuorumProof(builder, &proof)
+		proofOffsets[i] = rebuildQuorumProof(builder, &proof)
 	}
 
-	types.AttestedTransactionStartProofsVector(builder, len(proofOffsets))
-	for i := len(proofOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(proofOffsets[i])
-	}
-	proofsVec := builder.EndVector(len(proofOffsets))
+	proofsVec := endOffsetVector(builder, proofOffsets, types.AttestedTransactionStartProofsVector)
 
 	types.AttestedTransactionStart(builder)
 	types.AttestedTransactionAddTransaction(builder, txOffset)
@@ -250,11 +292,11 @@ func (d *DAG) tryRebuildAttestedTx(builder *flatbuffers.Builder, data []byte) (o
 	types.AttestedTransactionAddProofs(builder, proofsVec)
 	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
 
-	return types.AttestedTransactionEnd(builder), true
+	return types.AttestedTransactionEnd(builder)
 }
 
 // rebuildTransaction rebuilds a Transaction in the builder.
-func (d *DAG) rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
+func rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
 	if tx == nil {
 		types.TransactionStart(builder)
 		return types.TransactionEnd(builder)
@@ -264,7 +306,7 @@ func (d *DAG) rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transac
 }
 
 // rebuildObject rebuilds an Object in the builder.
-func (d *DAG) rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.UOffsetT {
+func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.UOffsetT {
 	idVec := builder.CreateByteVector(obj.IdBytes())
 	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
 	contentVec := builder.CreateByteVector(obj.ContentBytes())
@@ -281,7 +323,7 @@ func (d *DAG) rebuildObject(builder *flatbuffers.Builder, obj *types.Object) fla
 }
 
 // rebuildQuorumProof rebuilds a QuorumProof in the builder.
-func (d *DAG) rebuildQuorumProof(builder *flatbuffers.Builder, proof *types.QuorumProof) flatbuffers.UOffsetT {
+func rebuildQuorumProof(builder *flatbuffers.Builder, proof *types.QuorumProof) flatbuffers.UOffsetT {
 	objIdVec := builder.CreateByteVector(proof.ObjectIdBytes())
 	blsSigVec := builder.CreateByteVector(proof.BlsSignatureBytes())
 	bitmapVec := builder.CreateByteVector(proof.SignerBitmapBytes())

@@ -1369,10 +1369,10 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash + signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	parentOffsets = make([]flatbuffers.UOffsetT, len(parents))
@@ -1401,6 +1401,7 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	txsVec = builder.EndVector(0)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -1412,6 +1413,7 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)

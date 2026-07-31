@@ -556,6 +556,9 @@ impl<'a> Vertex<'a> {
   pub const VT_EPOCH: ::flatbuffers::VOffsetT = 16;
   pub const VT_FEE_SUMMARY: ::flatbuffers::VOffsetT = 18;
   pub const VT_TIMESTAMP: ::flatbuffers::VOffsetT = 20;
+  pub const VT_FRONTIER_ROUND: ::flatbuffers::VOffsetT = 22;
+  pub const VT_INDEX_ROOT: ::flatbuffers::VOffsetT = 24;
+  pub const VT_BODY_HASH: ::flatbuffers::VOffsetT = 26;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -567,9 +570,12 @@ impl<'a> Vertex<'a> {
     args: &'args VertexArgs<'args>
   ) -> ::flatbuffers::WIPOffset<Vertex<'bldr>> {
     let mut builder = VertexBuilder::new(_fbb);
+    builder.add_frontier_round(args.frontier_round);
     builder.add_timestamp(args.timestamp);
     builder.add_epoch(args.epoch);
     builder.add_round(args.round);
+    if let Some(x) = args.body_hash { builder.add_body_hash(x); }
+    if let Some(x) = args.index_root { builder.add_index_root(x); }
     if let Some(x) = args.fee_summary { builder.add_fee_summary(x); }
     if let Some(x) = args.transactions { builder.add_transactions(x); }
     if let Some(x) = args.parents { builder.add_parents(x); }
@@ -643,6 +649,27 @@ impl<'a> Vertex<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(Vertex::VT_TIMESTAMP, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn frontier_round(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Vertex::VT_FRONTIER_ROUND, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn index_root(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Vertex::VT_INDEX_ROOT, None)}
+  }
+  #[inline]
+  pub fn body_hash(&self) -> Option<::flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, u8>>>(Vertex::VT_BODY_HASH, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Vertex<'_> {
@@ -660,6 +687,9 @@ impl ::flatbuffers::Verifiable for Vertex<'_> {
      .visit_field::<u64>("epoch", Self::VT_EPOCH, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<FeeSummary>>("fee_summary", Self::VT_FEE_SUMMARY, false)?
      .visit_field::<u64>("timestamp", Self::VT_TIMESTAMP, false)?
+     .visit_field::<u64>("frontier_round", Self::VT_FRONTIER_ROUND, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("index_root", Self::VT_INDEX_ROOT, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("body_hash", Self::VT_BODY_HASH, false)?
      .finish();
     Ok(())
   }
@@ -674,6 +704,9 @@ pub struct VertexArgs<'a> {
     pub epoch: u64,
     pub fee_summary: Option<::flatbuffers::WIPOffset<FeeSummary<'a>>>,
     pub timestamp: u64,
+    pub frontier_round: u64,
+    pub index_root: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
+    pub body_hash: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
 }
 impl<'a> Default for VertexArgs<'a> {
   #[inline]
@@ -688,6 +721,9 @@ impl<'a> Default for VertexArgs<'a> {
       epoch: 0,
       fee_summary: None,
       timestamp: 0,
+      frontier_round: 0,
+      index_root: None,
+      body_hash: None,
     }
   }
 }
@@ -734,6 +770,18 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> VertexBuilder<'a, 'b, A> {
     self.fbb_.push_slot::<u64>(Vertex::VT_TIMESTAMP, timestamp, 0);
   }
   #[inline]
+  pub fn add_frontier_round(&mut self, frontier_round: u64) {
+    self.fbb_.push_slot::<u64>(Vertex::VT_FRONTIER_ROUND, frontier_round, 0);
+  }
+  #[inline]
+  pub fn add_index_root(&mut self, index_root: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Vertex::VT_INDEX_ROOT, index_root);
+  }
+  #[inline]
+  pub fn add_body_hash(&mut self, body_hash: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(Vertex::VT_BODY_HASH, body_hash);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> VertexBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     VertexBuilder {
@@ -760,6 +808,9 @@ impl ::core::fmt::Debug for Vertex<'_> {
       ds.field("epoch", &self.epoch());
       ds.field("fee_summary", &self.fee_summary());
       ds.field("timestamp", &self.timestamp());
+      ds.field("frontier_round", &self.frontier_round());
+      ds.field("index_root", &self.index_root());
+      ds.field("body_hash", &self.body_hash());
       ds.finish()
   }
 }

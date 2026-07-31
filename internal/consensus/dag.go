@@ -54,9 +54,16 @@ type DAG struct {
 	executor    Executor
 	broadcaster Broadcaster
 	systemPod   Hash
-	epoch       uint64
-	privKey     ed25519.PrivateKey
-	pubKey      Hash
+
+	// epoch is the construction-time epoch argument, kept only because it is part
+	// of the New signature. It is NOT the epoch of anything: the live epoch is
+	// currentEpoch, maintained by the commit path, and it is what production
+	// stamps into a vertex header (productionEpoch) — every node is constructed
+	// with 0, so trusting this field left every header claiming the genesis epoch.
+	epoch uint64
+
+	privKey ed25519.PrivateKey
+	pubKey  Hash
 
 	// Round management
 	round             atomic.Uint64
