@@ -95,9 +95,14 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 	//
 	// It runs LAST because its verdict is the only one that does not stop the
 	// vertex from being STORED: a proven liar is quarantined, not dropped. Every
-	// other check must therefore have passed before it is reached, or the
-	// quarantine door would be a way to put structurally invalid vertices into
-	// every honest node's store. A vertex that is both wrong-root and malformed
+	// other check that ran must therefore have passed before it is reached, or
+	// the quarantine door would be a way to put structurally invalid vertices
+	// into every honest node's store. That claim is scoped, not absolute: check
+	// 4 (validateParents) is skipped for every vertex, quarantined or not,
+	// inside the transition/buffer window, so a quarantined vertex reached from
+	// there may carry unvalidated parents. That is not exposure quarantine
+	// introduces — any vertex, quarantined or clean, is storable on those same
+	// terms in that window. A vertex that is both wrong-root and malformed
 	// comes back with the malformed verdict and stays terminally rejected.
 	return d.validateIndexAnchor(v)
 }

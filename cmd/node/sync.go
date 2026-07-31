@@ -430,15 +430,19 @@ func (n *Node) replayBufferedVertices(lastCommittedRound uint64) error {
 		"producersInBuffer", producers,
 	)
 
-	added := 0
+	// AddVertex's bool is the relay gate, not a storage report (see its doc
+	// comment): a quarantined replay is stored but returns false. Count what is
+	// actually being counted here so this log does not silently under-report
+	// progress relative to what landed in the store.
+	relayed := 0
 	for _, data := range vertices {
 		if n.dag.AddVertex(data) {
-			added++
+			relayed++
 		}
 	}
 
 	logger.Info("replay complete",
-		"added", added,
+		"relayed", relayed,
 		"total", len(vertices),
 		"dagRoundNow", n.dag.Round(),
 	)

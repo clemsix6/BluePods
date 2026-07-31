@@ -463,12 +463,25 @@ func (d *DAG) AddVertex(data []byte) bool {
 	producer := extractProducer(vertex)
 	round := vertex.Round()
 
+	// The vq/ mark must be written BEFORE the vertex, not after. Both writes go
+	// through pebble.NoSync (see storage.Storage), so neither is durable until
+	// the next periodic WAL sync; a power loss between them truncates the WAL
+	// tail, never the head. Mark-first means the only inconsistency a
+	// truncation can leave is an orphan mark for a vertex that never landed,
+	// which is harmless (provenLiar only runs on candidates read out of the
+	// store). Vertex-first would risk the opposite and unsafe outcome: the
+	// vertex durable, its quarantine verdict lost, so a restart resumes
+	// relaying and referencing a producer this node already proved lied.
+	if quarantined {
+		d.store.markQuarantined(hash)
+	}
+
 	if !d.store.add(data, hash, round, producer) {
 		return false // already exists
 	}
 
 	if quarantined {
-		d.quarantineVertex(vertex, hash, producer, round)
+		d.reportQuarantine(vertex, hash, producer, round)
 	} else {
 		events.VertexReceived(hash, producer, round)
 	}
