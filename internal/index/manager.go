@@ -27,6 +27,18 @@ type Manager struct {
 	domain    *DomainTree
 	validator *ValidatorTree
 
+	// frontierMu guards EVERY field below it: the retained root history and
+	// the cached committed pair. All of them are written by the commit path
+	// alone, which serializes its own calls (the DAG's commitMu) — but none
+	// of their readers sit on it. Vertex production calls CommittedFrontier
+	// and ingress vertex validation calls RootAt, both from goroutines that
+	// must NOT take commitMu: it would put a whole commit batch's execution
+	// on transaction submission and on gossip ingestion respectively. Reading
+	// history or epochCheckpoints unguarded while the commit loop writes them
+	// is not a benign race but a fatal concurrent map access, so the reads go
+	// through this lock instead.
+	frontierMu sync.RWMutex
+
 	// history retains the combined root for the last historyWindow committed
 	// rounds, evicted oldest-first as SetFrontier advances. order is the FIFO
 	// queue of rounds backing that eviction.
@@ -41,17 +53,12 @@ type Manager struct {
 	epochCheckpoints  map[uint64][32]byte
 	pendingCheckpoint bool
 
-	// frontierMu guards frontierRound and frontierRoot only. Every other
-	// field here is written exclusively by the commit path, which serializes
-	// its own calls (the DAG's commitMu) — but CommittedFrontier is called
-	// from vertex production, a different goroutine that must NOT take that
-	// lock (coupling submit latency to commit batches). Caching the pair
-	// written by the most recent SetFrontier call behind its own mutex lets
-	// production read it as one atomic pair: reading round and root as two
-	// separate calls could observe a SetFrontier landing between them and
-	// pair one call's round with another's root, a torn anchor that stage-1
-	// validation later rejects network-wide.
-	frontierMu    sync.RWMutex
+	// frontierRound and frontierRoot cache the pair written by the most
+	// recent SetFrontier call, so production reads it as one atomic pair:
+	// reading round and root as two separate calls could observe a
+	// SetFrontier landing between them and pair one call's round with
+	// another's root, a torn anchor that stage-1 validation later rejects
+	// network-wide.
 	frontierRound uint64
 	frontierRoot  [32]byte
 }
@@ -97,7 +104,10 @@ func (m *Manager) RemoveDomain(name string) {
 // bounded history window.
 func (m *Manager) RebuildValidators(entries []ValidatorLeaf) {
 	m.validator.Rebuild(entries)
+
+	m.frontierMu.Lock()
 	m.pendingCheckpoint = true
+	m.frontierMu.Unlock()
 }
 
 // Root returns the current combined index root over the four trees' current,
@@ -120,11 +130,20 @@ func (m *Manager) Root() [32]byte {
 // commit loop's own later call (see cmd/node initIndex). It bounds retained
 // history to the last historyWindow rounds, except a round marked pending by
 // a preceding RebuildValidators call, which is retained indefinitely.
+//
+// The whole body runs under frontierMu's write lock, so a concurrent RootAt
+// or CommittedFrontier reader never observes a half-recorded round.
 func (m *Manager) SetFrontier(round uint64) {
+	m.frontierMu.Lock()
+	defer m.frontierMu.Unlock()
+
 	if len(m.order) > 0 && round <= m.order[len(m.order)-1] {
 		return
 	}
 
+	// Root walks the trees, which the commit path owns exclusively and no
+	// reader of this lock touches, so taking it here costs the readers only
+	// the few rehashes the last batch dirtied.
 	root := m.Root()
 
 	m.history[round] = root
@@ -135,10 +154,8 @@ func (m *Manager) SetFrontier(round uint64) {
 		m.pendingCheckpoint = false
 	}
 
-	m.frontierMu.Lock()
 	m.frontierRound = round
 	m.frontierRoot = root
-	m.frontierMu.Unlock()
 
 	m.evictOldRounds()
 }
@@ -157,7 +174,8 @@ func (m *Manager) CommittedFrontier() (round uint64, root [32]byte) {
 }
 
 // evictOldRounds drops the oldest retained rounds past historyWindow from the
-// bounded history map; epochCheckpoints is untouched.
+// bounded history map; epochCheckpoints is untouched. Caller holds
+// frontierMu's write lock.
 func (m *Manager) evictOldRounds() {
 	for len(m.order) > historyWindow {
 		oldest := m.order[0]
@@ -168,8 +186,18 @@ func (m *Manager) evictOldRounds() {
 
 // RootAt returns the combined root anchored at round and whether one is
 // retained: inside the bounded history window, at an epoch checkpoint, or
-// false when neither holds.
+// false when neither holds. Ingress vertex validation calls it from the
+// gossip goroutines while the commit loop writes, hence the read lock (see
+// frontierMu).
+//
+// A retained round's root never changes — SetFrontier's non-advancing guard
+// makes the first root recorded for a round authoritative and only eviction
+// ever removes it — so a caller that reads the frontier and then this may
+// interleave with a commit without observing an inconsistent pair.
 func (m *Manager) RootAt(round uint64) ([32]byte, bool) {
+	m.frontierMu.RLock()
+	defer m.frontierMu.RUnlock()
+
 	if root, ok := m.epochCheckpoints[round]; ok {
 		return root, true
 	}

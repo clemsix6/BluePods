@@ -20,6 +20,7 @@ var (
 	errParentRound  = errors.New("parent_round")
 	errParentQuorum = errors.New("parent_quorum")
 	errFeeSummary   = errors.New("fee_summary")
+	errIndexRoot    = errors.New("index_root")
 )
 
 // classifyRejection maps a terminal validateVertex error to its
@@ -39,6 +40,8 @@ func classifyRejection(err error) string {
 		return "parent_quorum"
 	case errors.Is(err, errFeeSummary):
 		return "fee_summary"
+	case errors.Is(err, errIndexRoot):
+		return "index_root"
 	default:
 		return "unknown" // defensive fallback; unreachable in practice — a forgotten case must surface as "unknown", never masquerade as a real reason such as "fee_summary"
 	}
@@ -62,7 +65,14 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		return err
 	}
 
-	// 4. Parents must exist and form quorum.
+	// 4. The anchored index root must match this node's own history, when this
+	// node has the history to check it against (stage 1; unverifiable anchors
+	// pass untouched).
+	if err := d.validateIndexAnchor(v); err != nil {
+		return err
+	}
+
+	// 5. Parents must exist and form quorum.
 	// Use the vertex's round (not the node's current round) to determine if
 	// validation should be relaxed. A vertex produced during the transition/buffer
 	// window must always be accepted, even if it arrives via gossip after the
@@ -73,12 +83,12 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		}
 	}
 
-	// 5. Parents must represent quorum of validators from round-1
+	// 6. Parents must represent quorum of validators from round-1
 	if err := d.validateParentsQuorum(v); err != nil {
 		return err
 	}
 
-	// 6. Fee summary must match recalculation from tx headers
+	// 7. Fee summary must match recalculation from tx headers
 	if err := d.validateFeeSummary(v); err != nil {
 		return err
 	}

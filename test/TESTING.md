@@ -283,8 +283,9 @@ success, and one of a fixed set when `success` is false: `version_conflict`,
 
 `consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
 `bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,
-`fee_summary`, or `unknown` (a defensive fallback for a validation failure
-path that does not map to any of the above; should not occur in practice).
+`fee_summary`, `index_root`, or `unknown` (a defensive fallback for a
+validation failure path that does not map to any of the above; should not
+occur in practice).
 
 Attribute values use stable encodings: hashes and object/validator IDs as
 lowercase hex, rounds and versions as integers, reasons as short snake_case

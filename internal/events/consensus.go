@@ -15,7 +15,8 @@ func VertexReceived(vertex, producer [32]byte, round uint64) {
 
 // VertexRejected marks a vertex terminally rejected during validation. reason
 // is one of the fixed validation failure codes (for example "bad_signature",
-// "wrong_epoch", "parent_round", "parent_quorum", "fee_summary").
+// "wrong_epoch", "parent_round", "parent_quorum", "fee_summary",
+// "index_root").
 func VertexRejected(vertex [32]byte, reason string) {
 	emit(EvVertexRejected, hexAttr("vertex", vertex), slog.String("reason", reason))
 }

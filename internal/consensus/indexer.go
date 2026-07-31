@@ -41,6 +41,15 @@ type indexer interface {
 	// round with a later commit's root, a false anchor stage-1 validation
 	// rejects network-wide.
 	CommittedFrontier() (round uint64, root [32]byte)
+
+	// RootAt returns the combined root retained for a committed round, and
+	// false when none is (the round is not decided yet, or it has fallen out
+	// of the bounded retention window with no epoch checkpoint on it). It is
+	// what ingress validation checks a received vertex's anchored pair
+	// against, so like CommittedFrontier it is called off the commit path's
+	// lock — from every gossip goroutine, concurrently with the commit loop's
+	// own writes.
+	RootAt(round uint64) (root [32]byte, ok bool)
 }
 
 // SetIndexer wires the verifiable-index manager so object creation, reparent,

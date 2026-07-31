@@ -2,6 +2,7 @@ package index
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -202,15 +203,12 @@ func TestManager_NewManagerRootIsEmpty(t *testing.T) {
 // times over. A dropped or misplaced frontierMu would show up here as a data
 // race even on a run where every individual assertion still happens to pass.
 //
-// Every pair a reader observes during the race window is only recorded, not
-// checked, there: history/order are unguarded fields the writer is free to
-// mutate concurrently, so calling RootAt while the writer is still running
-// would race on those, not on frontierMu — a false positive unrelated to
-// what this test targets. Verification happens after the writer goroutine
-// finishes (synchronized through the closed done channel plus the readers'
-// WaitGroup), when it is safe to call RootAt from the test goroutine alone:
-// a torn read would pair one SetFrontier call's round with a different
-// call's root, which RootAt(pair.round) == pair.root then catches.
+// Every pair a reader observes during the race window is only recorded here,
+// and verified after the writer goroutine finishes (synchronized through the
+// closed done channel plus the readers' WaitGroup): a torn read would pair
+// one SetFrontier call's round with a different call's root, which
+// RootAt(pair.round) == pair.root then catches. The concurrent-RootAt case
+// is TestManager_RootAt_ConcurrentWithCommitPath's job.
 func TestManager_CommittedFrontier_ConcurrentWithApply(t *testing.T) {
 	m := NewManager()
 
@@ -281,5 +279,80 @@ func TestManager_CommittedFrontier_ConcurrentWithApply(t *testing.T) {
 
 	if checked == 0 {
 		t.Fatal("every observed pair had round 0 -- readers never overlapped the writer")
+	}
+}
+
+// TestManager_RootAt_ConcurrentWithCommitPath is the -race regression for the
+// reader RootAt acquired when ingress validation started calling it: vertex
+// validation runs on the gossip goroutines, concurrently with the commit
+// loop's SetFrontier writes. history, order and epochCheckpoints are plain
+// maps and a slice, so an unguarded RootAt against a live commit path is not
+// a benign race but a fatal concurrent map read/write that takes the node
+// down under load.
+//
+// One writer mirrors the commit path (ApplyEdge + SetFrontier, serialized by
+// the DAG's commitMu in production, by being a single goroutine here) while
+// several ingress-style readers call CommittedFrontier and RootAt in a tight
+// loop. The readers assert INSIDE the race window, which is sound because a
+// round's retained root is immutable once recorded (SetFrontier's
+// non-advancing guard makes the first write authoritative and nothing but
+// eviction ever removes it): whatever frontier a reader observes, RootAt of
+// that same round must return that same root.
+func TestManager_RootAt_ConcurrentWithCommitPath(t *testing.T) {
+	m := NewManager()
+
+	// Stay inside historyWindow so no round a reader observes can be evicted
+	// between its CommittedFrontier and its RootAt call.
+	const rounds = historyWindow - 1
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for round := uint64(1); round <= rounds; round++ {
+			m.ApplyEdge([32]byte{byte(round), byte(round >> 8)}, KeyRootKind, [32]byte{0x01})
+
+			// One checkpoint mid-run, so epochCheckpoints is written under the
+			// readers too, not only history and order.
+			if round == rounds/2 {
+				m.RebuildValidators([]ValidatorLeaf{{Pubkey: [32]byte{0x07}, CappedStake: round, Status: ValidatorActive}})
+			}
+
+			m.SetFrontier(round)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	var observed atomic.Int64
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				round, root := m.CommittedFrontier()
+
+				if got, ok := m.RootAt(round); ok && got != root {
+					t.Errorf("RootAt(%d) = %x, want the frontier root %x observed for that round", round, got, root)
+					return
+				}
+
+				if round > 0 {
+					observed.Add(1)
+				}
+
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if observed.Load() == 0 {
+		t.Fatal("readers never observed a recorded frontier -- they did not overlap the writer")
 	}
 }
