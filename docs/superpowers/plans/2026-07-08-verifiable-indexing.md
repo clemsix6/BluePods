@@ -270,7 +270,7 @@ table DeclaredOp {
 
 ### Task 3.1: Detached provable header
 
-**Files:** Modify `types/vertex.fbs` (append `frontier_round:uint64`, `index_root:[ubyte]`, `body_hash:[ubyte]` to `Vertex`); regenerate; modify `internal/consensus/build.go` (compute `bodyHash = blake3(parents || transactions || fee_summary || timestamp)` — round lives in the header only — then `hash = blake3(producer || round || epoch || frontier_round || index_root || bodyHash)`; sign `hash`; populate `epoch` with `d.currentEpoch`, read under `commitMu`) and `internal/consensus/validate.go` (`validateSignature` recomputes `bodyHash` and the header hash; `validateEpoch` reworked to accept `currentEpoch` and `currentEpoch-1` within the boundary window, else every vertex crossing a boundary in flight is rejected — add a boundary-skew test); Test `internal/consensus/build_test.go`.
+**Files:** Modify `types/vertex.fbs` (append `frontier_round:uint64`, `index_root:[ubyte]`, `body_hash:[ubyte]` to `Vertex`); regenerate; modify `internal/consensus/build.go` (compute `bodyHash = blake3(parents || transactions || fee_summary || timestamp)` — round lives in the header only — then `hash = blake3(producer || round || epoch || frontier_round || index_root || bodyHash)`; sign `hash`; populate `epoch` with the live epoch (atomic mirror of `currentEpoch`, written under `commitMu` at each transition — a direct `commitMu` read on the submit path couples client latency to commit batches)) and `internal/consensus/validate.go` (`validateSignature` recomputes `bodyHash` and the header hash; `validateEpoch` reworked to a receiver-independent two-sided window: accept `commitEpochForRound(v.Round())` and that value ±1 (a producer that has not transitioned yet, or one filling a lower round after transitioning), reject everything else; with `epochLength == 0` require epoch 0 — add boundary-skew tests on both sides. As-built adjudication: the original `currentEpoch`-relative rule was unsound (`validateEpoch` runs before `validateParents` and its rejection is terminal, so it would drop the tip vertices a lagging node must buffer for deep-gap recovery), and a one-sided round-derived bound rejects honest post-stall production while leaving the field unbounded below — the field must be bounded on both sides because from Task 3.5 on it names the validator tree weighing bundle quorums); Test `internal/consensus/build_test.go`.
 
 **Interfaces — Produces:** the header hash **is** the vertex identity (parent links, store keys — unchanged code, changed meaning); `headerBytes(v *types.Vertex) []byte` and `computeBodyHash(v *types.Vertex) [32]byte` shared by build and validate (one function, two call sites, cannot drift).
 
@@ -306,7 +306,7 @@ table DeclaredOp {
 
 **Files:** Modify `internal/network/messages.go` (tags `0x1D MsgTagGetIndexAnchor` / `0x1E MsgTagGetIndexAnchorResp` — 0x15-0x1C are taken by vertex fetch, fingerprint, test control, and range fetch — added to `clientRequestTags` at `messages.go:130` or the connection classifier will not route them); create the handler in `cmd/node/indexhandlers.go` (new file — `clienthandlers.go` is at 569 lines; serve the cached bundle: highest frontier where headers matching `(frontier, root)` reach the stake quorum within a 16-round sliding window; recompute lazily per committed batch); Test at the handler level.
 
-**Interfaces — Produces:** response = `{frontier_round, index_root, headers: [~200B each], epoch}`; assembly reuses the capped-stake quorum test from `stake.go`.
+**Interfaces — Produces:** response = `{frontier_round, index_root, headers: [~200B each], epoch}`; assembly reuses the capped-stake quorum test from `stake.go`. The header wire layout is the NORMATIVE contract pinned in `internal/consensus/header.go` (golden-vector tested); bundle assembly re-derives the expected epoch from the frontier round (`commitEpochForRound`) rather than trusting the header field, which the 3.1 window bounds only to ±1.
 
 - [ ] **Test:** with 4 simulated producers the bundle reaches quorum and verifies; a minority wrong-root producer is excluded from the bundle.
 - [ ] **Run, expect FAIL → implement → PASS.**
@@ -315,7 +315,7 @@ table DeclaredOp {
 ### Task 3.6: Scenario regression on the new vertex format
 
 - [ ] **Extend** `TestScenarioConsensusBasics` with an `index_anchor_quorum` subtest: after traffic commits, `GetIndexAnchor` from every node returns bundles whose `(frontier_round, index_root)` agree and reach quorum.
-- [ ] **Run, one at a time:** `TestScenarioConsensusBasics`, `TestScenarioAggregation`, `TestScenarioStress`, `TestScenarioEpochs`, `TestScenarioCrash` — bounded timeouts (5-10m); fix fallout (the identity change touches everything that stores or fetches vertices).
+- [ ] **Run, one at a time:** `TestScenarioConsensusBasics`, `TestScenarioAggregation`, `TestScenarioStress`, `TestScenarioEpochs`, `TestScenarioPartition`, `TestScenarioCrash` — bounded timeouts (5-10m); fix fallout (the identity change touches everything that stores or fetches vertices). Epochs and Partition are the two scenarios that reproduce stalled-production-across-an-epoch-boundary, the shape the 3.1 epoch window exists for.
 - [ ] **Commit:** title `Scenarios green on the anchored vertex format`. **Push the batch.**
 
 ---
