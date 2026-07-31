@@ -31,6 +31,9 @@ const (
 	EvAnchorCommitted = "consensus.anchor.committed"
 	// EvRoundSkipped marks a round decided with no anchor.
 	EvRoundSkipped = "consensus.round.skipped"
+	// EvAnchorFault marks a committed vertex whose anchored index root
+	// contradicts the emitting node's own recomputation at that frontier.
+	EvAnchorFault = "consensus.anchor.fault"
 
 	// EvTxCommitted marks a transaction decided at commit.
 	EvTxCommitted = "tx.committed"
@@ -119,6 +122,7 @@ var Names = []string{
 	EvRoundAdvanced,
 	EvAnchorCommitted,
 	EvRoundSkipped,
+	EvAnchorFault,
 
 	EvTxCommitted,
 	EvTxExecuted,

@@ -42,3 +42,15 @@ func AnchorCommitted(round uint64, anchor, producer [32]byte, vertices int) {
 func RoundSkipped(round uint64) {
 	emit(EvRoundSkipped, slog.Uint64("round", round))
 }
+
+// AnchorFault marks a committed vertex whose anchored index root contradicts
+// the emitting node's own deterministic recomputation at the same frontier:
+// producer signed claimed, this node derived computed. It is emitted once per
+// lying vertex, beside the persisted evidence that proves it.
+func AnchorFault(producer [32]byte, round uint64, claimed, computed [32]byte) {
+	emit(EvAnchorFault,
+		hexAttr("producer", producer),
+		slog.Uint64("round", round),
+		hexAttr("claimed", claimed),
+		hexAttr("computed", computed))
+}

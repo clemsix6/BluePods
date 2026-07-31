@@ -37,6 +37,17 @@ func generateTestKey(t *testing.T) ed25519.PrivateKey {
 func newFingerprintTestPair(t *testing.T) (*consensus.DAG, *state.State) {
 	t.Helper()
 
+	dag, st, _ := newFingerprintTestTrio(t)
+
+	return dag, st
+}
+
+// newFingerprintTestTrio is newFingerprintTestPair with the shared storage
+// handle, for the tests that must write keys the fingerprint is expected to
+// ignore.
+func newFingerprintTestTrio(t *testing.T) (*consensus.DAG, *state.State, *storage.Storage) {
+	t.Helper()
+
 	dir, err := os.MkdirTemp("", "fingerprint_test_*")
 	if err != nil {
 		t.Fatalf("mkdir temp: %v", err)
@@ -57,7 +68,7 @@ func newFingerprintTestPair(t *testing.T) (*consensus.DAG, *state.State) {
 	dag := consensus.New(db, consensus.NewValidatorSet(nil), nil, fingerprintTestPod, 0, generateTestKey(t), st)
 	t.Cleanup(func() { dag.Close() })
 
-	return dag, st
+	return dag, st, db
 }
 
 // TestComputeFingerprint_StableAcrossIdleComputes verifies two computes with no

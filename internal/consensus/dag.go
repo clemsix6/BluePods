@@ -1311,7 +1311,10 @@ func (d *DAG) debugRoundVertices(round uint64) {
 	}
 }
 
-// collectParents gathers parent hashes from the previous round.
+// collectParents gathers the parents a vertex at round may reference: the
+// previous round's vertices, minus the ones whose anchored index root this node
+// has proved wrong (referenceableParents, the production stage of anchor
+// enforcement).
 // During sync mode, only includes vertices from trusted producers (from snapshot)
 // to avoid referencing vertices that other nodes may not have.
 // During transition, references ALL parents to form cross-references immediately.
@@ -1320,7 +1323,7 @@ func (d *DAG) collectParents(round uint64) []Hash {
 		return nil
 	}
 
-	allParents := d.store.getByRound(round - 1)
+	candidates := d.store.getByRound(round - 1)
 
 	// Check if we need to filter parents (sync mode only)
 	d.syncModeMu.Lock()
@@ -1328,29 +1331,34 @@ func (d *DAG) collectParents(round uint64) []Hash {
 	trusted := d.trustedProducers
 	d.syncModeMu.Unlock()
 
-	// Normal mode or transition: return all parents.
-	// During transition, parent validation is skipped on receiving nodes,
-	// so cross-references are safe and help the network converge faster.
-	if !syncActive {
-		return allParents
+	// Sync mode: the first vertex after importing a snapshot references only
+	// producers the snapshot vouches for. Normal mode and the transition window
+	// keep every candidate: during the transition receiving nodes skip parent
+	// validation, so cross-references are safe and converge the network faster.
+	if syncActive {
+		candidates = d.trustedParents(candidates, trusted)
 	}
 
-	// Sync mode: only reference trusted producers from snapshot.
-	// This is the first vertex after importing a snapshot.
-	filtered := make([]Hash, 0, len(allParents))
-	for _, h := range allParents {
+	return d.referenceableParents(candidates)
+}
+
+// trustedParents keeps the candidates produced by a validator the imported
+// snapshot vouches for.
+func (d *DAG) trustedParents(candidates []Hash, trusted map[Hash]bool) []Hash {
+	kept := make([]Hash, 0, len(candidates))
+
+	for _, h := range candidates {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
-		producer := extractProducer(v)
-		if trusted != nil && trusted[producer] {
-			filtered = append(filtered, h)
+		if trusted != nil && trusted[extractProducer(v)] {
+			kept = append(kept, h)
 		}
 	}
 
-	return filtered
+	return kept
 }
 
 // takePendingTxs takes and clears pending transactions.

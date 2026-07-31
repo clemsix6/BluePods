@@ -244,6 +244,7 @@ must be called out in the commit that does it.
 | `consensus.round.advanced` | round, designated |
 | `consensus.anchor.committed` | round, anchor, producer, vertices |
 | `consensus.round.skipped` | round |
+| `consensus.anchor.fault` | producer, round, claimed, computed |
 | `tx.committed` | tx, vertex, round, success, reason |
 | `tx.executed` | tx, success, error_code |
 | `state.object.created` | object, tx, version, replication, owner |
@@ -286,6 +287,15 @@ success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_summary`, `index_root`, or `unknown` (a defensive fallback for a
 validation failure path that does not map to any of the above; should not
 occur in practice).
+
+`consensus.anchor.fault` is emitted from the commit path when a vertex that
+reached committed history anchored an index root the emitting node's own
+recomputation contradicts, once per lying vertex. It is node-local by design:
+a node convicts a liar only when it had committed the claimed frontier, so
+two honest nodes may emit different fault sets for the same history. The
+evidence behind it (the producer's signed header plus the recomputed root)
+is persisted outside every convergence-checked structure, so a scenario that
+provokes a fault still passes the teardown convergence check.
 
 Attribute values use stable encodings: hashes and object/validator IDs as
 lowercase hex, rounds and versions as integers, reasons as short snake_case

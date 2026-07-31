@@ -423,6 +423,10 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 			continue
 		}
 
+		// Anything that reached committed history gets its anchor checked once more,
+		// now that this node's own commit has passed the frontier it claims.
+		d.recheckCommittedAnchor(v)
+
 		// Attribute liveness and fees to the epoch the vertex's ROUND belongs to, not
 		// the epoch current when this batch commits. A vertex adjacent to a boundary is
 		// committed in different batches on different nodes (as its own anchor, or swept
