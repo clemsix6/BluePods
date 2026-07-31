@@ -16,6 +16,23 @@ import (
 // TestIndexAnchorBundle_WindowAnchoredAtOwnFrontier is the regression.
 const bundleWindow = 16
 
+// anchorScanSlack bounds how far above this node's own committed frontier
+// collectAnchorTallies scans candidate headers, on top of the window itself.
+// It exists because a producer's vertex at production round R anchors its
+// frontier at roughly R-2 (see storeAnchoredVertex/FrontierRound), so under
+// ordinary skew a header matching a frontier still inside the window can sit
+// a little above this node's own committed round — a scan stopping exactly
+// at committed would miss those. Capping the scan here loses no genuine
+// candidate: a vertex produced past committed+anchorScanSlack anchors a
+// frontier strictly above committed+anchorScanSlack-2, which already sits
+// outside the [committed-15, committed] window and can never match, so
+// nothing beyond the cap could ever have been collected anyway. Without this
+// cap, a maliciously inflated store.latestRound (a producer's own claim, not
+// a value this node computed) would make the tally walk unbounded — wedging
+// it, and with it every GetIndexAnchor request queued behind
+// cmd/node's anchorCache.mu, for as long as counting up to that round takes.
+const anchorScanSlack = 32
+
 // AnchorBundle is the quorum-attested anchor a light client verifies without
 // downloading the index: the highest frontier within this node's window for
 // which the stored headers matching this node's own RootAt reach the
@@ -27,7 +44,7 @@ type AnchorBundle struct {
 	FrontierRound uint64   // FrontierRound is the committed round IndexRoot anchors
 	IndexRoot     Hash     // IndexRoot is this node's own index root at FrontierRound
 	Epoch         uint64   // Epoch names the validator tree the quorum is weighed against
-	Headers       [][]byte // Headers are the quorum's records, each headerSize+ed25519.SignatureSize (184) bytes: header ‖ signature, one per distinct producer
+	Headers       [][]byte // Headers are the quorum's records, each headerSize+ed25519.SignatureSize (184) bytes: header ‖ signature, one record per distinct matching producer; membership and stake are the client's to recompute from the epoch set
 }
 
 // IndexAnchorBundle assembles the quorum bundle GetIndexAnchor serves: the
@@ -68,16 +85,23 @@ func (d *DAG) IndexAnchorBundle() (AnchorBundle, bool) {
 }
 
 // collectAnchorTallies walks every vertex this node holds from windowFloor
-// through its highest stored round — a vertex's own production round is
-// always at or after the frontier it anchors, so this span covers every
-// candidate in the window regardless of how far production has run ahead of
-// commit — and groups the ones whose declared anchor lands in the window and
-// matches this node's own RootAt, keyed by the frontier they claim, one
-// record per producer.
+// through min(its highest stored round, committed+anchorScanSlack) — a
+// vertex's own production round is always at or after the frontier it
+// anchors, so this span covers every candidate in the window regardless of
+// how far production has run ahead of commit — and groups the ones whose
+// declared anchor lands in the window and matches this node's own RootAt,
+// keyed by the frontier they claim, one record per producer. The upper bound
+// is computed once, not re-read from store.highestRound() on every
+// iteration: see anchorScanSlack for why the cap is safe and necessary.
 func (d *DAG) collectAnchorTallies(windowFloor, committed uint64) map[uint64]map[Hash][]byte {
 	tallies := make(map[uint64]map[Hash][]byte)
 
-	for round := windowFloor; round <= d.store.highestRound(); round++ {
+	scanCeiling := committed + anchorScanSlack
+	if highest := d.store.highestRound(); highest < scanCeiling {
+		scanCeiling = highest
+	}
+
+	for round := windowFloor; round <= scanCeiling; round++ {
 		for _, h := range d.store.getByRound(round) {
 			d.tallyAnchorVertex(tallies, h, windowFloor, committed)
 		}

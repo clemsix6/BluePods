@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"testing"
+	"time"
 
 	"BluePods/internal/index"
 )
@@ -172,5 +173,70 @@ func TestIndexAnchorBundle_NoIndexerUnavailable(t *testing.T) {
 
 	if _, ok := dag.IndexAnchorBundle(); ok {
 		t.Fatal("a DAG with no indexer wired must report no bundle")
+	}
+}
+
+// TestIndexAnchorBundle_AbsurdStoredRoundBounded is the store-walk
+// regression: collectAnchorTallies must never scan up to a maliciously
+// inflated store.latestRound (the producer's own claim, not a value this
+// node computed). Unlike TestIndexAnchorBundle_WindowAnchoredAtOwnFrontier,
+// which pins an absurd CLAIMED frontier, this pins an absurd PRODUCTION
+// round: three honest validators anchor the real root at committed+2 — well
+// inside anchorScanSlack, so the in-slack case still works — and a fourth
+// vertex is stored at round 1<<40. The genuine quorum must still be served,
+// unaffected by the absurd vertex, and IndexAnchorBundle must return well
+// within the bound asserted here: before the fix, the tally walk had no
+// upper cap and would have counted from windowFloor up to 1<<40, wedging for
+// as long as that takes — and every GetIndexAnchor request queued behind
+// cmd/node's anchorCache.mu with it.
+func TestIndexAnchorBundle_AbsurdStoredRoundBounded(t *testing.T) {
+	vals, dag, root := newBundleDAG(t)
+
+	const inSlackRound = receiverFrontier + 2
+	for _, v := range vals[:3] {
+		storeAnchoredVertex(t, dag, v, inSlackRound, receiverFrontier, root)
+	}
+
+	const absurdRound = 1 << 40
+	storeAnchoredVertex(t, dag, vals[3], absurdRound, receiverFrontier, Hash{0xEE})
+
+	type result struct {
+		bundle AnchorBundle
+		ok     bool
+	}
+	done := make(chan result, 1)
+
+	go func() {
+		bundle, ok := dag.IndexAnchorBundle()
+		done <- result{bundle, ok}
+	}()
+
+	select {
+	case r := <-done:
+		if !r.ok {
+			t.Fatal("the in-slack quorum at committed+2 must still be served despite the absurd-round vertex")
+		}
+		if r.bundle.FrontierRound != receiverFrontier {
+			t.Fatalf("bundle frontier = %d, want %d: the absurd stored round changed the served bundle",
+				r.bundle.FrontierRound, receiverFrontier)
+		}
+
+		seen := make(map[Hash]bool)
+		for _, record := range r.bundle.Headers {
+			producer, frontier, claimedRoot := verifyHeaderRecord(t, record)
+			if producer == vals[3].pubKey {
+				t.Fatal("the absurd-round vertex must not be collected into the bundle")
+			}
+			if frontier != receiverFrontier || claimedRoot != root {
+				t.Errorf("header (frontier, root) = (%d, %x), want (%d, %x)",
+					frontier, claimedRoot[:4], receiverFrontier, root[:4])
+			}
+			seen[producer] = true
+		}
+		if len(seen) != 3 {
+			t.Fatalf("bundle carries %d distinct producers, want 3 (the committed+2 in-slack vertices)", len(seen))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("IndexAnchorBundle did not return within 5s: the store walk is wedged by the absurd stored round")
 	}
 }

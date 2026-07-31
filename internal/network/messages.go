@@ -3,6 +3,8 @@ package network
 import (
 	"encoding/binary"
 	"fmt"
+
+	"BluePods/internal/logger"
 )
 
 // Client message-type tags. Tags 0x01-0x03 are reserved for the attestation
@@ -884,24 +886,30 @@ func EncodeGetIndexAnchor() []byte {
 // client verifies without downloading the index: the highest frontier the
 // serving node found a capped-stake quorum for, that frontier's index root,
 // the epoch naming the validator tree the quorum is weighed against, and one
-// IndexAnchorHeaderSize-byte header record per quorum member. Found is false
-// when the serving node has no quorate frontier yet (for instance, before its
-// first committed round), and every other field is then zero.
+// IndexAnchorHeaderSize-byte header record per distinct matching producer.
+// Membership and stake are the client's to recompute from the epoch set, not
+// something this response encodes. Found is false when the serving node has
+// no quorate frontier yet (for instance, before its first committed round),
+// and every other field is then zero.
 type GetIndexAnchorResponse struct {
 	Found         bool     // Found reports whether a quorate bundle exists
 	FrontierRound uint64   // FrontierRound is the committed round IndexRoot anchors
 	IndexRoot     [32]byte // IndexRoot is the verifiable index root at FrontierRound
 	Epoch         uint64   // Epoch names the validator tree the quorum is weighed against
-	Headers       [][]byte // Headers are the quorum's header records, each IndexAnchorHeaderSize bytes: 120B header ‖ 64B signature
+	Headers       [][]byte // Headers are the quorum's header records, each IndexAnchorHeaderSize bytes: 120B header ‖ 64B signature, one record per distinct matching producer
 }
 
 // EncodeGetIndexAnchorResp encodes an index-anchor bundle response.
 // Format: [1B tag] [1B found] [8B frontierRound] [32B indexRoot] [8B epoch]
 // [4B headerCount] then headerCount fixed-width IndexAnchorHeaderSize records
 // back to back, with no per-record length prefix: every record is the same
-// size, so one is unambiguous.
+// size, so one is unambiguous. Any resp.Headers record not exactly
+// IndexAnchorHeaderSize bytes is dropped (see validAnchorHeaders) rather than
+// silently zero-padded or truncated into headerCount's count.
 func EncodeGetIndexAnchorResp(resp *GetIndexAnchorResponse) []byte {
-	size := 1 + 1 + 8 + 32 + 8 + 4 + len(resp.Headers)*IndexAnchorHeaderSize
+	headers := validAnchorHeaders(resp.Headers)
+
+	size := 1 + 1 + 8 + 32 + 8 + 4 + len(headers)*IndexAnchorHeaderSize
 
 	buf := make([]byte, size)
 	buf[0] = MsgTagGetIndexAnchorResp
@@ -913,15 +921,38 @@ func EncodeGetIndexAnchorResp(resp *GetIndexAnchorResponse) []byte {
 	binary.BigEndian.PutUint64(buf[2:10], resp.FrontierRound)
 	copy(buf[10:42], resp.IndexRoot[:])
 	binary.BigEndian.PutUint64(buf[42:50], resp.Epoch)
-	binary.BigEndian.PutUint32(buf[50:54], uint32(len(resp.Headers)))
+	binary.BigEndian.PutUint32(buf[50:54], uint32(len(headers)))
 
 	off := 54
-	for _, h := range resp.Headers {
+	for _, h := range headers {
 		copy(buf[off:off+IndexAnchorHeaderSize], h)
 		off += IndexAnchorHeaderSize
 	}
 
 	return buf
+}
+
+// validAnchorHeaders returns only the records exactly IndexAnchorHeaderSize
+// bytes long, logging and dropping any other length. Every record this node
+// itself produces (headerRecord in internal/consensus) already satisfies
+// this; a mismatch here means a caller assembled the response by hand, and
+// copying such a record into a fixed-width slot would silently zero-pad or
+// truncate it into a header a light client's signature check simply fails on
+// — dropping it here is cheaper and no less safe, since a bundle missing one
+// record still verifies on the rest.
+func validAnchorHeaders(records [][]byte) [][]byte {
+	out := make([][]byte, 0, len(records))
+
+	for _, r := range records {
+		if len(r) != IndexAnchorHeaderSize {
+			logger.Warn("dropping malformed index-anchor header record", "len", len(r), "want", IndexAnchorHeaderSize)
+			continue
+		}
+
+		out = append(out, r)
+	}
+
+	return out
 }
 
 // DecodeGetIndexAnchorResp decodes an index-anchor bundle response. It
