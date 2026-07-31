@@ -34,12 +34,16 @@ type vertexParts struct {
 func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 	builder := flatbuffers.NewBuilder(4096 + len(txs)*1024)
 
+	frontierRound, indexRoot := d.committedFrontier()
+
 	parts := vertexParts{
-		round:     round,
-		epoch:     d.productionEpoch(),
-		timestamp: uint64(time.Now().UnixNano()),
-		parents:   parents,
-		txs:       txs,
+		round:         round,
+		epoch:         d.productionEpoch(),
+		timestamp:     uint64(time.Now().UnixNano()),
+		frontierRound: frontierRound,
+		indexRoot:     indexRoot,
+		parents:       parents,
+		txs:           txs,
 	}
 
 	// Build the unsigned vertex first: its body is what bodyHash commits to.
@@ -52,6 +56,21 @@ func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 	builder.Reset()
 
 	return d.buildSignedVertex(builder, parts)
+}
+
+// committedFrontier returns the (frontier_round, index_root) pair a vertex
+// produced now anchors: the indexer's most recently committed frontier, read
+// as one atomic pair through the CommittedFrontier seam so a commit landing
+// between two separate reads can never pair one round with another's root
+// (a torn anchor stage-1 validation rejects network-wide). Zero values when
+// no indexer is wired — tests, tools, and any DAG built before the index
+// existed produce vertices exactly as they did before this field existed.
+func (d *DAG) committedFrontier() (frontierRound uint64, indexRoot Hash) {
+	if d.indexer == nil {
+		return 0, Hash{}
+	}
+
+	return d.indexer.CommittedFrontier()
 }
 
 // productionEpoch returns the epoch a vertex produced now is stamped with: the

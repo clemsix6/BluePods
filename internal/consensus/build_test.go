@@ -9,6 +9,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/index"
 	"BluePods/internal/types"
 )
 
@@ -332,6 +333,69 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 	forged := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 4), 0)
 	if err := dag.validateEpoch(forged); !errors.Is(err, errWrongEpoch) {
 		t.Fatalf("an epoch two above the round's own epoch must be rejected, got: %v", err)
+	}
+}
+
+// TestBuildVertex_AnchorsCommittedFrontier verifies two independently
+// constructed DAGs, each wired to its own index.Manager fed the identical
+// edit stream and SetFrontier round, produce vertices carrying byte-identical
+// (frontier_round, index_root) — the plan's determinism requirement: the
+// anchor must depend on nothing node-local, only on the committed frontier
+// itself.
+func TestBuildVertex_AnchorsCommittedFrontier(t *testing.T) {
+	buildAt := func(t *testing.T) *types.Vertex {
+		db := newTestStorage(t)
+		validators, vs := newTestValidatorSet(1)
+
+		mgr := index.NewManager()
+		mgr.ApplyEdge([32]byte{0x11}, index.KeyRootKind, [32]byte{0x01})
+		mgr.SetFrontier(7)
+
+		dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+		defer dag.Close()
+		dag.SetIndexer(mgr)
+
+		return types.GetRootAsVertex(dag.buildVertex(8, nil, nil), 0)
+	}
+
+	v1 := buildAt(t)
+	v2 := buildAt(t)
+
+	if v1.FrontierRound() != 7 {
+		t.Fatalf("frontier_round = %d, want 7", v1.FrontierRound())
+	}
+
+	if v1.FrontierRound() != v2.FrontierRound() {
+		t.Fatalf("frontier_round mismatch: %d != %d", v1.FrontierRound(), v2.FrontierRound())
+	}
+
+	if len(v1.IndexRootBytes()) != 32 || bytes.Equal(v1.IndexRootBytes(), make([]byte, 32)) {
+		t.Fatal("expected a non-zero 32-byte index_root once a frontier is committed")
+	}
+
+	if !bytes.Equal(v1.IndexRootBytes(), v2.IndexRootBytes()) {
+		t.Fatalf("index_root mismatch: %x != %x", v1.IndexRootBytes(), v2.IndexRootBytes())
+	}
+}
+
+// TestBuildVertex_ZeroAnchorWhenIndexerUnset verifies a DAG built without
+// SetIndexer (tests, tools, any pre-index construction) anchors the zero
+// frontier and the zero root rather than panicking or leaking a stale value.
+func TestBuildVertex_ZeroAnchorWhenIndexerUnset(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	v := types.GetRootAsVertex(dag.buildVertex(0, nil, nil), 0)
+
+	if v.FrontierRound() != 0 {
+		t.Fatalf("frontier_round = %d, want 0 with no indexer wired", v.FrontierRound())
+	}
+
+	if !bytes.Equal(v.IndexRootBytes(), make([]byte, 32)) {
+		t.Fatalf("index_root = %x, want the zero root with no indexer wired", v.IndexRootBytes())
 	}
 }
 

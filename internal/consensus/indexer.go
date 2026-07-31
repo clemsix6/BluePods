@@ -31,6 +31,16 @@ type indexer interface {
 	// SetFrontier records the committed round the current combined root
 	// anchors.
 	SetFrontier(round uint64)
+
+	// CommittedFrontier returns the round and combined root of the most
+	// recently recorded committed frontier, as one atomic pair — the read
+	// side of SetFrontier. Vertex production calls it off the commit path's
+	// own lock (see productionEpoch's liveEpoch mirror for the identical
+	// reason), so the pair must come back atomic on the implementation's own
+	// terms: a torn read across two separate calls could pair one commit's
+	// round with a later commit's root, a false anchor stage-1 validation
+	// rejects network-wide.
+	CommittedFrontier() (round uint64, root [32]byte)
 }
 
 // SetIndexer wires the verifiable-index manager so object creation, reparent,

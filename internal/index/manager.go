@@ -1,5 +1,7 @@
 package index
 
+import "sync"
+
 // historyWindow bounds how many distinct committed rounds SetFrontier retains
 // for RootAt, beyond the epoch checkpoints retained indefinitely (see
 // Manager's history fields).
@@ -38,6 +40,20 @@ type Manager struct {
 	// checkpointed.
 	epochCheckpoints  map[uint64][32]byte
 	pendingCheckpoint bool
+
+	// frontierMu guards frontierRound and frontierRoot only. Every other
+	// field here is written exclusively by the commit path, which serializes
+	// its own calls (the DAG's commitMu) — but CommittedFrontier is called
+	// from vertex production, a different goroutine that must NOT take that
+	// lock (coupling submit latency to commit batches). Caching the pair
+	// written by the most recent SetFrontier call behind its own mutex lets
+	// production read it as one atomic pair: reading round and root as two
+	// separate calls could observe a SetFrontier landing between them and
+	// pair one call's round with another's root, a torn anchor that stage-1
+	// validation later rejects network-wide.
+	frontierMu    sync.RWMutex
+	frontierRound uint64
+	frontierRoot  [32]byte
 }
 
 // NewManager returns an empty Manager: every tree starts empty, matching a
@@ -115,7 +131,25 @@ func (m *Manager) SetFrontier(round uint64) {
 		m.pendingCheckpoint = false
 	}
 
+	m.frontierMu.Lock()
+	m.frontierRound = round
+	m.frontierRoot = root
+	m.frontierMu.Unlock()
+
 	m.evictOldRounds()
+}
+
+// CommittedFrontier returns the round and combined root of the most recently
+// recorded committed frontier, as one atomic pair. Nothing here is node-local:
+// two managers fed the identical edit stream and SetFrontier round return the
+// identical pair, which is what lets two nodes anchor byte-identical vertices
+// at the same committed frontier. Zero values before the first SetFrontier
+// call, matching a fresh chain that has not committed anything yet.
+func (m *Manager) CommittedFrontier() (round uint64, root [32]byte) {
+	m.frontierMu.RLock()
+	defer m.frontierMu.RUnlock()
+
+	return m.frontierRound, m.frontierRoot
 }
 
 // evictOldRounds drops the oldest retained rounds past historyWindow from the
