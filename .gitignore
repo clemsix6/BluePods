@@ -8,8 +8,7 @@
 *.swo
 
 # Claude
-.claude/*
-!.claude/settings.json
+.claude/
 
 # Go binaries
 /node

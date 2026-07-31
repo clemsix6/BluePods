@@ -40,11 +40,12 @@ The node is written in Go; pods are written in Rust and compiled to WebAssembly.
 
 - When a batch touches `pods/` or `wasm-gas/`, their builds and tests must pass
   too before the batch is considered green.
-- Heavy batches (consensus, multi-file, hours of work) are implemented
-  task-by-task by successive fresh subagents — a single agent must never carry
-  hours of dense work in one context. Implementers commit as soon as unit tests
-  pass; slow integration sims run AFTER the commit (a failure becomes a
-  follow-up fix commit).
+- Dense subsystems (consensus above all) get finely split tasks, so that no
+  single agent carries hours of work in one context. That is a constraint on the
+  plan: dispatch granularity follows what the plan says, `same-agent` and
+  `parallel` in heavy, one agent per batch in light.
+- Implementers commit as soon as unit tests pass; slow integration sims run
+  AFTER the commit (a failure becomes a follow-up fix commit).
 - Every new state mutation gets an `internal/events` constructor, every new
   feature extends or adds a scenario in `test/scenarios/`, and renaming or
   removing an event or attribute is a breaking change to call out in the
