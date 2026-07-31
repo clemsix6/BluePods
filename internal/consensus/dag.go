@@ -1586,9 +1586,18 @@ func (d *DAG) tryProcessPending() int {
 		// than rejects), add to store.
 		producer := extractProducer(vertex)
 
+		// Same mark-before-vertex ordering as AddVertex, and for the same reason:
+		// both writes are pebble.NoSync, so the vq/ mark must be durable-ordered
+		// ahead of the vertex, not after it. A WAL truncation here can only leave
+		// an orphan mark for a vertex that never made it into the store —
+		// harmless — never a stored proven-liar vertex with its verdict lost.
+		if quarantined {
+			d.store.markQuarantined(entry.hash)
+		}
+
 		if d.store.add(entry.data, entry.hash, entry.round, producer) {
 			if quarantined {
-				d.quarantineVertex(vertex, entry.hash, producer, entry.round)
+				d.reportQuarantine(vertex, entry.hash, producer, entry.round)
 			}
 
 			d.onVertexAdded(entry.round)

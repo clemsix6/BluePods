@@ -36,21 +36,14 @@ func isQuarantineVerdict(err error) bool {
 	return errors.Is(err, errIndexRoot)
 }
 
-// quarantineVertex records the verdict and reports it. The vertex is already in
-// the store by the time this runs: quarantine withholds a proven liar from
-// relay and from reference, never from storage, because a node that cannot
-// store a vertex cannot complete any causal batch containing it — and a batch
-// it cannot complete is a commit cursor that never moves again.
-func (d *DAG) quarantineVertex(v *types.Vertex, hash, producer Hash, round uint64) {
-	d.store.markQuarantined(hash)
-	d.reportQuarantine(v, hash, producer, round)
-}
-
-// reportQuarantine logs and emits the quarantine event, without writing the vq/
-// mark. Split out of quarantineVertex for AddVertex's ingress path, which must
-// write the mark BEFORE the vertex (see the ordering comment there) and so
-// calls store.markQuarantined directly, ahead of the store write, then this
-// once the vertex has landed.
+// reportQuarantine logs and emits the quarantine event. It never writes the
+// vq/ mark itself: every call site marks the vertex quarantined via
+// store.markQuarantined BEFORE the vertex is written to the store (see the
+// ordering comment at each call site), then calls this once the vertex has
+// landed. Quarantine withholds a proven liar from relay and from reference,
+// never from storage, because a node that cannot store a vertex cannot
+// complete any causal batch containing it — and a batch it cannot complete is
+// a commit cursor that never moves again.
 func (d *DAG) reportQuarantine(v *types.Vertex, hash, producer Hash, round uint64) {
 	logger.Warn("quarantining wrong-root vertex",
 		"vertex", hex.EncodeToString(hash[:8]), "producer", hex.EncodeToString(producer[:8]),
