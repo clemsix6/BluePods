@@ -567,7 +567,7 @@ func TestAnchorStatusEpochTailResolves(t *testing.T) {
 
 	// Simulate the state after the first epoch transition: epoch-1 holders frozen and
 	// a one-epoch-ahead proxy frozen, so round-9 producers (epoch 2) can be weighed.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.epochHolders = snapshotOf(dag.validators)
 	dag.nextEpochHolders = snapshotOf(dag.validators)
 

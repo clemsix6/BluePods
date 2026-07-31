@@ -162,7 +162,7 @@ func TestVertexHeader_EndToEnd(t *testing.T) {
 		t.Fatalf("produced vertex does not verify: %v", err)
 	}
 
-	if got := blake3.Sum256(headerBytes(v)); !bytes.Equal(got[:], v.HashBytes()) {
+	if got := blake3.Sum256(append([]byte{headerDomainTag}, headerBytes(v)...)); !bytes.Equal(got[:], v.HashBytes()) {
 		t.Fatal("vertex identity is not the hash of its declared header")
 	}
 
@@ -256,7 +256,7 @@ func TestVertexHeader_LightVerificationWithoutBody(t *testing.T) {
 		t.Fatal("detached header does not encode to the full vertex's header")
 	}
 
-	identity := blake3.Sum256(headerBytes(light))
+	identity := blake3.Sum256(append([]byte{headerDomainTag}, headerBytes(light)...))
 	if !bytes.Equal(identity[:], full.HashBytes()) {
 		t.Fatal("header hash does not reproduce the vertex identity")
 	}
@@ -277,7 +277,7 @@ func TestVertexHeader_EpochIsTheLiveEpoch(t *testing.T) {
 	defer dag.Close()
 
 	dag.commitMu.Lock()
-	dag.currentEpoch = 3
+	dag.setCurrentEpoch(3)
 	dag.commitMu.Unlock()
 
 	v := types.GetRootAsVertex(dag.buildVertex(30, nil, nil), 0)
@@ -304,7 +304,7 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 	defer dag.Close()
 
 	dag.commitMu.Lock()
-	dag.currentEpoch = 2
+	dag.setCurrentEpoch(2)
 	dag.commitMu.Unlock()
 
 	// Round 25 belongs to epoch 2: a producer still in epoch 1 (it had not
@@ -319,7 +319,7 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 	// A receiver still catching up must accept the epoch it has not reached yet,
 	// or it can never buffer the tip vertices that let it catch up.
 	dag.commitMu.Lock()
-	dag.currentEpoch = 0
+	dag.setCurrentEpoch(0)
 	dag.commitMu.Unlock()
 
 	v := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 2), 0)

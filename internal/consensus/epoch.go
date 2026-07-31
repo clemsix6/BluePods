@@ -104,7 +104,7 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	d.clearEpochState()
 
-	d.currentEpoch++
+	d.setCurrentEpoch(d.currentEpoch + 1)
 
 	logger.Info("epoch transition",
 		"round", round,
@@ -599,6 +599,15 @@ func (d *DAG) clearEpochState() {
 // is frozen, HoldersForEpoch reports epoch 0 unresolved and the commit loop waits;
 // it never reads the live, mutating set on the anchor path.
 func (d *DAG) InitEpochHolders() {}
+
+// setCurrentEpoch moves the live epoch and its lock-free mirror together. EVERY
+// write to currentEpoch goes through it: productionEpoch reads the mirror without
+// taking commitMu, so a write that skipped the mirror would stamp a stale epoch
+// into every vertex the node produces until the next transition.
+func (d *DAG) setCurrentEpoch(epoch uint64) {
+	d.currentEpoch = epoch
+	d.liveEpoch.Store(epoch)
+}
 
 // commitEpochForRound returns the epoch whose holder snapshot an ATX committed
 // at the given round must be verified against. The boundary round R = k*epochLength

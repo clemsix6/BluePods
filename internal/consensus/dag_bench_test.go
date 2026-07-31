@@ -86,6 +86,108 @@ func BenchmarkVertexIdentity(b *testing.B) {
 	}
 }
 
+// BenchmarkVertexIdentityLoaded measures the identity of a REALISTIC vertex: a
+// full round of parent links and a batch of attested transactions. Re-deriving the
+// identity re-serializes the whole body, so its cost is proportional to the vertex,
+// and the empty-vertex figure above says nothing about what validation actually
+// pays per gossiped vertex.
+func BenchmarkVertexIdentityLoaded(b *testing.B) {
+	validators, _ := newBenchValidatorSet(100)
+
+	parents := make([]Hash, 67)
+	for i := range parents {
+		parents[i] = blake3.Sum256([]byte{byte(i)})
+	}
+
+	txs := make([][]byte, 50)
+	for i := range txs {
+		txs[i] = buildBenchATX(i)
+	}
+
+	db := newBenchStorage(b)
+	dag := New(db, NewValidatorSet(nil), nil, benchSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	vertex := types.GetRootAsVertex(dag.buildVertex(1, parents, txs), 0)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = vertexIdentity(vertex)
+	}
+}
+
+// buildBenchATX builds a serialized AttestedTransaction of a realistic shape: a
+// transaction with arguments, one collected object and its quorum proof.
+func buildBenchATX(n int) []byte {
+	builder := flatbuffers.NewBuilder(2048)
+
+	hashVec := builder.CreateByteVector(benchFill(byte(n), 32))
+	senderVec := builder.CreateByteVector(benchFill(byte(n+1), 32))
+	podVec := builder.CreateByteVector(benchFill(byte(n+2), 32))
+	argsVec := builder.CreateByteVector(benchFill(byte(n+3), 256))
+	funcNameOff := builder.CreateString("bench_fn")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	txOff := types.TransactionEnd(builder)
+
+	objectsVec := endOffsetVector(builder, []flatbuffers.UOffsetT{buildBenchObject(builder, n)}, types.AttestedTransactionStartObjectsVector)
+	proofsVec := endOffsetVector(builder, []flatbuffers.UOffsetT{buildBenchProof(builder, n)}, types.AttestedTransactionStartProofsVector)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objectsVec)
+	types.AttestedTransactionAddProofs(builder, proofsVec)
+	builder.Finish(types.AttestedTransactionEnd(builder))
+
+	return builder.FinishedBytes()
+}
+
+// buildBenchObject writes one collected object with a realistic content payload.
+func buildBenchObject(builder *flatbuffers.Builder, n int) flatbuffers.UOffsetT {
+	idVec := builder.CreateByteVector(benchFill(byte(n+4), 32))
+	ownerVec := builder.CreateByteVector(benchFill(byte(n+5), 32))
+	contentVec := builder.CreateByteVector(benchFill(byte(n+6), 512))
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, uint64(n))
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, 10)
+	types.ObjectAddContent(builder, contentVec)
+
+	return types.ObjectEnd(builder)
+}
+
+// buildBenchProof writes one aggregated quorum proof.
+func buildBenchProof(builder *flatbuffers.Builder, n int) flatbuffers.UOffsetT {
+	objIDVec := builder.CreateByteVector(benchFill(byte(n+4), 32))
+	blsSigVec := builder.CreateByteVector(benchFill(byte(n+7), 96))
+	bitmapVec := builder.CreateByteVector(benchFill(byte(n+8), 16))
+
+	types.QuorumProofStart(builder)
+	types.QuorumProofAddObjectId(builder, objIDVec)
+	types.QuorumProofAddBlsSignature(builder, blsSigVec)
+	types.QuorumProofAddSignerBitmap(builder, bitmapVec)
+
+	return types.QuorumProofEnd(builder)
+}
+
+// benchFill returns n bytes filled with b.
+func benchFill(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+
+	return out
+}
+
 func BenchmarkValidateSignature(b *testing.B) {
 	db := newBenchStorage(b)
 	validators, vs := newBenchValidatorSet(10)

@@ -79,7 +79,7 @@ func TestEpochTransitionCarriesUndistributablePool(t *testing.T) {
 	// production (epochRoundsProduced unset), so totalRewardWeight is 0 and the pool has
 	// no weight to distribute against. Settlement is deferred one boundary, so drive it
 	// from epoch 1 with epoch 0's pool pending.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 100)
 	dag.epochFees[0] = 500
 

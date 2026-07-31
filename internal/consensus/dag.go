@@ -135,7 +135,8 @@ type DAG struct {
 
 	// Epoch: frozen validator set for Rendezvous hashing.
 	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
-	currentEpoch      uint64             // currentEpoch is the current epoch number
+	currentEpoch      uint64             // currentEpoch is the current epoch number, guarded by commitMu
+	liveEpoch         atomic.Uint64      // liveEpoch mirrors currentEpoch for readers that must not take commitMu (see setCurrentEpoch)
 	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
 	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
 	nextEpochHolders  *ValidatorSet      // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging

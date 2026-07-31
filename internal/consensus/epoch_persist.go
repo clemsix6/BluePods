@@ -96,7 +96,7 @@ func (d *DAG) restoreEpochState() {
 		return
 	}
 
-	d.currentEpoch = epoch
+	d.setCurrentEpoch(epoch)
 	d.epochHolders = d.loadHolderSnapshot(epochHoldersKey)
 	d.prevEpochHolders = d.loadHolderSnapshot(prevEpochHoldersKey)
 	d.nextEpochHolders = d.loadHolderSnapshot(nextEpochHoldersKey)

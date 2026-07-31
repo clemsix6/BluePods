@@ -104,7 +104,11 @@ func buildRound0Vertex(t *testing.T, priv ed25519.PrivateKey) ([]byte, consensus
 
 	// The identity is the header hash: BLAKE3 over {producer, round, epoch,
 	// frontier_round, index_root, body_hash}, with body_hash covering the body.
-	hash, bodyHash := consensus.VertexIdentity(build(nil, nil, nil))
+	hash, bodyHash, ok := consensus.VertexIdentity(build(nil, nil, nil))
+	if !ok {
+		t.Fatal("the test vertex must be readable")
+	}
+
 	sig := ed25519.Sign(priv, hash[:])
 
 	return build(hash[:], bodyHash[:], sig), hash

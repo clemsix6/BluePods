@@ -142,7 +142,7 @@ func (d *DAG) applyRegimeState(blob []byte) {
 		return
 	}
 
-	d.currentEpoch = binary.BigEndian.Uint64(blob[0:8])
+	d.setCurrentEpoch(binary.BigEndian.Uint64(blob[0:8]))
 	d.strictLatched = blob[8] != 0
 	d.strictStartRound = binary.BigEndian.Uint64(blob[9:17])
 

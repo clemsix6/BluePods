@@ -133,7 +133,7 @@ func TestSyncAdoptsFullCommitteePastBoundary(t *testing.T) {
 	setEqualStake(src, vals, 25) // freezes genesis: committedMembers = all four
 
 	src.commitMu.Lock()
-	src.currentEpoch = 1
+	src.setCurrentEpoch(1)
 	src.epochHolders = snapshotOf(src.validators)
 	src.prevEpochHolders = snapshotOf(src.validators)
 	src.strictLatched = true

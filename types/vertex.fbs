@@ -98,12 +98,13 @@ table Vertex {
     // Header field: covered by hash and signature, never by body_hash.
     index_root:[ubyte];
 
-    // body_hash is the 32-byte BLAKE3 of the vertex body (parents, transactions,
-    // fee summary, timestamp). It detaches the header from the body: hash is
-    // BLAKE3(producer || round || epoch || frontier_round || index_root ||
-    // body_hash), so a verifier holding the header alone checks the signature
-    // without downloading the body, and a full node recomputes body_hash to bind
-    // the body back to the signed header.
+    // body_hash is BLAKE3(0x02 || canonical body), the body being parents,
+    // transactions, fee summary and timestamp. It detaches the header from the
+    // body: hash is BLAKE3(0x01 || producer || round || epoch || frontier_round
+    // || index_root || body_hash), so a verifier holding the header alone checks
+    // the signature without downloading the body, and a full node recomputes
+    // body_hash to bind the body back to the signed header. The normative layout
+    // is pinned in internal/consensus/header.go.
     body_hash:[ubyte];
 }
 

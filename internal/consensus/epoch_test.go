@@ -2032,7 +2032,7 @@ func TestRewardConservation(t *testing.T) {
 
 	// Settlement is deferred one boundary, so epoch 0's bucket is minted at the next
 	// boundary. Model that: the node is in epoch 1 with epoch 0's bucket still pending.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio → rate rises, issuance > 0
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
@@ -2111,7 +2111,7 @@ func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
 
 	// Bonded far below the 25% band → the rate should rise. Settlement is deferred one
 	// boundary, so drive it from epoch 1 with epoch 0's bucket pending.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 
@@ -2144,7 +2144,7 @@ func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 3} // no fees this epoch, only issuance
 
@@ -2164,7 +2164,7 @@ func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	// No rounds produced in the settled epoch → totalRewardWeight == 0.
 	dag.epochRoundsProduced = make(map[uint64]map[Hash]uint64)
@@ -2205,7 +2205,7 @@ func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 

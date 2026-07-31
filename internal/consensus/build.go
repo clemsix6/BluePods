@@ -55,15 +55,16 @@ func (d *DAG) buildVertex(round uint64, parents []Hash, txs [][]byte) []byte {
 }
 
 // productionEpoch returns the epoch a vertex produced now is stamped with: the
-// LIVE epoch the commit path maintains, read under commitMu. The construction-time
-// epoch field is a vestigial hint (every node is built with 0) and must never be
-// used here — a header claiming epoch 0 forever would name the wrong validator
-// tree for every quorum weighed against it.
+// LIVE epoch the commit path maintains, read from its lock-free mirror. The
+// construction-time epoch field is a vestigial hint (every node is built with 0)
+// and must never be used here — a header claiming epoch 0 forever would name the
+// wrong validator tree for every quorum weighed against it.
+//
+// The mirror exists so this read does NOT take commitMu: production runs on the
+// client-request goroutine (SubmitTx -> tryProduceVertex), and a lock there would
+// put a full commit batch on the submit latency of every transaction.
 func (d *DAG) productionEpoch() uint64 {
-	d.commitMu.Lock()
-	defer d.commitMu.Unlock()
-
-	return d.currentEpoch
+	return d.liveEpoch.Load()
 }
 
 // buildUnsignedVertex creates a vertex without hash, body hash and signature. Its
