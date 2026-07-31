@@ -295,6 +295,17 @@ func rebuildAttestedTx(builder *flatbuffers.Builder, atx *types.AttestedTransact
 	return types.AttestedTransactionEnd(builder)
 }
 
+// serializeAttestedTx re-serializes a parsed AttestedTransaction as a standalone
+// buffer, which the execute path needs because atx.Table().Bytes returns the whole
+// parent vertex buffer. It runs the SAME rebuild the body hash runs, so what a pod
+// executes is byte-for-byte what the producer's signature covers.
+func serializeAttestedTx(atx *types.AttestedTransaction) []byte {
+	builder := flatbuffers.NewBuilder(1024)
+	builder.Finish(rebuildAttestedTx(builder, atx))
+
+	return builder.FinishedBytes()
+}
+
 // rebuildTransaction rebuilds a Transaction in the builder.
 func rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
 	if tx == nil {
@@ -305,7 +316,12 @@ func rebuildTransaction(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	return genesis.RebuildTxInBuilder(builder, tx)
 }
 
-// rebuildObject rebuilds an Object in the builder.
+// rebuildObject rebuilds an Object in the builder. Every field the schema
+// declares is written: a field left out here is covered by neither the body hash
+// nor the BLS quorum proof (which signs content||version||owner only), so a
+// relaying peer could rewrite it and the vertex would keep its identity and its
+// signature. TestVertexIdentity_MutationMatrixMatchesSchema holds this in lockstep
+// with types/object.fbs.
 func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.UOffsetT {
 	idVec := builder.CreateByteVector(obj.IdBytes())
 	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
@@ -318,6 +334,7 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
 	types.ObjectAddFees(builder, obj.Fees())
+	types.ObjectAddParentKind(builder, obj.ParentKind())
 
 	return types.ObjectEnd(builder)
 }

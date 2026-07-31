@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	flatbuffers "github.com/google/flatbuffers/go"
-
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
@@ -1967,94 +1965,4 @@ func (d *DAG) emitTransaction(tx *types.Transaction, success bool, reason FailRe
 	case d.committed <- committed:
 	case <-d.stop:
 	}
-}
-
-// serializeAttestedTx re-serializes an AttestedTransaction as a standalone buffer.
-// This is needed because atx.Table().Bytes returns the parent Vertex buffer.
-func serializeAttestedTx(atx *types.AttestedTransaction) []byte {
-	builder := flatbuffers.NewBuilder(1024)
-
-	// Rebuild Transaction
-	tx := atx.Transaction(nil)
-	txOffset := serializeTx(builder, tx)
-
-	// Rebuild Objects vector
-	objOffsets := make([]flatbuffers.UOffsetT, atx.ObjectsLength())
-	for i := 0; i < atx.ObjectsLength(); i++ {
-		var obj types.Object
-		atx.Objects(&obj, i)
-		objOffsets[i] = serializeObject(builder, &obj)
-	}
-
-	types.AttestedTransactionStartObjectsVector(builder, len(objOffsets))
-	for i := len(objOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(objOffsets[i])
-	}
-	objectsVec := builder.EndVector(len(objOffsets))
-
-	// Rebuild Proofs vector
-	proofOffsets := make([]flatbuffers.UOffsetT, atx.ProofsLength())
-	for i := 0; i < atx.ProofsLength(); i++ {
-		var proof types.QuorumProof
-		atx.Proofs(&proof, i)
-		proofOffsets[i] = serializeQuorumProof(builder, &proof)
-	}
-
-	types.AttestedTransactionStartProofsVector(builder, len(proofOffsets))
-	for i := len(proofOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(proofOffsets[i])
-	}
-	proofsVec := builder.EndVector(len(proofOffsets))
-
-	types.AttestedTransactionStart(builder)
-	types.AttestedTransactionAddTransaction(builder, txOffset)
-	types.AttestedTransactionAddObjects(builder, objectsVec)
-	types.AttestedTransactionAddProofs(builder, proofsVec)
-	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
-	atxOffset := types.AttestedTransactionEnd(builder)
-
-	builder.Finish(atxOffset)
-
-	return builder.FinishedBytes()
-}
-
-// serializeTx rebuilds a Transaction in the builder.
-func serializeTx(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
-	if tx == nil {
-		types.TransactionStart(builder)
-		return types.TransactionEnd(builder)
-	}
-
-	return genesis.RebuildTxInBuilder(builder, tx)
-}
-
-// serializeObject rebuilds an Object in the builder.
-func serializeObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.UOffsetT {
-	idVec := builder.CreateByteVector(obj.IdBytes())
-	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
-	contentVec := builder.CreateByteVector(obj.ContentBytes())
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, obj.Version())
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, obj.Replication())
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, obj.Fees())
-
-	return types.ObjectEnd(builder)
-}
-
-// serializeQuorumProof rebuilds a QuorumProof in the builder.
-func serializeQuorumProof(builder *flatbuffers.Builder, proof *types.QuorumProof) flatbuffers.UOffsetT {
-	objIdVec := builder.CreateByteVector(proof.ObjectIdBytes())
-	blsSigVec := builder.CreateByteVector(proof.BlsSignatureBytes())
-	bitmapVec := builder.CreateByteVector(proof.SignerBitmapBytes())
-
-	types.QuorumProofStart(builder)
-	types.QuorumProofAddObjectId(builder, objIdVec)
-	types.QuorumProofAddBlsSignature(builder, blsSigVec)
-	types.QuorumProofAddSignerBitmap(builder, bitmapVec)
-
-	return types.QuorumProofEnd(builder)
 }
