@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"BluePods/internal/consensus"
+	"BluePods/internal/network"
+	"BluePods/internal/storage"
 )
 
 // TestInitIndex_RestartRebuildMatchesNeverRestarted simulates a node restart:
@@ -137,6 +139,195 @@ func TestInitIndex_BootSeedDoesNotStealCursorRound(t *testing.T) {
 	if seeded, ok := n2.idxManager.RootAt(cursor - 1); !ok || seeded != bootRoot {
 		t.Errorf("RootAt(%d) ok=%v root=%x, want the boot backfill root %x under the last DECIDED round", cursor-1, ok, seeded[:4], bootRoot[:4])
 	}
+}
+
+// syncSnapshotFromLiveNode runs a bootstrap node through a short history —
+// genesis seeded, one further tracked object, rounds decided by the real commit
+// loop — and returns the snapshot a joining node would be served from it,
+// together with that node's own committed frontier and the root it holds there.
+// A joiner rebuilding from this snapshot must reproduce the identical pair:
+// that is what makes its vertices verifiable by every peer that followed the
+// same history.
+//
+// The index is wired only after the DAG is stopped, and the returned root is
+// therefore the boot backfill's — which the restart twin above pins to exactly
+// what a never-restarted node holds. Wiring it into a node whose production
+// loop is still running would instead make this helper trip -race on the DAG's
+// unguarded indexer field (see initIndex), a hazard that has nothing to do with
+// what these tests cover.
+func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) {
+	t.Helper()
+
+	dir := t.TempDir()
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	live, db := bootstrapTestNode(t, dir, privKey)
+	t.Cleanup(func() { db.Close() })
+
+	live.seedGenesisState()
+
+	// Post-genesis committed activity, so the exported state is more than the
+	// genesis seed and the joiner has a real hierarchy to rebuild.
+	var extra consensus.Hash
+	extra[0] = 0xAB
+	live.dag.TrackObject(extra, 1, 0, 0, 0, deriveOwner(privKey))
+
+	waitForCommit(t, live.dag, live.dag.LastCommittedRound(), 1)
+	live.dag.Close()
+
+	live.initIndex()
+
+	cut := live.dag.ExportConsistentCut(100)
+	defer cut.DBSnapshot.Close()
+
+	if cut.Cursor == 0 {
+		t.Fatal("test misconfigured: the live node decided no round")
+	}
+
+	// The last DECIDED round: what internal/sync exports as a snapshot's
+	// lastCommittedRound (cursor-1), and the round this node's own boot seed
+	// records its backfilled root under.
+	frontier := cut.Cursor - 1
+
+	root, ok := live.idxManager.RootAt(frontier)
+	if !ok {
+		t.Fatalf("no root recorded at the last DECIDED round %d (commit cursor %d): the boot seed must target cursor-1, the round the backfilled state corresponds to", frontier, cut.Cursor)
+	}
+	if root == ([32]byte{}) {
+		t.Fatal("test misconfigured: the live node anchors the empty root")
+	}
+
+	result := &snapshotResult{
+		lastCommittedRound: frontier,
+		validators:         cut.Validators,
+		vertices:           cut.Vertices,
+		trackerEntries:     cut.TrackerEntries,
+		domainEntries:      live.state.ExportDomains(),
+		issuanceRateMicro:  cut.IssuanceRate,
+		regimeState:        cut.Regime,
+	}
+
+	return result, frontier, root
+}
+
+// syncedJoiner builds the cmd/node-level shape of a node that joins by sync:
+// its own storage, network handle and state, with the snapshot's domains
+// imported, and NO pre-existing DAG or index — NewNode skips initConsensus
+// entirely whenever BootstrapAddr is set, so everything the joiner runs on is
+// built by the sync-side construction paths.
+func syncedJoiner(t *testing.T, result *snapshotResult) *Node {
+	t.Helper()
+
+	db, err := storage.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	net, err := network.NewNode(network.Config{PrivateKey: privKey, ListenAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("network: %v", err)
+	}
+	t.Cleanup(func() { net.Close() })
+
+	n := &Node{
+		cfg: &Config{
+			PrivateKey:    privKey,
+			BootstrapAddr: "127.0.0.1:1",
+			MinValidators: 1,
+		},
+		storage:   db,
+		network:   net,
+		systemPod: consensus.Hash{0x01, 0x02, 0x03},
+	}
+
+	// performSync's own order: the snapshot's domains land in state through the
+	// handle that applied the snapshot, and initState then rebuilds the handle
+	// over the same Pebble directory before consensus is constructed.
+	if err := n.initState(); err != nil {
+		t.Fatalf("init state: %v", err)
+	}
+
+	if len(result.domainEntries) > 0 {
+		n.state.ImportDomains(result.domainEntries)
+	}
+
+	if err := n.initState(); err != nil {
+		t.Fatalf("init state: %v", err)
+	}
+
+	return n
+}
+
+// assertSyncedIndex checks that a node built through a sync-side construction
+// path carries an index anchoring the same (frontier, root) pair a node that
+// followed the same history live anchors.
+func assertSyncedIndex(t *testing.T, n *Node, frontier uint64, wantRoot [32]byte) {
+	t.Helper()
+
+	if n.idxManager == nil {
+		t.Fatal("a node built through the sync path has no index: it anchors (0, zero root) in every vertex it produces, which every indexed peer rejects once the vertex round is past the first epoch boundary")
+	}
+
+	// What the joiner anchors in the vertices it produces. The round may have
+	// moved on if its own commit loop decided one before it was stopped, but a
+	// zero root, or one below the snapshot's frontier, never becomes correct.
+	gotRound, gotRoot := n.idxManager.CommittedFrontier()
+	if gotRound < frontier || gotRoot == ([32]byte{}) {
+		t.Errorf("synced CommittedFrontier() = (%d, %x), want the snapshot's frontier %d or later carrying a real root", gotRound, gotRoot[:4], frontier)
+	}
+
+	// The pair itself: the root a node that followed the same history holds at
+	// the snapshot's committed frontier. A seed on the wrong round leaves this
+	// round unrecorded, so !ok fails here too.
+	if got, ok := n.idxManager.RootAt(frontier); !ok || got != wantRoot {
+		t.Errorf("synced RootAt(%d) ok=%v root=%x, want %x", frontier, ok, got[:4], wantRoot[:4])
+	}
+}
+
+// TestInitConsensusForValidator_RebuildsIndex is the sync-side twin of the
+// restart test above, for the active-participation construction path. A node
+// that joined by sync produces vertices immediately, so an unwired index there
+// is not a silent gap: it anchors (0, zero root) in every vertex, and stage-1
+// ingress verification makes every indexed peer reject them the moment
+// commitEpochForRound(round) leaves the genesis epoch.
+func TestInitConsensusForValidator_RebuildsIndex(t *testing.T) {
+	result, frontier, wantRoot := syncSnapshotFromLiveNode(t)
+
+	n := syncedJoiner(t, result)
+	if err := n.initConsensusForValidator(result); err != nil {
+		t.Fatalf("initConsensusForValidator: %v", err)
+	}
+
+	// Stop the loops before asserting: the joiner's own commit loop would
+	// otherwise move the frontier past the boot seed mid-assertion.
+	n.dag.Close()
+
+	assertSyncedIndex(t, n, frontier, wantRoot)
+}
+
+// TestInitConsensusForListener_RebuildsIndex covers the listener construction
+// path. A listener produces nothing, but it commits the same ordered log and
+// serves snapshots, so its index must track the network's just as exactly.
+func TestInitConsensusForListener_RebuildsIndex(t *testing.T) {
+	result, frontier, wantRoot := syncSnapshotFromLiveNode(t)
+
+	n := syncedJoiner(t, result)
+	if err := n.initConsensusForListener(result); err != nil {
+		t.Fatalf("initConsensusForListener: %v", err)
+	}
+
+	n.dag.Close()
+
+	assertSyncedIndex(t, n, frontier, wantRoot)
 }
 
 // TestInitIndex_FreshBootBuildsNonEmptyRoot verifies initIndex backfills the

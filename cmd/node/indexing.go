@@ -6,18 +6,32 @@ import (
 	"BluePods/internal/state"
 )
 
-// initIndex constructs the verifiable-index manager, backfills it from
-// whatever this node's data directory already holds — the object tracker,
-// the domain store, and the live validator set — and wires it to the commit
-// and domain-write paths so every subsequent mutation keeps it current.
+// initIndex constructs the verifiable-index manager, backfills it from the
+// object tracker, the domain store and the validator set this node starts
+// with, and wires it to the commit and domain-write paths so every subsequent
+// mutation keeps it current.
 //
-// The backfill runs unconditionally, on both a fresh chain and a restart:
-// called right after seedGenesisState, it sees a freshly seeded genesis
-// object on first boot and the full persisted tracker/domain/validator state
-// on a restart over an existing data directory, either way rebuilding a
-// correct index BEFORE this node produces or verifies a single vertex. A
-// restarted node that skipped this would anchor an empty index's roots and
-// be silently excluded by peers the moment anchoring lands.
+// It runs unconditionally on all three construction paths, each of which has
+// installed a complete committed state by the time it is called:
+//
+//   - fresh chain: seedGenesisState just seeded the genesis object;
+//   - restart: the persisted tracker, domain store and live validator set come
+//     back from the data directory;
+//   - sync: WithImportData installed the snapshot's tracker, ImportDomains
+//     wrote its domains, and buildValidatorSetFromSnapshot rebuilt its
+//     validator set — all before the DAG was constructed.
+//
+// Either way the index is correct BEFORE this node produces or verifies a
+// single vertex. A node that skipped this anchors an empty index's roots
+// — (0, zero root) — in everything it produces, and every peer whose own
+// retained history contradicts that pair rejects those vertices.
+//
+// SetIndexer lands here, during single-threaded boot, on every path: the DAG's
+// indexer field has no happens-before guard of its own, so that ordering — the
+// wire completing before the gossip handler is switched onto this DAG and
+// before any buffered vertex is replayed — is what makes it safe to read from
+// the commit and gossip goroutines. A dynamic re-wire later would need a real
+// guard.
 func (n *Node) initIndex() {
 	mgr := index.NewManager()
 
@@ -38,6 +52,14 @@ func (n *Node) initIndex() {
 	// a never-restarted twin. A fresh chain (cursor 0) has decided nothing,
 	// so there is no round to seed: the commit loop is the sole frontier
 	// writer from round 0 on.
+	//
+	// The same arithmetic puts the sync path on the round its snapshot was cut
+	// at, which is the point of reusing it: the source exports its LAST DECIDED
+	// round (internal/sync's lastDecidedRound, cursor-1) and
+	// WithLastCommittedRound reads it back as cursor = round+1, so cursor-1 is
+	// exactly the snapshot's own committed frontier — the round the imported
+	// tracker, domains and validator set describe, and the round a peer that
+	// followed that history live holds the same root for in RootAt.
 	if cursor := n.dag.LastCommittedRound(); cursor > 0 {
 		mgr.SetFrontier(cursor - 1)
 	}

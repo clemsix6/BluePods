@@ -281,6 +281,12 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 	// commits the ordered log too, so it needs active recovery for liveness.
 	n.dag.SetVertexFetcher(n.newVertexFetcher())
 
+	// Rebuild the index from the applied snapshot, at the earliest point the
+	// DAG exists and still well before performSync switches the gossip handler
+	// onto it and replays the buffer. See initIndex for the frontier seed's
+	// derivation on this path.
+	n.initIndex()
+
 	n.setupValidatorCallback()
 
 	return nil
@@ -319,6 +325,14 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 
 	// Wire missing-ancestor recovery (synced-validator construction site).
 	n.dag.SetVertexFetcher(n.newVertexFetcher())
+
+	// Rebuild the index from the applied snapshot, at the earliest point the DAG
+	// exists. A synced validator produces vertices as soon as it is registered,
+	// so an unwired index here is not a silent gap: it anchors (0, zero root) in
+	// every vertex, and stage-1 ingress verification makes every indexed peer
+	// reject them once the vertex round leaves the genesis epoch. See initIndex
+	// for the frontier seed's derivation on this path.
+	n.initIndex()
 
 	logger.Info("DAG created for validator mode",
 		"validators", n.dag.ValidatorsInfo(),
