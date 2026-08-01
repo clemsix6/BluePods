@@ -340,9 +340,11 @@ table DeclaredOp {
 - [ ] **Run, expect FAIL → implement → PASS.**
 - [ ] **Commit:** title `Domain declared operations with ownership and namespaces`.
 
+**As-built (0ab4b97):** handlers live in `domainops.go`/`staged_domain.go` (300-line rule), not `ops.go`; `maxTermEpochs uint64 = 256` is a package constant that Task 4.2 MUST move into `FeeParams` AND rewire `domainExpiry` to read — otherwise the cap that reverts and the rent priced as `rate × term` drift apart under a governed parameter change; zero `term_epochs` is rejected; the seam is `DomainLeaf(name) (objectID, owner [32]byte, expiry uint64, ok bool)`; the composition-root wiring (`SetDomainStore` + `SetEpochSource`, `cmd/node/aggregation.go:80-81`) was written by this task — 4.4 must not remove or re-add it blindly. The tree leaf hashes all four fields, so the anchored root covers owner and expiry.
+
 ### Task 4.2: Rental and per-op fees, summary lockstep
 
-**Files:** Modify `internal/consensus/fees.go` (`FeeParams` gains `RentalRatePerEpoch`, `MaxTermEpochs`, `GraceEpochs`, `ReparentFee`, `DeleteFee`, `IndexEntryFee`); `calculateTxFeeSplit` (`commit.go:1009`) adds `Σ op fees` to the consumed part, rent = `safeMul(rate, term)`; `CalculateFee` + `buildFeeSummary` + `validateFeeSummary` in the same commit; Test `internal/consensus/fees_test.go`.
+**Files:** Modify `internal/consensus/fees.go` (`FeeParams` gains `RentalRatePerEpoch`, `MaxTermEpochs`, `GraceEpochs`, `ReparentFee`, `DeleteFee`, `IndexEntryFee`; `domainops.go`'s package constant `maxTermEpochs` is REPLACED by `FeeParams.MaxTermEpochs` and `domainExpiry` reads it — the cap and the pricing must move together); `calculateTxFeeSplit` (`commit.go:1009`) adds `Σ op fees` to the consumed part, rent = `safeMul(rate, term)`; `CalculateFee` + `buildFeeSummary` + `validateFeeSummary` in the same commit; Test `internal/consensus/fees_test.go`.
 
 - [ ] **Test:** a register-for-10-epochs tx pays `10×rate` into the epoch pool; a vertex whose summary omits op fees is rejected; an ops tx with no pod call pays `min_gas` compute.
 - [ ] **Run, expect FAIL → implement → PASS;** supply-invariant tests extended and green.
@@ -358,7 +360,7 @@ table DeclaredOp {
 
 ### Task 4.4: Retire the pod domain path
 
-**Files:** Modify `internal/state/state.go` (remove `applyRegisteredDomains`/`resolveDomainObjectID`; `validateOutput` rejects a non-empty `registered_domains`), `internal/consensus/commit.go:723` (drop the `MaxCreateDomains` term from the global-execution guard), `internal/consensus/fees.go` (remove the `max_create_domains × DomainFee` term from `CalculateFee` at `fees.go:169-170` AND from `buildFeeSummary`/`validateFeeSummary` in the same commit; drop `DomainFee` from `FeeParams`), `internal/genesis/transaction.go` (zero/deprecate the `maxCreateDomains` builder parameter — three-site lockstep applies), `types/podio.fbs` + `types/transaction.fbs` (mark `registered_domains` and `max_create_domains` deprecated in comments; fields stay for layout stability); pod SDK docs note; Test.
+**Files:** Modify `internal/state/state.go` (remove `applyRegisteredDomains`/`resolveDomainObjectID` AND `validateDomainName` in `internal/state/output_validation.go:80` — the pod path's weaker name rule must not survive the path; since 4.1 the pod path also writes unowned zero-expiry leaves no declared op can ever touch, one more reason it dies whole; `validateOutput` rejects a non-empty `registered_domains`), `internal/consensus/commit.go:723` (drop the `MaxCreateDomains` term from the global-execution guard), `internal/consensus/fees.go` (remove the `max_create_domains × DomainFee` term from `CalculateFee` at `fees.go:169-170` AND from `buildFeeSummary`/`validateFeeSummary` in the same commit; drop `DomainFee` from `FeeParams`), `internal/genesis/transaction.go` (zero/deprecate the `maxCreateDomains` builder parameter — three-site lockstep applies), `types/podio.fbs` + `types/transaction.fbs` (mark `registered_domains` and `max_create_domains` deprecated in comments; fields stay for layout stability); pod SDK docs note; Test.
 
 - [ ] **Test:** a pod emitting `registered_domains` reverts; domain refs in `ObjectRef` still resolve at execution (read path untouched).
 - [ ] **Run, expect FAIL → implement → PASS.**
