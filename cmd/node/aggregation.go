@@ -73,6 +73,13 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.state.ReparentObject(id, newKind, newParent, version)
 	})
 
+	// Declared domain operations read and write the registry state owns, and
+	// resolution measures a lease against the epoch the commit path maintains:
+	// every node applying a given round reads the same value, so a name expires
+	// at the same round everywhere.
+	n.dag.SetDomainStore(n.state)
+	n.state.SetEpochSource(n.dag.LiveEpoch)
+
 	// Creation-permission walk: the state layer asks consensus whether the tx
 	// sender controls a created object's declared object-parent, resolved through
 	// the global cascade walk over tracker metadata.

@@ -88,12 +88,17 @@ func trackerEntries(entries []consensus.ObjectTrackerEntry) []index.TrackerEntry
 }
 
 // domainLeaves converts state's domain entries into the index package's leaf
-// type. The domain store carries no owner or expiry yet (that lands with
-// rental economics), so both fields are zero until then.
+// type. Owner and expiry ride along: the domain tree hashes both, so a rebuild
+// that dropped them would compute a root no live node agrees with.
 func domainLeaves(entries []state.DomainEntry) []index.DomainLeaf {
 	out := make([]index.DomainLeaf, len(entries))
 	for i, e := range entries {
-		out[i] = index.DomainLeaf{Name: e.Name, ObjectID: e.ObjectID}
+		out[i] = index.DomainLeaf{
+			Name:        e.Name,
+			ObjectID:    e.ObjectID,
+			Owner:       e.Owner,
+			ExpiryEpoch: e.ExpiryEpoch,
+		}
 	}
 
 	return out

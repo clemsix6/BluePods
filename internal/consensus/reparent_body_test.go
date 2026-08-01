@@ -40,7 +40,7 @@ func TestApplyReparent_RewritesSingletonCoinBodyOwner(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: coin[:], TargetKind: keyRootKind, Target: recipient[:]}}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: coin, version: 0}}, ops, Hash{0x01})
 
-	if !dag.handleDeclaredOps(tx) {
+	if !dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("transfer of a controlled coin must succeed")
 	}
 
@@ -77,7 +77,7 @@ func TestApplyReparent_RewritesBodyOwnerToObjectParent(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: obj[:], TargetKind: objectParentKind, Target: parent[:]}}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: obj, version: 0}}, ops, Hash{0x02})
 
-	if !dag.handleDeclaredOps(tx) {
+	if !dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("reparent under a controlled ObjectParent must succeed")
 	}
 
@@ -111,7 +111,7 @@ func TestExecuteTx_TransferThenNewOwnerPaysGas(t *testing.T) {
 	// Transfer the coin A -> B (no fees on the direct handleDeclaredOps path).
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: coin[:], TargetKind: keyRootKind, Target: b[:]}}
 	transfer := opsTx(t, a, "", nil, []objectRef{{id: coin, version: 0}}, ops, Hash{0x10})
-	if !dag.handleDeclaredOps(transfer) {
+	if !dag.handleDeclaredOps(transfer, 0) {
 		t.Fatal("transfer must succeed")
 	}
 
@@ -145,7 +145,7 @@ func TestExecuteTx_TransferObjectThenNewOwnerMutates(t *testing.T) {
 
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: obj[:], TargetKind: keyRootKind, Target: b[:]}}
 	transfer := opsTx(t, a, "", nil, []objectRef{{id: obj, version: 0}}, ops, Hash{0x20})
-	if !dag.handleDeclaredOps(transfer) {
+	if !dag.handleDeclaredOps(transfer, 0) {
 		t.Fatal("object transfer must succeed")
 	}
 

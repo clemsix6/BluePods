@@ -21,7 +21,11 @@ const (
 // EITHER declared operations OR a pod call; a mix is rejected here rather than
 // half-applied.
 func (d *DAG) commitDeclaredOps(tx *types.Transaction, txHash, vertexHash Hash, commitRound uint64, feeSplit FeeSplit) FeeSplit {
-	success := !txHasPodCall(tx) && d.handleDeclaredOps(tx)
+	// The epoch domain leases are measured against is the one the COMMIT ROUND
+	// belongs to, the same deterministic mapping ATX proof verification and
+	// epoch fee bucketing use. Reading the live epoch counter instead would
+	// date a lease by when a node happened to reach the round.
+	success := !txHasPodCall(tx) && d.handleDeclaredOps(tx, d.commitEpochForRound(commitRound))
 
 	reason := FailNone
 	commitReason := ""
@@ -38,12 +42,14 @@ func (d *DAG) commitDeclaredOps(tx *types.Transaction, txHash, vertexHash Hash, 
 
 // handleDeclaredOps validates a transaction's declared operations as one
 // all-or-nothing list, then applies them. Validation runs against a staged view
-// so each operation sees the effects of the ones before it; the real tracker is
-// mutated only after the whole list is proven valid, because a settled deletion
-// (supply burn, deposit release) cannot be undone. The first failing operation
-// rejects the whole list with no effect. An all-zero sender is rejected outright
-// so it can never reach the cascade control walk and seize a frozen object.
-func (d *DAG) handleDeclaredOps(tx *types.Transaction) bool {
+// so each operation sees the effects of the ones before it; the real tracker and
+// domain registry are mutated only after the whole list is proven valid, because
+// a settled deletion (supply burn, deposit release) cannot be undone. The first
+// failing operation rejects the whole list with no effect. An all-zero sender is
+// rejected outright so it can never reach the cascade control walk and seize a
+// frozen object. epoch is the commit round's epoch, which the lease rules of the
+// domain operations are measured against.
+func (d *DAG) handleDeclaredOps(tx *types.Transaction, epoch uint64) bool {
 	sender, ok := hash32(tx.SenderBytes())
 	if !ok || sender == (Hash{}) {
 		return false
@@ -55,7 +61,7 @@ func (d *DAG) handleDeclaredOps(tx *types.Transaction) bool {
 	}
 
 	refs := mutableRefIDSet(tx)
-	staged := newStagedView(d.tracker)
+	staged := newStagedView(d.tracker, d.domains, epoch)
 
 	for i := range ops {
 		if !staged.validate(sender, ops[i], refs) {
@@ -63,25 +69,29 @@ func (d *DAG) handleDeclaredOps(tx *types.Transaction) bool {
 		}
 	}
 
-	d.applyDeclaredOps(tx, ops)
+	d.applyDeclaredOps(tx, sender, epoch, ops)
 
 	return true
 }
 
 // applyDeclaredOps runs the effects of an already-validated operation list in
-// order against the real tracker. Reparents rebind the parent edge; deletes
-// settle the deposit and drop the held body.
-func (d *DAG) applyDeclaredOps(tx *types.Transaction, ops []genesis.DeclaredOp) {
+// order against the real tracker and registry. Reparents rebind the parent edge;
+// deletes settle the deposit and drop the held body; the domain kinds write the
+// name's leaf. Applying in list order against the real state reproduces exactly
+// the sequence of states the staged view validated against.
+func (d *DAG) applyDeclaredOps(tx *types.Transaction, sender Hash, epoch uint64, ops []genesis.DeclaredOp) {
 	txHash, _ := hash32(tx.HashBytes())
 	gasCoinID, hasGasCoin := txGasCoinID(tx)
 
 	for i := range ops {
-		if ops[i].Kind == reparentOp {
+		switch ops[i].Kind {
+		case reparentOp:
 			d.applyReparent(txHash, ops[i])
-			continue
+		case deleteOp:
+			d.applyDelete(txHash, gasCoinID, hasGasCoin, ops[i])
+		default:
+			d.applyDomainOp(txHash, sender, epoch, ops[i])
 		}
-
-		d.applyDelete(txHash, gasCoinID, hasGasCoin, ops[i])
 	}
 }
 

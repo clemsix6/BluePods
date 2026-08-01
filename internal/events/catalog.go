@@ -56,6 +56,10 @@ const (
 	EvDomainRegistered = "state.domain.registered"
 	// EvDomainUpdated marks a domain name rebound to a different object.
 	EvDomainUpdated = "state.domain.updated"
+	// EvDomainRenewed marks a domain lease extended to a new expiry epoch.
+	EvDomainRenewed = "state.domain.renewed"
+	// EvDomainTransferred marks a domain name handed to a new owner.
+	EvDomainTransferred = "state.domain.transferred"
 	// EvDomainDeleted marks a domain name removed from the registry.
 	EvDomainDeleted = "state.domain.deleted"
 
@@ -137,6 +141,8 @@ var Names = []string{
 	EvObjectReparented,
 	EvDomainRegistered,
 	EvDomainUpdated,
+	EvDomainRenewed,
+	EvDomainTransferred,
 	EvDomainDeleted,
 
 	EvFeesDeducted,

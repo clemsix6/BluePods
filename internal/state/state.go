@@ -32,6 +32,7 @@ type State struct {
 	signObject         func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
 	parentValidator    func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
 	onDomainRegistered func(name string, objectID [32]byte)                                                                 // onDomainRegistered fires whenever a domain name is (re)bound to an object
+	epochSource        func() uint64                                                                                        // epochSource reports the epoch domain leases are measured against (nil = epoch 0)
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
@@ -67,10 +68,61 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 	return s
 }
 
-// ResolveDomain resolves a domain name to its ObjectID.
-// Returns the ObjectID and true if found, zero hash and false otherwise.
+// ResolveDomain resolves a domain name to its ObjectID. A name past its expiry
+// epoch does not resolve, even while its leaf is still in the registry awaiting
+// the sweep: the grace window reserves the owner's exclusive right to renew, it
+// never extends resolution. Returns the ObjectID and true when the name
+// resolves, zero hash and false otherwise.
 func (s *State) ResolveDomain(name string) ([32]byte, bool) {
-	return s.domains.get(name)
+	entry, ok := s.domains.get(name)
+	if !ok || entry.ExpiryEpoch < s.currentEpoch() {
+		return [32]byte{}, false
+	}
+
+	return entry.ObjectID, true
+}
+
+// DomainLeaf returns a name's registry leaf exactly as stored, expiry included
+// and unfiltered, so the commit path can apply the operations an expired lease
+// still allows (its owner's renewal). Resolution goes through ResolveDomain.
+func (s *State) DomainLeaf(name string) (objectID, owner [32]byte, expiry uint64, ok bool) {
+	entry, found := s.domains.get(name)
+	if !found {
+		return [32]byte{}, [32]byte{}, 0, false
+	}
+
+	return entry.ObjectID, entry.Owner, entry.ExpiryEpoch, true
+}
+
+// SetDomainLeaf writes a name's registry leaf, the write side of DomainLeaf.
+// The commit path calls it for every declared domain operation that leaves the
+// name registered.
+func (s *State) SetDomainLeaf(name string, objectID, owner [32]byte, expiry uint64) {
+	s.domains.set(DomainEntry{Name: name, ObjectID: objectID, Owner: owner, ExpiryEpoch: expiry})
+}
+
+// DeleteDomainLeaf removes a name from the registry, on an owner's declared
+// deletion or the epoch sweep of an expired lease.
+func (s *State) DeleteDomainLeaf(name string) {
+	s.domains.delete(name)
+}
+
+// SetEpochSource wires the epoch the resolver measures leases against. On the
+// commit path the source is the consensus epoch mirror, which every node reads
+// as the same value while a given round's transactions execute, so expiry never
+// resolves differently on two nodes. Left unwired (0), no lease ever expires,
+// which is the behavior of a chain with epochs disabled.
+func (s *State) SetEpochSource(fn func() uint64) {
+	s.epochSource = fn
+}
+
+// currentEpoch reads the wired epoch source, or 0 when none is set.
+func (s *State) currentEpoch() uint64 {
+	if s.epochSource == nil {
+		return 0
+	}
+
+	return s.epochSource()
 }
 
 // ExportDomains returns all domain entries for snapshot serialization.
@@ -411,7 +463,10 @@ func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [3
 		objectID := s.resolveDomainObjectID(&dom, txHash)
 		existed := s.domains.exists(name)
 
-		s.domains.set(name, objectID)
+		// The pod write path predates leases: it declares neither an owner nor
+		// a term, so the leaf it writes is unowned and expires at epoch 0.
+		// Domain leases are created by declared operations, which carry both.
+		s.domains.set(DomainEntry{Name: name, ObjectID: objectID})
 
 		if existed {
 			events.DomainUpdated(name, objectID, txHash)

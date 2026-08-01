@@ -26,6 +26,10 @@ func (a *anchorIndexer) ApplyEdge(child [32]byte, kind byte, parent [32]byte) {}
 
 func (a *anchorIndexer) RemoveObject(child [32]byte) {}
 
+func (a *anchorIndexer) ApplyDomain(name string, objectID, owner [32]byte, expiryEpoch uint64) {}
+
+func (a *anchorIndexer) RemoveDomain(name string) {}
+
 func (a *anchorIndexer) RebuildValidators(entries []index.ValidatorLeaf) {}
 
 func (a *anchorIndexer) SetFrontier(round uint64) {}

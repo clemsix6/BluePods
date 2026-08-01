@@ -19,20 +19,30 @@ type stagedView struct {
 	parents    map[Hash]parentEdge // parents overrides an object's staged parent edge
 	deleted    map[Hash]bool       // deleted marks objects a prior operation removed
 	childDelta map[Hash]int32      // childDelta accumulates staged child-count changes per ObjectParent
+
+	ds            DomainStore               // ds is the committed domain registry read through the overlay (nil = domain operations rejected)
+	epoch         uint64                    // epoch is the commit round's epoch, which lease rules are measured against
+	domains       map[string]domainLeafView // domains overrides a name's staged leaf
+	domainRemoved map[string]bool           // domainRemoved marks names a prior operation deleted
 }
 
-// newStagedView returns an empty overlay over the given tracker.
-func newStagedView(ot *objectTracker) *stagedView {
+// newStagedView returns an empty overlay over the given tracker and domain
+// registry, evaluated at the given epoch.
+func newStagedView(ot *objectTracker, ds DomainStore, epoch uint64) *stagedView {
 	return &stagedView{
-		ot:         ot,
-		parents:    make(map[Hash]parentEdge),
-		deleted:    make(map[Hash]bool),
-		childDelta: make(map[Hash]int32),
+		ot:            ot,
+		parents:       make(map[Hash]parentEdge),
+		deleted:       make(map[Hash]bool),
+		childDelta:    make(map[Hash]int32),
+		ds:            ds,
+		epoch:         epoch,
+		domains:       make(map[string]domainLeafView),
+		domainRemoved: make(map[string]bool),
 	}
 }
 
 // validate checks and stages one operation against the view, returning false for
-// any invalid or unknown-kind operation (the domain kinds land in a later batch).
+// any invalid or unknown-kind operation.
 func (s *stagedView) validate(sender Hash, op genesis.DeclaredOp, refs map[Hash]bool) bool {
 	switch op.Kind {
 	case reparentOp:
@@ -40,7 +50,7 @@ func (s *stagedView) validate(sender Hash, op genesis.DeclaredOp, refs map[Hash]
 	case deleteOp:
 		return s.validateDelete(sender, op, refs)
 	default:
-		return false
+		return s.validateDomainOp(sender, op)
 	}
 }
 

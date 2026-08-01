@@ -92,7 +92,7 @@ func TestHandleDeclaredOps_ReparentUnderForeignParentFails(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: obj[:], TargetKind: objectParentKind, Target: foreign[:]}}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: obj, version: 0}}, ops, Hash{0x02})
 
-	if dag.handleDeclaredOps(tx) {
+	if dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("reparent under a non-controlled ObjectParent must be rejected")
 	}
 	if k, p, _ := dag.tracker.getParent(obj); k != keyRootKind || p != sender {
@@ -116,7 +116,7 @@ func TestHandleDeclaredOps_CycleRejected(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: a[:], TargetKind: objectParentKind, Target: b[:]}}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: a, version: 0}}, ops, Hash{0x03})
 
-	if dag.handleDeclaredOps(tx) {
+	if dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("a cycle-forming reparent must be rejected")
 	}
 	if k, p, _ := dag.tracker.getParent(a); k != keyRootKind || p != sender {
@@ -179,7 +179,7 @@ func TestHandleDeclaredOps_DependentListAppliesNothing(t *testing.T) {
 	}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: x, version: 0}, {id: y, version: 0}}, ops, Hash{0x05})
 
-	if dag.handleDeclaredOps(tx) {
+	if dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("a list whose second op fails must be rejected wholesale")
 	}
 	if _, _, ok := dag.tracker.getParent(x); !ok {
@@ -211,7 +211,7 @@ func TestHandleDeclaredOps_SequentialReparentSucceeds(t *testing.T) {
 	}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: a, version: 0}, {id: c, version: 0}}, ops, Hash{0x06})
 
-	if !dag.handleDeclaredOps(tx) {
+	if !dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("valid sequential reparents must apply")
 	}
 	if k, p, _ := dag.tracker.getParent(a); k != objectParentKind || p != b {
@@ -297,7 +297,7 @@ func TestHandleDeclaredOps_DeleteLeafRefundsAndBurns(t *testing.T) {
 
 	buf := captureEvents(t)
 	supplyBefore := coinStore.TotalSupply()
-	if !dag.handleDeclaredOps(tx) {
+	if !dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("deleting a controlled leaf must succeed")
 	}
 
@@ -335,7 +335,7 @@ func TestHandleDeclaredOps_DeleteParentWithChildrenRejected(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: deleteOp, ObjectID: parent[:]}}
 	tx := opsTx(t, sender, "", nil, []objectRef{{id: parent, version: 0}}, ops, Hash{0x09})
 
-	if dag.handleDeclaredOps(tx) {
+	if dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("deleting a parent with children must be rejected")
 	}
 	if _, _, ok := dag.tracker.getParent(parent); !ok {
@@ -396,7 +396,7 @@ func TestHandleDeclaredOps_DeleteWithoutHolderHookIsClean(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: deleteOp, ObjectID: leaf[:]}}
 	tx := opsTx(t, sender, "", &gasCoin, []objectRef{{id: leaf, version: 0}}, ops, Hash{0x0B})
 
-	if !dag.handleDeclaredOps(tx) {
+	if !dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("a non-holder must settle the declared deletion too")
 	}
 	if _, _, ok := dag.tracker.getParent(leaf); ok {
@@ -426,7 +426,7 @@ func TestHandleDeclaredOps_ZeroSenderRejected(t *testing.T) {
 	ops := []genesis.DeclaredOp{{Kind: reparentOp, ObjectID: obj[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 	tx := opsTx(t, Hash{}, "", nil, []objectRef{{id: obj, version: 0}}, ops, Hash{0x0C})
 
-	if dag.handleDeclaredOps(tx) {
+	if dag.handleDeclaredOps(tx, 0) {
 		t.Fatal("an all-zero sender must never reach controls()")
 	}
 	if k, p, _ := dag.tracker.getParent(obj); k != keyRootKind || p != (Hash{}) {
@@ -434,8 +434,8 @@ func TestHandleDeclaredOps_ZeroSenderRejected(t *testing.T) {
 	}
 }
 
-// TestHandleDeclaredOps_UnknownKindRejected rejects an op of an
-// unknown/unsupported kind (the domain kinds land in a later batch).
+// TestHandleDeclaredOps_UnknownKindRejected rejects an op whose kind is outside
+// the defined set (0-1 object operations, 2-6 domain operations).
 func TestHandleDeclaredOps_UnknownKindRejected(t *testing.T) {
 	dag := opsTestDAG(t)
 	defer dag.Close()
@@ -445,10 +445,10 @@ func TestHandleDeclaredOps_UnknownKindRejected(t *testing.T) {
 
 	dag.tracker.trackObject(obj, 0, 0, 0, keyRootKind, sender)
 
-	for _, kind := range []byte{2, 3, 6, 7} {
+	for _, kind := range []byte{7, 8, 255} {
 		ops := []genesis.DeclaredOp{{Kind: kind, ObjectID: obj[:]}}
 		tx := opsTx(t, sender, "", nil, []objectRef{{id: obj, version: 0}}, ops, Hash{0x0D, kind})
-		if dag.handleDeclaredOps(tx) {
+		if dag.handleDeclaredOps(tx, 0) {
 			t.Fatalf("kind %d must be rejected as unknown/unsupported", kind)
 		}
 	}

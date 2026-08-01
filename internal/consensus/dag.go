@@ -168,6 +168,12 @@ type DAG struct {
 	// exactly as it did before this package existed.
 	indexer indexer
 
+	// domains is the registry declared domain operations read and write
+	// (domainops.go), wired post-construction by cmd/node via SetDomainStore.
+	// Left unset, every domain operation is rejected at validation, so no
+	// apply path ever dereferences it.
+	domains DomainStore
+
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
 	// Used as the inline fallback when no batch verifier is set (such as direct
@@ -854,6 +860,15 @@ func (d *DAG) EpochHolders() *ValidatorSet {
 // Epoch returns the current epoch number.
 func (d *DAG) Epoch() uint64 {
 	return d.currentEpoch
+}
+
+// LiveEpoch returns the current epoch from the lock-free mirror the commit path
+// maintains, so a caller outside the commit loop reads it without taking
+// commitMu. On the commit path itself the mirror equals the epoch the round
+// being applied belongs to, which is what makes it a deterministic input to
+// state reads that run during execution (domain lease expiry).
+func (d *DAG) LiveEpoch() uint64 {
+	return d.liveEpoch.Load()
 }
 
 // EpochLength returns the number of rounds per epoch (0 when epochs are disabled).

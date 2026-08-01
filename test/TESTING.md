@@ -254,6 +254,8 @@ must be called out in the commit that does it.
 | `state.object.reparented` | object, tx, kind, parent, version |
 | `state.domain.registered` | name, object, tx |
 | `state.domain.updated` | name, object, tx |
+| `state.domain.renewed` | name, expiry, tx |
+| `state.domain.transferred` | name, owner, tx |
 | `state.domain.deleted` | name, tx |
 | `fees.deducted` | tx, coin, amount, covered |
 | `fees.deposit.locked` | object, amount |

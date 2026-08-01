@@ -24,6 +24,16 @@ type indexer interface {
 	// deletion.
 	RemoveObject(child [32]byte)
 
+	// ApplyDomain upserts a name's domain-tree leaf. Every field of the leaf
+	// is hashed into the tree, so registration, renewal, repoint and transfer
+	// all feed through here: an expiry that moved in the registry without
+	// moving in the tree would fork this node's anchored root.
+	ApplyDomain(name string, objectID, owner [32]byte, expiryEpoch uint64)
+
+	// RemoveDomain drops a name's leaf, on an owner's deletion or the expiry
+	// sweep.
+	RemoveDomain(name string)
+
 	// RebuildValidators replaces the validator tree wholesale from a fresh
 	// snapshot.
 	RebuildValidators(entries []index.ValidatorLeaf)

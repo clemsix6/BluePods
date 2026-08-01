@@ -103,7 +103,7 @@ func TestValidateOutput_CreateUnderDomainReferencedTableSucceeds(t *testing.T) {
 
 	sender := Hash{0x01}
 	tableID := Hash{0xBB}
-	s.domains.set("table.app", tableID)
+	s.domains.set(DomainEntry{Name: "table.app", ObjectID: tableID})
 
 	tx := buildCreatingTx(sender, 1, []refSpec{{domain: "table.app"}})
 	output := buildCreatedParentsOutput([]createdSpec{{owner: tableID, parentKind: parentKindObject}})

@@ -901,7 +901,7 @@ func TestValidateOutput_DomainCollision(t *testing.T) {
 	s := New(db, nil)
 
 	// Pre-register domain
-	s.domains.set("taken.pod", Hash{0x99})
+	s.domains.set(DomainEntry{Name: "taken.pod", ObjectID: Hash{0x99}})
 
 	tx := buildTxWithLimits(5, 1)
 	domains := []testDomain{{name: "taken.pod"}}
@@ -1022,7 +1022,7 @@ func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
 
 	// Pre-register the domain
-	s.domains.set("taken.pod", Hash{0x99})
+	s.domains.set(DomainEntry{Name: "taken.pod", ObjectID: Hash{0x99}})
 
 	tx := buildTxWithLimits(5, 1)
 	txHash := Hash{0xBE, 0xEF}

@@ -164,7 +164,9 @@ func (s *State) domainReferencedParents(tx *types.Transaction) map[Hash]bool {
 			continue
 		}
 
-		if id, ok := s.domains.get(string(name)); ok {
+		// ResolveDomain, not a raw leaf read: an expired name resolves to
+		// nothing, so it grants no shared-access exemption either.
+		if id, ok := s.ResolveDomain(string(name)); ok {
 			parents[id] = true
 		}
 	}
