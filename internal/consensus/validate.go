@@ -108,18 +108,36 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 }
 
 // validateEpoch checks the epoch a vertex's header claims against a
-// receiver-independent window derived from the vertex's OWN round: the epoch that
-// round commits in (commitEpochForRound), plus or minus one.
+// receiver-independent window derived from the vertex's OWN ANCHORED FRONTIER: the
+// epoch that committed round belongs to (commitEpochForRound), plus or minus one.
 //
-// The window is exactly the two honest skews. A producer transitions to epoch E
-// when its COMMIT CURSOR reaches round E*epochLength, so a producer whose commit
-// lags stamps the round's epoch minus one, and a producer that has transitioned
-// but resumes production below the boundary (production restarts at
-// lastProducedRound+1, which sits below the commit cursor after a stall) stamps
-// the round's epoch plus one. Nothing else is reachable honestly, and the field
-// must be bounded on BOTH sides: from the quorum-bundle work on it names the
-// validator tree a header's quorum is weighed against, so an unbounded-below claim
-// is a stale-validator-set attack.
+// The two fields are read off the SAME state. A producer stamps the live epoch its
+// commit path maintains (productionEpoch, the liveEpoch mirror) and anchors the
+// frontier its commit path recorded (committedFrontier), and both move inside one
+// commitNextRound call: advanceCommitCursor transitions the epoch at a boundary,
+// setIndexFrontier records the round it just decided. An honest header is therefore
+// internally consistent however far the node's commit cursor trails its production
+// round — the property this rule needs, and the one the vertex's ROUND cannot give:
+// the round comes from the PRODUCTION clock, and the gap between the two clocks is
+// unbounded (a partition-healed node produces hundreds of rounds above the cursor
+// it is stuck on, a cold-restarted one resumes production below its cursor, and
+// sustained load lifts the lag past an epoch length with no fault at all). Bounding
+// a commit-clock field by a production-clock window rejected all three network-wide.
+//
+// The window is one epoch either side of the frontier's own.
+//
+//   - Plus one is reached on every boundary: at round R = k*epochLength
+//     transitionEpoch moves the live epoch to k BEFORE setIndexFrontier records R,
+//     and commitEpochForRound maps that boundary round back to k-1 (it is committed
+//     under the outgoing epoch's holders). The same edge covers a producer that
+//     read the lock-free epoch mirror after a transition the frontier seam had not
+//     caught up to yet.
+//   - Minus one is the mirror-image tolerance. Production reads the frontier first
+//     and the epoch second, so today the epoch can only be the fresher of the two;
+//     the low side keeps the rule from depending on that read order, and the field
+//     must be bounded on BOTH sides regardless: from the quorum-bundle work on it
+//     names the validator tree a header's quorum is weighed against, so an
+//     unbounded-below claim is a stale-validator-set attack.
 //
 // The receiver's own currentEpoch is deliberately NOT the reference. It is not
 // network-uniform at any instant: the producer of a vertex in flight across a
@@ -129,6 +147,16 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 // cursor trails — while it needs exactly those ahead-of-its-epoch tip vertices to
 // buffer, trigger deep-gap recovery and catch up at all. Comparing against
 // currentEpoch in either direction would reject them and wedge the node.
+//
+// A producer with no indexer wired anchors frontier 0 forever (committedFrontier's
+// zero pair), so its window stays 0..1 however far its live epoch runs. That is not
+// a carve-out this rule owes anything: stage 1 already ends that configuration one
+// epoch earlier, since a zero index root is tolerated only while the vertex's own
+// round is in the genesis epoch (validateIndexAnchor). Every production path wires
+// the index before the DAG produces or verifies a vertex (cmd/node's fresh-chain,
+// restart and sync constructions all call initIndex), so an indexer-less DAG is a
+// test and tooling configuration, and a test that needs a nonzero epoch anchors a
+// frontier that reaches it.
 //
 // With epochs disabled (epochLength 0) no boundary is ever crossed, so the only
 // epoch any header may claim is 0.
@@ -142,25 +170,25 @@ func (d *DAG) validateEpoch(v *types.Vertex) error {
 		return nil
 	}
 
-	low, high := epochWindow(d.commitEpochForRound(v.Round()))
+	low, high := epochWindow(d.commitEpochForRound(v.FrontierRound()))
 
 	if v.Epoch() < low || v.Epoch() > high {
-		return fmt.Errorf("epoch mismatch: round %d allows epochs %d..%d, got %d:\n%w",
-			v.Round(), low, high, v.Epoch(), errWrongEpoch)
+		return fmt.Errorf("epoch mismatch: frontier %d allows epochs %d..%d, got %d:\n%w",
+			v.FrontierRound(), low, high, v.Epoch(), errWrongEpoch)
 	}
 
 	return nil
 }
 
-// epochWindow returns the inclusive epoch window around the epoch a round commits
-// in: one below (a producer that has not transitioned yet) to one above (a
-// producer filling a round below the boundary it just crossed), clamped at 0.
-func epochWindow(roundEpoch uint64) (low, high uint64) {
-	if roundEpoch > 0 {
-		low = roundEpoch - 1
+// epochWindow returns the inclusive epoch window around the epoch the anchored
+// frontier commits in: one below to one above (see validateEpoch for what each
+// edge is), clamped at 0.
+func epochWindow(frontierEpoch uint64) (low, high uint64) {
+	if frontierEpoch > 0 {
+		low = frontierEpoch - 1
 	}
 
-	return low, roundEpoch + 1
+	return low, frontierEpoch + 1
 }
 
 // validateProducer checks the producer is in the validator set.

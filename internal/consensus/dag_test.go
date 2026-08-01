@@ -283,8 +283,19 @@ func TestHasQuorumFromRound_StakeWeighted(t *testing.T) {
 	}
 }
 
-// buildTestVertex creates a signed vertex for testing.
+// buildTestVertex creates a signed vertex for testing, anchoring frontier round
+// 0 — the pair an indexer-less producer builds.
 func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash, epoch uint64) []byte {
+	t.Helper()
+
+	return buildTestVertexAnchored(t, v, round, parents, epoch, 0)
+}
+
+// buildTestVertexAnchored creates a signed vertex that also anchors a committed
+// frontier round. That field is what validateEpoch derives its window from, so
+// any test that pins an epoch claim must set it: the vertex's own round says
+// nothing about the epoch its producer's commit clock was in.
+func buildTestVertexAnchored(t *testing.T, v testValidator, round uint64, parents []Hash, epoch uint64, frontierRound uint64) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -320,6 +331,7 @@ func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddFrontierRound(builder, frontierRound)
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
 
@@ -364,6 +376,7 @@ func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddFrontierRound(builder, frontierRound)
 	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOffset = types.VertexEnd(builder)
 

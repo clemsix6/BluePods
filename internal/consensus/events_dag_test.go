@@ -122,7 +122,7 @@ func TestAddVertex_TerminalRejection_WrongEpoch(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
-	data := buildTestVertex(t, validators[1], 0, nil, 99) // round 0 can only be epoch 0
+	data := buildTestVertex(t, validators[1], 0, nil, 99) // a frontier-0 anchor can only be epoch 0 or 1
 	vertex := types.GetRootAsVertex(data, 0)
 	var hash Hash
 	copy(hash[:], vertex.HashBytes())

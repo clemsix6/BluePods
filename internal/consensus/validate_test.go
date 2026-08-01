@@ -43,8 +43,8 @@ func TestValidateSignature_InvalidSig(t *testing.T) {
 	}
 }
 
-// TestValidateEpoch_Mismatch verifies an epoch the vertex's own round cannot have
-// reached is rejected.
+// TestValidateEpoch_Mismatch verifies an epoch the vertex's own ANCHORED
+// FRONTIER cannot have reached is rejected.
 func TestValidateEpoch_Mismatch(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)
@@ -52,8 +52,9 @@ func TestValidateEpoch_Mismatch(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
-	// Round 0 belongs to epoch 0: no producer can claim epoch 2 there.
-	data := buildTestVertex(t, validators[1], 0, nil, 2)
+	// A producer anchoring frontier 0 has committed nothing past the genesis
+	// epoch, so its commit clock cannot read epoch 2.
+	data := buildTestVertexAnchored(t, validators[1], 0, nil, 2, 0)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	err := dag.validateEpoch(vertex)
@@ -67,74 +68,119 @@ func TestValidateEpoch_Mismatch(t *testing.T) {
 }
 
 // TestValidateEpoch_Window pins the two-sided, receiver-independent window a
-// header's epoch must fall in: the epoch the vertex's OWN round commits in, or
-// that value plus or minus one. The window tolerates the two honest skews (a
-// producer that has not transitioned yet, and one filling a round below the
-// boundary it just crossed) and nothing else, so the field a light client reads
-// to pick a validator tree can neither run ahead nor be dragged back to a stale
-// validator set.
+// header's epoch must fall in: the epoch the vertex's ANCHORED FRONTIER commits
+// in, or that value plus or minus one. Both fields are stamped off the producer's
+// commit state, so the window is honest under any commit lag — while the vertex's
+// ROUND comes from the production clock and says nothing about the epoch its
+// producer had reached.
+//
+// The first three cases are the three witnesses from the batch-3 scenario
+// battery, each one an honest node whose entire production a round-derived window
+// rejected network-wide. The rest are the liar bounds: two epochs off the
+// frontier-derived value, on both sides.
 //
 // The receiver's own currentEpoch is left at 0 throughout: every case is decided
-// from the vertex's round alone.
+// from the vertex's own header alone.
 func TestValidateEpoch_Window(t *testing.T) {
 	tests := []struct {
-		name        string // name describes the skew being pinned
+		name        string // name describes the shape being pinned
 		epochLength uint64 // epochLength is the receiver's configured epoch length
 		round       uint64 // round is the round the vertex claims
+		frontier    uint64 // frontier is the committed round the vertex anchors
 		epoch       uint64 // epoch is the epoch the vertex's header claims
 		wantReject  bool   // wantReject is true when the claim must be rejected
 	}{
 		{
-			// Production resumes at lastProducedRound+1, which can sit BELOW the
-			// commit cursor after a stall: the node commits round 1000, moves to
-			// epoch 1, and stamps epoch 1 on the round-998 vertex it produces next.
-			name:        "post-stall production one epoch above its round",
-			epochLength: 1000,
-			round:       998,
+			// TestScenarioPartition/across_epoch_boundary: the isolated node
+			// kept producing rounds it could not commit, healed with its cursor
+			// at 153 (epoch 1) while producing at round 546, and every peer
+			// rejected the lot as wrong_epoch.
+			name:        "partition heal: commit cursor 388 rounds below production",
+			epochLength: 150,
+			round:       546,
+			frontier:    152,
 			epoch:       1,
 		},
 		{
-			name:        "the round's own epoch",
-			epochLength: 1000,
-			round:       998,
-			epoch:       0,
+			// A cold-restarted holder resumes production at
+			// lastProducedRound+1, which sits far BELOW the cursor it restored.
+			name:        "cold restart: production resumed 600 rounds below the cursor",
+			epochLength: 100,
+			round:       640,
+			frontier:    1250,
+			epoch:       12,
 		},
 		{
-			name:        "two epochs above the round is forged",
-			epochLength: 1000,
-			round:       998,
+			// TestScenarioStress runs epochLength 50, so sustained load puts
+			// the commit lag over two epoch lengths without any fault at all.
+			name:        "sustained load: commit lag above two epoch lengths",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       6,
+		},
+		{
+			// The boundary round R = k*epochLength transitions to epoch k
+			// BEFORE it is recorded as the frontier, and commitEpochForRound
+			// maps it to k-1: the +1 edge is reached on every boundary.
+			name:        "boundary round: transitioned but frontier still maps below",
+			epochLength: 150,
+			round:       151,
+			frontier:    150,
+			epoch:       1,
+		},
+		{
+			name:        "the frontier's own epoch",
+			epochLength: 50,
+			frontier:    310,
+			round:       460,
+			epoch:       7,
+		},
+		{
+			name:        "one epoch below the frontier",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       5,
+		},
+		{
+			name:        "two epochs above the frontier is forged",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       8,
+			wantReject:  true,
+		},
+		{
+			name:        "two epochs below the frontier is a stale validator set",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       4,
+			wantReject:  true,
+		},
+		{
+			// An indexer-less producer anchors frontier 0 forever: its window
+			// stays [0,1] however far its live epoch runs. See validateEpoch.
+			name:        "frontier 0 past the genesis window is rejected",
+			epochLength: 150,
+			round:       546,
+			frontier:    0,
 			epoch:       2,
 			wantReject:  true,
-		},
-		{
-			name:        "one epoch below the round (producer has not transitioned)",
-			epochLength: 1000,
-			round:       5500,
-			epoch:       4,
-		},
-		{
-			name:        "two epochs below the round is a stale validator set",
-			epochLength: 1000,
-			round:       5500,
-			epoch:       3,
-			wantReject:  true,
-		},
-		{
-			name:        "one epoch above the round",
-			epochLength: 1000,
-			round:       5500,
-			epoch:       6,
 		},
 		{
 			name:        "epochs disabled: epoch 0 is the only claim",
 			epochLength: 0,
 			round:       5500,
+			frontier:    5400,
 			epoch:       0,
 		},
 		{
 			name:        "epochs disabled: a nonzero epoch is rejected",
 			epochLength: 0,
 			round:       5500,
+			frontier:    5400,
 			epoch:       1,
 			wantReject:  true,
 		},
@@ -148,15 +194,15 @@ func TestValidateEpoch_Window(t *testing.T) {
 			dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(tt.epochLength))
 			defer dag.Close()
 
-			data := buildTestVertex(t, validators[1], tt.round, nil, tt.epoch)
+			data := buildTestVertexAnchored(t, validators[1], tt.round, nil, tt.epoch, tt.frontier)
 			err := dag.validateEpoch(types.GetRootAsVertex(data, 0))
 
 			if tt.wantReject && !errors.Is(err, errWrongEpoch) {
-				t.Fatalf("epoch %d at round %d must be rejected, got: %v", tt.epoch, tt.round, err)
+				t.Fatalf("epoch %d at frontier %d must be rejected, got: %v", tt.epoch, tt.frontier, err)
 			}
 
 			if !tt.wantReject && err != nil {
-				t.Fatalf("epoch %d at round %d must validate: %v", tt.epoch, tt.round, err)
+				t.Fatalf("epoch %d at frontier %d must validate: %v", tt.epoch, tt.frontier, err)
 			}
 		})
 	}

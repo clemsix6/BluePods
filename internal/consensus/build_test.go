@@ -277,6 +277,11 @@ func TestVertexHeader_EpochIsTheLiveEpoch(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
+	// The live epoch and the anchored frontier both come from the commit state,
+	// so an honest producer's pair is consistent: a commit cursor inside epoch 3
+	// is what moved the live epoch to 3.
+	dag.SetIndexer(&anchorIndexer{frontier: 31})
+
 	dag.commitMu.Lock()
 	dag.setCurrentEpoch(3)
 	dag.commitMu.Unlock()
@@ -294,9 +299,11 @@ func TestVertexHeader_EpochIsTheLiveEpoch(t *testing.T) {
 
 // TestValidateEpoch_BoundarySkew verifies a vertex produced in epoch N still
 // validates on a receiver that has already transitioned to N+1 (and the other way
-// round), while an epoch its own round cannot have reached is rejected. Producers
-// cross a boundary at different moments; rejecting the in-flight ones would drop
-// every vertex around every boundary.
+// round), while an epoch the vertex's own anchored frontier cannot have reached is
+// rejected wherever the receiver stands. Producers cross a boundary at different
+// moments; rejecting the in-flight ones would drop every vertex around every
+// boundary, and a receiver-relative rule would make one node's verdict on a vertex
+// disagree with another's.
 func TestValidateEpoch_BoundarySkew(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)
@@ -304,35 +311,31 @@ func TestValidateEpoch_BoundarySkew(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
-	dag.commitMu.Lock()
-	dag.setCurrentEpoch(2)
-	dag.commitMu.Unlock()
+	// A frontier at round 25 commits in epoch 2, so the window is 1..3: a
+	// producer that had not transitioned yet, one at the frontier's own epoch,
+	// and one that transitioned at round 30 and re-read its epoch before its
+	// frontier all pass. Epoch 4 is beyond any honest skew.
+	//
+	// Every case is checked from three receiver positions — behind the vertex,
+	// level with it, and well ahead of it — and the verdicts must not move.
+	for _, receiverEpoch := range []uint64{0, 2, 5} {
+		dag.commitMu.Lock()
+		dag.setCurrentEpoch(receiverEpoch)
+		dag.commitMu.Unlock()
 
-	// Round 25 belongs to epoch 2: a producer still in epoch 1 (it had not
-	// committed round 20 yet when it produced) and one already in epoch 2 both pass.
-	for _, epoch := range []uint64{1, 2} {
-		v := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, epoch), 0)
-		if err := dag.validateEpoch(v); err != nil {
-			t.Fatalf("epoch %d at round 25 must validate on a receiver in epoch 2: %v", epoch, err)
+		for _, epoch := range []uint64{1, 2, 3} {
+			v := types.GetRootAsVertex(buildTestVertexAnchored(t, validators[1], 25, nil, epoch, 25), 0)
+			if err := dag.validateEpoch(v); err != nil {
+				t.Fatalf("epoch %d at frontier 25 must validate on a receiver in epoch %d: %v",
+					epoch, receiverEpoch, err)
+			}
 		}
-	}
 
-	// A receiver still catching up must accept the epoch it has not reached yet,
-	// or it can never buffer the tip vertices that let it catch up.
-	dag.commitMu.Lock()
-	dag.setCurrentEpoch(0)
-	dag.commitMu.Unlock()
-
-	v := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 2), 0)
-	if err := dag.validateEpoch(v); err != nil {
-		t.Fatalf("a vertex from an epoch ahead of the receiver must validate: %v", err)
-	}
-
-	// Epoch 3 is the top of the window at round 25 (a producer that committed
-	// round 30 and resumed production below it), epoch 4 is beyond any honest skew.
-	forged := types.GetRootAsVertex(buildTestVertex(t, validators[1], 25, nil, 4), 0)
-	if err := dag.validateEpoch(forged); !errors.Is(err, errWrongEpoch) {
-		t.Fatalf("an epoch two above the round's own epoch must be rejected, got: %v", err)
+		forged := types.GetRootAsVertex(buildTestVertexAnchored(t, validators[1], 25, nil, 4, 25), 0)
+		if err := dag.validateEpoch(forged); !errors.Is(err, errWrongEpoch) {
+			t.Fatalf("an epoch two above the frontier's own epoch must be rejected on a receiver in epoch %d, got: %v",
+				receiverEpoch, err)
+		}
 	}
 }
 
