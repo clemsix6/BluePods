@@ -118,8 +118,11 @@ func requireDomainRegisteredAll(t *testing.T, c *harness.Cluster, name string, o
 
 // testRegisterResolveDuplicate registers "alpha", resolves it from a node
 // DIFFERENT than the one that submitted the registration, and confirms a
-// second registration of the same name — by a different, funded sender —
-// fails: first-come-first-served on the name.
+// second registration of the same name fails: first-come-first-served on the
+// name. The rival is a different, funded sender pointing at an object it
+// itself created and owns — never the first registrant's target — so
+// controls() has nothing to object to and the live-name collision is the
+// ONLY rule left standing between the rival and a successful registration.
 func testRegisterResolveDuplicate(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, target [32]byte) {
 	t.Helper()
 
@@ -136,8 +139,9 @@ func testRegisterResolveDuplicate(t *testing.T, c *harness.Cluster, cli *client.
 	}
 
 	rival, rivalGas := fundedWallet(stepCtx(t), t, cli, c.Node(0), 1_000_000)
+	rivalTarget := createObjectEverywhere(t, c, cli, rival, rivalGas, "rival-target")
 
-	hash, err := rival.DomainRegister(cli, name, target, domainsLongTerm, rivalGas)
+	hash, err := rival.DomainRegister(cli, name, rivalTarget, domainsLongTerm, rivalGas)
 	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, false, "declared_ops")
 }
@@ -236,10 +240,16 @@ func testExpirySweep(t *testing.T, c *harness.Cluster, name string) {
 	}
 }
 
-// requireRentReachedEpochPool confirms at least one epoch.rewards.distributed
-// event carried a positive pool during the run: the domain rent this
-// scenario pays (register, renew) is a consumed fee, never a refundable
-// deposit, so it must reach the epoch reward pool at a boundary.
+// requireRentReachedEpochPool is a smoke check: it confirms at least one
+// epoch.rewards.distributed event carried a positive pool during the run, so
+// the epoch boundary's distribution pass fires at all in this scenario's
+// mixed traffic (domain rent alongside object creation and reparenting).
+// It does NOT isolate the domain rent's own contribution to that pool — with
+// several fee-paying operations sharing the run, any one of them satisfies
+// this bound — so it is not evidence specific to rent reaching the pool.
+// Rent-specific coverage (rate x declared term feeding SplitFee's epoch
+// share) is unit-level: internal/consensus/fees_ops_test.go and
+// events_emit_test.go.
 func requireRentReachedEpochPool(t *testing.T, node0 *harness.Node) {
 	t.Helper()
 

@@ -8,8 +8,10 @@ import (
 
 // initIndex constructs the verifiable-index manager, backfills it from the
 // object tracker, the domain store and the validator set this node starts
-// with, and wires it to the commit and domain-write paths so every subsequent
-// mutation keeps it current.
+// with, and wires it to the commit path — the index's one wire, SetIndexer —
+// so every subsequent mutation keeps it current. Domain writes are no
+// exception: they arrive through that same commit path (applyDomainOp calling
+// writeDomainLeaf), not a separate wire of their own.
 //
 // It runs unconditionally on all three construction paths, each of which has
 // installed a complete committed state by the time it is called:

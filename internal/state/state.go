@@ -3,6 +3,8 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
+	"math/bits"
 	"sync"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -704,12 +706,43 @@ func extractSender(tx *types.Transaction) Hash {
 	return sender
 }
 
+// safeMul returns a * b, capping at math.MaxUint64 on overflow. Mirrors
+// consensus/fees.go's helper of the same name exactly: computeStorageDeposit
+// duplicates it here rather than importing it, since internal/consensus
+// already imports internal/state and an import the other way would cycle.
+func safeMul(a, b uint64) uint64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+
+	hi, _ := bits.Mul64(a, b)
+	if hi > 0 {
+		return math.MaxUint64
+	}
+
+	return a * b
+}
+
+// safeAdd returns a + b, capping at math.MaxUint64 on overflow. Mirrors
+// consensus/fees.go's helper of the same name; see safeMul for why it is
+// duplicated rather than imported.
+func safeAdd(a, b uint64) uint64 {
+	sum := a + b
+	if sum < a {
+		return math.MaxUint64
+	}
+
+	return sum
+}
+
 // computeStorageDeposit calculates the storage deposit for a new object: a
 // storage-fee share proportional to replication, plus the flat index-entry
-// term, mirroring fees.go's StorageDeposit exactly so the deposit stamped
-// here always equals the fee consensus debits for it. It reads the live
-// validator count (so the deposit matches the storage fee debited at
-// commit), falling back to the init-time count if none is wired.
+// term, mirroring fees.go's StorageDeposit exactly — saturating arithmetic
+// included — so the deposit stamped here always equals the fee consensus
+// debits for it, even under a governed StorageFee large enough to overflow
+// raw multiplication. It reads the live validator count (so the deposit
+// matches the storage fee debited at commit), falling back to the init-time
+// count if none is wired.
 func (s *State) computeStorageDeposit(replication uint16) uint64 {
 	total := s.totalValidators
 	if s.validatorCount != nil {
@@ -725,9 +758,9 @@ func (s *State) computeStorageDeposit(replication uint16) uint64 {
 		effRep = total
 	}
 
-	storage := uint64(effRep) * s.storageFee / uint64(total)
+	storage := safeMul(uint64(effRep), s.storageFee) / uint64(total)
 
-	return storage + s.indexEntryFee
+	return safeAdd(storage, s.indexEntryFee)
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects

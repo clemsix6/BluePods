@@ -495,7 +495,7 @@ func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 	s.SetIsHolder(func([32]byte, uint16) bool { return true }) // singletons: every validator holds it
-	s.SetStorageFees(1000, 0, 9500, 4)                          // singleton deposit == storage_fee == 1000
+	s.SetStorageFees(1000, 0, 9500, 4)                         // singleton deposit == storage_fee == 1000
 
 	// The deposits term of the supply identity is the sum of the storage
 	// deposits the tracker records, fed by the onObjectCreated callback (exactly
@@ -1000,7 +1000,6 @@ func TestApplyDeletedObjects_OwnerCanDelete(t *testing.T) {
 // internal/consensus deletion tests. The state layer keeps only physical content
 // removal (above).
 
-
 // --- computeStorageDeposit ---
 
 // TestComputeStorageDeposit verifies storage deposit calculation.
@@ -1218,4 +1217,3 @@ func buildTxWithDeleted(sender Hash, deleted []byte) *types.Transaction {
 
 	return types.GetRootAsTransaction(builder.FinishedBytes(), 0)
 }
-
