@@ -61,7 +61,7 @@ func (d *DAG) handleDeclaredOps(tx *types.Transaction, epoch uint64) bool {
 	}
 
 	refs := mutableRefIDSet(tx)
-	staged := newStagedView(d.tracker, d.domains, epoch)
+	staged := newStagedView(d.tracker, d.domains, epoch, d.maxTermEpochs())
 
 	for i := range ops {
 		if !staged.validate(sender, ops[i], refs) {

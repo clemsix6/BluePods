@@ -22,13 +22,14 @@ type stagedView struct {
 
 	ds            DomainStore               // ds is the committed domain registry read through the overlay (nil = domain operations rejected)
 	epoch         uint64                    // epoch is the commit round's epoch, which lease rules are measured against
+	maxTerm       uint64                    // maxTerm is the governed lease cap the fee side prices against
 	domains       map[string]domainLeafView // domains overrides a name's staged leaf
 	domainRemoved map[string]bool           // domainRemoved marks names a prior operation deleted
 }
 
 // newStagedView returns an empty overlay over the given tracker and domain
-// registry, evaluated at the given epoch.
-func newStagedView(ot *objectTracker, ds DomainStore, epoch uint64) *stagedView {
+// registry, evaluated at the given epoch under the given lease cap.
+func newStagedView(ot *objectTracker, ds DomainStore, epoch, maxTerm uint64) *stagedView {
 	return &stagedView{
 		ot:            ot,
 		parents:       make(map[Hash]parentEdge),
@@ -36,6 +37,7 @@ func newStagedView(ot *objectTracker, ds DomainStore, epoch uint64) *stagedView 
 		childDelta:    make(map[Hash]int32),
 		ds:            ds,
 		epoch:         epoch,
+		maxTerm:       maxTerm,
 		domains:       make(map[string]domainLeafView),
 		domainRemoved: make(map[string]bool),
 	}

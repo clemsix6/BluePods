@@ -130,7 +130,7 @@ func TestDomainRegister_TermCapReverts(t *testing.T) {
 
 	obj := env.object(domainAlice, Hash{0x11})
 
-	if env.apply(domainAlice, 0, registerOp("alpha", obj, uint32(maxTermEpochs+1))) {
+	if env.apply(domainAlice, 0, registerOp("alpha", obj, uint32(defaultMaxTermEpochs+1))) {
 		t.Fatal("a term beyond the cap must revert, never clamp")
 	}
 	if env.apply(domainAlice, 0, registerOp("alpha", obj, 0)) {
@@ -140,11 +140,11 @@ func TestDomainRegister_TermCapReverts(t *testing.T) {
 		t.Errorf("a leaf was written despite the reverted term: %+v", env.domains.leaves)
 	}
 
-	if !env.apply(domainAlice, 7, registerOp("alpha", obj, uint32(maxTermEpochs))) {
+	if !env.apply(domainAlice, 7, registerOp("alpha", obj, uint32(defaultMaxTermEpochs))) {
 		t.Fatal("a term exactly at the cap must be accepted")
 	}
-	if got := env.leaf(t, "alpha").expiry; got != 7+maxTermEpochs {
-		t.Errorf("expiry = %d, want %d", got, 7+maxTermEpochs)
+	if got := env.leaf(t, "alpha").expiry; got != 7+defaultMaxTermEpochs {
+		t.Errorf("expiry = %d, want %d", got, 7+defaultMaxTermEpochs)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestDomainRenew_OwnerOnlyAndCapped(t *testing.T) {
 		t.Fatalf("want one %s for alpha at expiry 8, got %v", events.EvDomainRenewed, recs)
 	}
 
-	if env.apply(domainAlice, 3, renewOp("alpha", uint32(maxTermEpochs))) {
+	if env.apply(domainAlice, 3, renewOp("alpha", uint32(defaultMaxTermEpochs))) {
 		t.Fatal("a renewal past the cap must revert")
 	}
 	if got := env.leaf(t, "alpha").expiry; got != 8 {

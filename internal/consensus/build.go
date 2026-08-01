@@ -169,8 +169,9 @@ func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbu
 }
 
 // computeTxFeeSplit calculates the fee split for a single AttestedTransaction.
-// The summary covers only the consumed portion (compute+transit+domain): the
-// storage deposit is locked in the object, never pooled, so it is not summarized.
+// The summary covers only the consumed portion (compute, transit, domain and
+// declared-operation fees, rent included): the storage deposit is locked in the
+// object, never pooled, so it is not summarized.
 func (d *DAG) computeTxFeeSplit(txBytes []byte) FeeSplit {
 	if len(txBytes) < 8 {
 		return FeeSplit{}

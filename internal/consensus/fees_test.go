@@ -161,7 +161,7 @@ func TestCalculateFee_FullFormula(t *testing.T) {
 	// storage[1] = 100 * 1000 / 100 = 1000 (rep=0 → effective=100)
 	// domain = 1 * 10000 = 10000
 	// total = 200 + 30 + 100 + 1000 + 10000 = 11330
-	fee := CalculateFee(500, 20, 100, 3, []uint16{10, 0}, 1, 100, params)
+	fee := CalculateFee(500, 20, 100, 3, []uint16{10, 0}, 1, nil, false, 100, params)
 	if fee != 11330 {
 		t.Errorf("full formula: got %d, want 11330", fee)
 	}
@@ -179,7 +179,7 @@ func TestCalculateFee_ZeroMaxGas(t *testing.T) {
 	// transit = 2 * 10 = 20
 	// storage = 10 * 1000 / 50 = 200
 	// domain = 1 * 10000 = 10000
-	fee := CalculateFee(0, 1, 1, 2, []uint16{10}, 1, 50, params)
+	fee := CalculateFee(0, 1, 1, 2, []uint16{10}, 1, nil, false, 50, params)
 	if fee != 10220 {
 		t.Errorf("zero gas: got %d, want 10220", fee)
 	}
@@ -192,7 +192,7 @@ func TestCalculateFee_NoStandardObjects(t *testing.T) {
 	}
 
 	// Only compute, no transit
-	fee := CalculateFee(100, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 1, 0, nil, 0, nil, false, 100, params)
 	if fee != 100 {
 		t.Errorf("no standard: got %d, want 100", fee)
 	}
@@ -206,7 +206,7 @@ func TestCalculateFee_NoCreatedObjects(t *testing.T) {
 	}
 
 	// compute + transit, no storage
-	fee := CalculateFee(100, 1, 1, 5, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 1, 5, nil, 0, nil, false, 100, params)
 	if fee != 150 {
 		t.Errorf("no created: got %d, want 150", fee)
 	}
@@ -218,7 +218,7 @@ func TestCalculateFee_NoDomains(t *testing.T) {
 		DomainFee: 10000,
 	}
 
-	fee := CalculateFee(100, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 1, 0, nil, 0, nil, false, 100, params)
 	if fee != 100 {
 		t.Errorf("no domains: got %d, want 100", fee)
 	}
@@ -231,7 +231,7 @@ func TestCalculateFee_ZeroValidators(t *testing.T) {
 	}
 
 	// Zero validators → no storage fees, no panic
-	fee := CalculateFee(100, 0, 1, 0, []uint16{10}, 0, 0, params)
+	fee := CalculateFee(100, 0, 1, 0, []uint16{10}, 0, nil, false, 0, params)
 	if fee != 0 {
 		t.Errorf("zero validators: got %d, want 0", fee)
 	}
@@ -241,7 +241,7 @@ func TestCalculateFee_ZeroRepDenom(t *testing.T) {
 	params := FeeParams{GasPrice: 1}
 
 	// Zero denom → no compute fee, no panic
-	fee := CalculateFee(100, 1, 0, 0, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 0, 0, nil, 0, nil, false, 100, params)
 	if fee != 0 {
 		t.Errorf("zero denom: got %d, want 0", fee)
 	}
@@ -251,7 +251,7 @@ func TestCalculateFee_LargeValues(t *testing.T) {
 	params := FeeParams{GasPrice: 1}
 
 	// Large max_gas that doesn't overflow: 10^18 * 1 * 1/1 = 10^18
-	fee := CalculateFee(1_000_000_000_000_000_000, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(1_000_000_000_000_000_000, 1, 1, 0, nil, 0, nil, false, 100, params)
 	if fee != 1_000_000_000_000_000_000 {
 		t.Errorf("large: got %d, want 1000000000000000000", fee)
 	}
@@ -492,7 +492,7 @@ func TestCalculateFee_OverflowMaxGas(t *testing.T) {
 	params := FeeParams{GasPrice: 2}
 
 	// MaxUint64 * 2 would overflow without safeMul
-	fee := CalculateFee(math.MaxUint64, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(math.MaxUint64, 1, 1, 0, nil, 0, nil, false, 100, params)
 
 	// Should be capped at MaxUint64, not wrap to 0
 	if fee == 0 {
@@ -507,7 +507,7 @@ func TestCalculateFee_OverflowStorageFee(t *testing.T) {
 	params := FeeParams{StorageFee: math.MaxUint64}
 
 	// Large storage fee with singleton (effRep=100 validators)
-	fee := CalculateFee(0, 0, 1, 0, []uint16{0}, 0, 100, params)
+	fee := CalculateFee(0, 0, 1, 0, []uint16{0}, 0, nil, false, 100, params)
 
 	// effRep=100, storageFee=MaxUint64, 100 validators → MaxUint64*100/100 = MaxUint64
 	// With safeMul, 100 * MaxUint64 → MaxUint64, then / 100 → still huge
@@ -525,7 +525,7 @@ func TestCalculateFee_AllComponentsOverflow(t *testing.T) {
 	}
 
 	// All components would overflow individually
-	fee := CalculateFee(math.MaxUint64, 1, 1, 100, []uint16{0}, 100, 100, params)
+	fee := CalculateFee(math.MaxUint64, 1, 1, 100, []uint16{0}, 100, nil, false, 100, params)
 
 	// Should be capped at MaxUint64, not some small wrapped value
 	if fee != math.MaxUint64 {

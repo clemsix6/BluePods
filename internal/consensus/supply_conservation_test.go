@@ -3,6 +3,7 @@ package consensus
 import (
 	"testing"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
 
@@ -49,6 +50,57 @@ func TestPartialFeeCoveragePooled(t *testing.T) {
 
 	if split.Epoch != balance {
 		t.Errorf("split.Epoch = %d, want %d (the whole drained balance pooled)", split.Epoch, balance)
+	}
+}
+
+// TestDeclaredOpFeesConserveSupply verifies that a declared-operation
+// transaction moves value without creating or destroying any: everything the
+// gas coin loses — the compute floor, the flat operation fee and the rent —
+// enters the epoch pool, and nothing is withheld as a deposit. Rent is a
+// consumed fee, so a domain lease must never leave a locked balance behind that
+// no object accounts for.
+func TestDeclaredOpFeesConserveSupply(t *testing.T) {
+	env := newOpsFeeEnv(t)
+	defer env.dag.Close()
+
+	sender := Hash{0x01}
+	gasCoin := Hash{0xCC}
+	const startBalance = 1_000_000
+	env.coins.SetObject(buildTestCoinObject(gasCoin, startBalance, sender, 0))
+
+	obj := Hash{0x11}
+	ops := []genesis.DeclaredOp{
+		registerOp("alpha", obj, 7),
+		renewOp("alpha", 3),
+		{Kind: deleteOp, ObjectID: obj[:]},
+	}
+
+	atxBytes := env.atx(t, opsFeeTx{sender: sender, gasCoin: gasCoin, maxGas: env.params.MinGas, ops: ops})
+	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
+	tx := atx.Transaction(nil)
+
+	split, storage, proceed := env.dag.deductFees(tx, atx, env.producer.pubKey)
+	if !proceed {
+		t.Fatal("deductFees must proceed for a funded gas coin")
+	}
+
+	balance, err := readCoinBalance(env.coins.GetObject(gasCoin))
+	if err != nil {
+		t.Fatalf("read gas coin: %v", err)
+	}
+
+	debited := uint64(startBalance) - balance
+	if pooled := split.Epoch + split.Burned + storage; pooled != debited {
+		t.Errorf("debited %d but accounted %d (epoch %d + burned %d + withheld %d)",
+			debited, pooled, split.Epoch, split.Burned, storage)
+	}
+	if storage != 0 {
+		t.Errorf("withheld storage = %d, want 0: declared operations create no object", storage)
+	}
+
+	want := env.params.MinGas*env.params.GasPrice + 10*env.params.RentalRatePerEpoch + env.params.DeleteFee
+	if debited != want {
+		t.Errorf("debited %d, want %d (floor + 7+3 epochs of rent + delete fee)", debited, want)
 	}
 }
 

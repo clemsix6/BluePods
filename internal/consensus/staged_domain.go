@@ -56,7 +56,7 @@ func (s *stagedView) validateDomainRegister(sender Hash, op genesis.DeclaredOp) 
 		return false
 	}
 
-	expiry, ok := domainExpiry(0, s.epoch, op.TermEpochs)
+	expiry, ok := domainExpiry(0, s.epoch, op.TermEpochs, s.maxTerm)
 	if !ok {
 		return false
 	}
@@ -75,7 +75,7 @@ func (s *stagedView) validateDomainRenew(sender Hash, op genesis.DeclaredOp) boo
 		return false
 	}
 
-	expiry, ok := domainExpiry(leaf.expiry, s.epoch, op.TermEpochs)
+	expiry, ok := domainExpiry(leaf.expiry, s.epoch, op.TermEpochs, s.maxTerm)
 	if !ok {
 		return false
 	}

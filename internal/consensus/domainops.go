@@ -28,14 +28,6 @@ const (
 )
 
 const (
-	// maxTermEpochs caps how far past the current epoch a lease may run. An
-	// operation whose term would push the expiry beyond it REVERTS rather than
-	// being clamped: the rent charged is rate x the declared term, read from
-	// the transaction header, so a clamped term would charge for epochs the
-	// lease does not get. Without the cap, one prepayment would hold a name
-	// effectively forever, the exact squat recurring rent exists to prevent.
-	maxTermEpochs uint64 = 256
-
 	// maxDomainNameLen bounds a registrable name, matching the length the pod
 	// write path has always enforced.
 	maxDomainNameLen = 253
@@ -101,7 +93,7 @@ func (d *DAG) applyDomainOp(txHash, sender Hash, epoch uint64, op genesis.Declar
 // for the declared term.
 func (d *DAG) applyDomainRegister(txHash, sender Hash, epoch uint64, op genesis.DeclaredOp) {
 	objectID := toHash(op.ObjectID)
-	expiry, _ := domainExpiry(0, epoch, op.TermEpochs)
+	expiry, _ := domainExpiry(0, epoch, op.TermEpochs, d.maxTermEpochs())
 
 	d.writeDomainLeaf(op.Name, objectID, sender, expiry)
 	events.DomainRegistered(op.Name, objectID, txHash)
@@ -114,7 +106,7 @@ func (d *DAG) applyDomainRenew(txHash Hash, epoch uint64, op genesis.DeclaredOp)
 		return
 	}
 
-	expiry, _ := domainExpiry(current, epoch, op.TermEpochs)
+	expiry, _ := domainExpiry(current, epoch, op.TermEpochs, d.maxTermEpochs())
 
 	d.writeDomainLeaf(op.Name, objectID, owner, expiry)
 	events.DomainRenewed(op.Name, expiry, txHash)
@@ -172,12 +164,27 @@ func (d *DAG) writeDomainLeaf(name string, objectID, owner Hash, expiry uint64) 
 	}
 }
 
+// maxTermEpochs returns the governed cap on how far past the current epoch a
+// lease may run. It comes from the same frozen FeeParams that charges rate x
+// term, so the cap that reverts an operation and the price of the term it
+// allows can never be moved apart by a parameter change. A DAG with no fee
+// system wired (a test, a fee-less bootstrap) falls back to the default rather
+// than to zero, which would revert every lease.
+func (d *DAG) maxTermEpochs() uint64 {
+	if d.feeParams == nil {
+		return defaultMaxTermEpochs
+	}
+
+	return d.feeParams.MaxTermEpochs
+}
+
 // domainExpiry computes the expiry a register or renew produces and reports
 // whether it is allowed. A renewal runs from the later of the current expiry
 // and the current epoch, so prepaying ahead and renewing after an expiry are
 // the same operation. A zero term is rejected (it would buy no lease at no
-// rent), and so is any result past the cap — reverted, never clamped.
-func domainExpiry(current, epoch uint64, term uint32) (uint64, bool) {
+// rent), and so is any result past maxTerm — reverted, never clamped, because
+// the rent charged is rate x the term the header declared.
+func domainExpiry(current, epoch uint64, term uint32, maxTerm uint64) (uint64, bool) {
 	if term == 0 {
 		return 0, false
 	}
@@ -188,7 +195,7 @@ func domainExpiry(current, epoch uint64, term uint32) (uint64, bool) {
 	}
 
 	expiry := safeAdd(base, uint64(term))
-	if expiry > safeAdd(epoch, maxTermEpochs) {
+	if expiry > safeAdd(epoch, maxTerm) {
 		return 0, false
 	}
 

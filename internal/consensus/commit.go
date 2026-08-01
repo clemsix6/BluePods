@@ -1038,8 +1038,9 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		return FeeSplit{}, 0, false
 	}
 
-	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
-	// the object's locked deposit, debited from the coin but never pooled.
+	// Split the fee: the consumed part (compute, transit, domain and the declared
+	// operations' flat fees and rent) feeds the pool; storage is the object's
+	// locked deposit, debited from the coin but never pooled.
 	consumed, storage := d.calculateTxFeeSplit(tx, atx)
 	fee := consumed + storage
 	if fee == 0 {
@@ -1071,10 +1072,12 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 // calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
 // to the epoch reward pool) and the storage portion (locked in the created
-// objects as a refundable deposit, never pooled). The storage term sums
-// StorageDeposit over the created objects using the SAME live validator count
-// state.computeStorageDeposit reads, so the debited storage equals the stamped
-// deposit and total_supply is unchanged at create time.
+// objects as a refundable deposit, never pooled). Declared-operation fees, a
+// domain lease's rent included, are consumed: a lease buys epochs of service
+// from the validators the pool pays, not an asset to be refunded. The storage
+// term sums StorageDeposit over the created objects using the SAME live
+// validator count state.computeStorageDeposit reads, so the debited storage
+// equals the stamped deposit and total_supply is unchanged at create time.
 func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTransaction) (consumed, storage uint64) {
 	if d.feeParams == nil {
 		return 0, 0
@@ -1309,12 +1312,20 @@ func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransacti
 		totalValidators,
 	)
 
+	// Declared operations are priced from the header. A transaction that carries
+	// them and no pod call runs no metered code, so it pays the flat min_gas
+	// compute term; one carrying both is a mixed transaction, rejected at commit
+	// but charged for the execution its holders were asked to run.
+	ops := genesis.ExtractOperations(tx)
+
 	return CalculateFee(
 		tx.MaxGas(),
 		repNum, repDenom,
 		standardCount,
 		createdReps,
 		int(tx.MaxCreateDomains()),
+		ops,
+		len(ops) > 0 && !txHasPodCall(tx),
 		totalValidators,
 		*d.feeParams,
 	)
