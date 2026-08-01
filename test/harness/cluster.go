@@ -135,7 +135,7 @@ func resolveOptions(size int, opts []Option) clusterOpts {
 func (c *Cluster) startCluster(size int) {
 	c.t.Helper()
 
-	bootstrap := c.startOne(0, true, "", "")
+	bootstrap := c.startOne(0, true, "", "", false)
 	c.nodes = []*Node{bootstrap}
 	c.waitNodeReady(bootstrap)
 
@@ -163,7 +163,10 @@ func (c *Cluster) startValidatorsSequential(size int, bootstrapAddr string) {
 	c.t.Helper()
 
 	for i := 1; i < size; i++ {
-		n := c.startOne(i, false, bootstrapAddr, "")
+		// A founding member: joins before the cluster has anything stable to
+		// pin a checkpoint to, so it takes the insecure hatch explicitly
+		// (never inferred from an absent checkpoint — see startOneErr).
+		n := c.startOne(i, false, bootstrapAddr, "", true)
 		c.nodes = append(c.nodes, n)
 		c.waitNodeReady(n)
 	}
@@ -188,7 +191,8 @@ func (c *Cluster) startValidatorsParallel(size int, bootstrapAddr string) {
 	results := make(chan result, size-1)
 	for i := 1; i < size; i++ {
 		go func(idx int) {
-			n, err := c.startOneErr(idx, false, bootstrapAddr, "")
+			// Founding members again: see startValidatorsSequential.
+			n, err := c.startOneErr(idx, false, bootstrapAddr, "", true)
 			results <- result{idx: idx, n: n, err: err}
 		}(i)
 	}
@@ -208,10 +212,12 @@ func (c *Cluster) startValidatorsParallel(size int, bootstrapAddr string) {
 
 // startOne allocates a port, creates a node under the cluster's directory,
 // and starts it with the cluster's tuning, failing the test on error.
-func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr, checkpoint string) *Node {
+// insecure is explicit at every call site on purpose (see startOneErr): the
+// hatch is never taken by a caller merely forgetting to pass a checkpoint.
+func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr, checkpoint string, insecure bool) *Node {
 	c.t.Helper()
 
-	n, err := c.startOneErr(index, isBootstrap, bootstrapAddr, checkpoint)
+	n, err := c.startOneErr(index, isBootstrap, bootstrapAddr, checkpoint, insecure)
 	if err != nil {
 		c.t.Fatalf("%v", err)
 	}
@@ -222,7 +228,16 @@ func (c *Cluster) startOne(index int, isBootstrap bool, bootstrapAddr, checkpoin
 // startOneErr is startOne's non-fatal core: it never touches *testing.T, so
 // it is safe to call from a goroutine startValidatorsParallel spawns (only
 // the test's own goroutine may call t.Fatalf/FailNow).
-func (c *Cluster) startOneErr(index int, isBootstrap bool, bootstrapAddr, checkpoint string) (*Node, error) {
+//
+// insecure selects the --insecure-bootstrap escape hatch and is always
+// passed explicitly by the caller (true only for the cluster's founding
+// members, which join before anything stable exists to checkpoint against);
+// it used to be inferred from checkpoint == "", which made the hatch a
+// silent default for any future caller that forgot to derive a checkpoint.
+// A non-empty checkpoint always wins in buildArgs regardless of this flag
+// (see node.go), so passing insecure=true alongside a real checkpoint is
+// harmless, but every current call site still states its intent plainly.
+func (c *Cluster) startOneErr(index int, isBootstrap bool, bootstrapAddr, checkpoint string, insecure bool) (*Node, error) {
 	port, err := allocatePort()
 	if err != nil {
 		return nil, fmt.Errorf("allocate port for node %d:\n%w", index, err)
@@ -257,8 +272,10 @@ func (c *Cluster) startOneErr(index int, isBootstrap bool, bootstrapAddr, checkp
 		// routinely stale by the time that snapshot arrives. Production has the
 		// same shape — a founding set is provisioned out of band. Every join
 		// AFTER the cluster is up (Spawn, Restart) pins a real checkpoint and
-		// takes the verified path.
-		InsecureBootstrap: checkpoint == "",
+		// takes the verified path. The caller states this explicitly through
+		// insecure rather than it being inferred here from an absent
+		// checkpoint.
+		InsecureBootstrap: insecure,
 	}
 
 	if err := n.Start(args); err != nil {
@@ -452,7 +469,7 @@ func (c *Cluster) Spawn() *Node {
 		c.t.Fatalf("spawn: no alive node to sync from")
 	}
 
-	n := c.startOne(idx, false, source.QUICAddr, c.trustCheckpointFrom(source))
+	n := c.startOne(idx, false, source.QUICAddr, c.trustCheckpointFrom(source), false)
 
 	c.mu.Lock()
 	c.nodes = append(c.nodes, n)
@@ -465,6 +482,35 @@ func (c *Cluster) Spawn() *Node {
 		c.Dump(c.t)
 		c.t.Fatalf("spawned node %d did not sync: %v", idx, err)
 	}
+
+	return n
+}
+
+// SpawnWithCheckpoint starts a brand-new node against the cluster, exactly
+// like Spawn, except the caller supplies the checkpoint value directly
+// instead of it being derived from an alive node's own published root — the
+// hook a scenario needs to exercise the refusal path with a checkpoint that
+// names no committee the cluster actually has. Unlike Spawn it does not wait
+// for sync.completed: a wrong checkpoint means that event never arrives (the
+// node's own fail-closed gate exits it first), so the caller asserts on the
+// returned node's journal instead.
+func (c *Cluster) SpawnWithCheckpoint(checkpoint string) *Node {
+	c.t.Helper()
+
+	c.mu.Lock()
+	idx := len(c.nodes)
+	c.mu.Unlock()
+
+	source := c.firstAlive(-1)
+	if source == nil {
+		c.t.Fatalf("spawn: no alive node to sync from")
+	}
+
+	n := c.startOne(idx, false, source.QUICAddr, checkpoint, false)
+
+	c.mu.Lock()
+	c.nodes = append(c.nodes, n)
+	c.mu.Unlock()
 
 	return n
 }

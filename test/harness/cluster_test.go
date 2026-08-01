@@ -88,7 +88,7 @@ func TestClusterSpawnJoinsOnTheVerifiedPath(t *testing.T) {
 	// that failed verification never emits (it exits instead).
 	n := c.Spawn()
 
-	if n.args.TrustCheckpoint == "" {
+	if n.trustCheckpointArg() == "" {
 		t.Fatal("the spawned node pinned no checkpoint: it joined on the escape hatch, not the verified path")
 	}
 
@@ -147,7 +147,7 @@ func TestClusterJoinRefusesAWrongCheckpoint(t *testing.T) {
 	// Same epoch, a root no committee hashes to.
 	wrong := fmt.Sprintf("%d:%s", 0, strings.Repeat("ab", 32))
 
-	refused, err := c.startOneErr(99, false, source.QUICAddr, wrong)
+	refused, err := c.startOneErr(99, false, source.QUICAddr, wrong, false)
 	if err != nil {
 		t.Fatalf("start the refusing node: %v", err)
 	}

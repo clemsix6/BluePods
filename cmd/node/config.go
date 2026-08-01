@@ -139,8 +139,14 @@ func parseFlags() (*Config, error) {
 // A genesis bootstrap has no upstream to verify against and needs neither.
 // Failing here rather than mid-sync means an operator learns about a malformed
 // checkpoint immediately, not after the buffering window.
+//
+// Keyed on the SAME predicate the sync path itself branches on
+// (!Bootstrap && BootstrapAddr != "", node.go) rather than BootstrapAddr != ""
+// alone: a node passed both --bootstrap and --bootstrap-addr never takes the
+// sync path (Bootstrap wins there), so requiring an anchor from it here would
+// force an operator to supply one their node never uses.
 func (c *Config) validateTrustAnchor() error {
-	if c.BootstrapAddr == "" {
+	if c.Bootstrap || c.BootstrapAddr == "" {
 		return nil
 	}
 

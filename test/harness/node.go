@@ -348,6 +348,18 @@ func (n *Node) isBootstrap() bool {
 	return n.bootstrap
 }
 
+// trustCheckpointArg returns the checkpoint value this node last started (or
+// restarted) with, guarded by n.mu like every other read of args: the pump
+// and awaitExit goroutines never touch args, but SetTrustCheckpoint and
+// Restart do, from the test goroutine, so an unguarded read races them under
+// -race.
+func (n *Node) trustCheckpointArg() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.args.TrustCheckpoint
+}
+
 // Alive reports whether the process is currently running.
 func (n *Node) Alive() bool {
 	n.mu.Lock()

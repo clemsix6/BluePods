@@ -78,6 +78,19 @@ import (
 // assumption, not something this gate can add), and history older than the
 // joiner's retained epochs cannot be checkpointed against (a stale checkpoint
 // is refused, never silently accepted).
+//
+// FRESHNESS IS NOT CLOSED EITHER, and it is a separate gap from the ones
+// above. minFrontier is derived from the snapshot itself (the committed round
+// the rebuilt state describes), never from an independent "current round"
+// signal, and the quorum requirement in link 5 asks only whether the
+// checkpointed committee attested THAT frontier, not whether that frontier is
+// recent. A source in a position to eclipse the joiner (control every peer it
+// syncs and gossips through) can therefore serve a genuine snapshot from
+// further back in the chain's history, with genuine matching attestations
+// from the time it was cut, and the chain above accepts it: every link
+// verifies authenticity, none of them verifies recency. This is the plan's
+// accepted rule, not an oversight to close here — see Task 5.2's as-built
+// note.
 
 const (
 	// anchorQuorumTimeout bounds how long a joining node waits for the network
@@ -162,8 +175,18 @@ func parseTrustCheckpoint(value string) (trustCheckpoint, error) {
 // chain above and, on any failure, records the refusal as node.stopping with
 // the "sync_unverified" reason before handing the error back. minFrontier is
 // the committed frontier the rebuilt state describes.
+//
+// THE ONE RULE, enforced at all three sites that know both flags
+// (parseFlags' validateTrustAnchor, the harness's buildArgs, and here): the
+// checkpoint wins whenever both are set. parseFlags refuses the combination
+// outright (an operator who typed both gets an immediate error, not a silent
+// pick); the other two sites cannot refuse — a Config built in-process
+// bypasses parseFlags entirely, and the harness only ever emits one of the
+// two flags to begin with — so both take the checkpoint path rather than the
+// hatch when a caller (by omission or otherwise) leaves InsecureBootstrap set
+// alongside a non-empty TrustCheckpoint.
 func (n *Node) verifySyncedState(minFrontier uint64) error {
-	if n.cfg.InsecureBootstrap {
+	if n.cfg.TrustCheckpoint == "" && n.cfg.InsecureBootstrap {
 		logger.Warn("INSECURE BOOTSTRAP: joining WITHOUT a trusted checkpoint",
 			"consequence", "the bootstrap supplies both this node's state and the validator set that judges it; nothing here proves the state is the network's")
 

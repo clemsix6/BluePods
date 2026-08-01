@@ -124,7 +124,15 @@ func (d *DAG) backfillIndex() {
 		return
 	}
 
-	leaves := d.ValidatorLeaves(d.EpochHolders().All())
+	// The tree rebuild needs SOME holder set even before anything is frozen
+	// (HoldersForEpoch(currentEpoch) fails during the unresolved genesis
+	// window), so it falls back to the live set like every other index-tree
+	// reader. The frozen-event publish below does NOT share that fallback.
+	holders, frozen := d.HoldersForEpoch(d.currentEpoch)
+	if !frozen {
+		holders = d.EpochHolders()
+	}
+	leaves := d.ValidatorLeaves(holders.All())
 
 	d.indexer.BuildFromState(
 		d.indexTrackerEntries(),
@@ -136,8 +144,14 @@ func (d *DAG) backfillIndex() {
 	// only from the freezes that follow: a node that just booted has frozen
 	// nothing yet, and an operator (or the scenario harness) reading a
 	// checkpoint off it would otherwise find no root at all until the next
-	// boundary.
-	events.ValidatorsFrozen(d.currentEpoch, index.ValidatorRootOf(leaves), len(leaves))
+	// boundary. Gated on `frozen` (HoldersForEpoch), never on EpochHolders'
+	// live-set fallback: the verifier a joiner runs (trustedJudge,
+	// checkpoint.go) reads HoldersForEpoch with no fallback, so a node with
+	// nothing persisted yet must publish no event at all rather than a pair no
+	// joiner can ever reproduce.
+	if frozen {
+		events.ValidatorsFrozen(d.currentEpoch, index.ValidatorRootOf(leaves), len(leaves))
+	}
 
 	if d.lastCommitted > 0 {
 		d.indexer.SetFrontier(lastDecidedRound(d.lastCommitted))
