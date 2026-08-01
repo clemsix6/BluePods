@@ -747,9 +747,11 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	}
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
-	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
+	// created_objects_replication > 0 → ALL validators execute (holder unknown
+	// until after execution). max_create_domains is deprecated: pod-driven
+	// domain registration is retired, so it no longer forces global execution.
 	// Otherwise → only holders of mutable objects execute.
-	if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
+	if tx.CreatedObjectsReplicationLength() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
 		d.emitTransaction(tx, true, FailNone)
 		events.TxCommitted(txHash, vertexHash, commitRound, true, "")
@@ -1307,7 +1309,6 @@ func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransacti
 	repNum, repDenom := ReplicationRatio(
 		mutableRefs,
 		len(createdReps),
-		int(tx.MaxCreateDomains()),
 		d.computeHolders,
 		totalValidators,
 	)
@@ -1323,7 +1324,6 @@ func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransacti
 		repNum, repDenom,
 		standardCount,
 		createdReps,
-		int(tx.MaxCreateDomains()),
 		ops,
 		len(ops) > 0 && !txHasPodCall(tx),
 		totalValidators,

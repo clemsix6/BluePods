@@ -32,13 +32,13 @@ func TestVerifyTxAuthenticity_WithOperations(t *testing.T) {
 		Target:     newParent[:],
 	}}
 
-	body := genesis.BuildUnsignedTxBytesSponsored(pub, testSystemPod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops)
+	body := genesis.BuildUnsignedTxBytesSponsored(pub, testSystemPod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(body)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
-		builder, pub, testSystemPod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, testSystemPod, "noop", nil, nil, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOff)
 	tx := types.GetRootAsTransaction(builder.FinishedBytes(), 0)
@@ -75,14 +75,14 @@ func TestVerifyTxAuthenticity_SponsoredWithOperations(t *testing.T) {
 	}}
 
 	sponsor := genesis.Sponsorship{FeePayer: sponsorPub, ValidUntil: 9}
-	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, sponsor, nil, ops)
+	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, sponsor, nil, ops)
 	hash := blake3.Sum256(body)
 	senderSig := ed25519.Sign(senderKey, hash[:])
 	sponsorSig := ed25519.Sign(sponsorKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
-		builder, senderPub, testSystemPod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, sponsorSig, nil, ops,
+		builder, senderPub, testSystemPod, "noop", nil, nil, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, sponsorSig, nil, ops,
 	)
 	builder.Finish(txOff)
 	tx := types.GetRootAsTransaction(builder.FinishedBytes(), 0)

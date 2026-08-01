@@ -862,128 +862,35 @@ func TestValidateOutput_MaxCreateObjectsExact(t *testing.T) {
 	}
 }
 
-// TestValidateOutput_MaxCreateDomainsExceeded verifies exceeding max domains fails.
-func TestValidateOutput_MaxCreateDomainsExceeded(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	tx := buildTxWithLimits(5, 1)
-	domains := []testDomain{
-		{name: "first.pod"},
-		{name: "second.pod"},
+// TestValidateOutput_RegisteredDomainsRejected verifies that validateOutput
+// reverts a pod output declaring any registered domain, unconditionally: the
+// pod domain write path is retired, so a well-formed, uncollided, single name
+// within max_create_domains is rejected exactly like a malformed or colliding
+// one — declared operations (internal/consensus) are the only domain writer now.
+func TestValidateOutput_RegisteredDomainsRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		domains []testDomain
+	}{
+		{name: "single well-formed name within limit", domains: []testDomain{{name: "only.pod"}}},
+		{name: "count within max_create_domains", domains: []testDomain{{name: "first.pod"}, {name: "second.pod"}}},
+		{name: "empty name", domains: []testDomain{{name: ""}}},
+		{name: "duplicate name in output", domains: []testDomain{{name: "dup.pod"}, {name: "dup.pod"}}},
 	}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx, Hash{}, nil); err == nil {
-		t.Error("expected error for 2 domains with max 1")
-	}
-}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := newTestStorage(t)
+			s := New(db, nil)
 
-// TestValidateOutput_MaxCreateDomainsExact verifies exact domain limit passes.
-func TestValidateOutput_MaxCreateDomainsExact(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
+			tx := buildTxWithLimits(5, uint16(len(c.domains)))
+			output := buildPodOutputWithDomainsRaw(0, 10, c.domains)
+			out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	tx := buildTxWithLimits(5, 1)
-	domains := []testDomain{{name: "only.pod"}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	if err := s.validateOutput(out, tx, Hash{}, nil); err != nil {
-		t.Errorf("expected success for 1 domain with max 1, got: %v", err)
-	}
-}
-
-// TestValidateOutput_DomainCollision verifies that registering an existing domain fails.
-func TestValidateOutput_DomainCollision(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	// Pre-register domain
-	s.domains.set(DomainEntry{Name: "taken.pod", ObjectID: Hash{0x99}})
-
-	tx := buildTxWithLimits(5, 1)
-	domains := []testDomain{{name: "taken.pod"}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	err := s.validateOutput(out, tx, Hash{}, nil)
-	if err == nil {
-		t.Error("expected error for domain collision")
-	}
-}
-
-// TestValidateOutput_EmptyDomainName verifies that empty domain name is rejected.
-func TestValidateOutput_EmptyDomainName(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	tx := buildTxWithLimits(5, 1)
-	domains := []testDomain{{name: ""}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	err := s.validateOutput(out, tx, Hash{}, nil)
-	if err == nil {
-		t.Error("expected error for empty domain name")
-	}
-}
-
-// TestValidateOutput_DomainNameTooLong verifies that domain names exceeding 253 bytes are rejected.
-func TestValidateOutput_DomainNameTooLong(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	tx := buildTxWithLimits(5, 1)
-	longName := string(make([]byte, 254)) // 254 bytes > max 253
-	domains := []testDomain{{name: longName}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	err := s.validateOutput(out, tx, Hash{}, nil)
-	if err == nil {
-		t.Error("expected error for domain name exceeding 253 bytes")
-	}
-}
-
-// TestValidateOutput_DomainNameExact253 verifies that exactly 253 byte domain name passes.
-func TestValidateOutput_DomainNameExact253(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	tx := buildTxWithLimits(5, 1)
-	name253 := string(make([]byte, 253))
-	for i := range []byte(name253) {
-		// Use printable characters to avoid FlatBuffers issues
-		name253 = name253[:i] + "a" + name253[i+1:]
-	}
-	domains := []testDomain{{name: name253}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	err := s.validateOutput(out, tx, Hash{}, nil)
-	if err != nil {
-		t.Errorf("expected success for 253-byte domain name, got: %v", err)
-	}
-}
-
-// TestValidateOutput_DuplicateDomainInOutput verifies same name twice in output is rejected.
-func TestValidateOutput_DuplicateDomainInOutput(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	tx := buildTxWithLimits(5, 2)
-	domains := []testDomain{
-		{name: "dup.pod"},
-		{name: "dup.pod"},
-	}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	err := s.validateOutput(out, tx, Hash{}, nil)
-	if err == nil {
-		t.Error("expected error for duplicate domain name in output")
+			if err := s.validateOutput(out, tx, Hash{}, nil); err == nil {
+				t.Error("expected the pod output to be rejected for declaring a registered domain")
+			}
+		})
 	}
 }
 
@@ -1015,14 +922,14 @@ func TestProcessOutput_RollbackOnLimitExceeded(t *testing.T) {
 	}
 }
 
-// TestProcessOutput_RollbackOnDomainCollision verifies no objects or domains on collision.
-func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
+// TestProcessOutput_RollbackOnRegisteredDomains verifies that a pod output
+// declaring a registered domain makes no state changes at all: the whole
+// output reverts, not just the domain write (the created object in the same
+// output must not land either).
+func TestProcessOutput_RollbackOnRegisteredDomains(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
-
-	// Pre-register the domain
-	s.domains.set(DomainEntry{Name: "taken.pod", ObjectID: Hash{0x99}})
 
 	tx := buildTxWithLimits(5, 1)
 	txHash := Hash{0xBE, 0xEF}
@@ -1031,7 +938,7 @@ func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
 
 	err := s.processOutput(output, txHash, tx, nil)
 	if err == nil {
-		t.Fatal("expected error for domain collision")
+		t.Fatal("expected error for a pod output declaring a registered domain")
 	}
 
 	// Object should not exist (validation failed before apply)
@@ -1039,88 +946,9 @@ func TestProcessOutput_RollbackOnDomainCollision(t *testing.T) {
 	if s.GetObject(id) != nil {
 		t.Error("object should not exist after rollback")
 	}
-}
 
-// --- applyRegisteredDomains ---
-
-// TestApplyRegisteredDomains_ByIndex verifies object_index computes correct ObjectID.
-func TestApplyRegisteredDomains_ByIndex(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	txHash := Hash{0xAA, 0xBB}
-	domains := []testDomain{{name: "indexed.pod", objectIndex: 2}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	s.applyRegisteredDomains(out, txHash)
-
-	expectedID := computeObjectID(txHash, 2)
-	got, found := s.ResolveDomain("indexed.pod")
-	if !found {
-		t.Fatal("expected domain to be registered")
-	}
-
-	if got != expectedID {
-		t.Errorf("expected %x, got %x", expectedID, got)
-	}
-}
-
-// TestApplyRegisteredDomains_ByObjectID verifies direct object_id is stored correctly.
-func TestApplyRegisteredDomains_ByObjectID(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	directID := Hash{0xDD, 0xEE, 0xFF}
-	domains := []testDomain{{name: "direct.pod", objectID: directID}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	s.applyRegisteredDomains(out, Hash{})
-
-	got, found := s.ResolveDomain("direct.pod")
-	if !found {
-		t.Fatal("expected domain to be registered")
-	}
-
-	if got != directID {
-		t.Errorf("expected %x, got %x", directID, got)
-	}
-}
-
-// TestResolveDomainObjectID_PrefersObjectID verifies that when both object_id and
-// object_index are set, object_id wins (the bug fix).
-func TestResolveDomainObjectID_PrefersObjectID(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	txHash := Hash{0x11, 0x22}
-	directID := Hash{0xCC, 0xDD}
-
-	// Both object_id and object_index set
-	domains := []testDomain{{
-		name:        "both.pod",
-		objectIndex: 5,
-		objectID:    directID,
-	}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	s.applyRegisteredDomains(out, txHash)
-
-	got, found := s.ResolveDomain("both.pod")
-	if !found {
-		t.Fatal("expected domain to be registered")
-	}
-
-	// Should use object_id, not compute from object_index
-	indexID := computeObjectID(txHash, 5)
-	if got == indexID {
-		t.Error("should prefer object_id over object_index")
-	}
-
-	if got != directID {
-		t.Errorf("expected direct ID %x, got %x", directID, got)
+	if _, found := s.ResolveDomain("taken.pod"); found {
+		t.Error("domain should not exist after rollback")
 	}
 }
 

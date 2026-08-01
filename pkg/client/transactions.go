@@ -337,14 +337,14 @@ func buildSignedTx(
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
-		pubKey, pod, funcName, args, createdObjectsReplication, 0, 0, nil, mutableRefs, readRefs,
+		pubKey, pod, funcName, args, createdObjectsReplication, 0, nil, mutableRefs, readRefs,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableWithRefs(
-		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, 0, nil, hash, sig, mutableRefs, readRefs,
+		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, nil, hash, sig, mutableRefs, readRefs,
 	)
 	builder.Finish(txOffset)
 
@@ -369,14 +369,14 @@ func buildSignedGasTx(
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
-		pubKey, pod, funcName, args, createdObjectsReplication, 0, clientMaxGas, gasCoin[:], mutableRefs, readRefs,
+		pubKey, pod, funcName, args, createdObjectsReplication, clientMaxGas, gasCoin[:], mutableRefs, readRefs,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableWithRefs(
-		builder, pubKey, pod, funcName, args, createdObjectsReplication, 0, clientMaxGas, gasCoin[:], hash, sig, mutableRefs, readRefs,
+		builder, pubKey, pod, funcName, args, createdObjectsReplication, clientMaxGas, gasCoin[:], hash, sig, mutableRefs, readRefs,
 	)
 	builder.Finish(txOffset)
 
@@ -400,14 +400,14 @@ func buildSignedOpsTx(
 	var zeroPod [32]byte
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pubKey, zeroPod, "", nil, nil, 0, clientMaxGas, gasCoin[:], mutableRefs, nil, genesis.Sponsorship{}, nil, ops,
+		pubKey, zeroPod, "", nil, nil, clientMaxGas, gasCoin[:], mutableRefs, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pubKey, zeroPod, "", nil, nil, 0, clientMaxGas, gasCoin[:], hash, sig, mutableRefs, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pubKey, zeroPod, "", nil, nil, clientMaxGas, gasCoin[:], hash, sig, mutableRefs, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 

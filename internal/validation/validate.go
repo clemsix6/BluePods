@@ -236,7 +236,6 @@ func rebuildUnsignedTx(tx *types.Transaction) []byte {
 		string(tx.FunctionName()),
 		tx.ArgsBytes(),
 		cor,
-		tx.MaxCreateDomains(),
 		tx.MaxGas(),
 		tx.GasCoinBytes(),
 		mutableRefs,

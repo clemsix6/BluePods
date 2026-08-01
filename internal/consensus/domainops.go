@@ -67,8 +67,10 @@ type DomainStore interface {
 	// expiry. The epoch boundary's sweep is its only consensus-side reader
 	// (a full-registry read, done once per boundary rather than tracked
 	// incrementally, keeps the sweep a pure function of committed state with
-	// no additional index to keep consistent); *state.State also serves it to
-	// the sync snapshot.
+	// no additional index to keep consistent); the composition root's boot
+	// index rebuild is its other reader. The sync snapshot and the
+	// convergence fingerprint do NOT use it — they read a consistent cut
+	// through *state.State.ExportDomainsFrom instead.
 	ExportDomains() []state.DomainEntry
 }
 

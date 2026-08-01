@@ -311,7 +311,7 @@ func verifyOpsTxRoundTrip(t *testing.T, txBytes []byte, senderPub ed25519.Public
 
 	body := genesis.BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(), nil,
-		tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(),
+		tx.MaxGas(), tx.GasCoinBytes(),
 		extractMutableRefs(tx), nil, sponsor, tx.DeletedObjectsBytes(), genesis.ExtractOperations(tx),
 	)
 

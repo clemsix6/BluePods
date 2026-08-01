@@ -46,14 +46,14 @@ func TestBuildATX_PreservesOperations(t *testing.T) {
 	mutableRefs := []genesis.ObjectRefData{{ID: objID, Version: 1}}
 
 	body := genesis.BuildUnsignedTxBytesSponsored(
-		pub, [32]byte{}, "", nil, nil, 0, 1000, gasCoin[:], mutableRefs, nil, genesis.Sponsorship{}, nil, ops,
+		pub, [32]byte{}, "", nil, nil, 1000, gasCoin[:], mutableRefs, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(body)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(512)
 	txOff := genesis.BuildTxTableSponsored(
-		builder, pub, [32]byte{}, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, mutableRefs, nil,
+		builder, pub, [32]byte{}, "", nil, nil, 1000, gasCoin[:], hash, sig, mutableRefs, nil,
 		genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOff)
@@ -85,7 +85,7 @@ func TestBuildATX_PreservesOperations(t *testing.T) {
 	// the transferred object's reparent.
 	rebuilt := genesis.BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(), [32]byte{}, string(tx.FunctionName()), tx.ArgsBytes(), nil,
-		tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(), mutableRefs, nil,
+		tx.MaxGas(), tx.GasCoinBytes(), mutableRefs, nil,
 		genesis.Sponsorship{}, tx.DeletedObjectsBytes(), genesis.ExtractOperations(tx),
 	)
 	rebuiltHash := blake3.Sum256(rebuilt)

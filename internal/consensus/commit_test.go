@@ -377,7 +377,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	// max_create_objects check happens in executeTx, not shouldExecute directly
-	// The check is: if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(...)
+	// The check is: if tx.CreatedObjectsReplicationLength() == 0 && !d.shouldExecute(...)
 	maxCreate := tx.CreatedObjectsReplicationLength()
 
 	if maxCreate == 0 {
@@ -385,7 +385,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	}
 
 	// With max_create_objects>0, the shouldExecute check is bypassed
-	shouldSkip := maxCreate == 0 && tx.MaxCreateDomains() == 0 && !dag.shouldExecute(atx, tx)
+	shouldSkip := maxCreate == 0 && !dag.shouldExecute(atx, tx)
 	if shouldSkip {
 		t.Fatal("max_create_objects>0 should force execution on all validators")
 	}
@@ -574,8 +574,12 @@ func TestCommittedTxOutput(t *testing.T) {
 	}
 }
 
-// TestMaxCreateDomainsAllValidatorsExecute tests that max_create_domains>0 forces execution.
-func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
+// TestMaxCreateDomainsDeprecated_NoLongerForcesExecution tests that
+// max_create_domains>0 is deprecated: the pod domain write path is retired,
+// so it no longer forces execution on non-holders the way it used to (that
+// role existed only to let every node observe a pod-driven domain
+// registration, which can no longer happen).
+func TestMaxCreateDomainsDeprecated_NoLongerForcesExecution(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(1)
 	mock := &mockBroadcaster{}
@@ -591,7 +595,8 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 
 	objID := Hash{0x10}
 
-	// Build ATX with max_create_domains=1
+	// Build ATX with max_create_domains=1 (a deprecated header value; real
+	// clients always encode zero, but the field stays and must not be trusted).
 	atxBytes := buildTestATXWithDomains(t, "test_func", []objectRef{{id: objID, version: 0}}, 1)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
@@ -601,10 +606,11 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 		t.Fatal("max_create_domains should be > 0")
 	}
 
-	// With max_create_domains>0, the shouldExecute check is bypassed
-	shouldSkip := tx.CreatedObjectsReplicationLength() == 0 && maxDomains == 0 && !dag.shouldExecute(atx, tx)
-	if shouldSkip {
-		t.Fatal("max_create_domains>0 should force execution on all validators")
+	// max_create_domains>0 no longer bypasses the shouldExecute check: a
+	// non-holder that creates no objects skips execution regardless.
+	shouldSkip := tx.CreatedObjectsReplicationLength() == 0 && !dag.shouldExecute(atx, tx)
+	if !shouldSkip {
+		t.Fatal("max_create_domains>0 must no longer force execution on non-holders")
 	}
 }
 

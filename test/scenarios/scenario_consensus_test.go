@@ -390,12 +390,12 @@ func buildSignedTransferTxWithGasCoin(priv ed25519.PrivateKey, coinID [32]byte, 
 	refs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
 	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), hash
@@ -412,7 +412,7 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, coinID [32]byte, versi
 	refs := []genesis.ObjectRefData{{ID: coinID, Version: version}}
 	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: coinID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, coinID[:], refs, nil, genesis.Sponsorship{}, nil, ops)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 1000, coinID[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
@@ -420,7 +420,7 @@ func buildTamperedHashTransferTx(priv ed25519.PrivateKey, coinID [32]byte, versi
 	bad[0] ^= 0xFF
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, coinID[:], bad, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 1000, coinID[:], bad, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), bad
@@ -562,12 +562,12 @@ func buildSignedTransferObjectTx(priv ed25519.PrivateKey, objID [32]byte, versio
 	refs := []genesis.ObjectRefData{{ID: objID, Version: version}}
 	ops := []genesis.DeclaredOp{{Kind: reparentOpKind, ObjectID: objID[:], TargetKind: keyRootKind, Target: newOwner[:]}}
 
-	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
+	unsigned := genesis.BuildUnsignedTxBytesSponsored(pub, zeroPod, "", nil, nil, 1000, gasCoin[:], refs, nil, genesis.Sponsorship{}, nil, ops)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
+	txOff := genesis.BuildTxTableSponsored(builder, pub, zeroPod, "", nil, nil, 1000, gasCoin[:], hash, sig, refs, nil, genesis.Sponsorship{}, nil, nil, ops)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes(), hash

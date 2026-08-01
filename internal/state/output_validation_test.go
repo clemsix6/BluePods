@@ -8,16 +8,17 @@ import (
 	"BluePods/internal/types"
 )
 
-// --- pod-output deletion carve-out: domain-registering transactions ---
+// --- pod-output deletion carve-out: max_create_domains is deprecated ---
 
-// TestValidateOutput_ShardedDeletionInDomainRegisteringTxSucceeds verifies that
-// a pod output may delete a sharded object when the transaction registers a
-// domain (MaxCreateDomains > 0) and creates no objects: the commit-path
-// global-execution guard (internal/consensus/commit.go) treats
-// MaxCreateDomains > 0 the same as CreatedObjectsReplicationLength > 0 — every
-// validator executes the transaction — so the deletion restriction here must
-// allow it too.
-func TestValidateOutput_ShardedDeletionInDomainRegisteringTxSucceeds(t *testing.T) {
+// TestValidateOutput_ShardedDeletionWithMaxCreateDomainsRejected verifies that
+// a deprecated, nonzero max_create_domains no longer grants the pod-output
+// deletion carve-out: it used to be treated the same as
+// CreatedObjectsReplicationLength > 0 (the commit-path global-execution guard
+// ran the transaction on every node), but the pod domain write path is
+// retired and max_create_domains no longer forces global execution, so a
+// sharded object deletion in such a transaction must be rejected like any
+// other non-globally-executed deletion.
+func TestValidateOutput_ShardedDeletionWithMaxCreateDomainsRejected(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 
@@ -31,8 +32,8 @@ func TestValidateOutput_ShardedDeletionInDomainRegisteringTxSucceeds(t *testing.
 	output := buildDeletedOutput([]Hash{shardedID})
 	out := types.GetRootAsPodExecuteOutput(output, 0)
 
-	if err := s.validateOutput(out, tx, Hash{}, inputs); err != nil {
-		t.Errorf("expected success deleting a sharded object in a domain-registering tx, got: %v", err)
+	if err := s.validateOutput(out, tx, Hash{}, inputs); err == nil {
+		t.Error("expected rejection: a deprecated max_create_domains must not grant the deletion carve-out")
 	}
 }
 

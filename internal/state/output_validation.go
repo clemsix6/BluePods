@@ -18,7 +18,7 @@ const (
 )
 
 // validateOutput enforces every pod-output invariant before any mutation is
-// applied: creation and domain limits, domain-name well-formedness, the
+// applied: creation limits, the domain-registration rejection, the
 // creation-permission rule, parent immutability on updated objects, and the
 // pod-output deletion carve-out. The first failing check reverts the whole
 // output (fees stay kept by the caller).
@@ -27,7 +27,7 @@ func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transac
 		return err
 	}
 
-	if err := s.validateDomainRegistrations(output); err != nil {
+	if err := validateDomainRegistrations(output); err != nil {
 		return err
 	}
 
@@ -42,57 +42,29 @@ func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transac
 	return validateOutputDeletions(output, tx, inputs)
 }
 
-// validateCreationLimits rejects an output that creates more objects or
-// registers more domains than the transaction header permits.
+// validateCreationLimits rejects an output that creates more objects than the
+// transaction header permits. max_create_domains is deprecated and no longer
+// bounds anything here: validateDomainRegistrations rejects any registered
+// domain unconditionally, regardless of what the header declares.
 func validateCreationLimits(output *types.PodExecuteOutput, tx *types.Transaction) error {
 	if output.CreatedObjectsLength() > tx.CreatedObjectsReplicationLength() {
 		return fmt.Errorf("created %d objects, max allowed %d", output.CreatedObjectsLength(), tx.CreatedObjectsReplicationLength())
 	}
 
-	if output.RegisteredDomainsLength() > int(tx.MaxCreateDomains()) {
-		return fmt.Errorf("registered %d domains, max allowed %d", output.RegisteredDomainsLength(), tx.MaxCreateDomains())
-	}
-
 	return nil
 }
 
-// validateDomainRegistrations rejects empty, over-long, duplicate, or colliding
-// domain names in the output.
-func (s *State) validateDomainRegistrations(output *types.PodExecuteOutput) error {
-	seen := make(map[string]bool, output.RegisteredDomainsLength())
-	var dom types.RegisteredDomain
-
-	for i := 0; i < output.RegisteredDomainsLength(); i++ {
-		if !output.RegisteredDomains(&dom, i) {
-			continue
-		}
-
-		if err := s.validateDomainName(string(dom.Name()), seen); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// validateDomainName checks one domain name against the length bounds, the
-// names already seen in this output, and the registered set.
-func (s *State) validateDomainName(name string, seen map[string]bool) error {
-	if len(name) == 0 {
-		return fmt.Errorf("empty domain name")
-	}
-
-	if len(name) > 253 {
-		return fmt.Errorf("domain name too long: %d bytes (max 253)", len(name))
-	}
-
-	if seen[name] {
-		return fmt.Errorf("duplicate domain name in output: %q", name)
-	}
-	seen[name] = true
-
-	if s.domains.exists(name) {
-		return fmt.Errorf("domain collision: %q already registered", name)
+// validateDomainRegistrations rejects a pod output that declares any
+// registered domain at all. The pod domain write path is retired: domain
+// registration is a declared operation now (internal/consensus), applied
+// deterministically at commit and visible to every node without execution, so
+// a pod output can no longer be the channel that binds a name. This is
+// unconditional — well-formedness, collision, and the max_create_domains
+// count no longer matter, since no count of pod-declared domains is ever
+// valid.
+func validateDomainRegistrations(output *types.PodExecuteOutput) error {
+	if output.RegisteredDomainsLength() > 0 {
+		return fmt.Errorf("pod output declares %d registered domain(s): the pod domain write path is retired, use a declared domain operation", output.RegisteredDomainsLength())
 	}
 
 	return nil
@@ -207,20 +179,22 @@ func validateParentImmutability(output *types.PodExecuteOutput, inputs []*types.
 
 // validateOutputDeletions rejects a pod output that deletes objects unless the
 // transaction is globally executed, so the deletion is applied uniformly on
-// every node. Global execution holds when the transaction creates objects,
-// registers domains, or when every mutable reference is a singleton (the merge
-// carve-out); a sharded deletion in any other transaction is rejected. This
-// condition mirrors the commit-path global-execution guard at
-// internal/consensus/commit.go (the CreatedObjectsReplicationLength/
-// MaxCreateDomains skip check) and must evolve alongside it: a term added there
-// that widens which transactions execute on every node needs the matching term
-// added here.
+// every node. Global execution holds when the transaction creates objects, or
+// when every mutable reference is a singleton (the merge carve-out); a
+// sharded deletion in any other transaction is rejected. This condition
+// mirrors the commit-path global-execution guard at internal/consensus/commit.go
+// (the CreatedObjectsReplicationLength skip check) and must evolve alongside
+// it: a term added or removed there needs the matching term added or removed
+// here. max_create_domains used to widen this the same way — a pod-driven
+// domain registration also ran on every node — but that write path is
+// retired, and validateDomainRegistrations rejects any registered_domains
+// before this check ever runs, so max_create_domains no longer belongs here.
 func validateOutputDeletions(output *types.PodExecuteOutput, tx *types.Transaction, inputs []*types.Object) error {
 	if output.DeletedObjectsLength() == 0 {
 		return nil
 	}
 
-	if tx.CreatedObjectsReplicationLength() > 0 || tx.MaxCreateDomains() > 0 || allMutableRefsSingletons(tx, inputs) {
+	if tx.CreatedObjectsReplicationLength() > 0 || allMutableRefsSingletons(tx, inputs) {
 		return nil
 	}
 

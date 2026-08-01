@@ -64,7 +64,11 @@ table Transaction {
     // args contains the serialized function arguments.
     args:[ubyte];
 
-    // max_create_domains is the maximum number of domains this transaction may register.
+    // max_create_domains is DEPRECATED: it used to bound pod-driven domain
+    // registration (see registered_domains in podio.fbs), a write path that is
+    // retired now that domain registration is a declared operation (see
+    // DeclaredOp below). Builders always encode zero. The field stays for
+    // wire-layout stability; never remove or renumber it.
     max_create_domains:uint16;
 
     // max_gas is the maximum gas units this transaction may consume.

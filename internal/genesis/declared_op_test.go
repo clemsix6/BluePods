@@ -35,15 +35,15 @@ func TestUnsignedBodyBindsOperations(t *testing.T) {
 		Target:     newParent[:],
 	}}
 
-	none := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, nil)
-	legacy := BuildUnsignedTxBytesWithRefs(pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil)
+	none := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, nil)
+	legacy := BuildUnsignedTxBytesWithRefs(pub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil)
 
 	// No declared operations must reproduce the legacy (pre-field) bytes exactly.
 	if !bytes.Equal(none, legacy) {
 		t.Error("empty operations body differs from the legacy body")
 	}
 
-	withOp := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
+	withOp := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
 
 	// A declared operation must change the body.
 	if bytes.Equal(none, withOp) {
@@ -73,13 +73,13 @@ func TestDeclaredOpRoundTrip_SelfPaid(t *testing.T) {
 		Target:     newParent[:],
 	}}
 
-	body := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
+	body := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
 	hash := blake3.Sum256(body)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := BuildTxTableSponsored(
-		builder, pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, Sponsorship{}, nil, nil, reparent,
+		builder, pub, pod, "noop", nil, nil, 1000, gasCoin[:], hash, sig, nil, nil, Sponsorship{}, nil, nil, reparent,
 	)
 	atxBytes := finishAttestedTx(builder, txOff)
 	tx := types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
@@ -101,7 +101,7 @@ func TestDeclaredOpRoundTrip_SelfPaid(t *testing.T) {
 
 	rebuilt := BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(), nil,
-		tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
+		tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
 		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 		tx.DeletedObjectsBytes(), ExtractOperations(tx),
 	)
@@ -143,14 +143,14 @@ func TestDeclaredOpRoundTrip_Sponsored(t *testing.T) {
 	}}
 
 	sponsor := Sponsorship{FeePayer: sponsorPub, ValidUntil: 9}
-	body := BuildUnsignedTxBytesSponsored(senderPub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, sponsor, nil, reparent)
+	body := BuildUnsignedTxBytesSponsored(senderPub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, sponsor, nil, reparent)
 	hash := blake3.Sum256(body)
 	senderSig := ed25519.Sign(senderKey, hash[:])
 	sponsorSig := ed25519.Sign(sponsorKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := BuildTxTableSponsored(
-		builder, senderPub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, sponsorSig, nil, reparent,
+		builder, senderPub, pod, "noop", nil, nil, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, sponsorSig, nil, reparent,
 	)
 	atxBytes := finishAttestedTx(builder, txOff)
 	tx := types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
@@ -161,7 +161,7 @@ func TestDeclaredOpRoundTrip_Sponsored(t *testing.T) {
 
 	rebuilt := BuildUnsignedTxBytesSponsored(
 		tx.SenderBytes(), pod, string(tx.FunctionName()), tx.ArgsBytes(), nil,
-		tx.MaxCreateDomains(), tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
+		tx.MaxGas(), tx.GasCoinBytes(), nil, nil,
 		Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 		tx.DeletedObjectsBytes(), ExtractOperations(tx),
 	)
@@ -201,13 +201,13 @@ func TestRebuildTxInBuilder_PreservesOperations(t *testing.T) {
 		Target:     newParent[:],
 	}}
 
-	body := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
+	body := BuildUnsignedTxBytesSponsored(pub, pod, "noop", nil, nil, 1000, gasCoin[:], nil, nil, Sponsorship{}, nil, reparent)
 	hash := blake3.Sum256(body)
 	sig := ed25519.Sign(priv, hash[:])
 
 	rawBuilder := flatbuffers.NewBuilder(1024)
 	rawTxOff := BuildTxTableSponsored(
-		rawBuilder, pub, pod, "noop", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, Sponsorship{}, nil, nil, reparent,
+		rawBuilder, pub, pod, "noop", nil, nil, 1000, gasCoin[:], hash, sig, nil, nil, Sponsorship{}, nil, nil, reparent,
 	)
 	rawBuilder.Finish(rawTxOff)
 

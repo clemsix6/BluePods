@@ -180,14 +180,14 @@ func TestValidateTx_WithOperations(t *testing.T) {
 	}}
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops,
+		pub, zeroPod, "", nil, nil, 1000, gasCoin[:], nil, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pub, zeroPod, "", nil, nil, 0, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, zeroPod, "", nil, nil, 1000, gasCoin[:], hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 
@@ -220,14 +220,14 @@ func TestValidateTx_OpsWithFunctionNameRejected(t *testing.T) {
 	}}
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pub, pod, "noop", nil, nil, 0, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+		pub, pod, "noop", nil, nil, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pub, pod, "noop", nil, nil, 0, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, pod, "noop", nil, nil, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 
@@ -259,14 +259,14 @@ func TestValidateTx_OpsWithNonZeroPodRejected(t *testing.T) {
 	}}
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pub, pod, "", nil, nil, 0, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+		pub, pod, "", nil, nil, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pub, pod, "", nil, nil, 0, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, pod, "", nil, nil, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 
@@ -561,7 +561,7 @@ func buildTxWithBadRefID(t *testing.T, mutable bool) []byte {
 	builder := flatbuffers.NewBuilder(1024)
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(
-		pub, pod, "test", []byte{}, nil, 0, 0, nil, nil, nil,
+		pub, pod, "test", []byte{}, nil, 0, nil, nil, nil,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
@@ -631,12 +631,12 @@ func buildTxWithDomainRefs(t *testing.T, mutableDomains, readDomains []string) [
 		readRefs = append(readRefs, genesis.ObjectRefData{Domain: d})
 	}
 
-	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(pub, pod, "test", nil, nil, 0, 0, nil, mutableRefs, readRefs)
+	unsignedBytes := genesis.BuildUnsignedTxBytesWithRefs(pub, pod, "test", nil, nil, 0, nil, mutableRefs, readRefs)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOffset := genesis.BuildTxTableWithRefs(builder, pub, pod, "test", nil, nil, 0, 0, nil, hash, sig, mutableRefs, readRefs)
+	txOffset := genesis.BuildTxTableWithRefs(builder, pub, pod, "test", nil, nil, 0, nil, hash, sig, mutableRefs, readRefs)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()

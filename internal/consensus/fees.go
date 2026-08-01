@@ -14,7 +14,6 @@ type FeeParams struct {
 	MinGas             uint64 // MinGas is the minimum gas per transaction (anti-spam), and the flat compute a declared-operation transaction pays for running no metered code
 	TransitFee         uint64 // TransitFee is the fixed fee per standard object in the ATX
 	StorageFee         uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
-	DomainFee          uint64 // DomainFee is the fixed fee per registered domain
 	RentalRatePerEpoch uint64 // RentalRatePerEpoch is what one epoch of a domain lease costs; a register or renew pays it times the term declared in the header
 	MaxTermEpochs      uint64 // MaxTermEpochs caps how far past the current epoch a lease may run; an operation whose term would exceed it reverts rather than being clamped, because the rent charged is the rate times the DECLARED term
 	GraceEpochs        uint64 // GraceEpochs is how many epochs past expiry a lease stays in the registry, reserving its owner's renewal right until the boundary sweep removes it
@@ -53,7 +52,6 @@ func DefaultFeeParams() FeeParams {
 		MinGas:             100,
 		TransitFee:         10,
 		StorageFee:         1000,
-		DomainFee:          10000,
 		RentalRatePerEpoch: 100,
 		MaxTermEpochs:      defaultMaxTermEpochs,
 		GraceEpochs:        defaultGraceEpochs,
@@ -112,11 +110,14 @@ type HolderFunc func(objectID [32]byte, replication int) []Hash
 
 // ReplicationRatio computes the proportion of validators that execute the tx.
 // Returns numerator and denominator to avoid floating-point arithmetic.
-// If any mutable is singleton or tx creates objects/domains: ratio = 1/1.
+// If any mutable is singleton or tx creates objects: ratio = 1/1. Domain
+// creation used to force the same (a pod-executed registration needed every
+// node to observe it), but the pod domain write path is retired: domain
+// registration is a declared operation, priced by declaredOpsFee instead of
+// this ratio, so no term for it remains here.
 func ReplicationRatio(
 	mutableRefs []ObjectRef,
 	createdObjectsCount int,
-	maxCreateDomains int,
 	computeHolders HolderFunc,
 	totalValidators int,
 ) (num, denom int) {
@@ -124,8 +125,8 @@ func ReplicationRatio(
 		return 0, 1
 	}
 
-	// Forces all validators: creating objects or domains
-	if createdObjectsCount > 0 || maxCreateDomains > 0 {
+	// Forces all validators: creating objects (holder unknown until after execution).
+	if createdObjectsCount > 0 {
 		return 1, 1
 	}
 
@@ -173,7 +174,6 @@ func CalculateFee(
 	repNum, repDenom int,
 	standardObjectCount int,
 	createdObjectsReplication []uint16,
-	maxCreateDomains int,
 	ops []genesis.DeclaredOp,
 	opsOnly bool,
 	totalValidators int,
@@ -206,10 +206,11 @@ func CalculateFee(
 		}
 	}
 
-	// Domain fee: max_create_domains * domain_fee
-	total = safeAdd(total, safeMul(uint64(maxCreateDomains), params.DomainFee))
-
-	// Declared-operation fees: flat per operation, rent for a lease.
+	// Declared-operation fees: flat per operation, rent for a lease. Domain
+	// registration used to add a flat max_create_domains * domain_fee term here
+	// (the pod path priced its declared intent to register); that path is
+	// retired, and a domain lease is now priced individually below, by its
+	// declared term, as one of these operation fees.
 	total = safeAdd(total, declaredOpsFee(ops, params))
 
 	return total

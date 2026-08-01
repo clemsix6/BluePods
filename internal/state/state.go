@@ -31,7 +31,7 @@ type State struct {
 	onObjectCreated    func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
 	signObject         func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
 	parentValidator    func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
-	onDomainRegistered func(name string, objectID [32]byte)                                                                 // onDomainRegistered fires whenever a domain name is (re)bound to an object
+	onDomainRegistered func(name string, objectID [32]byte)                                                                 // onDomainRegistered is set but never invoked: its only source, the pod domain write path, is retired
 	epochSource        func() uint64                                                                                        // epochSource reports the epoch domain leases are measured against (nil = epoch 0)
 
 	// Fee system: storage deposits and refunds.
@@ -178,12 +178,12 @@ func (s *State) SetParentValidator(fn func(kind byte, parent [32]byte, sender [3
 	s.parentValidator = fn
 }
 
-// SetOnDomainRegistered sets a callback that fires whenever a domain name is
-// bound or rebound to an object — the same moment applyRegisteredDomains
-// emits DomainRegistered or DomainUpdated. This is the domain store's only
-// writer today, so it is the single feed point for a derived domain index
-// until domain writes become a declared operation. Holding only the func
-// keeps state from importing whatever consumes it.
+// SetOnDomainRegistered sets a callback that used to fire whenever the pod
+// output path bound or rebound a domain name to an object. That write path is
+// retired (declared operations are the only domain writer now, and they feed
+// the index directly through the DAG's indexer); nothing calls this callback
+// today. Kept wired rather than torn out here, since its only caller is the
+// composition root's index setup, out of this change's scope.
 func (s *State) SetOnDomainRegistered(fn func(name string, objectID [32]byte)) {
 	s.onDomainRegistered = fn
 }
@@ -441,57 +441,8 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 	s.applyUpdatedObjects(output, txHash)
 	s.applyCreatedObjects(output, txHash, txLocksDeposits(tx))
 	s.applyDeletedObjects(tx)
-	s.applyRegisteredDomains(output, txHash)
 
 	return nil
-}
-
-// applyRegisteredDomains stores domain name → ObjectID mappings from pod output.
-// Each RegisteredDomain references either an object_index (into created objects) or a direct object_id.
-// Emits DomainUpdated when the name was already bound (rebound to a possibly
-// different object) and DomainRegistered for a first-time binding, so the event
-// stream reports which case actually happened.
-func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [32]byte) {
-	var dom types.RegisteredDomain
-
-	for i := 0; i < output.RegisteredDomainsLength(); i++ {
-		if !output.RegisteredDomains(&dom, i) {
-			continue
-		}
-
-		name := string(dom.Name())
-		objectID := s.resolveDomainObjectID(&dom, txHash)
-		existed := s.domains.exists(name)
-
-		// The pod write path predates leases: it declares neither an owner nor
-		// a term, so the leaf it writes is unowned and expires at epoch 0.
-		// Domain leases are created by declared operations, which carry both.
-		s.domains.set(DomainEntry{Name: name, ObjectID: objectID})
-
-		if existed {
-			events.DomainUpdated(name, objectID, txHash)
-		} else {
-			events.DomainRegistered(name, objectID, txHash)
-		}
-
-		if s.onDomainRegistered != nil {
-			s.onDomainRegistered(name, objectID)
-		}
-	}
-}
-
-// resolveDomainObjectID determines the ObjectID for a RegisteredDomain entry.
-// Prefers direct object_id if present (32 bytes), falls back to object_index.
-// object_id is checked first because FlatBuffers defaults object_index to 0,
-// which would silently use the first created object instead of the direct ID.
-func (s *State) resolveDomainObjectID(dom *types.RegisteredDomain, txHash [32]byte) Hash {
-	if idBytes := dom.ObjectIdBytes(); len(idBytes) == 32 {
-		var id Hash
-		copy(id[:], idBytes)
-		return id
-	}
-
-	return computeObjectID(txHash, uint32(dom.ObjectIndex()))
 }
 
 // applyUpdatedObjects stores updated objects with incremented versions.
