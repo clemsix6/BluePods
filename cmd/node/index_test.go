@@ -151,6 +151,18 @@ var syncDomains = []state.DomainEntry{
 	{Name: "carol.bp", ObjectID: [32]byte{0xD3}, Owner: [32]byte{0xC0, 0x03}, ExpiryEpoch: 9},
 }
 
+// syncSource is one live node's snapshot cut: the node that produced it, the
+// result a joiner applies, the committed frontier that state describes, and
+// the root the live node holds over it. Tests that only rebuild use result,
+// frontier and root; tests that must contrast the joiner with the source it
+// synced from (the trusted-checkpoint gate) also need live.
+type syncSource struct {
+	live     *Node           // live is the node the snapshot was cut from, its DAG stopped
+	result   *snapshotResult // result is what requestAndApplySnapshot would hand the joiner
+	frontier uint64          // frontier is the last decided round the cut state describes
+	root     [32]byte        // root is the live node's combined index root over that state
+}
+
 // syncSnapshotFromLiveNode runs a bootstrap node through a short history —
 // genesis seeded, rounds decided by the real commit loop, then further
 // committed activity (one tracked object and three registered domain leases) —
@@ -165,7 +177,7 @@ var syncDomains = []state.DomainEntry{
 // every feed point on the commit path is serialized against — the loop is the
 // only writer in production, and a test that broke that would trip -race
 // rather than prove anything about rebuilds.
-func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) {
+func syncSnapshotFromLiveNode(t *testing.T) syncSource {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -229,7 +241,7 @@ func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) 
 		regimeState:        cut.Regime,
 	}
 
-	return result, frontier, root
+	return syncSource{live: live, result: result, frontier: frontier, root: root}
 }
 
 // syncedJoiner builds the cmd/node-level shape of a node that joins by sync:
@@ -333,10 +345,10 @@ func assertSyncedIndex(t *testing.T, n *Node, frontier uint64, wantRoot [32]byte
 // ingress verification makes every indexed peer reject them the moment
 // commitEpochForRound(round) leaves the genesis epoch.
 func TestInitConsensusForValidator_RebuildsIndex(t *testing.T) {
-	result, frontier, wantRoot := syncSnapshotFromLiveNode(t)
+	src := syncSnapshotFromLiveNode(t)
 
-	n := syncedJoiner(t, result)
-	if err := n.initConsensusForValidator(result); err != nil {
+	n := syncedJoiner(t, src.result)
+	if err := n.initConsensusForValidator(src.result); err != nil {
 		t.Fatalf("initConsensusForValidator: %v", err)
 	}
 
@@ -344,23 +356,23 @@ func TestInitConsensusForValidator_RebuildsIndex(t *testing.T) {
 	// otherwise move the frontier past the boot seed mid-assertion.
 	n.dag.Close()
 
-	assertSyncedIndex(t, n, frontier, wantRoot)
+	assertSyncedIndex(t, n, src.frontier, src.root)
 }
 
 // TestInitConsensusForListener_RebuildsIndex covers the listener construction
 // path. A listener produces nothing, but it commits the same ordered log and
 // serves snapshots, so its index must track the network's just as exactly.
 func TestInitConsensusForListener_RebuildsIndex(t *testing.T) {
-	result, frontier, wantRoot := syncSnapshotFromLiveNode(t)
+	src := syncSnapshotFromLiveNode(t)
 
-	n := syncedJoiner(t, result)
-	if err := n.initConsensusForListener(result); err != nil {
+	n := syncedJoiner(t, src.result)
+	if err := n.initConsensusForListener(src.result); err != nil {
 		t.Fatalf("initConsensusForListener: %v", err)
 	}
 
 	n.dag.Close()
 
-	assertSyncedIndex(t, n, frontier, wantRoot)
+	assertSyncedIndex(t, n, src.frontier, src.root)
 }
 
 // TestInitConsensusForValidator_DomainOwnerMutationChangesRoot is the domain
@@ -372,11 +384,11 @@ func TestInitConsensusForListener_RebuildsIndex(t *testing.T) {
 // whose names point at whatever keys it likes while the anchored root still
 // checked out.
 func TestInitConsensusForValidator_DomainOwnerMutationChangesRoot(t *testing.T) {
-	result, _, wantRoot := syncSnapshotFromLiveNode(t)
+	src := syncSnapshotFromLiveNode(t)
 
 	// One flipped owner byte in the imported state, nothing else touched.
-	tampered := *result
-	tampered.domainEntries = append([]state.DomainEntry(nil), result.domainEntries...)
+	tampered := *src.result
+	tampered.domainEntries = append([]state.DomainEntry(nil), src.result.domainEntries...)
 	tampered.domainEntries[0].Owner[0] ^= 0xFF
 
 	n := syncedJoiner(t, &tampered)
@@ -385,7 +397,7 @@ func TestInitConsensusForValidator_DomainOwnerMutationChangesRoot(t *testing.T) 
 	}
 	n.dag.Close()
 
-	if got := n.idxManager.Root(); got == wantRoot {
+	if got := n.idxManager.Root(); got == src.root {
 		t.Errorf("a flipped domain owner rebuilt the same root %x: the domain leg is not covered by the anchored root", got[:4])
 	}
 }

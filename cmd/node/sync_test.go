@@ -211,7 +211,7 @@ func TestSyncConstructionPaths_WireTheSharedStateSeams(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, _, _ := syncSnapshotFromLiveNode(t)
+			result := syncSnapshotFromLiveNode(t).result
 
 			n := syncedJoiner(t, result)
 

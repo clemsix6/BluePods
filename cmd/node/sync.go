@@ -169,6 +169,16 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 		}
 	}
 
+	// The committed frontier the rebuilt state describes, read BEFORE replay
+	// moves it: it is the floor the anchor quorum must attest at or above, so
+	// the proof covers the state that came off the wire and not merely some
+	// later frontier this node reached on its own.
+	if n.idxManager == nil {
+		return fmt.Errorf("no index rebuilt from the snapshot: nothing to verify the join against")
+	}
+
+	rebuiltFrontier, _ := n.idxManager.CommittedFrontier()
+
 	// Switch message handler BEFORE replay to avoid losing vertices.
 	// New vertices go directly to the DAG while we replay the buffer; gossiped
 	// transactions enter the pending set (handleGossipMessage tells them apart).
@@ -191,6 +201,15 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	// Clear buffer
 	if buf := n.syncBuffer.Swap(nil); buf != nil {
 		buf.Clear()
+	}
+
+	// Fail-closed: everything above is the source's claim until a stake quorum
+	// of the checkpointed validator set attests the root this node rebuilt for
+	// itself (see checkpoint.go for the chain). A node that cannot prove its
+	// state never reaches sync.completed, so nothing downstream — the
+	// harness's readiness gate included — ever observes it as live.
+	if err := n.verifySyncedState(rebuiltFrontier); err != nil {
+		return fmt.Errorf("verify synced state:\n%w", err)
 	}
 
 	logger.Info("sync complete", "round", n.dag.Round())

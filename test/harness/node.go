@@ -24,18 +24,23 @@ const stopTimeout = 15 * time.Second
 // upstream; a non-empty BootstrapAddr starts a validator that syncs from and
 // registers against that address. The remaining fields are cluster-wide
 // tuning, unchanged across a node's restarts.
+// A syncing node must also pin a trust anchor, since the node binary refuses
+// to sync without one: TrustCheckpoint for the verified path, or
+// InsecureBootstrap for the escape hatch.
 type NodeArgs struct {
-	Bootstrap        bool   // Bootstrap starts this node as the genesis validator
-	BootstrapAddr    string // BootstrapAddr is the alive node this validator syncs from and registers against
-	SystemPod        string // SystemPod is the path to the system pod WASM
-	MinValidators    int    // MinValidators is the consensus threshold (0 = node default)
-	SyncBuffer       int    // SyncBuffer is the sync buffer in seconds (0 = node default)
-	EpochLength      uint64 // EpochLength is rounds per epoch (0 = node default)
-	MaxChurn         int    // MaxChurn is the max validator changes per epoch (0 = unlimited)
-	GossipFanout     int    // GossipFanout is peers per vertex gossip (0 = node default)
-	TransitionGrace  int    // TransitionGrace is grace rounds after minValidators is reached (0 = node default)
-	TransitionBuffer int    // TransitionBuffer is buffer rounds after the grace period (0 = node default)
-	InitialMint      uint64 // InitialMint is the bootstrap mint amount (0 = node default)
+	Bootstrap         bool   // Bootstrap starts this node as the genesis validator
+	BootstrapAddr     string // BootstrapAddr is the alive node this validator syncs from and registers against
+	SystemPod         string // SystemPod is the path to the system pod WASM
+	MinValidators     int    // MinValidators is the consensus threshold (0 = node default)
+	SyncBuffer        int    // SyncBuffer is the sync buffer in seconds (0 = node default)
+	EpochLength       uint64 // EpochLength is rounds per epoch (0 = node default)
+	MaxChurn          int    // MaxChurn is the max validator changes per epoch (0 = unlimited)
+	GossipFanout      int    // GossipFanout is peers per vertex gossip (0 = node default)
+	TransitionGrace   int    // TransitionGrace is grace rounds after minValidators is reached (0 = node default)
+	TransitionBuffer  int    // TransitionBuffer is buffer rounds after the grace period (0 = node default)
+	InitialMint       uint64 // InitialMint is the bootstrap mint amount (0 = node default)
+	TrustCheckpoint   string // TrustCheckpoint is the <epoch>:<validator-root hex> pair this node verifies its join against
+	InsecureBootstrap bool   // InsecureBootstrap joins without verification, for a founding committee that has no stable set to pin yet
 }
 
 // Node is one managed node process: its identity (data directory, key, QUIC
@@ -187,12 +192,34 @@ func (n *Node) buildArgs(args NodeArgs) []string {
 	}
 
 	if args.Bootstrap {
-		out = append(out, "--bootstrap")
-	} else {
-		out = append(out, "--bootstrap-addr", args.BootstrapAddr)
+		return append(out, "--bootstrap")
+	}
+
+	out = append(out, "--bootstrap-addr", args.BootstrapAddr)
+
+	// A syncing node pins its trust anchor. The checkpoint wins when both are
+	// set, so a cluster that learns a real one never falls back to the hatch.
+	if args.TrustCheckpoint != "" {
+		return append(out, "--trust-checkpoint", args.TrustCheckpoint)
+	}
+
+	if args.InsecureBootstrap {
+		return append(out, "--insecure-bootstrap")
 	}
 
 	return out
+}
+
+// SetTrustCheckpoint pins the checkpoint this node's NEXT start verifies its
+// join against, replacing whatever it started with. The cluster sets it before
+// restarting a node that will re-sync, so a founder that started unverified
+// (nothing stable to pin while the committee forms) restarts on the verified
+// path. A node restarting as the bootstrap ignores it: it has no upstream.
+func (n *Node) SetTrustCheckpoint(checkpoint string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.args.TrustCheckpoint = checkpoint
 }
 
 // pumpStdout reads complete lines from the process's stdout, appending every
@@ -309,6 +336,16 @@ func (n *Node) Restart(syncFrom string) error {
 	n.journal.NewSegment()
 
 	return n.Start(args)
+}
+
+// isBootstrap reports whether this node is the cluster's bootstrap identity,
+// which restarts with --bootstrap and no upstream: it syncs from nobody, so
+// there is nothing for it to verify a join against.
+func (n *Node) isBootstrap() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.bootstrap
 }
 
 // Alive reports whether the process is currently running.

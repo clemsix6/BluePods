@@ -1,6 +1,9 @@
 package consensus
 
-import "BluePods/internal/index"
+import (
+	"BluePods/internal/events"
+	"BluePods/internal/index"
+)
 
 // indexer is the narrow surface the DAG feeds as objects are created,
 // reparented, and deleted, and as committed rounds and epoch boundaries
@@ -121,15 +124,42 @@ func (d *DAG) backfillIndex() {
 		return
 	}
 
+	leaves := d.ValidatorLeaves(d.EpochHolders().All())
+
 	d.indexer.BuildFromState(
 		d.indexTrackerEntries(),
 		d.indexDomainLeaves(),
-		d.ValidatorLeaves(d.EpochHolders().All()),
+		leaves,
 	)
+
+	// Publish the epoch's validator-set root from the boot rebuild too, not
+	// only from the freezes that follow: a node that just booted has frozen
+	// nothing yet, and an operator (or the scenario harness) reading a
+	// checkpoint off it would otherwise find no root at all until the next
+	// boundary.
+	events.ValidatorsFrozen(d.currentEpoch, index.ValidatorRootOf(leaves), len(leaves))
 
 	if d.lastCommitted > 0 {
 		d.indexer.SetFrontier(lastDecidedRound(d.lastCommitted))
 	}
+}
+
+// rebuildIndexValidators replaces the index's validator tree with the leaves
+// of a freshly frozen holder snapshot and publishes that epoch's validator-set
+// root. epoch is passed explicitly because the boundary's freeze runs BEFORE
+// the epoch counter is incremented: the set being frozen belongs to the epoch
+// the boundary opens, not the one it closes, and an event naming the wrong one
+// would hand a joiner a checkpoint it can never match. No-op when no index is
+// wired.
+func (d *DAG) rebuildIndexValidators(epoch uint64, holders []*ValidatorInfo) {
+	if d.indexer == nil {
+		return
+	}
+
+	leaves := d.ValidatorLeaves(holders)
+	d.indexer.RebuildValidators(leaves)
+
+	events.ValidatorsFrozen(epoch, index.ValidatorRootOf(leaves), len(leaves))
 }
 
 // indexTrackerEntries converts the tracked objects into the index package's

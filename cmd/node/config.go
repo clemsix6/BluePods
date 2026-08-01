@@ -81,6 +81,18 @@ type Config struct {
 	// partition-control messages). Production binaries never set this; without
 	// it both messages return a typed refusal and change nothing.
 	TestHooks bool
+
+	// TrustCheckpoint is the out-of-band trust root a syncing node pins its
+	// verification to, as "<epoch>:<validator-root hex>" (the pair every node
+	// publishes as epoch.validators.frozen). Mandatory for any non-genesis
+	// join: see checkpoint.go for the chain it anchors.
+	TrustCheckpoint string
+
+	// InsecureBootstrap joins WITHOUT a trusted checkpoint, taking the
+	// bootstrap's word for both the state and the validator set that judges
+	// it. The escape hatch for provisioning a founding committee, never a
+	// default.
+	InsecureBootstrap bool
 }
 
 // parseFlags parses command-line flags into Config. It returns an error when a
@@ -107,13 +119,46 @@ func parseFlags() (*Config, error) {
 	flag.BoolVar(&cfg.LogMode, "log", false, "Force line logs instead of the dashboard, even on a terminal")
 	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log output format: text or json (json disables the dashboard)")
 	flag.BoolVar(&cfg.TestHooks, "test-hooks", false, "Enable the test-only QUIC surface (state fingerprint, partition control)")
+	flag.StringVar(&cfg.TrustCheckpoint, "trust-checkpoint", "", "Trusted checkpoint pinning the validator set a join is verified against, as <epoch>:<validator-root hex> (required to sync)")
+	flag.BoolVar(&cfg.InsecureBootstrap, "insecure-bootstrap", false, "Join without a trusted checkpoint, trusting the bootstrap for both the state and its judge")
 	flag.Parse()
 
 	if err := cfg.validateLogFormat(); err != nil {
 		return nil, err
 	}
 
+	if err := cfg.validateTrustAnchor(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateTrustAnchor requires every syncing node to pin a trust anchor before
+// it buffers a single vertex: a checkpoint, or the explicit insecure opt-out.
+// A genesis bootstrap has no upstream to verify against and needs neither.
+// Failing here rather than mid-sync means an operator learns about a malformed
+// checkpoint immediately, not after the buffering window.
+func (c *Config) validateTrustAnchor() error {
+	if c.BootstrapAddr == "" {
+		return nil
+	}
+
+	if c.InsecureBootstrap {
+		if c.TrustCheckpoint != "" {
+			return fmt.Errorf("--insecure-bootstrap and --trust-checkpoint are mutually exclusive: pick verified or unverified")
+		}
+
+		return nil
+	}
+
+	if c.TrustCheckpoint == "" {
+		return errNoTrustAnchor
+	}
+
+	_, err := parseTrustCheckpoint(c.TrustCheckpoint)
+
+	return err
 }
 
 // validateLogFormat rejects any --log-format value other than text or json.

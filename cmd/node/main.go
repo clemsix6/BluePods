@@ -67,4 +67,14 @@ func printStartupInfo(cfg *Config) {
 	if cfg.Bootstrap {
 		logger.Info("genesis configuration", "initial_mint", cfg.InitialMint)
 	}
+
+	if cfg.TrustCheckpoint != "" {
+		logger.Info("join verification armed", "trust_checkpoint", cfg.TrustCheckpoint)
+	}
+
+	if cfg.InsecureBootstrap {
+		logger.Warn("INSECURE BOOTSTRAP: this node will join without verifying its snapshot",
+			"consequence", "the bootstrap supplies both the state and the validator set that judges it",
+			"fix", "pass --trust-checkpoint <epoch>:<validator-root hex> obtained from a node you trust")
+	}
 }

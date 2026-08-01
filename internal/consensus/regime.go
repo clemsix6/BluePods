@@ -87,9 +87,7 @@ func (d *DAG) refreezeGenesisRegime(atRound uint64) {
 		// genesis registration or bond commits. The value fed is a pure function of
 		// committed history (committed members, committed stakes), so every node
 		// converges regardless of restart timing. No-op when no indexer is wired.
-		if d.indexer != nil {
-			d.indexer.RebuildValidators(d.ValidatorLeaves(d.epochHolders.All()))
-		}
+		d.rebuildIndexValidators(d.currentEpoch, d.epochHolders.All())
 	}
 
 	// The bootstrap-complete signal is a pure function of the committed log

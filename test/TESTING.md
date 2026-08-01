@@ -139,6 +139,22 @@ Node verbs, used on `c.Node(i)` or through the cluster:
 - `cluster.Spawn()`: starts a brand-new node that must register and sync,
   returning once it reports `sync.completed`.
 
+Every node that syncs joins on the **verified path**. The node binary refuses
+to sync without a trust anchor, so `Spawn` and `Restart` read the checkpoint
+their sync source published (its newest `epoch.validators.frozen`: the epoch
+and that epoch's validator-set root) and pass it as `--trust-checkpoint
+<epoch>:<root hex>`. The joiner then rebuilds the checkpointed epoch's
+validator tree from the holder snapshot it imported, requires it to hash to
+the pinned root, and requires a stake quorum of that set to attest the index
+root it recomputed for itself; anything else aborts the join with
+`node.stopping reason=sync_unverified`, and `sync.completed` never lands.
+
+The cluster's FOUNDING members are the one exception: they start with
+`--insecure-bootstrap`, because the genesis committee is refrozen on every
+committed registration until the strict latch arms, so no stable set exists to
+pin while they are joining. Production has the same shape, a founding set is
+provisioned out of band. Every join after the cluster is up is verified.
+
 ### The event journal
 
 The harness parses every JSON stdout line carrying an `event` key into a
@@ -208,7 +224,7 @@ what to do when the checker is right to fail.
 | `(*Cluster) Dump(t)` | Print per-node diagnostics (last events, live status, log paths) |
 | `(*Node) WaitEvent(ctx, name, preds...) (Event, error)` | Block until a matching event lands |
 | `(*Node) Events(name, preds...) []Event` | Read the journal without blocking |
-| `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` | Process control |
+| `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` / `SetTrustCheckpoint(cp string)` | Process control |
 | `(*Node) Alive() bool` / `Journal() *Journal` / `ParseError() error` | Node introspection |
 | `harness.Attr(key, want) Pred` / `AttrGE(key, min) Pred` | Event attribute predicates |
 | `harness.WithEpochLength/WithMinValidators/WithGossipFanout/WithSyncBuffer/WithInitialMint/WithTransitionGrace/WithTransitionBuffer/WithMaxChurn/WithStake` | Cluster tuning options |
@@ -272,6 +288,7 @@ must be called out in the commit that does it.
 | `epoch.validator.registered` | validator, quic_addr |
 | `epoch.validator.deregistered` | validator |
 | `epoch.rewards.distributed` | epoch, pool, validators |
+| `epoch.validators.frozen` | epoch, root, validators |
 | `sync.snapshot.created` | round, checksum |
 | `sync.snapshot.applied` | round, checksum, objects |
 | `sync.completed` | round |
@@ -285,6 +302,13 @@ success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
 `duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
 `delete_has_children`.
+
+`node.stopping`'s `reason` attribute is a signal name (`interrupt`,
+`terminated`) or `sync_unverified`: a joining node aborted rather than go live
+on a snapshot no stake quorum of its checkpointed validator set attested (a
+wrong or stale `--trust-checkpoint`, a tampered snapshot, or a network too
+silent to attest anything within the wait). Such a node never emits
+`sync.completed` and never joins the convergence set.
 
 `consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
 `bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,

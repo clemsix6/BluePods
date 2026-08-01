@@ -82,11 +82,10 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	// The validator tree freezes from the SAME snapshot that just froze
 	// epochHolders (spec §4), so a light client's quorum weighing matches the
-	// membership consensus itself uses from this boundary on. No-op when no
-	// indexer is wired.
-	if d.indexer != nil {
-		d.indexer.RebuildValidators(d.ValidatorLeaves(d.epochHolders.All()))
-	}
+	// membership consensus itself uses from this boundary on. The epoch named
+	// is the one this boundary opens: currentEpoch is still the outgoing one
+	// here (see sweepExpiredDomains above).
+	d.rebuildIndexValidators(d.currentEpoch+1, d.epochHolders.All())
 
 	// Freeze a one-epoch-ahead snapshot so the anchor rule's forward scan can weigh
 	// round-N+1 producers that fall in the next epoch when resolving a split at this

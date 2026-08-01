@@ -55,6 +55,19 @@ func (t *ValidatorTree) Rebuild(entries []ValidatorLeaf) {
 	t.smt = fresh
 }
 
+// ValidatorRootOf returns the root a validator tree holding exactly entries
+// hashes to, without keeping the tree. It is the epoch's validator-set
+// commitment as a single value: a pure function of the frozen holder snapshot,
+// so every node that froze the same epoch computes the same 32 bytes, and a
+// joiner can check an out-of-band checkpoint against the set it imported
+// before weighing any quorum with it.
+func ValidatorRootOf(entries []ValidatorLeaf) [32]byte {
+	tree := NewValidatorTree()
+	tree.Rebuild(entries)
+
+	return tree.Root()
+}
+
 // Get returns the leaf stored for pubkey and whether one exists.
 func (t *ValidatorTree) Get(pubkey [32]byte) (ValidatorLeaf, bool) {
 	value, ok := t.smt.Get(pubkey[:])

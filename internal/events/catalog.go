@@ -10,7 +10,9 @@ const (
 	EvNodeStarted = "node.started"
 	// EvNodeReady marks a node's listener coming up.
 	EvNodeReady = "node.ready"
-	// EvNodeStopping marks a node beginning shutdown.
+	// EvNodeStopping marks a node beginning shutdown. Its reason is a signal
+	// name, a close cause, or "sync_unverified" when a joining node refused to
+	// go live on state no stake quorum attested.
 	EvNodeStopping = "node.stopping"
 
 	// EvIngressTxReceived marks a submission accepted into the mempool path.
@@ -97,6 +99,9 @@ const (
 	EvValidatorDeregistered = "epoch.validator.deregistered"
 	// EvRewardsDistributed marks an epoch's issuance pool credited.
 	EvRewardsDistributed = "epoch.rewards.distributed"
+	// EvValidatorsFrozen marks the index's validator tree rebuilt from an
+	// epoch's holder snapshot, publishing that epoch's validator-set root.
+	EvValidatorsFrozen = "epoch.validators.frozen"
 
 	// EvSnapshotCreated marks a state snapshot exported.
 	EvSnapshotCreated = "sync.snapshot.created"
@@ -164,6 +169,7 @@ var Names = []string{
 	EvValidatorRegistered,
 	EvValidatorDeregistered,
 	EvRewardsDistributed,
+	EvValidatorsFrozen,
 
 	EvSnapshotCreated,
 	EvSnapshotApplied,
