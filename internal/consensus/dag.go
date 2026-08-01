@@ -991,10 +991,30 @@ func (d *DAG) updateRound(round uint64) {
 	}
 }
 
-// tryProduceVertex attempts to produce a vertex if conditions are met.
+// tryProduceVertex attempts to produce a vertex if conditions are met, then
+// gossips whatever the attempt decided to send.
+//
+// The gossip runs OUTSIDE roundMu, and that separation is load-bearing. A fan-out
+// costs up to sendStreamTimeout per peer that is not keeping up, and roundMu is
+// the production lock every caller of SubmitTx takes — including handleSubmitTx,
+// which calls it inline on the client's request goroutine. Holding it across the
+// send queued every producer and every client submission behind the slowest peer
+// in the mesh, and the queue grew with the number of concurrent submitters until
+// the client's own request deadline expired. Nothing sent here needs the lock:
+// the round decision, the vertex bytes and the cursor moves are all complete
+// before the first byte goes out.
 func (d *DAG) tryProduceVertex() {
+	for _, data := range d.produceVertex() {
+		d.sendVertex(data)
+	}
+}
+
+// produceVertex runs one production attempt under roundMu and returns the
+// vertices its caller must gossip once the lock is released: the vertex just
+// built, or the frontier leaf to re-announce when the round cannot advance.
+func (d *DAG) produceVertex() [][]byte {
 	if d.listenerMode {
-		return
+		return nil
 	}
 
 	// Security and liveness gate: a node produces once it is itself a registered
@@ -1010,7 +1030,7 @@ func (d *DAG) tryProduceVertex() {
 		logger.Debug("cannot produce: not in validator set",
 			"pubkey", hex.EncodeToString(d.pubKey[:8]),
 			"validators", d.validators.Len())
-		return
+		return nil
 	}
 
 	d.roundMu.Lock()
@@ -1029,8 +1049,8 @@ func (d *DAG) tryProduceVertex() {
 		if round%20 == 0 {
 			d.debugRoundVertices(prevRound)
 		}
-		d.rebroadcastFrontierLeaf()
-		return
+
+		return d.frontierLeafToRebroadcast()
 	}
 
 	parents := d.collectParents(round)
@@ -1041,7 +1061,7 @@ func (d *DAG) tryProduceVertex() {
 	// Validate our own vertex before accepting it
 	if !d.addOwnVertex(data, round) {
 		d.pendingTxs = append(txs, d.pendingTxs...)
-		return
+		return nil
 	}
 
 	builtVertex := types.GetRootAsVertex(data, 0)
@@ -1055,14 +1075,16 @@ func (d *DAG) tryProduceVertex() {
 	// Disable sync mode after first successful vertex production.
 	d.disableSyncMode()
 
-	d.sendVertex(data)
 	d.lastProducedRound.Store(round)
 	d.updateRound(round + 1)
+
+	return [][]byte{data}
 }
 
-// rebroadcastFrontierLeaf re-gossips this node's own latest produced vertex while
-// the node cannot advance for lack of quorum. Forward gossip sends a vertex once,
-// at production, so a node stuck at its frontier round never re-announces the leaf
+// frontierLeafToRebroadcast returns this node's own latest produced vertex for
+// re-gossip while the node cannot advance for lack of quorum, and nil when there
+// is nothing to re-announce yet. Forward gossip sends a vertex once, at
+// production, so a node stuck at its frontier round never re-announces the leaf
 // its stalled peers are missing. When two sides of a symmetric freeze reconnect,
 // each holds only its own subset of the frozen round's vertices and forward gossip
 // is silent about exactly the leaves the other needs to reach quorum there; walking
@@ -1070,31 +1092,36 @@ func (d *DAG) tryProduceVertex() {
 // Re-announcing the own leaf on the liveness tick carries it across: an
 // already-signed vertex is idempotent on receipt (peers deduplicate) and neutral
 // for safety. The re-gossip is throttled to at most once per liveness interval so a
-// production trigger firing faster than the tick cannot turn it into a storm. The
-// caller holds roundMu.
-func (d *DAG) rebroadcastFrontierLeaf() {
+// production trigger firing faster than the tick cannot turn it into a storm.
+//
+// It selects, it does not send: the caller holds roundMu here and gossips only
+// after releasing it (see tryProduceVertex).
+func (d *DAG) frontierLeafToRebroadcast() [][]byte {
 	lastRound := d.lastProducedRound.Load()
 	if lastRound == 0 {
-		return
+		return nil
 	}
 
 	now := time.Now()
 	if !d.lastRebroadcast.IsZero() && now.Sub(d.lastRebroadcast) < livenessTimeout {
-		return
+		return nil
 	}
 
 	hashes, ok := d.store.getByRoundProducer(lastRound, d.pubKey)
 	if !ok {
-		return
+		return nil
 	}
 
 	d.lastRebroadcast = now
 
+	leaves := make([][]byte, 0, len(hashes))
 	for _, h := range hashes {
 		if data := d.store.getRaw(h); data != nil {
-			d.sendVertex(data)
+			leaves = append(leaves, data)
 		}
 	}
+
+	return leaves
 }
 
 // nextProductionRound returns the round to produce at.
