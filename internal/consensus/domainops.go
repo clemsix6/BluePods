@@ -5,6 +5,7 @@ import (
 
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
+	"BluePods/internal/logger"
 )
 
 const (
@@ -73,13 +74,15 @@ func (d *DAG) SetDomainStore(store DomainStore) {
 // against the real registry, in list order. Each operation re-derives its
 // result from the store, which already carries the effects of the operations
 // before it in this same list — the identical sequence the staged view
-// validated against, so validation and application cannot disagree.
-func (d *DAG) applyDomainOp(txHash, sender Hash, epoch uint64, op genesis.DeclaredOp) {
+// validated against, so validation and application cannot disagree. maxTerm is
+// threaded from the SAME staged view that validated the list, so the lease
+// cap priced at apply time is always the one proven to fit at validation.
+func (d *DAG) applyDomainOp(txHash, sender Hash, epoch, maxTerm uint64, op genesis.DeclaredOp) {
 	switch op.Kind {
 	case domainRegisterOp:
-		d.applyDomainRegister(txHash, sender, epoch, op)
+		d.applyDomainRegister(txHash, sender, epoch, maxTerm, op)
 	case domainRenewOp:
-		d.applyDomainRenew(txHash, epoch, op)
+		d.applyDomainRenew(txHash, epoch, maxTerm, op)
 	case domainUpdateOp:
 		d.applyDomainUpdate(txHash, op)
 	case domainTransferOp:
@@ -90,23 +93,39 @@ func (d *DAG) applyDomainOp(txHash, sender Hash, epoch uint64, op genesis.Declar
 }
 
 // applyDomainRegister binds a name to an object under the sender's ownership
-// for the declared term.
-func (d *DAG) applyDomainRegister(txHash, sender Hash, epoch uint64, op genesis.DeclaredOp) {
+// for the declared term. maxTerm is the cap the staged view already proved
+// this term fits under; a disagreement here means apply diverged from
+// validation, an invariant violation logged loud rather than silently written
+// as an instantly-expired lease.
+func (d *DAG) applyDomainRegister(txHash, sender Hash, epoch, maxTerm uint64, op genesis.DeclaredOp) {
 	objectID := toHash(op.ObjectID)
-	expiry, _ := domainExpiry(0, epoch, op.TermEpochs, d.maxTermEpochs())
+
+	expiry, ok := domainExpiry(0, epoch, op.TermEpochs, maxTerm)
+	if !ok {
+		logger.Error("domain register: apply disagreed with staged validation", "name", op.Name)
+		return
+	}
 
 	d.writeDomainLeaf(op.Name, objectID, sender, expiry)
 	events.DomainRegistered(op.Name, objectID, txHash)
 }
 
 // applyDomainRenew extends a lease, leaving the name's object and owner alone.
-func (d *DAG) applyDomainRenew(txHash Hash, epoch uint64, op genesis.DeclaredOp) {
+// maxTerm is the cap the staged view already proved this term fits under; a
+// disagreement here means apply diverged from validation, an invariant
+// violation logged loud rather than silently written as an instantly-expired
+// lease.
+func (d *DAG) applyDomainRenew(txHash Hash, epoch, maxTerm uint64, op genesis.DeclaredOp) {
 	objectID, owner, current, ok := d.domains.DomainLeaf(op.Name)
 	if !ok {
 		return
 	}
 
-	expiry, _ := domainExpiry(current, epoch, op.TermEpochs, d.maxTermEpochs())
+	expiry, ok := domainExpiry(current, epoch, op.TermEpochs, maxTerm)
+	if !ok {
+		logger.Error("domain renew: apply disagreed with staged validation", "name", op.Name)
+		return
+	}
 
 	d.writeDomainLeaf(op.Name, objectID, owner, expiry)
 	events.DomainRenewed(op.Name, expiry, txHash)

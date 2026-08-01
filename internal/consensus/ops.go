@@ -69,7 +69,7 @@ func (d *DAG) handleDeclaredOps(tx *types.Transaction, epoch uint64) bool {
 		}
 	}
 
-	d.applyDeclaredOps(tx, sender, epoch, ops)
+	d.applyDeclaredOps(tx, sender, epoch, staged.maxTerm, ops)
 
 	return true
 }
@@ -78,8 +78,11 @@ func (d *DAG) handleDeclaredOps(tx *types.Transaction, epoch uint64) bool {
 // order against the real tracker and registry. Reparents rebind the parent edge;
 // deletes settle the deposit and drop the held body; the domain kinds write the
 // name's leaf. Applying in list order against the real state reproduces exactly
-// the sequence of states the staged view validated against.
-func (d *DAG) applyDeclaredOps(tx *types.Transaction, sender Hash, epoch uint64, ops []genesis.DeclaredOp) {
+// the sequence of states the staged view validated against. maxTerm is the SAME
+// lease cap the staged view validated the list against — never re-derived here —
+// so apply can never price a term against a different cap than the one that
+// proved it fits.
+func (d *DAG) applyDeclaredOps(tx *types.Transaction, sender Hash, epoch, maxTerm uint64, ops []genesis.DeclaredOp) {
 	txHash, _ := hash32(tx.HashBytes())
 	gasCoinID, hasGasCoin := txGasCoinID(tx)
 
@@ -90,7 +93,7 @@ func (d *DAG) applyDeclaredOps(tx *types.Transaction, sender Hash, epoch uint64,
 		case deleteOp:
 			d.applyDelete(txHash, gasCoinID, hasGasCoin, ops[i])
 		default:
-			d.applyDomainOp(txHash, sender, epoch, ops[i])
+			d.applyDomainOp(txHash, sender, epoch, maxTerm, ops[i])
 		}
 	}
 }
