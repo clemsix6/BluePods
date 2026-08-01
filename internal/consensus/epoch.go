@@ -59,6 +59,14 @@ func (d *DAG) transitionEpoch(round uint64) {
 	added := d.churnLimitedAdditions()
 	removed := d.applyPendingRemovals()
 
+	// Sweep leases past their grace window, reading the committed domain
+	// registry — never any in-memory residue — so the swept set and its
+	// order are identical on every node, including one that restarted
+	// mid-epoch. newEpoch is the epoch this boundary is transitioning INTO:
+	// currentEpoch has not been incremented yet at this point in the
+	// function, so it is named explicitly rather than read back off d.
+	d.sweepExpiredDomains(d.currentEpoch + 1)
+
 	// Retain the outgoing epoch's snapshot for the grace window so an ATX
 	// collected late in the previous epoch still verifies shortly after the
 	// boundary. snapshotEpochHolders overwrites d.epochHolders, so capture first.

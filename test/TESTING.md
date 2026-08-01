@@ -256,7 +256,7 @@ must be called out in the commit that does it.
 | `state.domain.updated` | name, object, tx |
 | `state.domain.renewed` | name, expiry, tx |
 | `state.domain.transferred` | name, owner, tx |
-| `state.domain.deleted` | name, tx |
+| `state.domain.deleted` | name, tx, reason |
 | `fees.deducted` | tx, coin, amount, covered |
 | `fees.deposit.locked` | object, amount |
 | `fees.deposit.refunded` | object, coin, amount |
@@ -313,6 +313,11 @@ two honest nodes may emit different fault sets for the same history. The
 evidence behind it (the producer's signed header plus the recomputed root)
 is persisted outside every convergence-checked structure, so a scenario that
 provokes a fault still passes the teardown convergence check.
+
+`state.domain.deleted`'s `reason` attribute is empty for an owner's declared
+deletion (`tx` names the deleting transaction) and `"expired"` for the epoch
+boundary's expiry sweep (`tx` is the zero hash — a sweep carries no
+transaction).
 
 Attribute values use stable encodings: hashes and object/validator IDs as
 lowercase hex, rounds and versions as integers, reasons as short snake_case

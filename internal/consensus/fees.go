@@ -38,6 +38,13 @@ type FeeSplit struct {
 // reason to do.
 const defaultMaxTermEpochs uint64 = 256
 
+// defaultGraceEpochs is the post-expiry grace window DefaultFeeParams
+// carries, and the fallback the epoch boundary's sweep uses on a DAG with no
+// fee system wired. Never 0: a zero window would sweep every lease the
+// instant it expired, forfeiting the owner's exclusive renewal right the
+// window exists to give.
+const defaultGraceEpochs uint64 = 8
+
 // DefaultFeeParams returns the default fee parameters.
 // Values are placeholders until governance sets real ones.
 func DefaultFeeParams() FeeParams {
@@ -49,7 +56,7 @@ func DefaultFeeParams() FeeParams {
 		DomainFee:          10000,
 		RentalRatePerEpoch: 100,
 		MaxTermEpochs:      defaultMaxTermEpochs,
-		GraceEpochs:        8,
+		GraceEpochs:        defaultGraceEpochs,
 		ReparentFee:        100,
 		DeleteFee:          100,
 		IndexEntryFee:      25,

@@ -7,6 +7,7 @@ import (
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/index"
+	"BluePods/internal/state"
 	"BluePods/internal/types"
 )
 
@@ -506,6 +507,24 @@ func (m *mockDomainStore) SetDomainLeaf(name string, objectID, owner [32]byte, e
 
 func (m *mockDomainStore) DeleteDomainLeaf(name string) {
 	delete(m.leaves, name)
+}
+
+// ExportDomains returns every leaf the mock holds, in Go's randomized map
+// order — exercising this on purpose so a sweep test that assumes sorted
+// input without sorting it itself fails regardless of which order the map
+// happens to yield on a given run.
+func (m *mockDomainStore) ExportDomains() []state.DomainEntry {
+	entries := make([]state.DomainEntry, 0, len(m.leaves))
+	for name, leaf := range m.leaves {
+		entries = append(entries, state.DomainEntry{
+			Name:        name,
+			ObjectID:    state.Hash(leaf.objectID),
+			Owner:       state.Hash(leaf.owner),
+			ExpiryEpoch: leaf.expiry,
+		})
+	}
+
+	return entries
 }
 
 // domainIndexer records the domain leg of the index feed, so a test can assert

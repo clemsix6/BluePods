@@ -61,8 +61,10 @@ func DomainTransferred(name string, owner, tx [32]byte) {
 	emit(EvDomainTransferred, slog.String("name", name), hexAttr("owner", owner), hexAttr("tx", tx))
 }
 
-// DomainDeleted marks a domain name removed from the registry, by its owner's
-// declared operation or by the expiry sweep.
-func DomainDeleted(name string, tx [32]byte) {
-	emit(EvDomainDeleted, slog.String("name", name), hexAttr("tx", tx))
+// DomainDeleted marks a domain name removed from the registry: by its
+// owner's declared operation (reason empty, tx the deleting transaction) or
+// by the epoch boundary's expiry sweep (reason "expired", tx the zero hash —
+// a sweep carries no transaction).
+func DomainDeleted(name string, tx [32]byte, reason string) {
+	emit(EvDomainDeleted, slog.String("name", name), hexAttr("tx", tx), slog.String("reason", reason))
 }

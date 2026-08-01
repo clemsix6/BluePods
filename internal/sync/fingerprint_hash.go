@@ -46,22 +46,28 @@ func hashTrackerEntries(h *blake3.Hasher, entries []consensus.ObjectTrackerEntry
 	return deposits
 }
 
-// hashDomains writes the domain entries sorted by name.
+// hashDomains writes the domain entries sorted by name (name, object,
+// owner, expiry epoch), so a divergence in either the lease's owner or its
+// expiry — not just the object it resolves to — surfaces in the convergence
+// fingerprint.
 func hashDomains(h *blake3.Hasher, entries []state.DomainEntry) {
 	sorted := make([]state.DomainEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], uint32(len(sorted)))
-	h.Write(buf[:])
+	var buf [8]byte
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(sorted)))
+	h.Write(buf[:4])
 
 	for _, e := range sorted {
 		nameBytes := []byte(e.Name)
-		binary.BigEndian.PutUint32(buf[:], uint32(len(nameBytes)))
-		h.Write(buf[:])
+		binary.BigEndian.PutUint32(buf[:4], uint32(len(nameBytes)))
+		h.Write(buf[:4])
 		h.Write(nameBytes)
 		h.Write(e.ObjectID[:])
+		h.Write(e.Owner[:])
+		binary.BigEndian.PutUint64(buf[:], e.ExpiryEpoch)
+		h.Write(buf[:])
 	}
 }
 

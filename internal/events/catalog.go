@@ -60,7 +60,9 @@ const (
 	EvDomainRenewed = "state.domain.renewed"
 	// EvDomainTransferred marks a domain name handed to a new owner.
 	EvDomainTransferred = "state.domain.transferred"
-	// EvDomainDeleted marks a domain name removed from the registry.
+	// EvDomainDeleted marks a domain name removed from the registry, by its
+	// owner's declared operation or by the epoch boundary's expiry sweep
+	// (reason "expired").
 	EvDomainDeleted = "state.domain.deleted"
 
 	// EvFeesDeducted marks a fee taken from a coin.

@@ -6,6 +6,7 @@ import (
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
+	"BluePods/internal/state"
 )
 
 const (
@@ -61,6 +62,14 @@ type DomainStore interface {
 
 	// DeleteDomainLeaf removes a name from the registry.
 	DeleteDomainLeaf(name string)
+
+	// ExportDomains returns every registered name's leaf, unfiltered by
+	// expiry. The epoch boundary's sweep is its only consensus-side reader
+	// (a full-registry read, done once per boundary rather than tracked
+	// incrementally, keeps the sweep a pure function of committed state with
+	// no additional index to keep consistent); *state.State also serves it to
+	// the sync snapshot.
+	ExportDomains() []state.DomainEntry
 }
 
 // SetDomainStore wires the registry declared domain operations act on. Left
@@ -161,6 +170,8 @@ func (d *DAG) applyDomainTransfer(txHash Hash, op genesis.DeclaredOp) {
 
 // applyDomainDelete removes a name from the registry and from the index. The
 // rent already consumed is not refunded: a lease buys epochs, not an asset.
+// reason is empty: the deletion carries a transaction, unlike the epoch
+// boundary's expiry sweep (reason "expired", no transaction to name).
 func (d *DAG) applyDomainDelete(txHash Hash, op genesis.DeclaredOp) {
 	d.domains.DeleteDomainLeaf(op.Name)
 
@@ -168,7 +179,7 @@ func (d *DAG) applyDomainDelete(txHash Hash, op genesis.DeclaredOp) {
 		d.indexer.RemoveDomain(op.Name)
 	}
 
-	events.DomainDeleted(op.Name, txHash)
+	events.DomainDeleted(op.Name, txHash, "")
 }
 
 // writeDomainLeaf persists a leaf and feeds it to the authenticated domain
@@ -195,6 +206,20 @@ func (d *DAG) maxTermEpochs() uint64 {
 	}
 
 	return d.feeParams.MaxTermEpochs
+}
+
+// graceEpochs returns the governed window past expiry a lease stays in the
+// registry before the boundary sweep removes it, reserving its owner's
+// exclusive renewal right until then. It mirrors maxTermEpochs' fallback
+// rule: a DAG with no fee system wired (a test, a fee-less bootstrap) uses
+// the default rather than zero, which would sweep every lease the instant it
+// expired.
+func (d *DAG) graceEpochs() uint64 {
+	if d.feeParams == nil {
+		return defaultGraceEpochs
+	}
+
+	return d.feeParams.GraceEpochs
 }
 
 // domainExpiry computes the expiry a register or renew produces and reports

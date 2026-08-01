@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	// snapshotVersion is the current snapshot format version. Bumped to 15 with
-	// the detached vertex header: the vertex identity is now the header hash, so
-	// vertices carried by an older snapshot can no longer validate.
-	snapshotVersion = 15
+	// snapshotVersion is the current snapshot format version. Bumped to 16 with
+	// the domain leaf's owner and expiry: SnapshotDomain now carries them, and
+	// a snapshot built before they existed cannot answer the epoch sweep or
+	// the fingerprint correctly, so it is rejected outright rather than decoded
+	// as a leaf with a zero owner and no expiry.
+	snapshotVersion = 16
 
 	// objectKeySize is the size of object keys (32 bytes for ID).
 	objectKeySize = 32
@@ -262,10 +264,13 @@ func buildSnapshot(lastCommittedRound uint64, objects []objectEntry, validators 
 	for i, entry := range domainEntries {
 		nameOffset := builder.CreateString(entry.Name)
 		objIdOffset := builder.CreateByteVector(entry.ObjectID[:])
+		ownerOffset := builder.CreateByteVector(entry.Owner[:])
 
 		types.SnapshotDomainStart(builder)
 		types.SnapshotDomainAddName(builder, nameOffset)
 		types.SnapshotDomainAddObjectId(builder, objIdOffset)
+		types.SnapshotDomainAddOwner(builder, ownerOffset)
+		types.SnapshotDomainAddExpiryEpoch(builder, entry.ExpiryEpoch)
 		domainOffsets[i] = types.SnapshotDomainEnd(builder)
 	}
 
@@ -491,6 +496,9 @@ func computeChecksumWithInfo(version uint32, round uint64, objects []objectEntry
 		hasher.Write(buf[:4])
 		hasher.Write(nameBytes)
 		hasher.Write(entry.ObjectID[:])
+		hasher.Write(entry.Owner[:])
+		binary.BigEndian.PutUint64(buf[:], entry.ExpiryEpoch)
+		hasher.Write(buf[:])
 	}
 
 	// Write signatures (sorted by ID for determinism)
@@ -836,6 +844,12 @@ func ExtractDomains(snapshot *types.Snapshot) []state.DomainEntry {
 		if idBytes := dom.ObjectIdBytes(); len(idBytes) == 32 {
 			copy(entries[i].ObjectID[:], idBytes)
 		}
+
+		if ownerBytes := dom.OwnerBytes(); len(ownerBytes) == 32 {
+			copy(entries[i].Owner[:], ownerBytes)
+		}
+
+		entries[i].ExpiryEpoch = dom.ExpiryEpoch()
 	}
 
 	return entries

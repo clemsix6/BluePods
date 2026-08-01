@@ -973,6 +973,70 @@ func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
 	}
 }
 
+// TestSnapshot_DomainRoundTrip_OwnerExpiry asserts a domain leaf's owner and
+// expiry epoch — not just its name and object — survive a snapshot round
+// trip byte-for-byte.
+func TestSnapshot_DomainRoundTrip_OwnerExpiry(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domains := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x11}, ExpiryEpoch: 42},
+	}
+
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+	extracted := ExtractDomains(snapshot)
+	if len(extracted) != 1 {
+		t.Fatalf("extracted domains count = %d, want 1", len(extracted))
+	}
+
+	got := extracted[0]
+	if got.Owner != domains[0].Owner {
+		t.Errorf("owner = %x, want %x", got.Owner, domains[0].Owner)
+	}
+	if got.ExpiryEpoch != domains[0].ExpiryEpoch {
+		t.Errorf("expiry_epoch = %d, want %d", got.ExpiryEpoch, domains[0].ExpiryEpoch)
+	}
+}
+
+// TestSnapshot_DomainOwnerAffectsChecksum asserts two domain sets identical
+// in name, object, and expiry but differing in owner produce different
+// checksums: the owner is part of what the snapshot commits to, not a
+// long-along field the checksum ignores.
+func TestSnapshot_DomainOwnerAffectsChecksum(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domainsA := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x11}, ExpiryEpoch: 5},
+	}
+	domainsB := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x22}, ExpiryEpoch: 5},
+	}
+
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot A: %v", err)
+	}
+
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot B: %v", err)
+	}
+
+	snapA := types.GetRootAsSnapshot(dataA, 0)
+	snapB := types.GetRootAsSnapshot(dataB, 0)
+
+	if bytes.Equal(snapA.ChecksumBytes(), snapB.ChecksumBytes()) {
+		t.Error("a one-bit owner difference must change the snapshot checksum")
+	}
+}
+
 func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()

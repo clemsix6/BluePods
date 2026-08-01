@@ -69,13 +69,22 @@ table ObjectSig {
     sig:[ubyte];
 }
 
-// SnapshotDomain maps a domain name to an object ID in the snapshot.
+// SnapshotDomain maps a domain name to a leaf in the snapshot: the object it
+// resolves to, the key holding the lease's rights, and the epoch the lease
+// runs to.
 table SnapshotDomain {
     // name is the domain name.
     name:string;
 
     // object_id is the 32-byte ObjectID.
     object_id:[ubyte];
+
+    // owner is the 32-byte key that may renew, update, transfer, or delete
+    // the name.
+    owner:[ubyte];
+
+    // expiry_epoch is the last epoch the lease resolves in.
+    expiry_epoch:uint64;
 }
 
 // Snapshot represents the committed state at a point in time.
