@@ -180,16 +180,27 @@ func TestBuildValidatorSetFromSnapshot_CarriesRewardCoin(t *testing.T) {
 	}
 }
 
-// TestSyncConstructionPaths_WireTheSameSeams pins the symmetry between the two
-// sync-side construction paths. A listener produces nothing, but it COMMITS the
-// same ordered log: it applies the same declared operations, prices leases from
-// the same governed parameters, stamps the same storage deposits and anchors
-// the same index root in the snapshots it serves. A path that skipped the
-// aggregation wiring would revert every domain operation validators apply and
-// stamp zero-fee deposits — a node class that permanently diverges while
-// looking healthy. The listener path is unreachable-broken upstream today, so
-// this test is what keeps the two from drifting before that is fixed.
-func TestSyncConstructionPaths_WireTheSameSeams(t *testing.T) {
+// TestSyncConstructionPaths_WireTheSharedStateSeams pins the symmetry between
+// the two sync-side construction paths on the seams they DO share: the index
+// manager, rendezvous, isHolder, the attestation handler, and the fee system's
+// coin store. A listener produces nothing, but it COMMITS the same ordered
+// log: it applies the same declared operations, prices leases from the same
+// governed parameters, stamps the same storage deposits and anchors the same
+// index root in the snapshots it serves. A path that skipped this wiring
+// would revert every domain operation validators apply and stamp zero-fee
+// deposits — a node class that permanently diverges while looking healthy.
+// The listener path is unreachable-broken upstream today, so this test is
+// what keeps the shared seams from drifting before that is fixed.
+//
+// It does NOT cover the seams the two paths wire asymmetrically by design:
+// the broadcaster (nil for a listener, n.network for a validator — the
+// distinction the two modes exist to make), WithGossipFanout (broadcast-only,
+// so meaningless without a broadcaster), WithMinValidators (validator-only
+// today), and the epoch options (the listener takes WithEpochLength directly,
+// the validator goes through appendEpochOpts) — none of those is a shared
+// state seam the aggregation wiring above depends on, so their asymmetry is
+// out of this test's scope, not a gap in it.
+func TestSyncConstructionPaths_WireTheSharedStateSeams(t *testing.T) {
 	cases := []struct {
 		name string
 		init func(*Node, *snapshotResult) error

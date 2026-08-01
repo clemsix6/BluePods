@@ -67,16 +67,20 @@ type DomainStore interface {
 	// expiry. The epoch boundary's sweep is its only consensus-side reader
 	// (a full-registry read, done once per boundary rather than tracked
 	// incrementally, keeps the sweep a pure function of committed state with
-	// no additional index to keep consistent); the composition root's boot
-	// index rebuild is its other reader. The sync snapshot and the
-	// convergence fingerprint do NOT use it — they read a consistent cut
-	// through *state.State.ExportDomainsFrom instead.
+	// no additional index to keep consistent); consensus.indexDomainLeaves,
+	// the construction-time index backfill, is its other reader. The sync
+	// snapshot and the convergence fingerprint do NOT use it — they read a
+	// consistent cut through *state.State.ExportDomainsFrom instead.
 	ExportDomains() []state.DomainEntry
 }
 
-// SetDomainStore wires the registry declared domain operations act on. Left
-// unset, every domain operation is rejected, so a DAG built without it behaves
-// exactly as it did before domain operations existed.
+// SetDomainStore wires the registry declared domain operations act on after
+// construction. It is a TEST-ONLY seam: package tests inject recording fakes
+// and hand-built stores into a DAG whose loops they control, which no
+// construction option can do. Production wires the registry through
+// WithDomainStore instead — writing d.domains once the commit loop is already
+// running rejects every domain operation decided before the wire lands, since
+// applyDomainOp's staged view has nothing to validate against until then.
 func (d *DAG) SetDomainStore(store DomainStore) {
 	d.domains = store
 }

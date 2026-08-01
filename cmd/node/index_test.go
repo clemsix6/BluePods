@@ -310,9 +310,17 @@ func assertSyncedIndex(t *testing.T, n *Node, frontier uint64, wantRoot [32]byte
 		t.Errorf("synced CommittedFrontier() = (%d, %x), want the snapshot's frontier %d or later carrying a real root", gotRound, gotRoot[:4], frontier)
 	}
 
-	// The pair itself: the root a node that followed the same history holds at
-	// the snapshot's committed frontier. A seed on the wrong round leaves this
-	// round unrecorded, so !ok fails here too.
+	// The pair itself: wantRoot is not a live node's own RootAt(frontier) —
+	// the fixture applies its post-snapshot writes (the extra tracked object,
+	// the domain leases) directly to the trees after the live node's commit
+	// loop already stopped, so those never advance any recorded frontier, and
+	// the live node's own RootAt(frontier) still holds whatever root was
+	// current when frontier was actually decided. wantRoot is instead
+	// live.idxManager.Root() read AFTER those writes, i.e. the root the
+	// exported cut describes. What this checks is that the joiner, rebuilding
+	// solely from that cut, reproduces the identical root under the
+	// frontier's history entry. A seed on the wrong round leaves this round
+	// unrecorded, so !ok fails here too.
 	if got, ok := n.idxManager.RootAt(frontier); !ok || got != wantRoot {
 		t.Errorf("synced RootAt(%d) ok=%v root=%x, want %x", frontier, ok, got[:4], wantRoot[:4])
 	}
@@ -382,12 +390,15 @@ func TestInitConsensusForValidator_DomainOwnerMutationChangesRoot(t *testing.T) 
 	}
 }
 
-// TestInitIndex_FreshBootBuildsNonEmptyRoot verifies a bootstrap node's index
-// carries the genesis-seeded reserve coin on an ordinary (non-restart) boot,
-// so it never anchors an empty root once genesis exists. The construction
-// backfill has nothing to read on a fresh chain: the coin arrives through
-// seedGenesisState's own tracker feed, which is exactly why that feed must
-// reach a manager that is already wired.
+// TestInitIndex_FreshBootBuildsNonEmptyRoot is a smoke test: it checks that a
+// bootstrap node's index manager is wired and carries a non-empty root after
+// genesis seeding, on an ordinary (non-restart) boot. CombinedRoot is never
+// the zero value once any tree has a leaf, so this cannot fail on the
+// genesis-coin feed specifically reaching the index — that property (the
+// reserve coin's tracker entry actually landing in the tree, not just some
+// root existing) is what TestInitIndex_RestartRebuildMatchesNeverRestarted
+// discriminates, by comparing against a twin that took the same coin through
+// the construction backfill instead of the live feed.
 func TestInitIndex_FreshBootBuildsNonEmptyRoot(t *testing.T) {
 	dir := t.TempDir()
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)

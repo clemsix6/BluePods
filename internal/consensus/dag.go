@@ -162,14 +162,14 @@ type DAG struct {
 	// onObjectDeleted in the same reverse direction (consensus notifying state).
 	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte, version uint64)
 
-	// indexer is the verifiable-index feed (indexer.go): nil-safe, wired
-	// post-construction by cmd/node via SetIndexer. Every call site checks it
+	// indexer is the verifiable-index feed (indexer.go): nil-safe, wired at
+	// construction by cmd/node via WithIndexer. Every call site checks it
 	// for nil before calling, so a DAG built without an indexer behaves
 	// exactly as it did before this package existed.
 	indexer indexer
 
 	// domains is the registry declared domain operations read and write
-	// (domainops.go), wired post-construction by cmd/node via SetDomainStore.
+	// (domainops.go), wired at construction by cmd/node via WithDomainStore.
 	// Left unset, every domain operation is rejected at validation, so no
 	// apply path ever dereferences it.
 	domains DomainStore

@@ -90,9 +90,14 @@ func (d *DAG) SetIndexer(idx indexer) {
 // backfillIndex rebuilds the wired index from this DAG's committed state and
 // anchors it at the round that state describes. New calls it after every
 // option has been applied and BEFORE the commit and production goroutines
-// start, which is what makes the whole index seam safe: the field and the
-// trees behind it are written once, on the constructing goroutine, and only
-// read afterwards by loops that started later.
+// start, which is what makes this call itself safe with no lock: it is the
+// index's only writer at a point where no other goroutine exists yet to race
+// it. It is not the trees' only out-of-loop writer overall, though: on a
+// fresh chain, SeedGenesisLedger (dag.go) feeds the reserve coin's edge into
+// the same trees while the commit loop is already running, and is ordered
+// against it not by construction timing but by holding d.commitMu for that
+// write — the same lock the commit loop's own writes serialize under (see
+// Manager's field comment in manager.go for both out-of-loop writers).
 //
 // It covers all three boot paths uniformly, because each one installs its
 // committed state through options that ran above: a restart resumes the
