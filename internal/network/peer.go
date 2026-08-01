@@ -3,7 +3,9 @@ package network
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +24,24 @@ const (
 	// stopped returning stream credit or reading, and Send's contract for such a
 	// peer is to drop the message rather than wait.
 	sendStreamTimeout = 2 * time.Second
+
+	// uniStreamReadTimeout bounds how long handleUniStream waits for a gossip
+	// message to finish arriving. Gossip messages are small, so a peer that
+	// keeps up finishes in microseconds; the bound is only ever reached by a
+	// peer that opened a stream and then stopped writing, and it exists so that
+	// goroutine and stream slot are freed rather than parked on it forever.
+	uniStreamReadTimeout = 30 * time.Second
+
+	// streamAbortCode is the QUIC application error code used to abort a
+	// stream that has stalled past its deadline, on either side: CancelWrite
+	// (RESET_STREAM) on a send that timed out, CancelRead (STOP_SENDING) on a
+	// receive that timed out. Neither is gated on the stream's own
+	// flow-control credit the way a clean Close (FIN) is, so both complete the
+	// stream immediately even when the peer is not reading or not writing;
+	// Close on a write that failed for that reason would instead queue the FIN
+	// behind the very data that is blocked, so the stream never finishes and
+	// its slot is never reclaimed.
+	streamAbortCode quic.StreamErrorCode = 1
 )
 
 // Peer represents a connection to a remote node.
@@ -97,10 +117,20 @@ func (p *Peer) Send(data []byte) error {
 	}
 
 	if err := writeMessage(stream, data); err != nil {
-		stream.Close()
+		// CancelWrite (RESET_STREAM), not Close (FIN): a write that failed on
+		// the deadline failed because the receiver is not reading and has
+		// stopped granting flow-control window, and Close would queue the FIN
+		// behind that same blocked data — the stream never completes and its
+		// slot in maxIncomingUniStreams is never reclaimed on either side.
+		// CancelWrite is not gated on stream data credit, so it completes the
+		// stream immediately regardless.
+		stream.CancelWrite(streamAbortCode)
 		return fmt.Errorf("write message: %w", err)
 	}
 
+	// Close (FIN) here is verified non-blocking: writeMessage already
+	// succeeded, so the receiver has already granted (and is consuming) the
+	// window this stream needed.
 	return stream.Close()
 }
 
@@ -235,9 +265,22 @@ func (p *Peer) handleBidiStream(stream *quic.Stream) {
 }
 
 // handleUniStream reads a message from a unidirectional stream.
+//
+// The read is bounded by uniStreamReadTimeout: without a deadline, a peer that
+// opens a stream and then never finishes writing parks this goroutine and its
+// maxIncomingUniStreams slot forever, and the mesh tier grants that budget per
+// connection, so a single half-writing peer can hold up to 4096 of them open.
 func (p *Peer) handleUniStream(stream *quic.ReceiveStream) {
+	stream.SetReadDeadline(time.Now().Add(uniStreamReadTimeout))
+
 	data, err := readMessage(stream)
 	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			// CancelRead reclaims the stream and its slot immediately; without
+			// it the half-written stream stays open (and counted) past the
+			// deadline this was meant to bound.
+			stream.CancelRead(streamAbortCode)
+		}
 		logger.Debug("stream read error", "peer", p.address, "error", err)
 		return
 	}

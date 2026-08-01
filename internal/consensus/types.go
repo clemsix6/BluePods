@@ -94,5 +94,12 @@ type CommittedTx struct {
 // Broadcaster sends vertices to the network.
 type Broadcaster interface {
 	// Gossip sends data to a subset of peers who will relay it.
+	//
+	// Implementations must be safe for concurrent use. tryProduceVertex calls
+	// Gossip outside roundMu (see its doc comment), and it is reached from both
+	// the livenessLoop goroutine's ticker and every SubmitTx caller's own
+	// goroutine (including handleSubmitTx, inline on the client's request
+	// goroutine) — so two or more calls into Gossip on the same Broadcaster can
+	// race.
 	Gossip(data []byte, fanout int) error
 }

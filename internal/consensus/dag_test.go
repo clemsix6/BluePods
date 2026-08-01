@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,14 +185,30 @@ func TestAddVertexDuplicate(t *testing.T) {
 	}
 }
 
-// mockBroadcaster captures vertices for testing.
+// mockBroadcaster captures vertices for testing. Gossip is now called outside
+// roundMu (see Broadcaster's doc comment), reachable from both the
+// livenessLoop goroutine and every SubmitTx caller's own goroutine, so the
+// captured slice needs its own lock rather than the caller's.
 type mockBroadcaster struct {
+	mu       sync.Mutex
 	vertices [][]byte
 }
 
 func (m *mockBroadcaster) Gossip(data []byte, fanout int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.vertices = append(m.vertices, data)
 	return nil
+}
+
+// Vertices returns a copy of the vertices captured so far, safe to call
+// concurrently with Gossip.
+func (m *mockBroadcaster) Vertices() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]byte, len(m.vertices))
+	copy(out, m.vertices)
+	return out
 }
 
 // disableTxAuth turns off commit-time authenticity on a DAG for tests that drive
@@ -219,11 +236,12 @@ func TestProduceVertex(t *testing.T) {
 	// Wait for vertex production
 	time.Sleep(50 * time.Millisecond)
 
-	if len(mock.vertices) == 0 {
+	vertices := mock.Vertices()
+	if len(vertices) == 0 {
 		t.Fatal("no vertex was broadcast")
 	}
 
-	vertex := types.GetRootAsVertex(mock.vertices[0], 0)
+	vertex := types.GetRootAsVertex(vertices[0], 0)
 	if vertex.Round() != 0 {
 		t.Errorf("expected round 0, got %d", vertex.Round())
 	}

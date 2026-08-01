@@ -279,10 +279,10 @@ func TestTryProduceVertex_EmitsVertexProduced(t *testing.T) {
 	dag.SubmitTx([]byte("test tx"))
 
 	deadline := time.Now().Add(2 * time.Second)
-	for len(mock.vertices) == 0 && time.Now().Before(deadline) {
+	for len(mock.Vertices()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(mock.vertices) == 0 {
+	if len(mock.Vertices()) == 0 {
 		t.Fatal("no vertex was broadcast")
 	}
 

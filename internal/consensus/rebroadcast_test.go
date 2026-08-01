@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"sync"
 	"testing"
 
 	"BluePods/internal/types"
@@ -9,7 +10,11 @@ import (
 // linkedGossip records every gossiped vertex so the driver can hand it to the
 // peer half on its own schedule, modeling the mesh carrying a vertex across a
 // healed partition without re-entering the producing DAG under its own lock.
+// Gossip is now called outside roundMu (see Broadcaster's doc comment), so it
+// can race with take() called from the driving test goroutine — both are
+// guarded by mu.
 type linkedGossip struct {
+	mu  sync.Mutex
 	out [][]byte // out holds the vertices gossiped since the last take
 }
 
@@ -17,12 +22,17 @@ type linkedGossip struct {
 func (g *linkedGossip) Gossip(data []byte, fanout int) error {
 	cp := make([]byte, len(data))
 	copy(cp, data)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.out = append(g.out, cp)
 	return nil
 }
 
 // take returns the gossiped vertices and clears the buffer.
 func (g *linkedGossip) take() [][]byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	out := g.out
 	g.out = nil
 	return out

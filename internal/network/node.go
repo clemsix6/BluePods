@@ -124,6 +124,13 @@ func NewNode(cfg Config) (*Node, error) {
 		NextProtos:         []string{alpnProtocol},
 	}
 
+	// One quic.Config serves both tiers on this listener: mesh validators, sized
+	// for gossip fan-out (maxIncomingUniStreams unidirectional streams) and
+	// request/response traffic (maxIncomingBidiStreams bidirectional streams);
+	// and ephemeral clients, who share that same per-connection stream budget.
+	// The client tier is bounded by other means instead of a tier-specific quic
+	// config: clientGate's per-IP connection and stream admission limits, plus
+	// the clientIdleTimeout read deadline set on every client stream.
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:        30 * time.Second,
 		KeepAlivePeriod:       10 * time.Second,
