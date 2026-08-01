@@ -383,11 +383,10 @@ table DeclaredOp {
 
 ### Task 5.1: Rebuild the trees on snapshot apply
 
-**Files:** Modify `cmd/node/sync.go` (after snapshot apply: `Manager.BuildFromState(...)` from the imported tracker/domains/validator set, before consensus init); Test at the sync-manager level.
+**Largely LANDED in batch 3 (commit 61e8fc7, the 3.3 fix wave):** both sync-side construction paths call `initIndex` after snapshot apply; the sync-shaped twin test in `cmd/node/index_test.go` proves rebuilt root == live root at the same frontier (via the restart-twin composition), with wrong-seed and missing-tracker mutations discriminating. Remaining for this task: (a) the DOMAIN leg of the twin (the batch-3 fixture had no domains — extend it once batch 4's leaves exist); (b) a joiner-holds-no-quarantine-marks note where the rebuild is documented (snapshot-imported vertices carry no `vq/` mark — correct, the joiner is in the "could not check" class, but the quarantine set is not reconstructible from a snapshot); (c) adjudicate the `WithIndexer` construction option (closes the `d.indexer` happens-before gap AND the decide-before-wire window — review carry-over).
 
-- [ ] **Test:** rebuilt root equals the root of a node that followed the same history live.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Rebuild the index from snapshot state`.
+- [ ] **Test:** domain-leg twin (rebuilt root includes domain leaves, equals live).
+- [ ] **Commit:** title `Index rebuild covers domains; indexer wired at construction`.
 
 ### Task 5.2: Fail-closed verification and the trusted checkpoint
 
