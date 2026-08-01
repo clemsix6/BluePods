@@ -404,11 +404,13 @@ table DeclaredOp {
 - [ ] **Run, expect FAIL → implement → PASS.**
 - [ ] **Commit:** title `Fail-closed snapshot verification against the anchored root`.
 
+**As-built (141199d, review-adjudicated):** the joiner's checkpoint pins `(epoch, VALIDATOR-SET root)`, not the combined index root (spec §5 amended with the two-checkpoint distinction — the light client keeps the full triple; the joiner cannot recompute a past frontier's combined root and a weakened pin is copyable). The harness derives the checkpoint from the source's newest `epoch.validators.frozen` event, NOT from a `GetIndexAnchor` bundle. New surface: `AnchorQuorumSince` on the DAG, `epoch.validators.frozen` event, `node.stopping reason=sync_unverified`, `--trust-checkpoint`/`--insecure-bootstrap` (hatch confined to harness genesis-committee formation). The gate has no freshness bound beyond frontier ≥ snapshot round (an eclipsing source can serve a genuine but old snapshot — documented, plan rule).
+
 ### Task 5.3: Join scenarios on the verified path
 
 **Files:** Extend `test/scenarios/scenario_joining_test.go` (a joined node's `GetIndexAnchor` root matches the founders'; joining refuses a wrong `--trust-checkpoint` — assert the `node.stopping` reason and that the cluster's alive set is unaffected, `WithoutInvariants` NOT needed since the refused node never joins the convergence set).
 
-- [ ] **Run, one at a time, bounded:** `TestScenarioJoining`, `TestScenarioJoinLoad`, `TestScenarioColdRestart`, `TestScenarioChurn`. Intermittent history on join scenarios: loop the first two ≥3 passes each.
+- [ ] **Run, one at a time, bounded:** `TestScenarioJoining`, `TestScenarioJoinLoad`, `TestScenarioColdRestart`, `TestScenarioChurn`, plus `TestScenarioCrash`, `TestScenarioEpochCrash`, `TestScenarioAnchorCrash` — 5.2 re-routed EVERY non-bootstrap Restart through the quorum gate, so the crash family takes the changed path too (safe by stake arithmetic but unvalidated). Intermittent history on join scenarios: loop Joining and JoinLoad ≥3 passes each; loop ColdRestart too (its phase C satisfies the gate only through pre-extinction stored vertices anchoring exactly the rebuilt frontier — a miss is a hard failure, not a retry).
 - [ ] **Commit:** title `Join scenarios cover verified snapshots`. **Push the batch.**
 
 ---
