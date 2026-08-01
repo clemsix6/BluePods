@@ -379,6 +379,8 @@ table DeclaredOp {
 - [ ] **Run:** `TestScenarioDomains`, `TestScenarioEpochs`, `TestScenarioFees` one at a time, bounded.
 - [ ] **Commit:** title `Flat index-entry term in the creation deposit; domain scenario`. **Push the batch.**
 
+**As-built (2cfe5aa + a68d650 + fix wave):** `CalculateFee`'s storage term DELEGATES to `StorageDeposit` — an avoided regression, in scope per spec §8's own "same shared function" sentence (without it, the split's storage would exceed the fee's total; on a common 1-object tx the un-delegated version would have silently moved `IndexEntryFee` out of the pool). The batch's one consensus-visible behavior change: every created object costs +`IndexEntryFee` (25), stamped into the deposit, settled 95/5 on delete; refunds read the STAMPED deposit so parameter changes between create and delete cannot break them. Minimal client domain builders landed in `pkg/client/domain.go` (kind constants duplicated from `transactions.go` — batch 6 consolidates). `cmd/node/aggregation.go` was edited by this task (forced arity update — the batch closer carries its own integration). Listener-mode gap widens by one item (no `initFeeSystem` ⇒ zero-stamped deposits) — owned by Task 5.1 (d).
+
 ---
 
 # Batch 5 — Sync: index rebuild and fail-closed verification
