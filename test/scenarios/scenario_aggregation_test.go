@@ -206,8 +206,16 @@ func waitOwnerBounded(t *testing.T, cli *client.Client, id, want [32]byte, timeo
 
 // testAttestedTransfer transfers a sharded object through the daemon's
 // attestation path and asserts every holder converged on the new owner at an
-// advanced version, with a state.object.updated event as the typed witness
-// on at least one holder.
+// advanced version, with state.object.reparented as the typed witness.
+//
+// A transfer is a declared reparent to a KeyRoot, applied in the commit loop:
+// its witness is state.object.reparented, not state.object.updated (which
+// only marks a pod-executed content replacement). The reparent event is
+// emitted strictly after that node rewrote its own stored body's owner and
+// version, so waiting for it on EVERY node — the same requireReparentedAll
+// the hierarchy scenario uses for a transfer — is what makes the holder sweep
+// below a settled read rather than a race against nodes still applying the
+// round.
 func testAttestedTransfer(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
@@ -219,8 +227,8 @@ func testAttestedTransfer(t *testing.T, c *harness.Cluster, cli *client.Client, 
 	recipient := client.NewWallet()
 
 	transferWithRetry(t, c, cli, w, objectID, recipient.Pubkey(), gasCoin)
+	requireReparentedAll(t, c, objectID, keyRootKind, recipient.Pubkey())
 	requireHoldersConverged(t, c, objectID, recipient.Pubkey(), before.Version)
-	requireObjectUpdatedEvent(t, c, objectID)
 }
 
 // requireHoldersConverged asserts every node that holds id locally reports
