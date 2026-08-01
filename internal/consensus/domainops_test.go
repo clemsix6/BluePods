@@ -542,6 +542,9 @@ type domainLeafFeed struct {
 	expiry   uint64
 }
 
+func (d *domainIndexer) BuildFromState(tracker []index.TrackerEntry, domains []index.DomainLeaf, validators []index.ValidatorLeaf) {
+}
+
 func (d *domainIndexer) ApplyEdge(child [32]byte, kind byte, parent [32]byte) {}
 
 func (d *domainIndexer) RemoveObject(child [32]byte) {}
@@ -573,12 +576,16 @@ type domainEnv struct {
 }
 
 // newDomainEnv builds a DAG with commit authenticity disabled, a domain store,
-// and a recording indexer.
+// and a recording indexer. The governed fee parameters are wired at
+// construction, as every production path wires them: the lease cap and the
+// grace window are read off them with no fallback (mustFeeParams), so a domain
+// test on an unwired DAG panics instead of exercising anything.
 func newDomainEnv(t *testing.T) *domainEnv {
 	t.Helper()
 
 	validators, vs := newTestValidatorSet(3)
-	dag := New(newTestStorage(t), vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil)
+	params := DefaultFeeParams()
+	dag := New(newTestStorage(t), vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil, WithFeeParams(&params))
 	disableTxAuth(dag)
 
 	env := &domainEnv{t: t, dag: dag, domains: newMockDomainStore(), idx: &domainIndexer{}, producer: validators[0].pubKey}

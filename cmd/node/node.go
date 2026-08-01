@@ -44,6 +44,11 @@ type Node struct {
 
 	useTUI bool // useTUI is true when the dashboard should run instead of line logs
 
+	// fees holds the governed fee parameters, allocated once by feeParams() and
+	// shared by consensus (lease pricing, the lease cap, the grace window) and
+	// state (storage deposits), which must read identical values.
+	fees *consensus.FeeParams
+
 	// Aggregation components
 	blsKey     *aggregation.BLSKeyPair                          // blsKey is the BLS key for signing attestations
 	attHandler *aggregation.Handler                             // attHandler responds to attestation requests

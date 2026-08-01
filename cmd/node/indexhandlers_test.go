@@ -8,9 +8,9 @@ import (
 	"BluePods/internal/network"
 )
 
-// TestHandleGetIndexAnchor_NoIndexerNotFound covers a node before initIndex
-// has wired the seam: GetIndexAnchor must answer Found=false, never panic on
-// the nil dag/idxManager guard.
+// TestHandleGetIndexAnchor_NoIndexerNotFound covers a node whose consensus is
+// not constructed yet, so nothing has wired the index seam: GetIndexAnchor must
+// answer Found=false, never panic on the nil dag/idxManager guard.
 func TestHandleGetIndexAnchor_NoIndexerNotFound(t *testing.T) {
 	n := &Node{}
 
@@ -47,7 +47,6 @@ func TestHandleGetIndexAnchor_ServesAndCachesUntilFrontierAdvances(t *testing.T)
 	t.Cleanup(func() { n.dag.Close(); db.Close() })
 
 	n.seedGenesisState()
-	n.initIndex()
 
 	waitForCommit(t, n.dag, n.dag.LastCommittedRound(), 2)
 

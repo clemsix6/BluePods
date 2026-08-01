@@ -266,6 +266,11 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
 	}
 
+	// The index rebuilt from the applied snapshot, the domain registry and the
+	// governed fee parameters — installed before New starts a goroutine. See
+	// committedStateOpts for the rebuild and the frontier seed's derivation.
+	opts = append(opts, n.committedStateOpts()...)
+
 	n.dag = consensus.New(
 		n.storage,
 		validators,
@@ -281,13 +286,19 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 	// commits the ordered log too, so it needs active recovery for liveness.
 	n.dag.SetVertexFetcher(n.newVertexFetcher())
 
-	// Rebuild the index from the applied snapshot, at the earliest point the
-	// DAG exists and still well before performSync switches the gossip handler
-	// onto it and replays the buffer. See initIndex for the frontier seed's
-	// derivation on this path.
-	n.initIndex()
-
 	n.setupValidatorCallback()
+
+	// The same aggregation wiring the validator path gets. A listener produces
+	// nothing, but it COMMITS the same ordered log: it applies the same declared
+	// operations, stamps the same storage deposits, and anchors the same index
+	// root in the snapshots it serves. A listener built without this reverts
+	// every domain operation validators apply (no epoch source for lease
+	// resolution) and stamps zero-fee deposits — a permanent divergence from the
+	// state every validator holds. The path is unreachable-broken upstream today
+	// (requestAndApplySnapshot dereferences a nil n.state in listener mode, which
+	// is out of this task's scope), so the point of wiring it symmetrically is
+	// that fixing that panic cannot silently resurrect a divergent node class.
+	n.initAggregation(validators)
 
 	return nil
 }
@@ -312,6 +323,14 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 
 	opts = n.appendEpochOpts(opts)
 
+	// The index rebuilt from the applied snapshot, the domain registry and the
+	// governed fee parameters. A synced validator produces vertices as soon as
+	// it is registered, so an index wired any later is not a silent gap: it
+	// anchors (0, zero root) in every vertex, and stage-1 ingress verification
+	// makes every indexed peer reject them once the vertex round leaves the
+	// genesis epoch. See committedStateOpts for the frontier seed's derivation.
+	opts = append(opts, n.committedStateOpts()...)
+
 	n.dag = consensus.New(
 		n.storage,
 		validators,
@@ -325,14 +344,6 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 
 	// Wire missing-ancestor recovery (synced-validator construction site).
 	n.dag.SetVertexFetcher(n.newVertexFetcher())
-
-	// Rebuild the index from the applied snapshot, at the earliest point the DAG
-	// exists. A synced validator produces vertices as soon as it is registered,
-	// so an unwired index here is not a silent gap: it anchors (0, zero root) in
-	// every vertex, and stage-1 ingress verification makes every indexed peer
-	// reject them once the vertex round leaves the genesis epoch. See initIndex
-	// for the frontier seed's derivation on this path.
-	n.initIndex()
 
 	logger.Info("DAG created for validator mode",
 		"validators", n.dag.ValidatorsInfo(),

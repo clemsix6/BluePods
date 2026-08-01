@@ -7,14 +7,21 @@ import "BluePods/internal/index"
 // close. A nil indexer (the DAG's zero value) makes every feed point a
 // no-op, so wiring the verifiable index is optional and additive over the
 // existing commit path: cmd/node constructs a real *index.Manager and injects
-// it through SetIndexer once it exists, and any DAG built without that call
-// runs exactly as it did before this package existed.
+// it through WithIndexer at construction, and any DAG built without that
+// option runs exactly as it did before this package existed.
 // The edge and object parameters below are typed [32]byte, not Hash: Hash is a
 // named type over the same underlying array, so Hash values are directly
 // assignable at every call site (Go's named/unnamed assignability rule), while
 // [32]byte is what *index.Manager's methods actually take — internal/index
 // stays free of any BluePods import, consensus included.
 type indexer interface {
+	// BuildFromState rebuilds every tree wholesale from the committed state
+	// the DAG already holds. It runs once, inside New, before any goroutine
+	// starts: the trees are derived state, so a node's index is only correct
+	// from its first tick if it is rebuilt from the tracker, the domain
+	// registry and the validator snapshot it boots with.
+	BuildFromState(tracker []index.TrackerEntry, domains []index.DomainLeaf, validators []index.ValidatorLeaf)
+
 	// ApplyEdge upserts child's parent-tree and children-tree edge, covering
 	// both a newly created object's declared parent and a reparent's edge
 	// move.
@@ -62,9 +69,14 @@ type indexer interface {
 	RootAt(round uint64) (root [32]byte, ok bool)
 }
 
-// SetIndexer wires the verifiable-index manager so object creation, reparent,
-// deletion, epoch validator snapshots, and committed frontiers all feed it.
-// Left unset, every feed point is a no-op.
+// SetIndexer wires the verifiable-index manager after construction. It is a
+// TEST-ONLY seam: package tests inject recording fakes and hand-built managers
+// into a DAG whose loops they control, which no construction option can do.
+// Production wires the index through WithIndexer instead — writing d.indexer
+// once the commit and production goroutines are already running publishes it
+// with no happens-before edge, and skips the construction backfill below, so
+// every root the loop records until the wire lands is computed over empty
+// trees.
 //
 // idx must never be a nil-typed concrete pointer (e.g. a nil *index.Manager)
 // wrapped in the interface: `d.indexer != nil` is a check on the interface
@@ -73,6 +85,85 @@ type indexer interface {
 // Only omitting the call at all leaves indexer correctly unset.
 func (d *DAG) SetIndexer(idx indexer) {
 	d.indexer = idx
+}
+
+// backfillIndex rebuilds the wired index from this DAG's committed state and
+// anchors it at the round that state describes. New calls it after every
+// option has been applied and BEFORE the commit and production goroutines
+// start, which is what makes the whole index seam safe: the field and the
+// trees behind it are written once, on the constructing goroutine, and only
+// read afterwards by loops that started later.
+//
+// It covers all three boot paths uniformly, because each one installs its
+// committed state through options that ran above: a restart resumes the
+// tracker, the domain registry and the persisted epoch holders from Pebble; a
+// sync joiner has WithImportData's tracker entries, the snapshot's domains
+// behind the domain store, and the validator set rebuilt from the snapshot; a
+// fresh chain has nothing to rebuild and takes the genesis seed through the
+// live feed points instead.
+//
+// The frontier seed is the LAST DECIDED round, which is the commit cursor
+// minus one (advanceCommitCursor sets the cursor to round+1, so it names the
+// NEXT round to decide — the next-vs-last confusion that caused batch 0's I4
+// bug). Seeding at the cursor itself would record a pre-batch root under the
+// cursor round's key, and SetFrontier's non-advancing guard would then drop
+// that round's real root when the commit loop decides it, forking RootAt
+// against a never-restarted twin. A fresh chain (cursor 0) has decided
+// nothing, so nothing is seeded: the commit loop is the sole frontier writer
+// from round 0 on.
+func (d *DAG) backfillIndex() {
+	if d.indexer == nil {
+		return
+	}
+
+	d.indexer.BuildFromState(
+		d.indexTrackerEntries(),
+		d.indexDomainLeaves(),
+		d.ValidatorLeaves(d.EpochHolders().All()),
+	)
+
+	if d.lastCommitted > 0 {
+		d.indexer.SetFrontier(lastDecidedRound(d.lastCommitted))
+	}
+}
+
+// indexTrackerEntries converts the tracked objects into the index package's
+// self-contained entry type, dropping the fields (version, replication, fees,
+// child count) the hierarchy trees do not hash.
+func (d *DAG) indexTrackerEntries() []index.TrackerEntry {
+	entries := d.tracker.Export()
+
+	out := make([]index.TrackerEntry, len(entries))
+	for i, e := range entries {
+		out[i] = index.TrackerEntry{ID: e.ID, ParentKind: e.ParentKind, Parent: e.Parent}
+	}
+
+	return out
+}
+
+// indexDomainLeaves converts the committed domain registry into the index
+// package's leaf type. Owner and expiry ride along: the domain tree hashes
+// both, so a rebuild that dropped them would compute a root no live node
+// agrees with. A DAG with no domain store wired rebuilds an empty domain
+// tree, the same no-op every other domain feed point takes when unset.
+func (d *DAG) indexDomainLeaves() []index.DomainLeaf {
+	if d.domains == nil {
+		return nil
+	}
+
+	entries := d.domains.ExportDomains()
+
+	out := make([]index.DomainLeaf, len(entries))
+	for i, e := range entries {
+		out[i] = index.DomainLeaf{
+			Name:        e.Name,
+			ObjectID:    e.ObjectID,
+			Owner:       e.Owner,
+			ExpiryEpoch: e.ExpiryEpoch,
+		}
+	}
+
+	return out
 }
 
 // ValidatorLeaves converts a validator snapshot into the index package's

@@ -11,7 +11,7 @@ import (
 // committed registration or bond the moment it commits, not only at the first
 // epoch boundary (transitionEpoch's RebuildValidators call, which epoch 0
 // never reaches until it ends). Before the fix, a node's index tree built
-// once at boot (cmd/node/indexing.go initIndex) stayed frozen at that
+// once at boot (the composition root's index rebuild) stayed frozen at that
 // snapshot for the rest of epoch 0, while a restarted twin (or any node fed
 // the committed stream directly) rebuilds it from the CURRENT committed
 // holders -- a different root the moment a genesis registration or bond
@@ -33,9 +33,10 @@ func TestGenesisValidatorTreeRestartInvariant_Critical(t *testing.T) {
 	dag.recordCommittedMember(founder.pubKey, 0)
 	dag.commitMu.Unlock()
 
-	// initIndex's genesis-time build: a validator-tree snapshot taken once at
-	// boot from the frozen genesis holders, wired via SetIndexer afterward --
-	// mirroring cmd/node's initIndex -> SetIndexer sequence.
+	// The construction-time build: a validator-tree snapshot taken once at boot
+	// from the frozen genesis holders -- what backfillIndex does for a DAG
+	// built with WithIndexer, driven here through the test seam so this test
+	// keeps control of the DAG it already built.
 	live := index.NewManager()
 	live.BuildFromState(nil, nil, dag.ValidatorLeaves(dag.epochHolders.All()))
 	dag.SetIndexer(live)

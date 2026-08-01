@@ -73,11 +73,12 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 		n.state.ReparentObject(id, newKind, newParent, version)
 	})
 
-	// Declared domain operations read and write the registry state owns, and
-	// resolution measures a lease against the epoch the commit path maintains:
-	// every node applying a given round reads the same value, so a name expires
-	// at the same round everywhere.
-	n.dag.SetDomainStore(n.state)
+	// Domain resolution measures a lease against the epoch the commit path
+	// maintains: every node applying a given round reads the same value, so a
+	// name expires at the same round everywhere. The reverse direction — the
+	// registry consensus reads and writes — is wired at construction instead
+	// (committedStateOpts), because rounds decided before it lands would revert
+	// domain operations every other node applies.
 	n.state.SetEpochSource(n.dag.LiveEpoch)
 
 	// Creation-permission walk: the state layer asks consensus whether the tx
@@ -121,8 +122,13 @@ func (n *Node) initAggregation(validators *consensus.ValidatorSet) {
 }
 
 // initFeeSystem configures protocol-level fee deduction and storage deposits.
+// The parameters themselves are already wired into consensus at construction
+// (committedStateOpts): what this adds is the coin store and the holder
+// computation, which only exist once the rendezvous does. Both sides read the
+// SAME parameters — a second allocation here would let the deposit stamped on a
+// created object and the fee debited for it drift under any future change.
 func (n *Node) initFeeSystem(validators *consensus.ValidatorSet) {
-	feeParams := consensus.DefaultFeeParams()
+	feeParams := n.feeParams()
 
 	// Build holder computation closure for replication ratio
 	computeHolders := func(objectID [32]byte, replication int) []consensus.Hash {
@@ -130,7 +136,7 @@ func (n *Node) initFeeSystem(validators *consensus.ValidatorSet) {
 	}
 
 	// Wire into DAG for fee deduction at commit
-	n.dag.SetFeeSystem(n.state, &feeParams, computeHolders)
+	n.dag.SetFeeSystem(n.state, feeParams, computeHolders)
 
 	// Wire into state for storage deposits on object creation/deletion
 	n.state.SetStorageFees(

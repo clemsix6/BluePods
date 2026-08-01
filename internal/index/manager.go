@@ -22,6 +22,12 @@ type TrackerEntry struct {
 // committed round. It is derived state: BuildFromState rebuilds every tree
 // from the tracker, domain store, and validator snapshot a caller already
 // persists elsewhere, and nothing here is itself persisted.
+//
+// The trees themselves carry no lock, because they have exactly one writer:
+// the commit path. Two callers sit outside that loop and are ordered against
+// it rather than locked against it — the construction backfill, which runs
+// before the loop's goroutine exists, and the genesis ledger seed, which holds
+// the DAG's commitMu while it feeds the reserve coin's edge.
 type Manager struct {
 	hierarchy *HierarchyTrees
 	domain    *DomainTree
@@ -127,7 +133,7 @@ func (m *Manager) Root() [32]byte {
 // round authoritative. The flip side: a boot-time seed must only ever target
 // rounds already decided — strictly below the commit cursor, which is the
 // NEXT round to decide — or it would steal the cursor round's key from the
-// commit loop's own later call (see cmd/node initIndex). It bounds retained
+// commit loop's own later call (see consensus.backfillIndex). It bounds retained
 // history to the last historyWindow rounds, except a round marked pending by
 // a preceding RebuildValidators call, which is retained indefinitely.
 //

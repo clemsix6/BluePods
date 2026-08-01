@@ -84,7 +84,7 @@ func (n *Node) initNetwork() error {
 // initConsensus initializes the DAG consensus engine.
 func (n *Node) initConsensus() error {
 	validators := n.buildValidatorSet()
-	opts := n.buildConsensusOpts()
+	opts := append(n.buildConsensusOpts(), n.committedStateOpts()...)
 
 	n.dag = consensus.New(
 		n.storage,
@@ -104,7 +104,6 @@ func (n *Node) initConsensus() error {
 	n.setupValidatorCallback()
 	n.initAggregation(validators)
 	n.seedGenesisState()
-	n.initIndex()
 
 	return nil
 }

@@ -7,18 +7,18 @@ import (
 
 	"BluePods/internal/consensus"
 	"BluePods/internal/network"
+	"BluePods/internal/state"
 	"BluePods/internal/storage"
 )
 
 // TestInitIndex_RestartRebuildMatchesNeverRestarted simulates a node restart:
-// session 1 seeds genesis (tracking the reserve coin), wires the index via
-// initIndex, then tracks one more object live through the wired
+// session 1 seeds genesis (tracking the reserve coin) through the index wired
+// at construction, then tracks one more object through the same
 // DAG.TrackObject -> indexer.ApplyEdge hook, capturing the resulting root
-// without ever restarting. Session 2 reopens the same data directory fresh
-// and calls initIndex alone. Its BuildFromState backfill, reading only what
-// session 1 persisted to Pebble, must reproduce the identical combined root —
-// otherwise a restarted node would anchor a wrong root and be silently
-// excluded by peers the moment anchoring lands.
+// without ever restarting. Session 2 reopens the same data directory fresh;
+// its construction-time backfill, reading only what session 1 persisted to
+// Pebble, must reproduce the identical combined root — otherwise a restarted
+// node anchors a wrong root and is silently excluded by its peers.
 func TestInitIndex_RestartRebuildMatchesNeverRestarted(t *testing.T) {
 	dir := t.TempDir()
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)
@@ -26,12 +26,15 @@ func TestInitIndex_RestartRebuildMatchesNeverRestarted(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	// Session 1: seed genesis, wire the index, then track one more object
-	// live so both the backfill path and the live ApplyEdge hook contribute
-	// to the final root session 2 must reproduce.
+	// Session 1: seed genesis, then track one more object so both the genesis
+	// feed and a live ApplyEdge contribute to the root session 2 must
+	// reproduce. The direct TrackObject runs with the loops stopped: on the
+	// commit path every index feed is serialized by the commit loop itself, and
+	// a test calling it while that loop records frontiers would be the one
+	// unsynchronized writer.
 	n1, db1 := bootstrapTestNode(t, dir, privKey)
 	n1.seedGenesisState()
-	n1.initIndex()
+	n1.dag.Close()
 
 	owner := deriveOwner(privKey)
 	var extra consensus.Hash
@@ -43,20 +46,17 @@ func TestInitIndex_RestartRebuildMatchesNeverRestarted(t *testing.T) {
 		t.Fatal("test misconfigured: session 1's root is the empty root")
 	}
 
-	n1.dag.Close()
 	if err := db1.Close(); err != nil {
 		t.Fatalf("close first session storage: %v", err)
 	}
 
-	// Session 2: fresh storage/state/dag over the same data directory. Only
-	// initIndex runs — no live TrackObject call — so its root depends
-	// entirely on the BuildFromState backfill.
+	// Session 2: fresh storage/state/dag over the same data directory. No live
+	// TrackObject call — the root depends entirely on the construction backfill.
 	n2, db2 := bootstrapTestNode(t, dir, privKey)
 	defer db2.Close()
 	defer n2.dag.Close()
 
 	n2.seedGenesisState() // guarded re-seed: restores the founder, does not re-track
-	n2.initIndex()
 
 	if got := n2.idxManager.Root(); got != wantRoot {
 		t.Errorf("restarted index root = %x, want %x (session 1, never restarted)", got[:4], wantRoot[:4])
@@ -71,10 +71,10 @@ func TestInitIndex_RestartRebuildMatchesNeverRestarted(t *testing.T) {
 // resumed commit loop's own SetFrontier for that round is then ignored by
 // the guard, and the restarted node serves a RootAt(cursor) a
 // never-restarted twin — which recorded that round's root AFTER its batch
-// applied — disagrees with: an anchored fork the moment batch 3 anchors
-// roots. The seed must target cursor-1, the round the backfilled state
-// actually corresponds to. The cursor round's decision is driven
-// synchronously here (commit loop stopped) so the test is deterministic.
+// applied — disagrees with: an anchored fork. The seed must target cursor-1,
+// the round the backfilled state actually corresponds to. The cursor round's
+// decision is driven synchronously here (commit loop stopped) so the test is
+// deterministic.
 func TestInitIndex_BootSeedDoesNotStealCursorRound(t *testing.T) {
 	dir := t.TempDir()
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)
@@ -92,9 +92,10 @@ func TestInitIndex_BootSeedDoesNotStealCursorRound(t *testing.T) {
 		t.Fatalf("close first session storage: %v", err)
 	}
 
-	// Session 2: reopen the same data directory, then STOP the commit loop
-	// immediately so the cursor round's decision below is this test's own
-	// synchronous call, never raced by the background ticker.
+	// Session 2: reopen the same data directory — the backfill and its frontier
+	// seed run inside New — then STOP the commit loop immediately so the cursor
+	// round's decision below is this test's own synchronous call, never raced by
+	// the background ticker.
 	n2, db2 := bootstrapTestNode(t, dir, privKey)
 	defer db2.Close()
 	n2.dag.Close()
@@ -105,7 +106,6 @@ func TestInitIndex_BootSeedDoesNotStealCursorRound(t *testing.T) {
 	}
 
 	n2.seedGenesisState()
-	n2.initIndex()
 	bootRoot := n2.idxManager.Root()
 
 	// A mutation lands in the cursor round's batch: committed state changes
@@ -141,20 +141,30 @@ func TestInitIndex_BootSeedDoesNotStealCursorRound(t *testing.T) {
 	}
 }
 
+// syncDomains are the leases the live node registers before its snapshot is
+// cut: the DOMAIN leg of the twin below. Owner and expiry are both hashed into
+// the domain tree's leaves, so a rebuild that dropped either computes a root no
+// live node agrees with.
+var syncDomains = []state.DomainEntry{
+	{Name: "alice.bp", ObjectID: [32]byte{0xD1}, Owner: [32]byte{0xA0, 0x01}, ExpiryEpoch: 17},
+	{Name: "bob.bp", ObjectID: [32]byte{0xD2}, Owner: [32]byte{0xB0, 0x02}, ExpiryEpoch: 42},
+	{Name: "carol.bp", ObjectID: [32]byte{0xD3}, Owner: [32]byte{0xC0, 0x03}, ExpiryEpoch: 9},
+}
+
 // syncSnapshotFromLiveNode runs a bootstrap node through a short history —
-// genesis seeded, one further tracked object, rounds decided by the real commit
-// loop — and returns the snapshot a joining node would be served from it,
-// together with that node's own committed frontier and the root it holds there.
-// A joiner rebuilding from this snapshot must reproduce the identical pair:
-// that is what makes its vertices verifiable by every peer that followed the
-// same history.
+// genesis seeded, rounds decided by the real commit loop, then further
+// committed activity (one tracked object and three registered domain leases) —
+// and returns the snapshot a joining node would be served from it, together
+// with that node's own committed frontier and the root it holds over that
+// state. A joiner rebuilding from this snapshot must reproduce the identical
+// pair: that is what makes its vertices verifiable by every peer that followed
+// the same history.
 //
-// The index is wired only after the DAG is stopped, and the returned root is
-// therefore the boot backfill's — which the restart twin above pins to exactly
-// what a never-restarted node holds. Wiring it into a node whose production
-// loop is still running would instead make this helper trip -race on the DAG's
-// unguarded indexer field (see initIndex), a hazard that has nothing to do with
-// what these tests cover.
+// The post-genesis activity is applied with the DAG stopped. Feeding it while
+// the commit loop runs would put a second writer on the index trees, which
+// every feed point on the commit path is serialized against — the loop is the
+// only writer in production, and a test that broke that would trip -race
+// rather than prove anything about rebuilds.
 func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) {
 	t.Helper()
 
@@ -169,16 +179,23 @@ func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) 
 
 	live.seedGenesisState()
 
+	waitForCommit(t, live.dag, live.dag.LastCommittedRound(), 1)
+	live.dag.Close()
+
 	// Post-genesis committed activity, so the exported state is more than the
-	// genesis seed and the joiner has a real hierarchy to rebuild.
+	// genesis seed: a real hierarchy AND a populated domain registry for the
+	// joiner to rebuild.
 	var extra consensus.Hash
 	extra[0] = 0xAB
 	live.dag.TrackObject(extra, 1, 0, 0, 0, deriveOwner(privKey))
 
-	waitForCommit(t, live.dag, live.dag.LastCommittedRound(), 1)
-	live.dag.Close()
-
-	live.initIndex()
+	for _, d := range syncDomains {
+		// Exactly what the commit path's writeDomainLeaf does for every
+		// registration, renewal, repoint and transfer: the registry and the
+		// authenticated tree, in lockstep.
+		live.state.SetDomainLeaf(d.Name, d.ObjectID, d.Owner, d.ExpiryEpoch)
+		live.idxManager.ApplyDomain(d.Name, d.ObjectID, d.Owner, d.ExpiryEpoch)
+	}
 
 	cut := live.dag.ExportConsistentCut(100)
 	defer cut.DBSnapshot.Close()
@@ -188,16 +205,18 @@ func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) 
 	}
 
 	// The last DECIDED round: what internal/sync exports as a snapshot's
-	// lastCommittedRound (cursor-1), and the round this node's own boot seed
-	// records its backfilled root under.
+	// lastCommittedRound (cursor-1), and the round a rebuild over the exported
+	// state anchors itself at.
 	frontier := cut.Cursor - 1
 
-	root, ok := live.idxManager.RootAt(frontier)
-	if !ok {
-		t.Fatalf("no root recorded at the last DECIDED round %d (commit cursor %d): the boot seed must target cursor-1, the round the backfilled state corresponds to", frontier, cut.Cursor)
-	}
+	root := live.idxManager.Root()
 	if root == ([32]byte{}) {
 		t.Fatal("test misconfigured: the live node anchors the empty root")
+	}
+
+	domains := live.state.ExportDomains()
+	if len(domains) != len(syncDomains) {
+		t.Fatalf("test misconfigured: exported %d domains, want %d", len(domains), len(syncDomains))
 	}
 
 	result := &snapshotResult{
@@ -205,7 +224,7 @@ func syncSnapshotFromLiveNode(t *testing.T) (*snapshotResult, uint64, [32]byte) 
 		validators:         cut.Validators,
 		vertices:           cut.Vertices,
 		trackerEntries:     cut.TrackerEntries,
-		domainEntries:      live.state.ExportDomains(),
+		domainEntries:      domains,
 		issuanceRateMicro:  cut.IssuanceRate,
 		regimeState:        cut.Regime,
 	}
@@ -269,12 +288,18 @@ func syncedJoiner(t *testing.T, result *snapshotResult) *Node {
 
 // assertSyncedIndex checks that a node built through a sync-side construction
 // path carries an index anchoring the same (frontier, root) pair a node that
-// followed the same history live anchors.
+// followed the same history anchors over the same committed state.
 func assertSyncedIndex(t *testing.T, n *Node, frontier uint64, wantRoot [32]byte) {
 	t.Helper()
 
 	if n.idxManager == nil {
 		t.Fatal("a node built through the sync path has no index: it anchors (0, zero root) in every vertex it produces, which every indexed peer rejects once the vertex round is past the first epoch boundary")
+	}
+
+	// The rebuilt trees themselves: tracker hierarchy, domain leases with their
+	// owners and expiries, and the validator snapshot, combined.
+	if got := n.idxManager.Root(); got != wantRoot {
+		t.Errorf("synced index root = %x, want %x (the root over the same committed state)", got[:4], wantRoot[:4])
 	}
 
 	// What the joiner anchors in the vertices it produces. The round may have
@@ -330,9 +355,39 @@ func TestInitConsensusForListener_RebuildsIndex(t *testing.T) {
 	assertSyncedIndex(t, n, frontier, wantRoot)
 }
 
-// TestInitIndex_FreshBootBuildsNonEmptyRoot verifies initIndex backfills the
-// genesis-seeded reserve coin into the index on an ordinary (non-restart)
-// boot, so a bootstrap node never anchors an empty root once genesis exists.
+// TestInitConsensusForValidator_DomainOwnerMutationChangesRoot is the domain
+// leg's discriminator. A joiner whose imported registry differs from the
+// source's by ONE lease owner must rebuild a different root: the owner is
+// hashed into the domain leaf, so a rebuild that ignored it (or a snapshot
+// that carried the name and object without the lease's holder) would agree
+// with the source anyway, and a lying bootstrap could hand a joiner a registry
+// whose names point at whatever keys it likes while the anchored root still
+// checked out.
+func TestInitConsensusForValidator_DomainOwnerMutationChangesRoot(t *testing.T) {
+	result, _, wantRoot := syncSnapshotFromLiveNode(t)
+
+	// One flipped owner byte in the imported state, nothing else touched.
+	tampered := *result
+	tampered.domainEntries = append([]state.DomainEntry(nil), result.domainEntries...)
+	tampered.domainEntries[0].Owner[0] ^= 0xFF
+
+	n := syncedJoiner(t, &tampered)
+	if err := n.initConsensusForValidator(&tampered); err != nil {
+		t.Fatalf("initConsensusForValidator: %v", err)
+	}
+	n.dag.Close()
+
+	if got := n.idxManager.Root(); got == wantRoot {
+		t.Errorf("a flipped domain owner rebuilt the same root %x: the domain leg is not covered by the anchored root", got[:4])
+	}
+}
+
+// TestInitIndex_FreshBootBuildsNonEmptyRoot verifies a bootstrap node's index
+// carries the genesis-seeded reserve coin on an ordinary (non-restart) boot,
+// so it never anchors an empty root once genesis exists. The construction
+// backfill has nothing to read on a fresh chain: the coin arrives through
+// seedGenesisState's own tracker feed, which is exactly why that feed must
+// reach a manager that is already wired.
 func TestInitIndex_FreshBootBuildsNonEmptyRoot(t *testing.T) {
 	dir := t.TempDir()
 	_, privKey, err := ed25519.GenerateKey(rand.Reader)
@@ -344,14 +399,14 @@ func TestInitIndex_FreshBootBuildsNonEmptyRoot(t *testing.T) {
 	defer db.Close()
 	defer n.dag.Close()
 
-	n.seedGenesisState()
-	n.initIndex()
-
 	if n.idxManager == nil {
-		t.Fatal("initIndex did not construct the manager")
+		t.Fatal("construction did not build the index manager")
 	}
+
+	n.seedGenesisState()
+
 	if n.idxManager.Root() == ([32]byte{}) {
-		t.Error("index root is empty after genesis seeding; the reserve coin was not backfilled")
+		t.Error("index root is empty after genesis seeding; the reserve coin never reached the index")
 	}
 
 	entries := n.dag.ExportTrackerEntries()

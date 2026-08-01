@@ -22,7 +22,8 @@ import (
 func TestExecuteTx_DeclaredTransferMovesOnlyRoot(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
-	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil)
+	params := DefaultFeeParams()
+	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil, WithFeeParams(&params))
 	defer dag.Close()
 	disableTxAuth(dag)
 
@@ -129,7 +130,8 @@ func TestHandleDeclaredOps_CycleRejected(t *testing.T) {
 func TestExecuteTx_DeclaredReparentBumpsVersionOncePerObject(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
-	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil)
+	params := DefaultFeeParams()
+	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil, WithFeeParams(&params))
 	defer dag.Close()
 	disableTxAuth(dag)
 
@@ -233,7 +235,8 @@ func TestHandleDeclaredOps_SequentialReparentSucceeds(t *testing.T) {
 func TestExecuteTx_OpsWithPodCallRejected(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
-	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil)
+	params := DefaultFeeParams()
+	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil, WithFeeParams(&params))
 	defer dag.Close()
 	disableTxAuth(dag)
 
@@ -463,12 +466,16 @@ func TestHandleDeclaredOps_UnknownKindRejected(t *testing.T) {
 
 // opsTestDAG builds a DAG with commit-time authenticity disabled, for tests that
 // drive handleDeclaredOps/settleDeclaredDeletions with synthetic transactions.
+// The governed fee parameters are wired at construction, as every production
+// path wires them: the declared-op staging path reads the lease cap off them
+// with no fallback (mustFeeParams).
 func opsTestDAG(t *testing.T) *DAG {
 	t.Helper()
 
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
-	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil)
+	params := DefaultFeeParams()
+	dag := New(db, vs, &mockBroadcaster{}, testSystemPod, 0, validators[0].privKey, nil, WithFeeParams(&params))
 	disableTxAuth(dag)
 
 	return dag

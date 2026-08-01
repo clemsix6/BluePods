@@ -22,6 +22,9 @@ type anchorIndexer struct {
 	root     Hash   // root is the index root CommittedFrontier reports
 }
 
+func (a *anchorIndexer) BuildFromState(tracker []index.TrackerEntry, domains []index.DomainLeaf, validators []index.ValidatorLeaf) {
+}
+
 func (a *anchorIndexer) ApplyEdge(child [32]byte, kind byte, parent [32]byte) {}
 
 func (a *anchorIndexer) RemoveObject(child [32]byte) {}

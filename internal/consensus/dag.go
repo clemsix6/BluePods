@@ -365,6 +365,42 @@ func WithImportData(vertices []VertexEntry, trackerEntries []ObjectTrackerEntry)
 	}
 }
 
+// WithIndexer wires the verifiable-index manager AT CONSTRUCTION, which is the
+// only point at which it can be wired correctly. Two failures come with any
+// later wire: the commit and production goroutines read d.indexer with no
+// happens-before edge of their own, and every round the commit loop decides
+// before the wire lands records a root computed over empty trees — a
+// permanently wrong RootAt entry for a round the rest of the network holds a
+// real root for. New backfills the manager from this DAG's committed state and
+// seeds its frontier before either goroutine starts (see backfillIndex).
+func WithIndexer(idx indexer) Option {
+	return func(d *DAG) {
+		d.indexer = idx
+	}
+}
+
+// WithDomainStore wires the committed domain registry at construction. It is
+// consensus-visible state — leases are validated, applied and swept against it,
+// and its leaves are hashed into the anchored index root — so a DAG that
+// commits rounds before the registry is wired reverts domain operations every
+// other node applies, and rebuilds its index over an empty domain tree.
+func WithDomainStore(store DomainStore) Option {
+	return func(d *DAG) {
+		d.domains = store
+	}
+}
+
+// WithFeeParams wires the governed fee parameters at construction. Every
+// construction path must supply them (this option, or SetFeeSystem in package
+// tests): the lease cap and the grace window are read straight off them with
+// no fallback, because a node applying leases by numbers no other node uses
+// forks the anchored index root permanently. See mustFeeParams.
+func WithFeeParams(params *FeeParams) Option {
+	return func(d *DAG) {
+		d.feeParams = params
+	}
+}
+
 // New creates a DAG with the given parameters.
 // Options are applied before starting the background goroutines.
 func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster, systemPod Hash, epoch uint64, privKey ed25519.PrivateKey, executor Executor, opts ...Option) *DAG {
@@ -415,6 +451,12 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 	for _, opt := range opts {
 		opt(d)
 	}
+
+	// Rebuild the wired index from the committed state the options above just
+	// installed, and anchor it at the round that state describes. It runs here,
+	// after every option and before the first goroutine, because both loops
+	// below read the index and one of them writes it.
+	d.backfillIndex()
 
 	d.wg.Add(2)
 	go d.commitLoop()
@@ -802,7 +844,15 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 		copy(parent[:], ownerBytes)
 	}
 
+	// Under commitMu, like SeedGenesisValidator below and for the same reason:
+	// the commit loop is already running by the time genesis is seeded, and
+	// TrackObject feeds the index trees — which the loop reads whenever it
+	// records a committed frontier. Every other writer of those trees is the
+	// commit path itself, so this lock is what keeps the genesis seed from
+	// being the one unsynchronized writer.
+	d.commitMu.Lock()
 	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees(), coin.ParentKind(), parent)
+	d.commitMu.Unlock()
 }
 
 // SeedGenesisValidator installs the founding validator into the validator set:

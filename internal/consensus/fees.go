@@ -31,17 +31,16 @@ type FeeSplit struct {
 	Epoch  uint64 // Epoch is the epoch reward share (100% of consumed fees)
 }
 
-// defaultMaxTermEpochs is the lease cap DefaultFeeParams carries, and the
-// fallback a DAG with no fee system wired prices leases against. It is never 0:
-// a zero cap reverts every lease, which a fee-less test or bootstrap node has no
-// reason to do.
+// defaultMaxTermEpochs is the lease cap DefaultFeeParams carries. It is never
+// 0: a zero cap reverts every lease. Nothing falls back to it — a DAG with no
+// fee parameters wired stops rather than pricing leases from a constant no
+// other node reads (see mustFeeParams).
 const defaultMaxTermEpochs uint64 = 256
 
 // defaultGraceEpochs is the post-expiry grace window DefaultFeeParams
-// carries, and the fallback the epoch boundary's sweep uses on a DAG with no
-// fee system wired. Never 0: a zero window would sweep every lease the
-// instant it expired, forfeiting the owner's exclusive renewal right the
-// window exists to give.
+// carries. Never 0: a zero window would sweep every lease the instant it
+// expired, forfeiting the owner's exclusive renewal right the window exists to
+// give. Like the lease cap, it is a default, never a fallback.
 const defaultGraceEpochs uint64 = 8
 
 // DefaultFeeParams returns the default fee parameters.

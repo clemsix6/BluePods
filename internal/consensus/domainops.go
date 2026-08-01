@@ -199,29 +199,39 @@ func (d *DAG) writeDomainLeaf(name string, objectID, owner Hash, expiry uint64) 
 // maxTermEpochs returns the governed cap on how far past the current epoch a
 // lease may run. It comes from the same frozen FeeParams that charges rate x
 // term, so the cap that reverts an operation and the price of the term it
-// allows can never be moved apart by a parameter change. A DAG with no fee
-// system wired (a test, a fee-less bootstrap) falls back to the default rather
-// than to zero, which would revert every lease.
+// allows can never be moved apart by a parameter change.
 func (d *DAG) maxTermEpochs() uint64 {
-	if d.feeParams == nil {
-		return defaultMaxTermEpochs
-	}
-
-	return d.feeParams.MaxTermEpochs
+	return d.mustFeeParams().MaxTermEpochs
 }
 
 // graceEpochs returns the governed window past expiry a lease stays in the
 // registry before the boundary sweep removes it, reserving its owner's
-// exclusive renewal right until then. It mirrors maxTermEpochs' fallback
-// rule: a DAG with no fee system wired (a test, a fee-less bootstrap) uses
-// the default rather than zero, which would sweep every lease the instant it
-// expired.
+// exclusive renewal right until then.
 func (d *DAG) graceEpochs() uint64 {
+	return d.mustFeeParams().GraceEpochs
+}
+
+// mustFeeParams returns the governed fee parameters and panics when a DAG
+// reaches a consensus decision that depends on them with none wired.
+//
+// The rule it enforces is a construction rule: every path builds the DAG with
+// WithFeeParams (package tests use SetFeeSystem), so reaching this panic means
+// a construction path forgot the parameters — and a node that applies domain
+// leases against parameters no other node uses is not degraded, it is forked.
+// The accessors used to fall back to the defaults instead, which is exactly
+// how the listener path stayed silently broken: built with no fee system, it
+// capped lease terms from a package constant while validators capped them from
+// the governed value, so the day MaxTermEpochs moves it reverts operations
+// every validator applies and anchors a domain tree no one else computes.
+// Rejecting the operation instead of panicking would fork just as permanently,
+// only more quietly. Stopping is the only outcome that cannot corrupt the
+// committed log.
+func (d *DAG) mustFeeParams() *FeeParams {
 	if d.feeParams == nil {
-		return defaultGraceEpochs
+		panic("consensus: domain lease parameters read from a DAG built with no fee parameters (WithFeeParams, or SetFeeSystem in tests)")
 	}
 
-	return d.feeParams.GraceEpochs
+	return d.feeParams
 }
 
 // domainExpiry computes the expiry a register or renew produces and reports

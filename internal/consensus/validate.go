@@ -154,7 +154,7 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 // epoch earlier, since a zero index root is tolerated only while the vertex's own
 // round is in the genesis epoch (validateIndexAnchor). Every production path wires
 // the index before the DAG produces or verifies a vertex (cmd/node's fresh-chain,
-// restart and sync constructions all call initIndex), so an indexer-less DAG is a
+// restart and sync constructions all pass WithIndexer), so an indexer-less DAG is a
 // test and tooling configuration, and a test that needs a nonzero epoch anchors a
 // frontier that reaches it.
 //

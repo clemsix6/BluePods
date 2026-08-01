@@ -32,7 +32,8 @@ func (d *DAG) anchorLie(v *types.Vertex) (claimed, computed Hash, lying bool) {
 	// round to decide (advanceCommitCursor sets it to round+1), so the obvious
 	// `frontier <= LastCommittedRound()` is off by one and would treat the
 	// undecided cursor round as verifiable — the exact next-vs-last confusion
-	// that produced batch 0's I4 bug and cmd/node initIndex's cursor-1 seed.
+	// that produced batch 0's I4 bug and the construction backfill's cursor-1
+	// seed (backfillIndex).
 	// Reading the cursor also takes commitMu, which would put a whole commit
 	// batch's execution on every gossip goroutine. The seam's frontier is the
 	// last round SetFrontier recorded, which IS the last decided round, and it
