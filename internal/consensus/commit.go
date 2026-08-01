@@ -1087,7 +1087,7 @@ func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTran
 
 	totalValidators := d.validators.Len()
 	for _, rep := range extractCreatedObjectsReplication(tx) {
-		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee))
+		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee, d.feeParams.IndexEntryFee))
 	}
 
 	full := d.calculateTxFee(tx, atx)

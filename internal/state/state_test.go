@@ -85,7 +85,7 @@ func TestComputeStorageDeposit_FollowsLiveValidatorCount(t *testing.T) {
 
 	count := 4
 	s.SetValidatorCount(func() int { return count })
-	s.SetStorageFees(1000, 9500, 0) // totalValidators fallback unused once live count is wired
+	s.SetStorageFees(1000, 0, 9500, 0) // totalValidators fallback unused once live count is wired
 
 	// Singleton (replication 0) -> effRep == count -> deposit == storageFee.
 	if got := s.computeStorageDeposit(0); got != 1000 {
@@ -495,7 +495,7 @@ func TestRegisterValidatorCommitPreservesSupplyIdentity(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 	s.SetIsHolder(func([32]byte, uint16) bool { return true }) // singletons: every validator holds it
-	s.SetStorageFees(1000, 9500, 4)                            // singleton deposit == storage_fee == 1000
+	s.SetStorageFees(1000, 0, 9500, 4)                          // singleton deposit == storage_fee == 1000
 
 	// The deposits term of the supply identity is the sum of the storage
 	// deposits the tracker records, fed by the onObjectCreated callback (exactly
@@ -1013,8 +1013,8 @@ func TestComputeStorageDeposit(t *testing.T) {
 		t.Errorf("expected 0 with no fees, got %d", dep)
 	}
 
-	// Configure fees
-	s.SetStorageFees(1000, 9500, 100)
+	// Configure fees, no index-entry term
+	s.SetStorageFees(1000, 0, 9500, 100)
 
 	// Standard object: 10 * 1000 / 100 = 100
 	if dep := s.computeStorageDeposit(10); dep != 100 {
@@ -1024,6 +1024,34 @@ func TestComputeStorageDeposit(t *testing.T) {
 	// Singleton: 100 * 1000 / 100 = 1000
 	if dep := s.computeStorageDeposit(0); dep != 1000 {
 		t.Errorf("singleton: got %d, want 1000", dep)
+	}
+}
+
+// TestComputeStorageDeposit_IncludesIndexEntryFee confirms the flat
+// index-entry term (mirroring consensus's FeeParams.IndexEntryFee) is added on
+// top of the storage-fee share, and that a validator count of zero still gates
+// the whole deposit to zero regardless of the index-entry term — the deposit
+// is undefined without a validator count to divide the storage share by.
+func TestComputeStorageDeposit_IncludesIndexEntryFee(t *testing.T) {
+	db := newTestStorage(t)
+	s := New(db, nil)
+	s.SetStorageFees(1000, 25, 9500, 100)
+
+	// Standard object: 10 * 1000 / 100 = 100, plus the 25 index-entry term.
+	if dep := s.computeStorageDeposit(10); dep != 125 {
+		t.Errorf("standard + index entry: got %d, want 125", dep)
+	}
+
+	// Singleton: 100 * 1000 / 100 = 1000, plus the 25 index-entry term.
+	if dep := s.computeStorageDeposit(0); dep != 1025 {
+		t.Errorf("singleton + index entry: got %d, want 1025", dep)
+	}
+
+	// Zero validators: gated to zero even with a nonzero index-entry term.
+	zero := New(newTestStorage(t), nil)
+	zero.SetStorageFees(1000, 25, 9500, 0)
+	if dep := zero.computeStorageDeposit(10); dep != 0 {
+		t.Errorf("0 validators: got %d, want 0", dep)
 	}
 }
 

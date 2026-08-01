@@ -23,19 +23,19 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	db                 *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
-	objects            *objectStore                                                                                         // objects is the object storage
-	domains            *domainStore                                                                                         // domains stores domain name → ObjectID mappings
-	pods               *podvm.Pool                                                                                          // pods is the WASM runtime pool
-	isHolder           func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
-	onObjectCreated    func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
-	signObject         func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
-	parentValidator    func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
-	onDomainRegistered func(name string, objectID [32]byte)                                                                 // onDomainRegistered is set but never invoked: its only source, the pod domain write path, is retired
-	epochSource        func() uint64                                                                                        // epochSource reports the epoch domain leases are measured against (nil = epoch 0)
+	db              *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
+	objects         *objectStore                                                                                         // objects is the object storage
+	domains         *domainStore                                                                                         // domains stores domain name → ObjectID mappings
+	pods            *podvm.Pool                                                                                          // pods is the WASM runtime pool
+	isHolder        func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
+	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
+	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
+	parentValidator func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
+	epochSource     func() uint64                                                                                        // epochSource reports the epoch domain leases are measured against (nil = epoch 0)
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
+	indexEntryFee    uint64     // indexEntryFee is the flat term a created object's hierarchy-index entry adds to its deposit, mirroring consensus's FeeParams.IndexEntryFee
 	storageRefundBPS uint64     // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
 	totalValidators  int        // totalValidators is the fallback validator count when validatorCount is unset
 	validatorCount   func() int // validatorCount returns the live validator count; set to the consensus set so the storage-deposit formula matches consensus
@@ -178,21 +178,15 @@ func (s *State) SetParentValidator(fn func(kind byte, parent [32]byte, sender [3
 	s.parentValidator = fn
 }
 
-// SetOnDomainRegistered sets a callback that used to fire whenever the pod
-// output path bound or rebound a domain name to an object. That write path is
-// retired (declared operations are the only domain writer now, and they feed
-// the index directly through the DAG's indexer); nothing calls this callback
-// today. Kept wired rather than torn out here, since its only caller is the
-// composition root's index setup, out of this change's scope.
-func (s *State) SetOnDomainRegistered(fn func(name string, objectID [32]byte)) {
-	s.onDomainRegistered = fn
-}
-
 // SetStorageFees configures protocol-level storage deposits and refunds.
 // When storageFee > 0, created objects get a storage deposit in their fees field.
-// totalValidators is only a fallback; SetValidatorCount supplies the live count.
-func (s *State) SetStorageFees(storageFee uint64, storageRefundBPS uint64, totalValidators int) {
+// indexEntryFee is the flat term added on top, mirroring consensus's
+// FeeParams.IndexEntryFee, so the deposit stamped here always equals the fee
+// debited at commit (fees.go's StorageDeposit). totalValidators is only a
+// fallback; SetValidatorCount supplies the live count.
+func (s *State) SetStorageFees(storageFee, indexEntryFee, storageRefundBPS uint64, totalValidators int) {
 	s.storageFee = storageFee
+	s.indexEntryFee = indexEntryFee
 	s.storageRefundBPS = storageRefundBPS
 	s.totalValidators = totalValidators
 }
@@ -710,16 +704,19 @@ func extractSender(tx *types.Transaction) Hash {
 	return sender
 }
 
-// computeStorageDeposit calculates the storage deposit for a new object.
-// It reads the live validator count (so the deposit matches the storage fee
-// debited at commit), falling back to the init-time count if none is wired.
+// computeStorageDeposit calculates the storage deposit for a new object: a
+// storage-fee share proportional to replication, plus the flat index-entry
+// term, mirroring fees.go's StorageDeposit exactly so the deposit stamped
+// here always equals the fee consensus debits for it. It reads the live
+// validator count (so the deposit matches the storage fee debited at
+// commit), falling back to the init-time count if none is wired.
 func (s *State) computeStorageDeposit(replication uint16) uint64 {
 	total := s.totalValidators
 	if s.validatorCount != nil {
 		total = s.validatorCount()
 	}
 
-	if s.storageFee == 0 || total == 0 {
+	if total == 0 {
 		return 0
 	}
 
@@ -728,7 +725,9 @@ func (s *State) computeStorageDeposit(replication uint16) uint64 {
 		effRep = total
 	}
 
-	return uint64(effRep) * s.storageFee / uint64(total)
+	storage := uint64(effRep) * s.storageFee / uint64(total)
+
+	return storage + s.indexEntryFee
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects

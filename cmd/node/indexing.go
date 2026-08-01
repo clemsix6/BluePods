@@ -66,13 +66,6 @@ func (n *Node) initIndex() {
 
 	n.idxManager = mgr
 	n.dag.SetIndexer(mgr)
-
-	// Domain writes still land through the pod output path (batch 4 replaces
-	// this with a declared operation); applyRegisteredDomains is where they
-	// are written today, so its callback is the index's only domain feed.
-	n.state.SetOnDomainRegistered(func(name string, objectID [32]byte) {
-		mgr.ApplyDomain(name, objectID, [32]byte{}, 0)
-	})
 }
 
 // trackerEntries converts consensus tracker entries into the index package's

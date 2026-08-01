@@ -197,12 +197,14 @@ func CalculateFee(
 	// Transit fee: nb_standard_objects * transit_fee
 	total = safeAdd(total, safeMul(uint64(standardObjectCount), params.TransitFee))
 
-	// Storage fee: sum(effective_rep(replication_i) / total_validators) * storage_fee
+	// Storage fee: sum(StorageDeposit(replication_i)), delegating to the exact
+	// formula the creation deposit is stamped with (fees.go's StorageDeposit,
+	// mirrored by state.computeStorageDeposit) so the declared fee this loop
+	// totals into the header always covers the deposit calculateTxFeeSplit
+	// later locks against the created objects, index-entry term included.
 	if totalValidators > 0 {
 		for _, rep := range createdObjectsReplication {
-			effRep := effectiveRep(rep, totalValidators)
-			storage := safeMul(uint64(effRep), params.StorageFee) / uint64(totalValidators)
-			total = safeAdd(total, storage)
+			total = safeAdd(total, StorageDeposit(rep, totalValidators, params.StorageFee, params.IndexEntryFee))
 		}
 	}
 
@@ -269,16 +271,21 @@ func SplitFee(total uint64, params FeeParams) FeeSplit {
 	}
 }
 
-// StorageDeposit computes the storage deposit for a newly created object.
-// deposit = storage_fee * effective_rep(replication) / total_validators.
-func StorageDeposit(replication uint16, totalValidators int, storageFee uint64) uint64 {
+// StorageDeposit computes the storage deposit for a newly created object: a
+// storage-fee share proportional to replication, plus the flat index-entry
+// term its hierarchy-index leaf adds. state.computeStorageDeposit mirrors this
+// exact formula so the deposit stamped on a created object always equals the
+// fee CalculateFee (via this same function) debits for it.
+// deposit = storage_fee * effective_rep(replication) / total_validators + index_entry_fee.
+func StorageDeposit(replication uint16, totalValidators int, storageFee, indexEntryFee uint64) uint64 {
 	if totalValidators == 0 {
 		return 0
 	}
 
 	effRep := effectiveRep(replication, totalValidators)
+	storage := safeMul(uint64(effRep), storageFee) / uint64(totalValidators)
 
-	return uint64(effRep) * storageFee / uint64(totalValidators)
+	return safeAdd(storage, indexEntryFee)
 }
 
 // StorageRefund computes the refund amount when an object is deleted.

@@ -55,7 +55,7 @@ func TestApplyCreatedObjects_EmitsObjectCreatedAndDepositLocked(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
-	s.SetStorageFees(1000, 9500, 100) // storageFee=1000, totalValidators=100
+	s.SetStorageFees(1000, 0, 9500, 100) // storageFee=1000, no index-entry term, totalValidators=100
 
 	buf := captureEvents(t)
 

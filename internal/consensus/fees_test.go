@@ -317,30 +317,50 @@ func TestSplitFee_One(t *testing.T) {
 }
 
 func TestStorageDeposit(t *testing.T) {
-	// Standard object: rep=10, 100 validators, fee=1000
+	// Standard object: rep=10, 100 validators, fee=1000, no index-entry term
 	// deposit = 10 * 1000 / 100 = 100
-	dep := StorageDeposit(10, 100, 1000)
+	dep := StorageDeposit(10, 100, 1000, 0)
 	if dep != 100 {
 		t.Errorf("standard: got %d, want 100", dep)
 	}
 
 	// Singleton: rep=0, effective=100, 100 validators
 	// deposit = 100 * 1000 / 100 = 1000
-	dep = StorageDeposit(0, 100, 1000)
+	dep = StorageDeposit(0, 100, 1000, 0)
 	if dep != 1000 {
 		t.Errorf("singleton: got %d, want 1000", dep)
 	}
 
 	// 1 validator: rep=10, deposit = 10 * 1000 / 1 = 10000
-	dep = StorageDeposit(10, 1, 1000)
+	dep = StorageDeposit(10, 1, 1000, 0)
 	if dep != 10000 {
 		t.Errorf("1 validator: got %d, want 10000", dep)
 	}
 
-	// 0 validators: no panic, returns 0
-	dep = StorageDeposit(10, 0, 1000)
+	// 0 validators: no panic, returns 0 even with a nonzero index-entry term
+	dep = StorageDeposit(10, 0, 1000, 25)
 	if dep != 0 {
 		t.Errorf("0 validators: got %d, want 0", dep)
+	}
+}
+
+// TestStorageDeposit_IncludesIndexEntryFee confirms the flat index-entry term
+// is added on top of the storage-fee share, for both a standard object and a
+// singleton, matching state.computeStorageDeposit's mirror of this formula.
+func TestStorageDeposit_IncludesIndexEntryFee(t *testing.T) {
+	// Standard object: 10 * 1000 / 100 = 100, plus a 25 index-entry term.
+	if dep := StorageDeposit(10, 100, 1000, 25); dep != 125 {
+		t.Errorf("standard + index entry: got %d, want 125", dep)
+	}
+
+	// Singleton: 100 * 1000 / 100 = 1000, plus a 25 index-entry term.
+	if dep := StorageDeposit(0, 100, 1000, 25); dep != 1025 {
+		t.Errorf("singleton + index entry: got %d, want 1025", dep)
+	}
+
+	// A zero storage fee still charges the flat index-entry term alone.
+	if dep := StorageDeposit(10, 100, 0, 25); dep != 25 {
+		t.Errorf("index entry only: got %d, want 25", dep)
 	}
 }
 

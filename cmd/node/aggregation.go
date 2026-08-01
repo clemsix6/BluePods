@@ -135,6 +135,7 @@ func (n *Node) initFeeSystem(validators *consensus.ValidatorSet) {
 	// Wire into state for storage deposits on object creation/deletion
 	n.state.SetStorageFees(
 		feeParams.StorageFee,
+		feeParams.IndexEntryFee,
 		feeParams.StorageRefundBPS,
 		validators.Len(),
 	)

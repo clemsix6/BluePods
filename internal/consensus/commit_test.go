@@ -1326,8 +1326,8 @@ func TestFailedExecutionPoolsStorageFee(t *testing.T) {
 	gasCoinID := Hash{0xCC}
 	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
 
-	// One created singleton (replication 0): StorageDeposit(0, 3, 1000) = 1000,
-	// comfortably covered by the coin, so deductFees debits the full fee.
+	// One created singleton (replication 0): StorageDeposit(0, 3, 1000, 25) =
+	// 1025, comfortably covered by the coin, so deductFees debits the full fee.
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 

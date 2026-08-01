@@ -28,7 +28,7 @@ import (
 func TestSupplyInvariant(t *testing.T) {
 	db := newTestStorage(t)
 	st := state.New(db, nil)
-	st.SetStorageFees(1000, 9500, 4)
+	st.SetStorageFees(1000, 25, 9500, 4)
 
 	dag := newInvariantDAG(t, db, st)
 	defer dag.Close()
@@ -156,7 +156,7 @@ func mergeCoin(t *testing.T, st *state.State, srcID, dstID [32]byte) {
 func createObjectWithDeposit(t *testing.T, dag *DAG, st *state.State, coinID, objID, owner [32]byte, replication uint16) {
 	t.Helper()
 
-	deposit := StorageDeposit(replication, dag.validators.Len(), dag.feeParams.StorageFee)
+	deposit := StorageDeposit(replication, dag.validators.Len(), dag.feeParams.StorageFee, dag.feeParams.IndexEntryFee)
 
 	coin := st.GetObject(coinID)
 	balance, _ := readCoinBalance(coin)
