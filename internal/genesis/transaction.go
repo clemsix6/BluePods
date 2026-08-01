@@ -238,7 +238,7 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateDomains(builder, tx.MaxCreateDomains())
+	types.TransactionAddMaxCreateDomains(builder, 0) // deprecated field, outside the signed body: builders always encode zero, matching the canonical-body sites
 	types.TransactionAddMaxGas(builder, tx.MaxGas())
 
 	if corVec != 0 {

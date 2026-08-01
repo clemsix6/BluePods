@@ -414,11 +414,12 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 }
 
 // processOutput validates and applies PodExecuteOutput to the state.
-// Validates creation limits, domain collisions, the creation-permission rule,
-// parent immutability, and the pod-output deletion carve-out before applying any
-// mutations. The inputs are the attested object copies the pod ran against, used
-// as the local comparison basis for the parent and deletion checks. If any
-// validation fails, no state changes are made (rollback semantics).
+// Validates creation limits, the unconditional domain-registration rejection,
+// the creation-permission rule, parent immutability, and the pod-output
+// deletion carve-out before applying any mutations. The inputs are the
+// attested object copies the pod ran against, used as the local comparison
+// basis for the parent and deletion checks. If any validation fails, no state
+// changes are made (rollback semantics).
 func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction, inputs []*types.Object) error {
 	if len(outputData) == 0 {
 		return nil
