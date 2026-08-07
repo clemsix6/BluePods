@@ -110,9 +110,9 @@ table DeclaredOp {
 
 **Relation to `tx.deleted_objects` (existing):** the two channels coexist by execution mode. `DeclaredOp` delete (kind 1) is the protocol-level delete for transactions with no pod call; `tx.deleted_objects` remains the declaration channel for pod-driven deletions inside globally-executed transactions (the `merge` carve-out, spec §3). Both funnel into the same settlement (Task 1.5).
 
-- [ ] **Test:** a transaction carrying one reparent op round-trips through build → `rebuildUnsignedTx` → `verifyTxAuthenticity` (hash and signature verify); the same with a sponsor signature; a transaction without ops serializes byte-identically to one built before the field existed (absent-when-empty, same guarantee as sponsorship).
-- [ ] **Run, expect FAIL** → regenerate (`bash types/generate.sh`), implement body coverage, **expect PASS**.
-- [ ] **Commit:** title `DeclaredOp and parent_kind schemas under the canonical body hash`.
+- [x] **Test:** a transaction carrying one reparent op round-trips through build → `rebuildUnsignedTx` → `verifyTxAuthenticity` (hash and signature verify); the same with a sponsor signature; a transaction without ops serializes byte-identically to one built before the field existed (absent-when-empty, same guarantee as sponsorship).
+- [x] **Run, expect FAIL** → regenerate (`bash types/generate.sh`), implement body coverage, **expect PASS**.
+- [x] **Commit:** title `DeclaredOp and parent_kind schemas under the canonical body hash`.
 
 ### Task 1.2: Tracker carries parent and child count
 
@@ -120,9 +120,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `trackObject(objectID Hash, version uint64, replication uint16, fees uint64, parentKind byte, parent Hash)`; `getParent(objectID Hash) (kind byte, parent Hash, ok bool)`; `setParent(objectID Hash, kind byte, parent Hash)`; `childCount(parentID Hash) uint32` maintained on track/setParent/delete; `Export`/`Import` extended; entry layout: version 8 + replication 2 + fees 8 + kind 1 + parent 32 + childCount 4 = 55 bytes; a stored 18-byte value decodes as `KeyRoot` with zero parent (never panics — such objects are controlled by the zero key, i.e. frozen; acceptable only because pre-mainnet networks are recreated, state this in the docstring).
 
-- [ ] **Test:** round-trip encode/decode both lengths; child counts follow reparent chains (A under K, B under A: `childCount(A)==1`; reparent B to K: `childCount(A)==0`); export/import preserves parents.
-- [ ] **Run, expect FAIL → implement → PASS.** Update all `trackObject` call sites (creation path passes the created object's parent from its body — thread it through `SetOnObjectCreated` and `DAG.TrackObject`).
-- [ ] **Commit:** title `Track parent and child count in the global object tracker`.
+- [x] **Test:** round-trip encode/decode both lengths; child counts follow reparent chains (A under K, B under A: `childCount(A)==1`; reparent B to K: `childCount(A)==0`); export/import preserves parents.
+- [x] **Run, expect FAIL → implement → PASS.** Update all `trackObject` call sites (creation path passes the created object's parent from its body — thread it through `SetOnObjectCreated` and `DAG.TrackObject`).
+- [x] **Commit:** title `Track parent and child count in the global object tracker`.
 
 ### Task 1.3: Snapshot and fingerprint carry parents
 
@@ -130,9 +130,9 @@ table DeclaredOp {
 
 **Why now, not batch 5:** the harness's teardown convergence check compares fingerprints on every scenario. If the tracker carries parents but the snapshot does not ship them, a joined node's tracker (and fingerprint) diverges from a founder's, and every join scenario goes red between this batch and batch 5.
 
-- [ ] **Test:** snapshot round-trip preserves parents and child counts; checksum covers the new bytes; two nodes with identical trackers fingerprint identically, and a one-bit parent difference changes the fingerprint.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Snapshot and convergence fingerprint carry object parents`.
+- [x] **Test:** snapshot round-trip preserves parents and child counts; checksum covers the new bytes; two nodes with identical trackers fingerprint identically, and a one-bit parent difference changes the fingerprint.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Snapshot and convergence fingerprint carry object parents`.
 
 ### Task 1.4: Permission walk over tracker metadata
 
@@ -140,9 +140,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `controllerOf(objectID Hash) (Hash, bool)` (terminal KeyRoot pubkey, walking ≤ 256 edges, `false` on depth overflow or missing entry); `controls(sender, objectID Hash) bool`; `wouldCycle(objectID Hash, newParentKind byte, newParent Hash) bool` (true if newParent is the object or any descendant — implemented as: walk up from newParent; if the walk meets objectID, cycle).
 
-- [ ] **Test:** nested chain resolves to the root key; depth 257 fails closed; reparenting an ancestor under its descendant is detected; reparenting to a `KeyRoot` never cycles.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Cascade permission walk over global metadata`.
+- [x] **Test:** nested chain resolves to the root key; depth 257 fails closed; reparenting an ancestor under its descendant is detected; reparenting to a `KeyRoot` never cycles.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Cascade permission walk over global metadata`.
 
 ### Task 1.5: Reparent, transfer, and delete as commit-path operations
 
@@ -154,9 +154,9 @@ table DeclaredOp {
 - **Delete (kind 1):** requires `controls(sender, object)`, the object in `mutable_refs` at its current version, and `childCount(object)==0`; settles through the existing `settleDeletion` (deposit release, 95/5 refund/burn, tracker removal, `events.ObjectDeleted`), decrements the parent's child count, and triggers the state hook so holders drop the body (wire a `SetOnObjectDeleted`-style hook mirroring `SetOnObjectCreated`).
 - The pod carve-out channel (`tx.deleted_objects` in globally-executed transactions) gains the SAME `childCount==0` gate and parent-count decrement inside `settleDeclaredDeletions`, so `merge` keeps working and no channel can orphan children.
 
-- [ ] **Test:** transfer to another key succeeds and only the root object's tracker entry changes; reparent under a non-controlled `ObjectParent` fails; cycle fails; version increments once per touched object; a dependent list (`delete X` then `reparent Y under X`) fails on the second op and applies nothing; sequential semantics: `reparent A under B` then `reparent C under A` succeeds in one tx; a tx with ops AND a pod function is rejected; deleting a leaf refunds 95% and burns 5% (assert supply delta); deleting a parent with children fails, through BOTH channels; a non-holder node processes the same delete without holding the body.
-- [ ] **Run, expect FAIL → implement → PASS;** re-run the supply-invariant tests (`go test ./internal/consensus/ -run TestSupply -count=1 -timeout 120s`).
-- [ ] **Commit:** title `Reparent, transfer, and delete as protocol-declared operations`.
+- [x] **Test:** transfer to another key succeeds and only the root object's tracker entry changes; reparent under a non-controlled `ObjectParent` fails; cycle fails; version increments once per touched object; a dependent list (`delete X` then `reparent Y under X`) fails on the second op and applies nothing; sequential semantics: `reparent A under B` then `reparent C under A` succeeds in one tx; a tx with ops AND a pod function is rejected; deleting a leaf refunds 95% and burns 5% (assert supply delta); deleting a parent with children fails, through BOTH channels; a non-holder node processes the same delete without holding the body.
+- [x] **Run, expect FAIL → implement → PASS;** re-run the supply-invariant tests (`go test ./internal/consensus/ -run TestSupply -count=1 -timeout 120s`).
+- [x] **Commit:** title `Reparent, transfer, and delete as protocol-declared operations`.
 
 ### Task 1.6: Creation permission and pod-output lockdown
 
@@ -164,9 +164,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** a created object's parent must satisfy: KeyRoot == sender, or `controls(sender, parent)`, or parent is referenced by this tx through a domain ref (`ObjectRef.domain != ""`, the existing shared-access exemption). `updated_objects` whose owner/parent bytes differ from the input object's are rejected (input objects are in the ATX at the checked version — a pure local compare, no tracker needed). Pod-output `deleted_objects` (the `podio.fbs` field) is valid only when the tx is globally executed (`CreatedObjectsReplicationLength() > 0` or all mutable refs are singletons — the `merge` carve-out); otherwise the output is rejected.
 
-- [ ] **Test:** creating under someone else's key succeeds (gift; deposit paid by creator); under an owned object succeeds; under a domain-referenced table succeeds; a pod flipping owner in `updated_objects` reverts the tx; `merge` (singleton coins) still deletes its source coin; a pod deleting a sharded object in a non-creating tx reverts.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Creation permission rule and pod-output lockdown`, body `[!] closes the third parent write path (pods) and spam-attach`.
+- [x] **Test:** creating under someone else's key succeeds (gift; deposit paid by creator); under an owned object succeeds; under a domain-referenced table succeeds; a pod flipping owner in `updated_objects` reverts the tx; `merge` (singleton coins) still deletes its source coin; a pod deleting a sharded object in a non-creating tx reverts.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Creation permission rule and pod-output lockdown`, body `[!] closes the third parent write path (pods) and spam-attach`.
 
 ### Task 1.7: Client builders for declared operations
 
@@ -174,23 +174,23 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `(w *Wallet) TransferObject(...)` and siblings; each puts the object in `mutable_refs` with its current version and one `DeclaredOp`; a pure transfer no longer executes WASM. Gas rules unchanged; sponsorship (fee_payer + sponsor_signature) works over ops.
 
-- [ ] **Test:** builder output round-trips `verifyTxAuthenticity`; refs and op fields match inputs; a sponsored declared-op transfer verifies.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Client builders for reparent, transfer, delete`.
+- [x] **Test:** builder output round-trips `verifyTxAuthenticity`; refs and op fields match inputs; a sponsored declared-op transfer verifies.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Client builders for reparent, transfer, delete`.
 
 ### Task 1.8: Retire pod transfers
 
 **Files:** Modify `pods/pod-system/src/lib.rs` (drop the `transfer` and `transfer_object` dispatch entries, lines 23-24, and their function dirs); `make -C pods/pod-system release`; fix any scenario helper still building pod transfers.
 
-- [ ] **Commit:** title `Retire pod-level transfer entrypoints`, body `[-] transfer/transfer_object from the system pod`.
+- [x] **Commit:** title `Retire pod-level transfer entrypoints`, body `[-] transfer/transfer_object from the system pod`.
 
 ### Task 1.9: Hierarchy scenario
 
 **Files:** Create `test/scenarios/scenario_hierarchy_test.go` (`TestScenarioHierarchy`, ~5 nodes); add the corpus-table row in `test/TESTING.md` (same commit).
 
-- [ ] **Scenario:** create a nested chain (object under key, object under object) and assert `state.object.created` carries the parent; transfer the root object to another key (declared op) and assert only the root's version moved; reparent with a cycle attempt is rejected (`tx.committed` success=false); delete a leaf and assert `state.object.deleted` + `fees.deposit.refunded` + the supply invariant at teardown; delete-with-children is rejected; a sponsored declared-op transfer commits with `fees.deducted` naming the sponsor's coin.
-- [ ] **Run the batch's scenario battery, one at a time:** `TestScenarioHierarchy`, `TestScenarioObjects`, `TestScenarioSponsored`, `TestScenarioFees`, `TestScenarioConsensusBasics` — `go test ./test/scenarios/ -run TestScenarioX -v -count=1 -timeout 5m` each. Fix fallout (the retired pod transfer touches several scenarios' helpers).
-- [ ] **Commit:** title `Hierarchy scenario: cascade ops under live consensus`. **Push the batch.**
+- [x] **Scenario:** create a nested chain (object under key, object under object) and assert `state.object.created` carries the parent; transfer the root object to another key (declared op) and assert only the root's version moved; reparent with a cycle attempt is rejected (`tx.committed` success=false); delete a leaf and assert `state.object.deleted` + `fees.deposit.refunded` + the supply invariant at teardown; delete-with-children is rejected; a sponsored declared-op transfer commits with `fees.deducted` naming the sponsor's coin.
+- [x] **Run the batch's scenario battery, one at a time:** `TestScenarioHierarchy`, `TestScenarioObjects`, `TestScenarioSponsored`, `TestScenarioFees`, `TestScenarioConsensusBasics` — `go test ./test/scenarios/ -run TestScenarioX -v -count=1 -timeout 5m` each. Fix fallout (the retired pod transfer touches several scenarios' helpers).
+- [x] **Commit:** title `Hierarchy scenario: cascade ops under live consensus`. **Push the batch.**
 
 ---
 
@@ -204,9 +204,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `type SMT` with `Insert(key, value []byte)`, `Delete(key []byte)`, `Root() [32]byte`, `Get(key []byte) ([]byte, bool)`. Leaf hash `blake3(0x00 || keyHash || blake3(value))`, internal `blake3(0x01 || left || right)`, `defaultHash[depth]` precomputed; key position = `blake3(key)`, 256 levels, path compression (a subtree with one leaf collapses to that leaf, JMT-style).
 
-- [ ] **Test:** insertion-order independence (same set, shuffled, same root); incremental insert+delete equals from-scratch rebuild; empty tree root equals `defaultHash[0]`; 10k-entry root stable across two builds.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Sparse Merkle Tree core`.
+- [x] **Test:** insertion-order independence (same set, shuffled, same root); incremental insert+delete equals from-scratch rebuild; empty tree root equals `defaultHash[0]`; 10k-entry root stable across two builds.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Sparse Merkle Tree core`.
 
 ### Task 2.2: Inclusion and absence proofs
 
@@ -214,9 +214,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `Prove(key []byte) Proof`, `Verify(root [32]byte, key, value []byte, p Proof) bool` (absence: `value == nil` verifies against the default/other-leaf at the key's position). `Proof` is `{Siblings [][32]byte, Leaf []byte}` serializable with FlatBuffers-free plain encoding (length-prefixed), since clients re-implement it.
 
-- [ ] **Test:** inclusion verifies; absence verifies for a missing key; a tampered value, wrong root, or truncated sibling list fails; proof size ~`log2(n)` siblings.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `SMT inclusion and absence proofs`.
+- [x] **Test:** inclusion verifies; absence verifies for a missing key; a tampered value, wrong root, or truncated sibling list fails; proof size ~`log2(n)` siblings.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `SMT inclusion and absence proofs`.
 
 ### Task 2.3: Domain, parent, and children trees
 
@@ -224,17 +224,17 @@ table DeclaredOp {
 
 **Interfaces — Produces:** typed wrappers with leaf codecs: `DomainTree` (key `blake3(name)`, leaf `{name, objectID, owner, expiryEpoch}`), `ParentTree` (key `blake3(childID)`, leaf `{childID, parentKind, parentBytes}`), `ChildrenTree` (two-level: top key `blake3(parentID)` → child-subtree root; subtree key `childID` → `present`); `SetEdge(child, kind, parent)` / `RemoveEdge` update ParentTree and ChildrenTree together (the two views of one edge set).
 
-- [ ] **Test:** enumeration completeness (subtree root recomputed from streamed leaves matches the top-tree leaf); an ancestry walk over ParentTree leaves terminates at a KeyRoot kind; edge move (reparent) updates both trees consistently.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Domain, parent, and children trees over the SMT`.
+- [x] **Test:** enumeration completeness (subtree root recomputed from streamed leaves matches the top-tree leaf); an ancestry walk over ParentTree leaves terminates at a KeyRoot kind; edge move (reparent) updates both trees consistently.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Domain, parent, and children trees over the SMT`.
 
 ### Task 2.4: Validator tree and the combined root
 
 **Files:** Create `internal/index/validator_tree.go` (`ValidatorTree`: key `blake3(pubkey)`, leaf `{pubkey, cappedStake, blsKey, status}`; during the genesis epoch the tree tracks the live registration set, first frozen at the first boundary — spec §4); create `CombinedRoot(domain, parent, children, validator [32]byte) [32]byte = blake3(d || p || c || v)`; Test.
 
-- [ ] **Test:** rebuild from a validator snapshot is deterministic; combined root changes when any sub-root changes.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Validator tree and combined index root`.
+- [x] **Test:** rebuild from a validator snapshot is deterministic; combined root changes when any sub-root changes.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Validator tree and combined index root`.
 
 ### Task 2.5: Index manager wired to the commit path
 
@@ -242,9 +242,9 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `Manager` with `ApplyEdge(child Hash, kind byte, parent Hash)`, `RemoveObject(child Hash)`, `ApplyDomain(...)`/`RemoveDomain(name)`, `RebuildValidators(entries []ValidatorLeaf)`, `Root() [32]byte`, `RootAt(round uint64) ([32]byte, bool)` (bounded history: 1,000 rounds + one per epoch), `SetFrontier(round uint64)` called once per committed batch. `BuildFromState(trackerEntries, domainEntries, validatorEntries)` for boot/sync rebuild.
 
-- [ ] **Test:** applying a synthetic committed stream vs `BuildFromState` on the final state → identical root; `RootAt` returns historical roots inside the window and `false` outside; restart rebuild matches the never-restarted twin.
-- [ ] **Run, expect FAIL → implement → PASS;** `go build ./... && go vet ./...`; fast gate `go test -short ./... -timeout 120s`.
-- [ ] **Commit:** title `Index manager fed by the commit path`.
+- [x] **Test:** applying a synthetic committed stream vs `BuildFromState` on the final state → identical root; `RootAt` returns historical roots inside the window and `false` outside; restart rebuild matches the never-restarted twin.
+- [x] **Run, expect FAIL → implement → PASS;** `go build ./... && go vet ./...`; fast gate `go test -short ./... -timeout 120s`.
+- [x] **Commit:** title `Index manager fed by the commit path`.
 
 ### Task 2.6: Incremental SMT behind the same API
 
@@ -254,9 +254,9 @@ table DeclaredOp {
 
 **Interfaces — unchanged:** the public API (`Insert/Delete/Get/Root/Prove/Verify`) does not move; callers never change. Internally the tree materializes non-empty paths and memoizes subtree hashes so a mutation dirties only its root-to-leaf path; `Root()` rehashes dirty paths only; `Prove` reuses the materialized path (no full-set re-sort per call — the anchor handler generates proofs on the query path).
 
-- [ ] **Test (differential, the real "incremental == rebuild"):** a seeded randomized sequence of insert/overwrite/delete (≥5k steps) asserting after EVERY step that the incremental root equals a from-scratch functional recompute (the 2.1 oracle, kept callable from tests); the 2.1/2.2 suite passes unchanged; a benchmark demonstrating a single-key update at 100k entries costs O(log n) hashes (assert a hash-count or wall bound, not vibes); the negative absence-proof and oversized-proof guards still pass.
-- [ ] **Run, expect FAIL → implement → PASS;** full package + fast gate.
-- [ ] **Commit:** title `Incremental SMT: dirty-path rehash behind the unchanged API`. **Push the batch.**
+- [x] **Test (differential, the real "incremental == rebuild"):** a seeded randomized sequence of insert/overwrite/delete (≥5k steps) asserting after EVERY step that the incremental root equals a from-scratch functional recompute (the 2.1 oracle, kept callable from tests); the 2.1/2.2 suite passes unchanged; a benchmark demonstrating a single-key update at 100k entries costs O(log n) hashes (assert a hash-count or wall bound, not vibes); the negative absence-proof and oversized-proof guards still pass.
+- [x] **Run, expect FAIL → implement → PASS;** full package + fast gate.
+- [x] **Commit:** title `Incremental SMT: dirty-path rehash behind the unchanged API`. **Push the batch.**
 
 ---
 
@@ -274,33 +274,33 @@ table DeclaredOp {
 
 **Interfaces — Produces:** the header hash **is** the vertex identity (parent links, store keys — unchanged code, changed meaning); `headerBytes(v *types.Vertex) []byte` and `computeBodyHash(v *types.Vertex) [32]byte` shared by build and validate (one function, two call sites, cannot drift).
 
-- [ ] **Test:** a vertex verifies end-to-end; tampering with a transaction changes `bodyHash` and breaks the signature; tampering with `index_root` breaks it too; a light verification using only `{producer, round, epoch, frontier_round, index_root, bodyHash, signature}` (~200 bytes) accepts without the body; boundary skew: a vertex produced in epoch N arriving after the receiver transitioned to N+1 validates inside the window.
-- [ ] **Run, expect FAIL → implement → PASS;** full consensus package tests.
-- [ ] **Commit:** title `Detached provable vertex header`, body `[&] header hash becomes the vertex identity; epoch field populated`.
+- [x] **Test:** a vertex verifies end-to-end; tampering with a transaction changes `bodyHash` and breaks the signature; tampering with `index_root` breaks it too; a light verification using only `{producer, round, epoch, frontier_round, index_root, bodyHash, signature}` (~200 bytes) accepts without the body; boundary skew: a vertex produced in epoch N arriving after the receiver transitioned to N+1 validates inside the window.
+- [x] **Run, expect FAIL → implement → PASS;** full consensus package tests.
+- [x] **Commit:** title `Detached provable vertex header`, body `[&] header hash becomes the vertex identity; epoch field populated`.
 
 ### Task 3.2: Producers anchor their committed frontier
 
 **Files:** Modify `internal/consensus/build.go` (anchor the pair from the indexer seam's `CommittedFrontier()` — added as-built to `internal/consensus/indexer.go` and `internal/index/manager.go`, returning `(frontier, root-at-frontier)` atomically under its own leaf lock, because no read seam existed and the commit loop mutates trees between `SetFrontier` calls. `Manager.Root()` is the LIVE uncommitted root: it must never be anchored into a vertex nor compared against a received one — 3.4 in particular must not reach for it; zero values when indexer unset); Test.
 
-- [ ] **Test:** two nodes at the same committed frontier produce vertices carrying identical `(frontier_round, index_root)`.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Anchor the index root in every produced vertex`.
+- [x] **Test:** two nodes at the same committed frontier produce vertices carrying identical `(frontier_round, index_root)`.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Anchor the index root in every produced vertex`.
 
 ### Task 3.3: Ingress root check (stage 1)
 
 **Files:** Create `internal/consensus/rootcheck.go`; modify `internal/consensus/validate.go` (`validateVertex`: if the frontier is at or below the receiver's committed index frontier and the indexer is set, require `RootAt(frontier) == index_root`; unverifiable-yet vertices pass. As-built: the gate reads the seam's `CommittedFrontier()`, not the DAG cursor — provably the same rejection set since retained rounds never exceed the seam frontier, and it avoids both the next-vs-last cursor trap and `commitMu` on the gossip path); modify `cmd/node/sync.go` — both sync-side construction paths (`initConsensusForListener`/`initConsensusForValidator`) call `initIndex` after snapshot apply, pulled forward from Task 5.1: once stage 1 is active, the harness's bootstrap-joined nodes 1..N-1 anchor `(0, zero)` and node 0 would reject every peer vertex past the first epoch boundary, wedging every epoch-enabled scenario (Task 5.1 keeps the fail-closed verification and the trusted checkpoint); modify `internal/index/manager.go` — `RootAt` reads `history`/`epochCheckpoints` with no lock, safe only while every caller sits on the commit path; this task puts it on ingress goroutines concurrent with the commit loop's writes (a fatal concurrent map access), so bring those maps under `frontierMu` (write-lock on the commit path, `RLock` in `RootAt`); Test `internal/consensus/rootcheck_test.go`.
 
-- [ ] **Test:** a wrong-root vertex whose frontier the receiver has committed is rejected; a vertex anchoring a future frontier is accepted; a frontier older than the retention window (no `RootAt` entry, no epoch checkpoint) is treated as unverifiable and passes (parents are always recent, so production never depends on stale roots); a zero-root vertex passes during the genesis epoch ONLY and is rejected like a wrong root from the first epoch boundary on (spec §5) — and the genesis tolerance keys on the VERTEX's own round (`commitEpochForRound(v.Round()) == 0`), never on the receiver's current epoch: receiver-relative rules are the unsoundness class the 3.1 adjudication removed (a genesis vertex buffered across the first boundary by deep-gap recovery or late gossip must not be terminally rejected). The new rejection reason joins `consensus.vertex.rejected`'s fixed reason set (new value, e.g. `index_root` — update the catalog comment and `test/TESTING.md`'s reason list in the same commit).
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Ingress root verification when the frontier is local`.
+- [x] **Test:** a wrong-root vertex whose frontier the receiver has committed is rejected; a vertex anchoring a future frontier is accepted; a frontier older than the retention window (no `RootAt` entry, no epoch checkpoint) is treated as unverifiable and passes (parents are always recent, so production never depends on stale roots); a zero-root vertex passes during the genesis epoch ONLY and is rejected like a wrong root from the first epoch boundary on (spec §5) — and the genesis tolerance keys on the VERTEX's own round (`commitEpochForRound(v.Round()) == 0`), never on the receiver's current epoch: receiver-relative rules are the unsoundness class the 3.1 adjudication removed (a genesis vertex buffered across the first boundary by deep-gap recovery or late gossip must not be terminally rejected). The new rejection reason joins `consensus.vertex.rejected`'s fixed reason set (new value, e.g. `index_root` — update the catalog comment and `test/TESTING.md`'s reason list in the same commit).
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Ingress root verification when the frontier is local`.
 
 ### Task 3.4: Verify-before-reference at production (stage 2) and commit re-check (stage 3)
 
 **Files:** Modify `internal/consensus/dag.go` (`collectParents` filters to parents whose anchor is verified — `RootAt` match, or zero-root during the genesis epoch only); extend `rootcheck.go` with `recheckCommittedAnchor(v)` called from the commit loop's apply path; fault evidence persisted under a `fault/` Pebble prefix `{producer, round, claimed, computed, headerBytes, signature}` and emitted as a NEW event `consensus.anchor.fault` {producer, round, claimed, computed} (constructor in `internal/events/consensus.go` + catalog + `test/TESTING.md` rows, same commit); Test.
 
-- [ ] **Test:** an honest producer never references a wrong-root vertex (it can win the round only when the liar is excluded); a committed vertex with a wrong root (forced through a crafted store) writes exactly one fault record with a verifying signature over the lying header, and emits the event.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Verify-before-reference and commit-path fault evidence`.
+- [x] **Test:** an honest producer never references a wrong-root vertex (it can win the round only when the liar is excluded); a committed vertex with a wrong root (forced through a crafted store) writes exactly one fault record with a verifying signature over the lying header, and emits the event.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Verify-before-reference and commit-path fault evidence`.
 
 **As-built (landed 6d7f6d5):** (a) stage 2 is a denylist of PROVEN liars, not the allowlist above — measured: the allowlist kept 0 of 3 parents at frontier skew 3-vs-9 and a parentless vertex is rejected, silencing lagging producers; (b) the fault record is `header(120)‖signature(64)‖computed(32)` under 38-byte `fault/` keys, producer/round/claimed derived from the header at the normative offsets; (c) stage 2 also applies in sync mode, composed after `trustedParents`; (d) `referenceableParents` also drops a candidate whose vertex the store cannot read. Scenario exemption: `consensus.anchor.fault` and `consensus.vertex.quarantined` both need a byzantine producer the harness does not offer; covered by crafted-store package tests (incl. the end-to-end wedge regression), scenarios deferred to the byzantine harness axis.
 
@@ -312,15 +312,15 @@ table DeclaredOp {
 
 **Interfaces — Produces:** response = `{frontier_round, index_root, headers: [~200B each], epoch}`; assembly reuses the capped-stake quorum test from `stake.go`. The header wire layout is the NORMATIVE contract pinned in `internal/consensus/header.go` (golden-vector tested); bundle assembly re-derives the expected epoch from the frontier round (`commitEpochForRound`) rather than trusting the header field, which the 3.1 window bounds only to ±1. The 16-round sliding window is anchored at the serving node's own `CommittedFrontier()`, never at the highest CLAIMED frontier seen — otherwise one absurd-future anchor (e.g. 10^9) drags the window where no quorum exists and denies bundles to every client. **As-built (7085295):** assembly lives in `internal/consensus` (`AnchorBundle`, `(*DAG) IndexAnchorBundle()`) reusing the package-private capped-stake helpers — there is NO exported "header ‖ signature from a vertex" accessor; the batch-6 light client decodes the 184-byte record positionally (`producer@0:32, round@32:40, epoch@40:48, frontier@48:56, root@56:88, bodyHash@88:120, sig@120:184`) per `internal/consensus/header.go`'s normative layout. `Headers` carries one record per distinct MATCHING producer (non-members weigh zero; the client recomputes stake from the epoch set).
 
-- [ ] **Test:** with 4 simulated producers the bundle reaches quorum and verifies; a minority wrong-root producer is excluded from the bundle.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `GetIndexAnchor quorum bundles`.
+- [x] **Test:** with 4 simulated producers the bundle reaches quorum and verifies; a minority wrong-root producer is excluded from the bundle.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `GetIndexAnchor quorum bundles`.
 
 ### Task 3.6: Scenario regression on the new vertex format
 
-- [ ] **Extend** `TestScenarioConsensusBasics` with an `index_anchor_quorum` subtest: after traffic commits, `GetIndexAnchor` from every node returns bundles whose `(frontier_round, index_root)` agree and reach quorum. This needs a new `pkg/client` verb for tag `0x1D` (nothing speaks it yet — `pkg/client/quic.go` has `Fingerprint()`/`TestControl()` as the pattern): add `GetIndexAnchor()` returning the decoded bundle, minimal surface, same task.
-- [ ] **Run, one at a time:** `TestScenarioConsensusBasics`, `TestScenarioAggregation`, `TestScenarioStress`, `TestScenarioEpochs`, `TestScenarioPartition`, `TestScenarioCrash` — bounded timeouts (5-10m); fix fallout (the identity change touches everything that stores or fetches vertices). Epochs and Partition are the two scenarios that reproduce stalled-production-across-an-epoch-boundary, the shape the 3.1 epoch window exists for.
-- [ ] **Commit:** title `Scenarios green on the anchored vertex format`. **Push the batch.**
+- [x] **Extend** `TestScenarioConsensusBasics` with an `index_anchor_quorum` subtest: after traffic commits, `GetIndexAnchor` from every node returns bundles whose `(frontier_round, index_root)` agree and reach quorum. This needs a new `pkg/client` verb for tag `0x1D` (nothing speaks it yet — `pkg/client/quic.go` has `Fingerprint()`/`TestControl()` as the pattern): add `GetIndexAnchor()` returning the decoded bundle, minimal surface, same task.
+- [x] **Run, one at a time:** `TestScenarioConsensusBasics`, `TestScenarioAggregation`, `TestScenarioStress`, `TestScenarioEpochs`, `TestScenarioPartition`, `TestScenarioCrash` — bounded timeouts (5-10m); fix fallout (the identity change touches everything that stores or fetches vertices). Epochs and Partition are the two scenarios that reproduce stalled-production-across-an-epoch-boundary, the shape the 3.1 epoch window exists for.
+- [x] **Commit:** title `Scenarios green on the anchored vertex format`. **Push the batch.**
 
 ---
 
@@ -336,9 +336,9 @@ table DeclaredOp {
 
 **Interfaces — Consumes:** domain reads through a narrow state accessor `DomainLeaf(name) (objectID, owner Hash, expiry uint64, ok bool)`. **Produces:** `expiry = max(currentExpiry, currentEpoch) + term`, and an op whose result would exceed `currentEpoch + maxTermEpochs` **reverts** (never clamps: the fee is `rate × term_epochs` from the header, and a clamped term would charge a fee that no longer matches the declared field). Domain ops carry NO object refs and increment NO object version (spec §3); `domain_register` and `domain_update` require `controls(sender, pointedObject)` — without it, anyone could alias a victim's object and reach it mutably through the domain-ref ownership exemption. Resolution (execution-time and queries) treats a name past `expiry_epoch` as absent, even during grace; grace only reserves the owner's renewal right.
 
-- [ ] **Test:** FCFS on roots; `x.y` without owning `y` fails; renewal by a non-owner fails; a term pushing past the cap reverts and charges nothing but the base fee; registering a name pointing at a non-controlled object fails; an expired-in-grace name does not resolve at execution but renews for the owner; update repoints; transfer hands renewal rights; register on an existing live name fails; each successful op emits its event.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Domain declared operations with ownership and namespaces`.
+- [x] **Test:** FCFS on roots; `x.y` without owning `y` fails; renewal by a non-owner fails; a term pushing past the cap reverts and charges nothing but the base fee; registering a name pointing at a non-controlled object fails; an expired-in-grace name does not resolve at execution but renews for the owner; update repoints; transfer hands renewal rights; register on an existing live name fails; each successful op emits its event.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Domain declared operations with ownership and namespaces`.
 
 **As-built (0ab4b97):** handlers live in `domainops.go`/`staged_domain.go` (300-line rule), not `ops.go`; `maxTermEpochs uint64 = 256` is a package constant that Task 4.2 MUST move into `FeeParams` AND rewire `domainExpiry` to read — otherwise the cap that reverts and the rent priced as `rate × term` drift apart under a governed parameter change; zero `term_epochs` is rejected; the seam is `DomainLeaf(name) (objectID, owner [32]byte, expiry uint64, ok bool)`; the composition-root wiring (`SetDomainStore` + `SetEpochSource`, `cmd/node/aggregation.go:80-81`) was written by this task — 4.4 must not remove or re-add it blindly. The tree leaf hashes all four fields, so the anchored root covers owner and expiry.
 
@@ -346,9 +346,9 @@ table DeclaredOp {
 
 **Files:** Modify `internal/consensus/fees.go` (`FeeParams` gains `RentalRatePerEpoch`, `MaxTermEpochs`, `GraceEpochs`, `ReparentFee`, `DeleteFee`, `IndexEntryFee`; `domainops.go`'s package constant `maxTermEpochs` is REPLACED by `FeeParams.MaxTermEpochs` and `domainExpiry` reads it — the cap and the pricing must move together); `calculateTxFeeSplit` (`commit.go:1009`) adds `Σ op fees` to the consumed part, rent = `safeMul(rate, term)`; `CalculateFee` + `buildFeeSummary` + `validateFeeSummary` in the same commit; Test `internal/consensus/fees_test.go`.
 
-- [ ] **Test:** a register-for-10-epochs tx pays `10×rate` into the epoch pool; a vertex whose summary omits op fees is rejected; an ops tx with no pod call pays `min_gas` compute.
-- [ ] **Run, expect FAIL → implement → PASS;** supply-invariant tests extended and green.
-- [ ] **Commit:** title `Rental and declared-operation fees in the summary lockstep`.
+- [x] **Test:** a register-for-10-epochs tx pays `10×rate` into the epoch pool; a vertex whose summary omits op fees is rejected; an ops tx with no pod call pays `min_gas` compute.
+- [x] **Run, expect FAIL → implement → PASS;** supply-invariant tests extended and green.
+- [x] **Commit:** title `Rental and declared-operation fees in the summary lockstep`.
 
 **As-built (b9b7788):** fees are a pure function of the DECLARED header, validated at ingress — a domain op that later REVERTS at commit still pays `rate × declared term` (the summary cannot depend on commit-time outcomes; same semantics as a reverting pod call paying its gas, and it keeps cap-probing expensive). Task 4.1's earlier "charges nothing but the base fee" test wording was unimplementable and is superseded by this rule. Signatures later tasks build on: `CalculateFee(..., maxCreateDomains, ops []genesis.DeclaredOp, opsOnly bool, totalValidators, params)`; `domainExpiry(current, epoch, term, maxTerm)`; `newStagedView(ot, ds, epoch, maxTerm)`; the cap reads `(*DAG).maxTermEpochs()` with a 256 fallback when no fee system is wired — and the class that runs unwired in production is the LISTENER construction path (`initConsensusForListener` never calls `initAggregation`, so a listener has no domain store and no fee params: it reverts every domain op validators apply, and prices the cap from the fallback — a permanent index-root divergence plus a governed-parameter fork armed to fire the day `MaxTermEpochs` moves; listener mode is unreachable-broken in production today, which is why this is recorded rather than fixed here). This commit also promotes `feeParams` from "affects balances" to "affects the domain tree and thus the anchored index root". `GraceEpochs` is declared and 4.3's sweep fires at `expiry + GraceEpochs`.
 
@@ -356,9 +356,9 @@ table DeclaredOp {
 
 **Files:** Modify `internal/consensus/epoch.go` (`transitionEpoch`: call a `sweepExpiredDomains(newEpoch)` hook after `applyPendingRemovals` and before the holder freeze, wired to state + index manager; each swept name emits `state.domain.deleted` with a `reason:"expired"` attribute — a new attribute on an existing event is compatible); modify `types/snapshot.fbs` (`SnapshotDomain` gains `owner:[ubyte]`, `expiry_epoch:uint64`), `internal/sync/snapshot.go` (encode/decode; bump `snapshotVersion` 15 → 16) and `internal/sync/fingerprint_hash.go` (`hashDomains` digests owner + expiry); Test `internal/consensus/epoch_test.go` + snapshot/fingerprint round-trips.
 
-- [ ] **Test:** a name expired beyond grace is removed from store and tree on the boundary, deterministically on two nodes, with the event; within grace it stops resolving for registration purposes but the owner can still renew; the sweep touches only expired leaves (root changes only when something is swept); snapshot round-trips owner/expiry; a one-bit owner difference changes the fingerprint.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Deterministic domain expiry sweep; snapshot and fingerprint carry the leaf`.
+- [x] **Test:** a name expired beyond grace is removed from store and tree on the boundary, deterministically on two nodes, with the event; within grace it stops resolving for registration purposes but the owner can still renew; the sweep touches only expired leaves (root changes only when something is swept); snapshot round-trips owner/expiry; a one-bit owner difference changes the fingerprint.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Deterministic domain expiry sweep; snapshot and fingerprint carry the leaf`.
 
 **As-built (b6f2a52 + 3f4f7c7):** tests live in `internal/consensus/domain_sweep_test.go` (file-size rule), not `epoch_test.go`; the determinism test is three sequential in-process DAGs leaning on Go map-iteration randomization (adequate — map order is the only entropy source; two-NODE agreement is proven by 4.5's scenario); "stops resolving within grace" is enforced by `State.ResolveDomain` since 4.1/4.2, not re-asserted here; `DomainStore` gained `ExportDomains()`; `DomainDeleted` gained a `reason` param (empty for owner deletes, `"expired"` + zero tx for sweeps). Sweep rule: `newEpoch > safeAdd(expiry, grace)`, strict, saturating.
 
@@ -366,18 +366,18 @@ table DeclaredOp {
 
 **Files:** Modify `internal/state/state.go` (remove `applyRegisteredDomains`/`resolveDomainObjectID` AND `validateDomainName` in `internal/state/output_validation.go:80` — the pod path's weaker name rule must not survive the path; since 4.1 the pod path also writes unowned zero-expiry leaves no declared op can ever touch, one more reason it dies whole; `validateOutput` rejects a non-empty `registered_domains`), `internal/consensus/commit.go:723` (drop the `MaxCreateDomains` term from the global-execution guard), `internal/consensus/fees.go` (remove the `max_create_domains × DomainFee` term from `CalculateFee` at `fees.go:169-170` AND from `buildFeeSummary`/`validateFeeSummary` in the same commit; drop `DomainFee` from `FeeParams`), `internal/genesis/transaction.go` (zero/deprecate the `maxCreateDomains` builder parameter — three-site lockstep applies), `types/podio.fbs` + `types/transaction.fbs` (mark `registered_domains` and `max_create_domains` deprecated in comments; fields stay for layout stability); pod SDK docs note; Test.
 
-- [ ] **Test:** a pod emitting `registered_domains` reverts; domain refs in `ObjectRef` still resolve at execution (read path untouched).
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Retire the pod domain write path`.
+- [x] **Test:** a pod emitting `registered_domains` reverts; domain refs in `ObjectRef` still resolve at execution (read path untouched).
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Retire the pod domain write path`.
 
 ### Task 4.5: Index-entry deposit term; domain scenario
 
 **Files:** Modify `internal/consensus/fees.go` (`StorageDeposit`, `fees.go:191`) **and** `internal/state/state.go` (`computeStorageDeposit`, `state.go:669`) — same formula, same commit: `storage_fee × effective_rep / total_validators + index_entry_fee`; refund keeps the existing 95/5 over the whole `fees` field (the `txLocksDeposits` gate for fee-exempt registrations is untouched); REMOVE the dead pod-path domain wiring left by 4.4 (`cmd/node/indexing.go` `SetOnDomainRegistered` closure — its only caller died with `applyRegisteredDomains`, and if a caller ever returned it would write a zero-owner zero-expiry leaf into the anchored tree; plus the `SetOnDomainRegistered`/`onDomainRegistered` pair in `internal/state/state.go` — 4.4 review obligation); create `test/scenarios/scenario_domains_test.go` (`TestScenarioDomains`, 5 nodes, short `WithEpochLength`) + corpus-table row in `test/TESTING.md`.
 
-- [ ] **Test (unit):** debit equals stamped deposit at creation; delete refunds 95% of (storage + index term); supply exact at the boundary.
-- [ ] **Scenario:** register a name and wait `state.domain.registered` on every node (`WaitAll`); resolve from a different node; a second registration of the same name fails; renew moves expiry (`state.domain.renewed`); transfer hands the name (`state.domain.transferred`); let it expire and assert the sweep event lands on the boundary on every node and the name stops resolving; teardown invariants green (rent flows into the epoch pool; supply identity holds).
-- [ ] **Run:** `TestScenarioDomains`, `TestScenarioEpochs`, `TestScenarioFees` one at a time, bounded.
-- [ ] **Commit:** title `Flat index-entry term in the creation deposit; domain scenario`. **Push the batch.**
+- [x] **Test (unit):** debit equals stamped deposit at creation; delete refunds 95% of (storage + index term); supply exact at the boundary.
+- [x] **Scenario:** register a name and wait `state.domain.registered` on every node (`WaitAll`); resolve from a different node; a second registration of the same name fails; renew moves expiry (`state.domain.renewed`); transfer hands the name (`state.domain.transferred`); let it expire and assert the sweep event lands on the boundary on every node and the name stops resolving; teardown invariants green (rent flows into the epoch pool; supply identity holds).
+- [x] **Run:** `TestScenarioDomains`, `TestScenarioEpochs`, `TestScenarioFees` one at a time, bounded.
+- [x] **Commit:** title `Flat index-entry term in the creation deposit; domain scenario`. **Push the batch.**
 
 **As-built (2cfe5aa + a68d650 + fix wave):** `CalculateFee`'s storage term DELEGATES to `StorageDeposit` — an avoided regression, in scope per spec §8's own "same shared function" sentence (without it, the split's storage would exceed the fee's total; on a common 1-object tx the un-delegated version would have silently moved `IndexEntryFee` out of the pool). The batch's one consensus-visible behavior change: every created object costs +`IndexEntryFee` (25), stamped into the deposit, settled 95/5 on delete; refunds read the STAMPED deposit so parameter changes between create and delete cannot break them. Minimal client domain builders landed in `pkg/client/domain.go` (kind constants duplicated from `transactions.go` — batch 6 consolidates). `cmd/node/aggregation.go` was edited by this task (forced arity update — the batch closer carries its own integration). Listener-mode gap widens by one item (no `initFeeSystem` ⇒ zero-stamped deposits) — owned by Task 5.1 (d).
 
@@ -393,16 +393,16 @@ table DeclaredOp {
 
 **Largely LANDED in batch 3 (commit 61e8fc7, the 3.3 fix wave):** both sync-side construction paths call `initIndex` after snapshot apply; the sync-shaped twin test in `cmd/node/index_test.go` proves rebuilt root == live root at the same frontier (via the restart-twin composition), with wrong-seed and missing-tracker mutations discriminating. Remaining for this task: (a) the DOMAIN leg of the twin (the batch-3 fixture had no domains — extend it once batch 4's leaves exist); (b) a joiner-holds-no-quarantine-marks note where the rebuild is documented (snapshot-imported vertices carry no `vq/` mark — correct, the joiner is in the "could not check" class, but the quarantine set is not reconstructible from a snapshot); (c) adjudicate the `WithIndexer` construction option (closes the `d.indexer` happens-before gap AND the decide-before-wire window — review carry-over); (d) the composition root must wire everything consensus-visible on BOTH construction paths — domain store, fee params, epoch source — and the parameter-accessor fallbacks (`maxTermEpochs()` 256, `graceEpochs()` 8) are then removed (fail-loud instead): a node class that commits the log and builds the index while reverting the ops validators apply is a permanent index-root divergence (today's listener path; unreachable-broken in production, but the next construction path inherits the same trap silently).
 
-- [ ] **Test:** domain-leg twin (rebuilt root includes domain leaves, equals live).
-- [ ] **Commit:** title `Index rebuild covers domains; indexer wired at construction`.
+- [x] **Test:** domain-leg twin (rebuilt root includes domain leaves, equals live).
+- [x] **Commit:** title `Index rebuild covers domains; indexer wired at construction`.
 
 ### Task 5.2: Fail-closed verification and the trusted checkpoint
 
 **Files:** Modify `cmd/node/sync.go` (during replay, assemble anchors per frontier; go live only when a stake quorum matches the locally recomputed root for some frontier ≥ snapshot round; else abort with a typed error and emit `node.stopping` with `reason:"sync_unverified"`); add a `--trust-checkpoint epoch:rootHex` node flag, **mandatory for any non-genesis join** — without it the node refuses to sync; an explicit `--insecure-bootstrap` flag (loud warning) exists as an escape hatch. A default that trusts the snapshot's own validator set would let the bootstrap supply both the state and the judge, which is exactly the lie the spec promises to catch. **Harness wiring (same task):** `Cluster.Spawn`/`Restart` derive a real checkpoint from an alive node (`GetIndexAnchor` bundle → `epoch:root`) and pass `--trust-checkpoint`, so scenarios exercise the verified path, not the escape hatch; Test.
 
-- [ ] **Test:** a tampered snapshot (one flipped tracker parent) fails sync with the event; an honest snapshot passes; no-quorum-in-history aborts rather than going live.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Fail-closed snapshot verification against the anchored root`.
+- [x] **Test:** a tampered snapshot (one flipped tracker parent) fails sync with the event; an honest snapshot passes; no-quorum-in-history aborts rather than going live.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Fail-closed snapshot verification against the anchored root`.
 
 **As-built (141199d, review-adjudicated):** the joiner's checkpoint pins `(epoch, VALIDATOR-SET root)`, not the combined index root (spec §5 amended with the two-checkpoint distinction — the light client keeps the full triple; the joiner cannot recompute a past frontier's combined root and a weakened pin is copyable). The harness derives the checkpoint from the source's newest `epoch.validators.frozen` event, NOT from a `GetIndexAnchor` bundle. New surface: `AnchorQuorumSince` on the DAG, `epoch.validators.frozen` event, `node.stopping reason=sync_unverified`, `--trust-checkpoint`/`--insecure-bootstrap` (hatch confined to harness genesis-committee formation). The gate has no freshness bound beyond frontier ≥ snapshot round (an eclipsing source can serve a genuine but old snapshot — documented, plan rule).
 
@@ -410,10 +410,10 @@ table DeclaredOp {
 
 **Files:** Extend `test/scenarios/scenario_joining_test.go` (a joined node's `GetIndexAnchor` root matches the founders'; joining refuses a wrong `--trust-checkpoint` — assert the `node.stopping` reason and that the cluster's alive set is unaffected, `WithoutInvariants` NOT needed since the refused node never joins the convergence set).
 
-- [ ] **Run, one at a time, bounded:** `TestScenarioJoining`, `TestScenarioJoinLoad`, `TestScenarioColdRestart`, `TestScenarioChurn`, plus `TestScenarioCrash`, `TestScenarioEpochCrash`, `TestScenarioAnchorCrash`. Intermittent history on join scenarios: loop Joining and JoinLoad ≥3 passes each; loop ColdRestart ≥3.
+- [x] **Run, one at a time, bounded:** `TestScenarioJoining`, `TestScenarioJoinLoad`, `TestScenarioColdRestart`, `TestScenarioChurn`, plus `TestScenarioCrash`, `TestScenarioEpochCrash`, `TestScenarioAnchorCrash`. Intermittent history on join scenarios: loop Joining and JoinLoad ≥3 passes each; loop ColdRestart ≥3.
 
 **As-built (batch-5 join/restart semantics, 0f8da59 + fix wave):** the 5.2 gate applies to FOREIGN state only. A node whose directory holds state it already ADOPTED resumes locally (initConsensus + ordinary gossip/backfill catch-up, new `runResume` + `node.resumed` event) — the first resurrector after a full extinction can never see a live quorum, so gating every restart made recovery impossible by construction. "Adopted" = durable marker `m:stateAdopted` (plus cursor and live set), written ONLY where the state became this node's own: after `verifySyncedState` returns nil in performSync, and in runBootstrap gated on `cfg.Bootstrap` (a refused join's residue never marks, and starting that residue without the upstream flag must not launder it). `ApplySnapshot` writes only exactly-32-byte non-consensus-prefix keys (a hostile snapshot could previously write ANY key, including the marker — the rule would be theatre). Empty-directory joins are bit-unchanged: gate, mandatory `--trust-checkpoint`, insecure hatch confined to harness genesis formation.
-- [ ] **Commit:** title `Join scenarios cover verified snapshots`. **Push the batch.**
+- [x] **Commit:** title `Join scenarios cover verified snapshots`. **Push the batch.**
 
 ---
 
@@ -448,8 +448,8 @@ table DeclaredOp {
 
 **Files:** Create `pkg/client/verify.go` (checkpoint struct, `VerifyAnchor(bundle, validatorTree)`, `VerifyProof(root, key, value, proof)`, epoch walking via `GetValidatorTree` — add tags `0x23/0x24` + `clientRequestTags` + handler in the same commit); the library also exposes the spec §5 freshness choice: `WaitForFrontier(round)` (poll bundles until frontier ≥ round) vs an explicit unproven live read; Test `pkg/client/verify_test.go`.
 
-- [ ] **Test:** a full flow against a fixture: checkpoint at epoch N → bundle whose headers carry epoch N+1 within the boundary window verified through the epoch-N validator tree (the spec §5 handoff rule) → the first N+1-attested root proves the new set → a domain proof verified against the bundle; a forged bundle below quorum fails; `WaitForFrontier` returns once a bundle covers the requested round.
-- [ ] **Run, expect FAIL → implement → PASS.**
+- [x] **Test:** a full flow against a fixture: checkpoint at epoch N → bundle whose headers carry epoch N+1 within the boundary window verified through the epoch-N validator tree (the spec §5 handoff rule) → the first N+1-attested root proves the new set → a domain proof verified against the bundle; a forged bundle below quorum fails; `WaitForFrontier` returns once a bundle covers the requested round.
+- [x] **Run, expect FAIL → implement → PASS.**
 - [x] **Commit:** title `Light-client verification: checkpoint, epoch walk, proofs`.
 
 **As-built (29dc0b6, review-adjudicated):**
@@ -505,12 +505,12 @@ table DeclaredOp {
 
 **Files:** Delete `pods/pod-sdk/src/domain_generated.rs` (verified still present); scrub any `TrieNode`/`DomainRegistry` reference; `make -C pods/pod-system release` green.
 
-- [ ] **Commit:** title `Remove the abandoned on-chain-trie registry`, body `[-] domain_generated.rs (unreferenced)`.
+- [x] **Commit:** title `Remove the abandoned on-chain-trie registry`, body `[-] domain_generated.rs (unreferenced)`.
 
 ### Task 7.2: Repo-wide regression
 
-- [ ] **Run:** `go build ./... && go vet ./... && go test -short ./... -timeout 300s`; `gofmt -l` repo-wide (three test files predating this batch are unformatted on the branch — format them here); then one scenario per family, one at a time, bounded: `TestScenarioBootstrap`, `TestScenarioConsensusBasics`, `TestScenarioCrash`.
-- [ ] **Commit:** title `Post-removal regression pass`. **Push the batch.**
+- [x] **Run:** `go build ./... && go vet ./... && go test -short ./... -timeout 300s`; `gofmt -l` repo-wide (three test files predating this batch are unformatted on the branch — format them here); then one scenario per family, one at a time, bounded: `TestScenarioBootstrap`, `TestScenarioConsensusBasics`, `TestScenarioCrash`.
+- [x] **Commit:** title `Post-removal regression pass`. **Push the batch.**
 
 ---
 
@@ -522,7 +522,7 @@ table DeclaredOp {
 
 **Files:** Modify `docs/WHITEPAPER.md`: object model (parent, cascade, creation rule), domains (authenticated index, owner, namespaces, rental + cap, lifecycle), transaction lifecycle (declared operations, either-ops-or-pod), consensus (detached provable header), fees (op fees, `index_entry_fee`, 95/5 unchanged), network (new messages), sync (fail-closed snapshot, trusted checkpoint); the "18 bytes per object" tracker figures become the new entry size. Follow the root `CLAUDE.md` doc conventions (one document of record, sober register, no em dashes).
 
-- [ ] **Commit:** title `Whitepaper: verifiable indexing`.
+- [x] **Commit:** title `Whitepaper: verifiable indexing`.
 
 ### Task 8.2: VISION composability wording
 
@@ -535,13 +535,13 @@ table DeclaredOp {
 - Sweep the rest of VISION for wording that leans on the old claim (the non-goals and Sui paragraphs reference "the synchronous composability above" and "uniform atomic composability") and keep them consistent with the reworded property.
 - Keep VISION's register (opinionated, positioning; sentence-case headings, straight quotes, no em dashes) per the root `CLAUDE.md` conventions. The wedge stands: no fragmented blockchain offers holder-independent atomicity plus zero rollback.
 
-- [ ] **Commit:** title `VISION: composability stated as the per-transaction guarantee`.
+- [x] **Commit:** title `VISION: composability stated as the per-transaction guarantee`.
 
 ### Task 8.3: Final review
 
-- [ ] **Check** `test/TESTING.md` is fully current: corpus table (2 new scenarios), event table (4 new events + new attributes/reasons), maintenance rule respected across the branch.
-- [ ] **Run** the final whole-branch review (most capable model); fix findings autonomously; mark the PR ready when CI is green.
-- [ ] **Commit** fixes if any. **Push.**
+- [x] **Check** `test/TESTING.md` is fully current: corpus table (2 new scenarios), event table (4 new events + new attributes/reasons), maintenance rule respected across the branch.
+- [x] **Run** the final whole-branch review (most capable model); fix findings autonomously; mark the PR ready when CI is green.
+- [x] **Commit** fixes if any. **Push.**
 
 ---
 
