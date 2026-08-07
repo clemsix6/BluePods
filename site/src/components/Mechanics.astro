@@ -5,17 +5,14 @@ const parts = [
   {
     title: 'Objects',
     body: 'The global state is not a tree. It is a set of discrete objects, each carrying an ID, a version, an owner, a replication factor, and up to 4 KB of content. Two transactions touching different objects can never collide, and when they touch the same one, catching it is a version check rather than a lock.',
-    meta: 'id · version · owner · replication · content',
   },
   {
     title: 'Consensus',
     body: 'Ordering runs on a leaderless DAG. Every validator produces one vertex per round, linking to a stake supermajority of the round before, so there is no proposer to wait on and none to bribe. Committing an anchor applies its whole causal history in an order that is a pure function of the hash links, identical on every node.',
-    meta: 'one vertex per validator per round',
   },
   {
     title: 'Pods',
     body: 'Backends are Rust compiled to WebAssembly, running in a sandbox that exposes four host functions and nothing else: declare gas, ask for the input size, read the input, write the output. No filesystem, no network, no clock. That is the entire attack surface.',
-    meta: 'gas · input_len · read_input · write_output',
   },
 ];
 ---
@@ -35,7 +32,6 @@ const parts = [
           <article class="card">
             <h3>{part.title}</h3>
             <p>{part.body}</p>
-            <p class="meta">{part.meta}</p>
           </article>
         ))
       }

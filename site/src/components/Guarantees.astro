@@ -2,13 +2,11 @@
 const guarantees = [
   {
     title: 'Zero rollback',
-    body: 'A finalized operation is never reverted. Finality is deterministic and absolute, not probabilistic. A backend can treat a finalized write as permanent and build on it without defensive logic.',
-    meta: 'The committed log is append-only',
+    body: 'A finalized operation is never reverted. Finality is deterministic and absolute, not probabilistic. The committed log is append-only, so a backend can treat a finalized write as permanent and build on it without defensive logic.',
   },
   {
     title: 'Holder-independent atomicity',
-    body: 'A transaction touches every object it declares, up to the reference cap, atomically and consistently in one finalized step, whichever validators hold them. Across transactions the client orchestrates, and zero rollback makes each finalized step solid ground that needs no compensating logic.',
-    meta: 'The atomic boundary is the transaction, never a chain',
+    body: 'A transaction touches every object it declares, up to the reference cap, atomically and consistently in one finalized step, whichever validators hold them. The atomic boundary is the transaction, never a chain: across transactions the client orchestrates, and zero rollback makes each finalized step solid ground that needs no compensating logic.',
   },
 ];
 ---
@@ -30,7 +28,6 @@ const guarantees = [
           <article class="card">
             <h3>{item.title}</h3>
             <p>{item.body}</p>
-            <p class="meta">{item.meta}</p>
           </article>
         ))
       }

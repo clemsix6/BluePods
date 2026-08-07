@@ -300,21 +300,6 @@ svg {
   color: var(--ink-inv-soft);
 }
 
-.meta {
-  margin-top: 1.4rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--rule);
-  font-family: var(--mono);
-  font-size: var(--step-meta);
-  letter-spacing: 0.02em;
-  color: var(--ink-faint);
-}
-
-.band--dark .meta {
-  border-top-color: var(--rule-inv);
-  color: rgba(240, 229, 222, 0.42);
-}
-
 .grid {
   display: grid;
   gap: var(--gap);
