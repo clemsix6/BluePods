@@ -2,19 +2,19 @@
 const peers = [
   {
     name: 'Internet Computer',
-    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets of a few dozen nodes, which scales by adding subnets but turns cross-subnet calls asynchronous and non-atomic, with rollback left to the developer. BluePods keeps one global DAG, so a transaction stays atomic across its objects whoever holds them and nothing rolls back, and it pays for that in throughput.',
+    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets, thirteen nodes for a standard application subnet and a few dozen for the ones carrying stronger guarantees, and it scales by adding subnets. The price is that a call from one subnet to another is asynchronous and non-atomic, so a failure halfway through leaves the developer to write the compensation. BluePods keeps one global DAG, so a transaction stays atomic across its objects whoever holds them and nothing rolls back, and it pays for that in throughput.',
   },
   {
     name: 'Sui',
-    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a consensus-less fast path for single-owner objects, quicker on simple transfers but finalized outside the total order, so the guarantee is not uniform across operations, and it puts large storage in a separate network. BluePods folds storage and execution into one protocol.',
+    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a fast path for objects with a single owner that settles a plain transfer in a few hundred milliseconds without waiting for the commit rule to order it, so the guarantee is not uniform across operations, and it sends large data to Walrus, a separate network. BluePods folds storage and execution into one protocol, under one order.',
   },
   {
     name: 'Solana',
-    note: 'The same bandwidth bet, a different shape. Solana is leader-based, and its roadmap isolates execution into domains that cannot touch each other’s state. BluePods is leaderless, and any two objects can meet in the same transaction whoever holds them.',
+    note: 'The same bandwidth bet, a different answer. Solana scales the node: Firedancer raises what one machine can push, asynchronous execution takes replay off the critical path, and the work on concurrent leaders is dismantling the single-proposer bottleneck. What none of it changes is that every validator still holds and executes the whole state. BluePods scales the set of machines a transaction needs instead, and asks the ten that hold its objects rather than all of them.',
   },
   {
     name: 'Ethereum',
-    note: 'An account model over a global state trie means every validator processes every transaction, and scaling happens on layer 2. BluePods decouples unrelated state into objects. The honest cost is that composability is bounded by the per-transaction reference cap, so the deep multi-contract compositions Ethereum allows are harder here.',
+    note: 'An account model over one global state commitment. Ethereum is scaling the base layer as well as rolling up onto layer 2, with parallel execution and clients that verify without replaying everything. What does not move is that the state stays a single object every validator has to check against one root, so capacity is what one node can carry. BluePods decouples unrelated state into objects with holders of their own. The honest cost is that composability is bounded by the per-transaction reference cap, so the deep multi-contract compositions Ethereum allows are harder here.',
   },
 ];
 ---

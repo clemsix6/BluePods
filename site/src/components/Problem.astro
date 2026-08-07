@@ -11,11 +11,11 @@ import { links } from '../links';
     <div class="prose">
       <p>
         Most layer 1 blockchains make you pick two of throughput, decentralization, and
-        state. Ethereum keeps decentralization, but every validator stores and processes
-        the whole state, which caps throughput. Solana reaches high throughput through a
-        leader-based pipeline, where the leader is the bottleneck and the hardware bar
-        decides who gets to take part. Sui parallelizes execution with an object model and
-        still has every validator process every transaction.
+        state. Ethereum keeps decentralization, and the state stays one object every
+        validator has to verify, which caps what the base layer carries. Solana pushes that
+        ceiling by making the node bigger, which raises the hardware bar for taking part.
+        Sui parallelizes execution with an object model and still has every validator
+        process every transaction.
       </p>
       <p>
         The usual way out is to trust fewer validators or push the work to a layer 2.
