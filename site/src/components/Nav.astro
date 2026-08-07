@@ -5,13 +5,7 @@ import { links } from '../links';
 <header class="nav" id="site-nav">
   <div class="wrap nav-inner">
     <a class="mark" href="#top">BluePods</a>
-    <nav aria-label="Sections">
-      <a href="#guarantees">Guarantees</a>
-      <a href="#mechanics">Mechanics</a>
-      <a href="#cost">Cost</a>
-      <a href="#pods">Pods</a>
-      <a href={links.repo} rel="noopener">GitHub</a>
-    </nav>
+    <a class="repo" href={links.repo} rel="noopener">GitHub</a>
   </div>
 </header>
 
@@ -75,13 +69,7 @@ import { links } from '../links';
     text-decoration: none;
   }
 
-  nav {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem 1.5rem;
-  }
-
-  nav a {
+  .repo {
     display: flex;
     align-items: center;
     gap: 0.5em;
@@ -94,20 +82,14 @@ import { links } from '../links';
     transition: color 0.25s ease;
   }
 
-  nav a::before {
+  .repo::before {
     content: '';
     width: 5px;
     height: 5px;
     background: currentColor;
   }
 
-  nav a:hover {
+  .repo:hover {
     color: var(--wine);
-  }
-
-  @media (max-width: 720px) {
-    nav a:not(:last-child) {
-      display: none;
-    }
   }
 </style>

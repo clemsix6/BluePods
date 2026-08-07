@@ -158,11 +158,11 @@ svg {
   color: var(--ink-inv);
 }
 
-#site-nav.is-dark nav a {
+#site-nav.is-dark .repo {
   color: var(--ink-inv-soft);
 }
 
-#site-nav.is-dark nav a:hover {
+#site-nav.is-dark .repo:hover {
   color: var(--ash);
 }
 
@@ -191,34 +191,6 @@ svg {
 }
 
 /* --- Section headers ----------------------------------------------------- */
-
-.label {
-  display: flex;
-  align-items: center;
-  gap: 0.55em;
-  margin-bottom: 1.6rem;
-  font-family: var(--mono);
-  font-size: var(--step-label);
-  font-weight: 400;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-
-.band--dark .label {
-  color: var(--ink-inv-soft);
-}
-
-.label::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  background: var(--wine);
-}
-
-.band--dark .label::before {
-  background: var(--ash);
-}
 
 .head {
   display: flex;
@@ -267,8 +239,10 @@ svg {
 .prose {
   display: grid;
   gap: 1.4rem;
+  min-width: 0;
   max-width: 46ch;
   color: var(--ink-soft);
+  overflow-wrap: break-word;
 }
 
 .band--dark .prose {
@@ -357,36 +331,6 @@ svg {
 
 .grid--4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-/* --- Code ---------------------------------------------------------------
-   Shiki writes the theme background inline, so the sheet colour has to win
-   over it here. */
-
-/* A grid item defaults to min-width:auto, which lets a wide code block push the
-   whole page sideways instead of scrolling inside its own box. */
-.prose,
-.run-step,
-.pod-grid > *,
-figure {
-  min-width: 0;
-}
-
-.astro-code {
-  max-width: 100%;
-  margin: 0;
-  padding: clamp(1.1rem, 2vw, 1.6rem) clamp(1.1rem, 2vw, 1.5rem);
-  border: 1px solid var(--rule);
-  border-radius: 16px;
-  background: var(--shell) !important;
-  font-size: 0.78125rem;
-  line-height: 1.75;
-  overflow-x: auto;
-}
-
-.astro-code,
-.astro-code code {
-  font-family: var(--mono);
 }
 
 /* --- Motion -------------------------------------------------------------- */
