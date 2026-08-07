@@ -167,14 +167,23 @@ func (m *Manager) anchor() Anchor {
 
 // ChildrenSubtreeRoot rebuilds a children subtree from a raw leaf stream and
 // returns its root, the client side of the enumeration completeness check: it
-// must equal the subtree root the top-tree proof commits to. Exported for
-// verifiers outside this package; the tree's own writes go through the same
-// functional recompute, so the two can never disagree over an identical set.
-func ChildrenSubtreeRoot(children [][32]byte) [32]byte {
+// must equal the subtree root the top-tree proof commits to. It reports
+// ok false, without computing a root, when children carries a duplicate ID:
+// folding a duplicate into the set silently would let a server pad the stream
+// with a repeated child and still match SubtreeRoot, so len(children) would no
+// longer be an authenticated count. An honest server never repeats an ID, so
+// this rejection never triggers on a genuine answer. Exported for verifiers
+// outside this package; the tree's own writes go through the same functional
+// recompute, so the two can never disagree over an identical, duplicate-free
+// set.
+func ChildrenSubtreeRoot(children [][32]byte) (root [32]byte, ok bool) {
 	set := make(map[[32]byte]bool, len(children))
 	for _, c := range children {
+		if set[c] {
+			return [32]byte{}, false
+		}
 		set[c] = true
 	}
 
-	return subtreeRoot(set)
+	return subtreeRoot(set), true
 }

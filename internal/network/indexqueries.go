@@ -37,7 +37,10 @@ func DecodeListChildren(data []byte) (*ListChildrenRequest, error) {
 // The stream is unauthenticated on purpose — the client rebuilds the subtree
 // from it and checks that root against SubtreeRoot, which detects a withheld or
 // invented leaf at every set size, with no threshold below which the stream is
-// taken on trust. The whole set travels in one message, so a parent with more
+// taken on trust. That check (index.ChildrenSubtreeRoot) rejects a stream
+// carrying a duplicate ID rather than folding it away, which is what makes
+// len(Children) an authenticated count rather than a number the server could
+// pad. The whole set travels in one message, so a parent with more
 // children than the transport's message limit can carry is not serveable
 // through this verb: there is no continuation token, by design — a paginated
 // stream would need a completeness argument per chunk, which is exactly what
@@ -177,6 +180,16 @@ type AncestorEdge struct {
 
 // GetAncestorsResponse carries the walk, ordered from the queried object
 // upward, every edge proven against the same ParentRoot.
+//
+// NORMATIVE for any external verifier: verifying each edge against ParentRoot
+// on its own is not sufficient. A per-edge proof only shows that Leaf sits at
+// ChildID's position in the tree — it says nothing about whether Edges[i]
+// continues the walk Edges[i-1] started, so a server could splice in a
+// correctly-proven edge for an unrelated object. A verifier MUST additionally
+// check Edges[i].ChildID == DecodeParentLeaf(Edges[i-1].Leaf).Parent for every
+// i > 0, chaining each hop's own parent reference into the next edge's key;
+// this is what makes the walk provably one continuous chain rather than a
+// bundle of independently true but unrelated edges.
 type GetAncestorsResponse struct {
 	Anchor ProvedIndexAnchor // Anchor is the index state every edge's proof was taken against
 	Edges  []AncestorEdge    // Edges are the walk's hops, the queried object's own edge first

@@ -12,7 +12,11 @@ import (
 // unchanged; the leaf and its proof come from the authenticated domain tree, so
 // a client can check the name against a quorum-attested root instead of taking
 // this node's word for it. A name with no leaf at all comes back with an
-// absence proof, which is just as verifiable as an inclusion.
+// absence proof, which is just as verifiable as an inclusion. The authenticated
+// answer is the leaf and its proof; Found and ObjectID are the legacy,
+// unproven path, read outside the lock the leaf is read under, so a domain op
+// committing between the two reads can leave them describing a different state
+// than the proof does.
 func (n *Node) handleDomainResolve(data []byte) ([]byte, error) {
 	req, err := network.DecodeDomainResolve(data)
 	if err != nil {
@@ -49,7 +53,7 @@ func (n *Node) handleListChildren(data []byte) ([]byte, error) {
 	}
 
 	if n.idxManager == nil {
-		return network.EncodeListChildrenResp(&network.ListChildrenResponse{}), nil
+		return nil, fmt.Errorf("children enumeration not available")
 	}
 
 	answer := n.idxManager.ListChildren(req.ParentID)
@@ -75,7 +79,7 @@ func (n *Node) handleGetAncestors(data []byte) ([]byte, error) {
 	}
 
 	if n.idxManager == nil {
-		return network.EncodeGetAncestorsResp(&network.GetAncestorsResponse{}), nil
+		return nil, fmt.Errorf("ancestor walk not available")
 	}
 
 	answer := n.idxManager.Ancestors(req.ObjectID)

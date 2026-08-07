@@ -194,7 +194,11 @@ func assertChildrenProve(t *testing.T, resp *network.ListChildrenResponse, paren
 		t.Fatal("top-tree proof does not bind the subtree root to the attested children root")
 	}
 
-	if got := index.ChildrenSubtreeRoot(resp.Children); got != resp.SubtreeRoot {
+	got, ok := index.ChildrenSubtreeRoot(resp.Children)
+	if !ok {
+		t.Fatal("streamed leaves carry a duplicate child ID")
+	}
+	if got != resp.SubtreeRoot {
 		t.Fatalf("streamed leaves rebuild subtree root %x, want the proven %x", got[:4], resp.SubtreeRoot[:4])
 	}
 
@@ -406,13 +410,46 @@ func TestProvedIndexQueries_TruncatedLeafStreamFailsSubtreeCheck(t *testing.T) {
 		t.Fatal("the honest answer does not verify, so the truncation below proves nothing")
 	}
 
-	if got := index.ChildrenSubtreeRoot(resp.Children); got != resp.SubtreeRoot {
-		t.Fatalf("the honest stream rebuilds %x, not the proven %x", got[:4], resp.SubtreeRoot[:4])
+	honest, ok := index.ChildrenSubtreeRoot(resp.Children)
+	if !ok {
+		t.Fatal("the honest stream carries a duplicate child ID, so the truncation below proves nothing")
+	}
+	if honest != resp.SubtreeRoot {
+		t.Fatalf("the honest stream rebuilds %x, not the proven %x", honest[:4], resp.SubtreeRoot[:4])
 	}
 
 	truncated := resp.Children[:len(resp.Children)-1]
-	if got := index.ChildrenSubtreeRoot(truncated); got == resp.SubtreeRoot {
+	if got, ok := index.ChildrenSubtreeRoot(truncated); ok && got == resp.SubtreeRoot {
 		t.Fatal("a truncated leaf stream rebuilt the proven subtree root: enumeration completeness is not enforced")
+	}
+}
+
+// TestProvedIndexQueries_DuplicateLeafStreamFailsSubtreeCheck is the other
+// half of the completeness guarantee: a serving node cannot inflate the
+// streamed count by repeating a leaf either. Folding a duplicate into the
+// rebuilt set would silently agree with the proven subtree root while
+// claiming an extra, non-existent child, which is exactly what would make
+// len(Children) an unauthenticated number even on a green verification.
+func TestProvedIndexQueries_DuplicateLeafStreamFailsSubtreeCheck(t *testing.T) {
+	f := buildProvedFixture(t)
+
+	resp, err := network.DecodeListChildrenResp(clientRoundTrip(t, f.node,
+		network.EncodeListChildren(&network.ListChildrenRequest{ParentID: f.owner})))
+	if err != nil {
+		t.Fatalf("decode list children: %v", err)
+	}
+
+	if len(resp.Children) == 0 {
+		t.Fatal("test misconfigured: no children streamed to duplicate")
+	}
+
+	if _, ok := index.ChildrenSubtreeRoot(resp.Children); !ok {
+		t.Fatal("the honest stream carries a duplicate child ID, so padding it below proves nothing")
+	}
+
+	padded := append(append([][32]byte{}, resp.Children...), resp.Children[0])
+	if _, ok := index.ChildrenSubtreeRoot(padded); ok {
+		t.Fatal("a padded leaf stream with a repeated child ID rebuilt a root instead of being rejected")
 	}
 }
 
@@ -452,5 +489,118 @@ func TestProvedIndexQueries_AbsentParentAndUnknownObject(t *testing.T) {
 
 	if !index.Verify(ancestors.Anchor.ParentRoot, stranger[:], nil, decodeProof(t, ancestors.Edges[0].Proof)) {
 		t.Fatal("absence proof for an unknown object does not verify against the attested parent root")
+	}
+}
+
+// TestProvedIndexQueries_ExpiredLeaseInclusionProofCarriesExpiry covers the
+// split the resolve handler's doc comment calls out: Found comes from state's
+// own epoch filter and reports false for a lease past its expiry epoch, but
+// the authenticated leg still walks the domain tree as it stands, where the
+// unswept leaf is still present. It must therefore come back as an INCLUSION
+// proof, with the expiry readable inside the proven leaf, not as an absence
+// proof — a tree-side filter that dropped expired leaves before proving would
+// pass every other test in this file just as green.
+func TestProvedIndexQueries_ExpiredLeaseInclusionProofCarriesExpiry(t *testing.T) {
+	dir := t.TempDir()
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	n, db := bootstrapTestNode(t, dir, privKey)
+	t.Cleanup(func() { db.Close() })
+
+	n.seedGenesisState()
+	waitForCommit(t, n.dag, n.dag.LastCommittedRound(), 1)
+	n.dag.Close()
+
+	// Past epoch 5, an ExpiryEpoch of 1 is expired but still sitting in the
+	// registry: state.ResolveDomain's grace window never sweeps it, only a
+	// later epoch-boundary sweep would remove the leaf itself.
+	n.state.SetEpochSource(func() uint64 { return 5 })
+
+	owner := deriveOwner(privKey)
+	const name = "expired.bp"
+	var leafID [32]byte
+	leafID[0] = 0xEE
+
+	const expiry = 1
+	n.state.SetDomainLeaf(name, leafID, owner, expiry)
+	n.idxManager.ApplyDomain(name, leafID, owner, expiry)
+
+	round := n.dag.LastCommittedRound()
+	if round == 0 {
+		t.Fatal("test misconfigured: the node decided no round")
+	}
+	n.idxManager.SetFrontier(round)
+
+	pass := queryProved(t, n, name, owner, leafID)
+
+	if pass.resolve.Found {
+		t.Fatalf("resolve(%s) reported Found=true for a lease past its expiry epoch", name)
+	}
+
+	if !pass.resolve.Anchor.Anchored {
+		t.Fatal("test misconfigured: the resolve answer is not anchored")
+	}
+
+	if len(pass.resolve.Leaf) == 0 {
+		t.Fatal("expired-but-unswept lease answered with an absence proof, not the inclusion the tree still holds")
+	}
+
+	if !index.Verify(pass.resolve.Anchor.DomainRoot, []byte(name), pass.resolve.Leaf, decodeProof(t, pass.resolve.Proof)) {
+		t.Fatal("inclusion proof for the expired-but-unswept lease does not verify against the attested domain root")
+	}
+
+	leaf, ok := index.DecodeDomainLeaf(pass.resolve.Leaf)
+	if !ok {
+		t.Fatal("served domain leaf does not decode")
+	}
+
+	if leaf.ExpiryEpoch != expiry {
+		t.Fatalf("served leaf carries expiry %d, want %d", leaf.ExpiryEpoch, expiry)
+	}
+}
+
+// TestProvedIndexQueries_UnanchoredBetweenMutationAndFrontier covers the other
+// unanchored branch: Anchor.Anchored comes from comparing the trees' live
+// combined root against the root the last SetFrontier call recorded, not from
+// FrontierRound alone. A query landing after a tree mutation but before the
+// SetFrontier call that closes its batch — exactly the gap buildProvedFixture
+// itself opens between its writes and its own SetFrontier — must therefore
+// come back unanchored even though the manager still names a real, previously
+// committed round.
+func TestProvedIndexQueries_UnanchoredBetweenMutationAndFrontier(t *testing.T) {
+	dir := t.TempDir()
+	_, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	n, db := bootstrapTestNode(t, dir, privKey)
+	t.Cleanup(func() { db.Close() })
+
+	n.seedGenesisState()
+	waitForCommit(t, n.dag, n.dag.LastCommittedRound(), 1)
+	n.dag.Close()
+
+	owner := deriveOwner(privKey)
+	var top [32]byte
+	top[0] = 0xC3
+
+	// Mutate the tree without closing the batch with SetFrontier — the same
+	// gap commitNextRound leaves open between a tree write and the
+	// setIndexFrontier call that closes its batch.
+	n.dag.TrackObject(top, 1, 0, 0, index.KeyRootKind, owner)
+
+	pass := queryProved(t, n, "unanchored.bp", owner, top)
+
+	if pass.resolve.Anchor.Anchored {
+		t.Fatal("resolve answered anchored while queried between a tree mutation and its closing SetFrontier")
+	}
+
+	if pass.resolve.Anchor.FrontierRound != 0 {
+		t.Fatalf("an unanchored answer carries FrontierRound %d, want 0 — Round is meaningful only when Anchored",
+			pass.resolve.Anchor.FrontierRound)
 	}
 }
