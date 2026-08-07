@@ -1,0 +1,83 @@
+---
+const peers = [
+  {
+    name: 'Internet Computer',
+    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets, thirteen nodes for a standard application subnet and a few dozen for the ones carrying stronger guarantees, and it scales by adding subnets. The price is that a call from one subnet to another is asynchronous and non-atomic, so a failure halfway through leaves the developer to write the compensation. BluePods keeps one global DAG, so a transaction stays atomic across its objects whoever holds them and nothing rolls back. It pays for that in throughput.',
+  },
+  {
+    name: 'Sui',
+    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a fast path for objects with a single owner that settles a plain transfer in a few hundred milliseconds without waiting for the commit rule to order it, so the guarantee is not uniform across operations, and it sends large data to Walrus, a separate network. BluePods folds storage and execution into one protocol, under one order.',
+  },
+  {
+    name: 'Solana',
+    note: 'The same bandwidth bet, a different answer. Solana scales the node: Firedancer raises what one machine can push, asynchronous execution takes replay off the critical path, and the work on concurrent leaders is dismantling the single-proposer bottleneck. Through all of it, every validator still holds and executes the whole state. BluePods scales the set of machines a transaction needs instead, and asks the ten that hold its objects.',
+  },
+  {
+    name: 'Ethereum',
+    note: 'An account model over one global state commitment. Ethereum is scaling the base layer as well as rolling up onto layer 2, with parallel execution and clients that verify a block by reading its results instead of replaying it. Underneath, the state stays a single object every validator checks against one root, so capacity is still what one node can carry. BluePods decouples unrelated state into objects with holders of their own, and pays for it in composability: the per-transaction reference cap bounds how many objects one step can touch, so the deep multi-contract compositions Ethereum allows are harder here.',
+  },
+];
+---
+
+<section class="band" id="standing">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <h2>Against the neighbours.</h2>
+      </div>
+      <p class="aside">
+        Three of them scale by making the machine cheaper. One splits the order into
+        subnets. BluePods splits which machines hold what, and keeps one order over all
+        of them.
+      </p>
+    </div>
+
+    <div class="rows">
+      {
+        peers.map((peer) => (
+          <article class="row">
+            <h3>{peer.name}</h3>
+            <p>{peer.note}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .aside {
+    max-width: 28ch;
+    padding-bottom: 0.5rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  .rows {
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 1rem clamp(2rem, 5vw, 5rem);
+    padding-block: clamp(1.75rem, 3vw, 2.5rem);
+    border-top: 1px solid var(--rule);
+  }
+
+  .row:last-child {
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .row p {
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  @media (max-width: 720px) {
+    .row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

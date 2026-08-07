@@ -1,0 +1,46 @@
+---
+const guarantees = [
+  {
+    title: 'Zero rollback',
+    body: 'A finalized operation stays finalized. Finality is deterministic, and the committed log only ever grows, so a backend can treat a finalized write the way it treats a committed database transaction and build straight on top of it.',
+  },
+  {
+    title: 'Holder-independent atomicity',
+    body: 'A transaction touches every object it declares, up to the reference cap, in one finalized step, whichever validators hold them. The atomic boundary is the transaction itself. Chain several together and the client does the orchestrating, but zero rollback leaves each finalized step as ground you can stand on, so there is nothing to compensate for afterwards.',
+  },
+];
+---
+
+<section class="band" id="guarantees">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <h2>Neither of these bends.</h2>
+      </div>
+      <p class="aside">
+        Every line of defensive code a backend developer stops having to write comes from
+        these two.
+      </p>
+    </div>
+
+    <div class="grid grid--2">
+      {
+        guarantees.map((item) => (
+          <article class="card">
+            <h3>{item.title}</h3>
+            <p>{item.body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .aside {
+    max-width: 30ch;
+    padding-bottom: 0.5rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+</style>

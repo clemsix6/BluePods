@@ -1,0 +1,193 @@
+---
+import { author, links } from '../links';
+
+const columns = [
+  {
+    title: 'Documents',
+    items: [
+      { label: 'Whitepaper', href: links.whitepaper },
+      { label: 'Vision', href: links.vision },
+    ],
+  },
+];
+---
+
+<footer class="band foot">
+  <div class="wrap foot-inner">
+    <div>
+      <p class="mark">BluePods</p>
+      <p class="tag">A decentralized cloud, written from scratch.</p>
+
+      <a class="author" href={links.author} rel="noopener me">
+        <img class="face" src={author.photo} width="100" height="100" alt="" loading="lazy" />
+        <span class="who">
+          <span class="name">{author.name}</span>
+          <span class="role">{author.role}</span>
+        </span>
+        <span class="arrow" aria-hidden="true">&#8627;</span>
+      </a>
+
+      <p class="legal">Apache License 2.0</p>
+    </div>
+
+    <div class="cols">
+      {
+        columns.map((column) => (
+          <nav aria-label={column.title}>
+            <p class="col-title">{column.title}</p>
+            <ul>
+              {column.items.map((item) => (
+                <li>
+                  <a href={item.href} rel="noopener">
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))
+      }
+    </div>
+  </div>
+</footer>
+
+<style>
+  .foot {
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .foot-inner {
+    display: flex;
+    justify-content: space-between;
+    gap: 3rem clamp(2rem, 6vw, 6rem);
+    flex-wrap: wrap;
+  }
+
+  .mark {
+    font-family: var(--display);
+    font-size: clamp(2.25rem, 6vw, 4rem);
+    font-weight: 300;
+    letter-spacing: -0.05em;
+    line-height: 1;
+  }
+
+  .tag {
+    max-width: 32ch;
+    margin-top: 1rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  /* Read as a contents entry, like the hero's: a rule, a face, a name, an
+     arrow. The whole row is the link, so the target is the person rather than
+     five words inside a sentence. */
+  .author {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    width: min(100%, 21rem);
+    margin-top: clamp(2rem, 4vw, 2.75rem);
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--rule);
+    text-decoration: none;
+    transition: color 0.25s ease;
+  }
+
+  .face {
+    flex: none;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--shell);
+  }
+
+  .who {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .name {
+    font-family: var(--display);
+    font-size: 1.125rem;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
+
+  .role {
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .arrow {
+    flex: none;
+    margin-left: auto;
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .author:hover {
+    color: var(--wine);
+  }
+
+  .author:hover .arrow {
+    transform: translateX(4px);
+  }
+
+  .legal {
+    margin-top: 2.5rem;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .cols {
+    display: flex;
+    gap: clamp(2.5rem, 6vw, 5rem);
+    flex-wrap: wrap;
+  }
+
+  .col-title {
+    margin-bottom: 1.25rem;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  ul {
+    display: grid;
+    gap: 0.6rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .cols a {
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    color: var(--ink-soft);
+    transition: color 0.25s ease;
+  }
+
+  .cols a:hover {
+    color: var(--wine);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .arrow,
+    .author:hover .arrow {
+      transition: none;
+      transform: none;
+    }
+  }
+</style>

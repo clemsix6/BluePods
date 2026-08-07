@@ -1,0 +1,186 @@
+---
+const consequences = [
+  {
+    title: 'No horizontal scaling',
+    body: 'Total capacity is whatever one node can ingest and validate. Adding validators spreads storage and execution around, and the ceiling stays exactly where it was.',
+    note: 'Validators added → ceiling unchanged',
+  },
+  {
+    title: 'It halts rather than fork',
+    body: 'Under a network partition the system is CP. It stops instead of risking a rollback, so a global partition can take the cloud down until it heals.',
+    note: 'Partition → stop, never diverge',
+  },
+];
+---
+
+<section class="band" id="cost">
+  <div class="field" aria-hidden="true">
+    <span class="orb"></span>
+    <span class="orb orb--low"></span>
+  </div>
+
+  <div class="wrap reveal">
+    <div class="split">
+      <h2>The part we don't hide.</h2>
+
+      <div class="prose">
+        <p>
+          Holding both guarantees requires a single global DAG with one total order. Every
+          operation, from every app, passes through it and is seen by every validator, even
+          though each validator only stores and executes a fraction of the state.
+        </p>
+        <p>Two things follow from that, and both are load-bearing.</p>
+      </div>
+    </div>
+
+    <!-- Numbered because the sentence above counts them: two, in order. -->
+    <ol class="costs">
+      {
+        consequences.map((item, index) => (
+          <li class="cost">
+            <p class="num">{String(index + 1).padStart(2, '0')}</p>
+            <h3>{item.title}</h3>
+            <p class="body">{item.body}</p>
+            <p class="note">{item.note}</p>
+          </li>
+        ))
+      }
+    </ol>
+
+    <p class="closer">
+      The bet that makes this worth taking is bandwidth. Per-node bandwidth keeps climbing,
+      and putting only hashes on the consensus path, with the data available elsewhere,
+      makes that bet easier to win while the total order stays whole.
+    </p>
+  </div>
+</section>
+
+<style>
+  /* The section changes register through light, not through a painted rectangle.
+     The mask is what does it: the field arrives, fills the section and leaves,
+     so the ground stays the same paper as every other section. */
+  .field {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(0, 0, 0, 0.55) 9%,
+      #000 22%,
+      #000 76%,
+      rgba(0, 0, 0, 0.5) 92%,
+      transparent 100%
+    );
+  }
+
+  /* Ash-dominant, where the hero's runs on wine. Large enough to carry the whole
+     section on its own now that nothing else colours it. */
+  .orb {
+    --spin: 96deg;
+    --c1: #8ba689;
+    --c2: #a8bca6;
+    --c3: #c7d2c2;
+    --c4: #eee6dc;
+
+    top: -30vw;
+    left: -34vw;
+    width: 96vw;
+    aspect-ratio: 1;
+    opacity: 0.78;
+    filter: blur(64px) saturate(112%);
+  }
+
+  .orb--low {
+    --spin: 272deg;
+    --c1: #96a892;
+    --c2: #b6c2ae;
+    --c3: #d6d5c6;
+    --c4: #f0e5de;
+
+    top: auto;
+    bottom: -34vw;
+    left: auto;
+    right: -28vw;
+    width: 78vw;
+    opacity: 0.62;
+    animation-duration: 61s;
+    animation-direction: alternate-reverse;
+  }
+
+  .costs {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    margin: clamp(4rem, 9vw, 8rem) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* Staggered on purpose. Two landings the reader arrives at one after the
+     other, not two cells of a table read at once. */
+  .cost {
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--rule);
+  }
+
+  .cost:first-child {
+    grid-column: 1 / span 5;
+  }
+
+  .cost:last-child {
+    grid-column: 7 / span 6;
+    margin-top: clamp(3.5rem, 8vw, 7rem);
+  }
+
+  .num {
+    font-family: var(--display);
+    font-size: clamp(3rem, 6vw, 5.5rem);
+    font-weight: 200;
+    line-height: 0.8;
+    letter-spacing: -0.06em;
+    color: var(--wine);
+  }
+
+  .cost h3 {
+    margin: 1.5rem 0 0.9rem;
+  }
+
+  .body {
+    max-width: 40ch;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  .note {
+    margin-top: 1.5rem;
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    color: var(--wine);
+  }
+
+  .closer {
+    max-width: 34ch;
+    margin-top: clamp(4rem, 8vw, 7rem);
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+    font-size: var(--step-lede);
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+
+  @media (max-width: 720px) {
+    .costs {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 3rem;
+    }
+
+    .cost:first-child,
+    .cost:last-child {
+      grid-column: 1;
+      margin-top: 0;
+    }
+
+    .body,
+    .closer {
+      max-width: none;
+    }
+  }
+</style>

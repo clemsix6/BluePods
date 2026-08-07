@@ -1,0 +1,40 @@
+---
+import { links } from '../links';
+
+const parts = [
+  {
+    title: 'Objects',
+    body: 'The global state is a set of discrete objects rather than a tree. Each one carries an ID, a version, an owner, a replication factor, and up to 4 KB of content. Two transactions touching different objects can never collide, and when they touch the same one, a version check catches it where a lock would otherwise be needed.',
+  },
+  {
+    title: 'Consensus',
+    body: 'Ordering runs on a leaderless DAG. Every validator produces one vertex per round, linking to a stake supermajority of the round before, so a round advances on the group rather than on one proposer you have to wait for or bribe. Committing an anchor applies its whole causal history in an order that is a pure function of the hash links, identical on every node.',
+  },
+  {
+    title: 'Pods',
+    body: 'Backends are Rust compiled to WebAssembly, running in a sandbox whose entire interface is four host functions: declare gas, ask for the input size, read the input, write the output. A pod reaches no filesystem, network or clock, because the sandbox has no way to hand it one. Those four functions are the whole attack surface.',
+  },
+];
+---
+
+<section class="band" id="mechanics">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <h2>Three pieces do most of the work.</h2>
+      </div>
+      <a class="jump" href={links.whitepaper} rel="noopener">Full whitepaper &#8627;</a>
+    </div>
+
+    <div class="grid grid--3">
+      {
+        parts.map((part) => (
+          <article class="card">
+            <h3>{part.title}</h3>
+            <p>{part.body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>

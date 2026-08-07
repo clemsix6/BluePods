@@ -1,0 +1,84 @@
+---
+import { links } from '../links';
+---
+
+<header class="nav" id="site-nav">
+  <div class="wrap nav-inner">
+    <a class="mark" href="#top">BluePods</a>
+    <a class="repo" href={links.repo} rel="noopener">GitHub</a>
+  </div>
+</header>
+
+<script>
+  const nav = document.getElementById('site-nav');
+
+  if (nav) {
+    /* Over the hero the bar sits on the field and needs no ground of its own.
+       Once the page has moved it takes one, so text scrolling under it stays
+       readable. */
+    let queued = false;
+
+    const paint = () => {
+      queued = false;
+      nav.classList.toggle('is-stuck', window.scrollY > 48);
+    };
+
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(paint);
+    };
+
+    paint();
+    window.addEventListener('scroll', schedule, { passive: true });
+  }
+</script>
+
+<style>
+  .nav {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 60;
+    padding-block: calc(var(--frame) + 0.75rem) 1.25rem;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .mark {
+    font-family: var(--display);
+    font-size: 1.125rem;
+    font-weight: 500;
+    letter-spacing: -0.035em;
+    text-decoration: none;
+  }
+
+  .repo {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--ink-soft);
+    transition: color 0.25s ease;
+  }
+
+  .repo::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    background: currentColor;
+  }
+
+  .repo:hover {
+    color: var(--wine);
+  }
+</style>

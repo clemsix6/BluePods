@@ -1,0 +1,197 @@
+---
+import { links } from '../links';
+
+const facts = [
+  'Leaderless DAG',
+  'Objects up to 4 KB',
+  'Four host functions',
+  'Ten holders minimum',
+];
+---
+
+<section class="hero" id="top">
+  <div class="field" aria-hidden="true">
+    <span class="orb"></span>
+    <span class="orb orb--far"></span>
+    <span class="veil"></span>
+  </div>
+
+  <div class="wrap hero-inner">
+    <h1>A backend the network runs, stores, and never rolls back.</h1>
+
+    <div class="hero-foot">
+      <p class="lede">
+        Backends run as WebAssembly modules called pods. State splits into objects, each
+        held by a handful of validators, so a transaction runs on the ten or fifty machines
+        that hold what it touches instead of on every machine in the network.
+      </p>
+
+      <nav class="entries" aria-label="Read more">
+        <a class="entry" href={links.whitepaper} rel="noopener">
+          Read the whitepaper<span class="arrow" aria-hidden="true">&#8627;</span>
+        </a>
+      </nav>
+    </div>
+
+    <ul class="facts">
+      {facts.map((fact) => <li>{fact}</li>)}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    min-height: 100svh;
+    padding-block: 9rem 3.5rem;
+    overflow: hidden;
+  }
+
+  /* The page's first and largest field. It runs off the top and right edges so
+     the frame never contains the whole circle: what stays in view is an arc,
+     which reads as an object passing through rather than as a ball dropped on
+     the page. */
+  .orb {
+    top: -14vw;
+    right: -14vw;
+    width: 62vw;
+    aspect-ratio: 1;
+    opacity: 0.92;
+  }
+
+  /* A smaller body further off, out of phase with the first. Two arcs crossing
+     is what keeps the field from resolving into a single clean shape. */
+  .orb--far {
+    top: -4vw;
+    right: 6vw;
+    width: 30vw;
+    opacity: 0.5;
+    filter: blur(64px) saturate(118%);
+    animation-duration: 67s;
+    animation-direction: alternate-reverse;
+  }
+
+  /* The field never meets an edge. It lifts off the top so the bar stays
+     legible over it, and fades into the page colour well before the fold so
+     the section below starts on plain paper. */
+  .veil {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(to bottom, rgba(240, 229, 222, 0.82) 0%, rgba(240, 229, 222, 0) 13%),
+      linear-gradient(
+        to bottom,
+        rgba(240, 229, 222, 0) 24%,
+        rgba(240, 229, 222, 0.72) 66%,
+        var(--linen) 92%
+      );
+  }
+
+  /* A second, heavier pass of grain, scoped to the field. Gradients this soft
+     band without it, and the grain is what ties them to the paper. */
+  .field::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0.3;
+    mix-blend-mode: overlay;
+    background-image: var(--noise);
+  }
+
+  .hero-inner {
+    position: relative;
+    width: min(100% - 2 * clamp(1.5rem, 4vw, 3.5rem), 1240px);
+  }
+
+  h1 {
+    max-width: 10ch;
+  }
+
+  .hero-foot {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 2.5rem clamp(2rem, 6vw, 6rem);
+    flex-wrap: wrap;
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  /* Read as a line of a contents page: a rule, a title, a folio arrow. */
+  .entries {
+    width: min(100%, 22rem);
+  }
+
+  .entry {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding-block: 0.75rem 0.65rem;
+    border-block: 1px solid var(--ink);
+    font-family: var(--display);
+    font-size: 1.375rem;
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    text-decoration: none;
+    transition: color 0.25s ease;
+  }
+
+  .entry:hover {
+    color: var(--wine);
+  }
+
+  .arrow {
+    flex: none;
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .entry:hover .arrow {
+    transform: translateX(4px);
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    margin: clamp(3.5rem, 8vw, 6rem) 0 0;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--rule);
+    list-style: none;
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    color: var(--ink-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .arrow,
+    .entry:hover .arrow {
+      transition: none;
+      transform: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .hero {
+      padding-block: 7.5rem 2.5rem;
+    }
+
+    h1 {
+      max-width: none;
+    }
+
+    .orb {
+      top: -30vw;
+      right: -34vw;
+      width: 132vw;
+    }
+
+    .orb--far {
+      top: 6vw;
+      right: 30vw;
+      width: 58vw;
+    }
+  }
+</style>
