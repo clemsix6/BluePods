@@ -271,6 +271,49 @@ func TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays(t *testing.T) {
 	}
 }
 
+// TestVerifyAnchor_SplitQuorumAcrossTheHandoffWindowStillAttestsTheRoot is a
+// split quorum, not a byzantine minority: half the committee signs the
+// GENUINE (frontier, root) pair labeling it epoch N, the other half signs the
+// very same pair labeling it N+1. Both labels are protocol-legal (a producer
+// picks its own epoch at production time and churn is capped, so the two
+// committees overlap), and neither bucket carries the committee's own quorum
+// alone. The pair itself is still attested by the full committee once the
+// buckets are taken together, so it must not be refused outright — the
+// attribution falls back to N, since only N+1's own bucket may ever advance
+// the epoch (see TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays).
+func TestVerifyAnchor_SplitQuorumAcrossTheHandoffWindowStillAttestsTheRoot(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+
+	round, root := f.mgr.CommittedFrontier()
+	set := ValidatorSet{Epoch: f.epoch, Leaves: leavesOf(committee)}
+
+	records := make([][]byte, 0, 4)
+	for _, v := range committee[:2] {
+		records = append(records, headerRecord(v, round+2, f.epoch, round, root))
+	}
+	for _, v := range committee[2:] {
+		records = append(records, headerRecord(v, round+2, f.epoch+1, round, root))
+	}
+
+	bundle := &network.GetIndexAnchorResponse{
+		Found:         true,
+		FrontierRound: round,
+		IndexRoot:     root,
+		Epoch:         f.epoch + 1, // the serving node's own unauthenticated label
+		Headers:       records,
+	}
+
+	attested, err := VerifyAnchor(bundle, set)
+	if err != nil {
+		t.Fatalf("a quorum split evenly across the handoff window's two legal labels, on one genuine (frontier, root) pair, was refused outright: %v", err)
+	}
+
+	if attested.Epoch != f.epoch {
+		t.Fatalf("attested epoch = %d, want %d: neither label's own bucket carries the committee's quorum alone, so the union attests at the lower epoch", attested.Epoch, f.epoch)
+	}
+}
+
 // TestVerifyAnchor_HeadersOutsideTheWindowReportTheWeakSubjectivityBoundary
 // verifies the epoch-window exhaustion is reported as its own distinct
 // condition rather than folded into the generic "short of two thirds"
@@ -312,6 +355,37 @@ func TestVerifyAnchor_BelowQuorumInsideTheWindowIsNotReportedAsCheckpointBehind(
 
 	if errors.Is(err, ErrCheckpointBehind) {
 		t.Fatalf("an ordinary quorum shortfall inside the handoff window was reported as the checkpoint falling behind: %v", err)
+	}
+}
+
+// TestVerifyAnchor_AllRecordsUnparsableIsNotReportedAsCheckpointBehind is the
+// TDD witness for the case allHeadersOutsideWindow must not fold into "behind
+// the checkpoint": a bundle whose every record fails to parse — here, a
+// corrupted signature on each one — names no epoch at all. It is not "every
+// header outside the handoff window", which is what ErrCheckpointBehind
+// exists to report and what tells a caller to re-bootstrap out of band rather
+// than poll again. A single malformed or malicious record must not be able to
+// evict a light client's otherwise-valid checkpoint.
+func TestVerifyAnchor_AllRecordsUnparsableIsNotReportedAsCheckpointBehind(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+
+	bundle := bundleFrom(t, f, committee)
+	for i, record := range bundle.Headers {
+		tampered := append([]byte(nil), record...)
+		tampered[anchorHeaderSize-1] ^= 0xFF
+		bundle.Headers[i] = tampered
+	}
+
+	set := ValidatorSet{Epoch: f.epoch, Leaves: leavesOf(committee)}
+
+	_, err := VerifyAnchor(bundle, set)
+	if err == nil {
+		t.Fatal("a bundle whose every record fails to parse was accepted as attested")
+	}
+
+	if errors.Is(err, ErrCheckpointBehind) {
+		t.Fatalf("a bundle with not one parsable header was reported as the checkpoint falling behind: %v", err)
 	}
 }
 

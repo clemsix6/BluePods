@@ -1,7 +1,6 @@
 package client
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -9,15 +8,6 @@ import (
 	"BluePods/internal/index"
 	"BluePods/internal/network"
 )
-
-// ErrCheckpointBehind reports a bundle whose headers all name an epoch
-// outside the checkpoint's handoff window {Epoch, Epoch+1}: every header the
-// node could possibly weigh has already moved past what this client's
-// committee is authorized to attest. That is the weak-subjectivity boundary
-// spec §5 describes, not a quorum failure — retrying gets the same refusal
-// forever, and the caller's move is a fresh out-of-band checkpoint, never
-// another poll.
-var ErrCheckpointBehind = errors.New("checkpoint's handoff window no longer covers any served header")
 
 // Checkpoint is a light client's trust anchor (spec §5): the weak-subjectivity
 // pin it obtains out of band and then walks forward from. Holding no state of
@@ -60,7 +50,7 @@ type ValidatorSet struct {
 type VerifiedAnchor struct {
 	FrontierRound uint64   // FrontierRound is the committed round IndexRoot anchors
 	IndexRoot     [32]byte // IndexRoot is the attested index root
-	Epoch         uint64   // Epoch is the epoch whose own header subset carried the quorum
+	Epoch         uint64   // Epoch is the epoch whose own header subset — or, at N, its union with N+1's — carried the quorum
 }
 
 // VerifyAnchor checks that a GetIndexAnchor bundle carries set's capped-stake
@@ -72,12 +62,22 @@ type VerifiedAnchor struct {
 // every counted header must repeat the frontier and the root it claims. The
 // attested epoch is likewise never read from the response, nor taken as the
 // highest epoch among whichever headers happened to count — it is N+1 only
-// when the headers naming N+1 carry set's quorum BY THEMSELVES, and N
-// otherwise. Weighing the two epochs' headers together for that decision
-// would let one byzantine committee member's own N+1 claim relabel a genuine
-// N-quorum as N+1, dragging a light client's checkpoint forward a full epoch
-// on a single vote (see countedProducers and
-// TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays).
+// when the headers naming N+1 carry set's quorum BY THEMSELVES. Weighing the
+// two epochs' headers together to decide N+1 would let one byzantine
+// committee member's own N+1 claim relabel a genuine N-quorum as N+1,
+// dragging a light client's checkpoint forward a full epoch on a single vote
+// (see countedProducers and TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays).
+//
+// N carries no such risk, so it is tested the other way: against the UNION of
+// both buckets. A committee is legally split by label at the handoff boundary
+// — a producer picks its own epoch at production time, so the very same
+// (frontier, root) pair can arrive labeled N from some members and N+1 from
+// others, with neither bucket alone reaching quorum. That pair is still
+// genuinely attested by the committee as a whole, and refusing it outright
+// would let a single dishonest-looking but harmless label split evict an
+// otherwise-valid anchor; attributing it to the lower epoch costs nothing,
+// since N+1 is never reached this way (see
+// TestVerifyAnchor_SplitQuorumAcrossTheHandoffWindowStillAttestsTheRoot).
 func VerifyAnchor(bundle *network.GetIndexAnchorResponse, set ValidatorSet) (VerifiedAnchor, error) {
 	if bundle == nil || !bundle.Found {
 		return VerifiedAnchor{}, fmt.Errorf("no quorate anchor bundle: the node has no attested frontier yet")
@@ -93,50 +93,11 @@ func VerifyAnchor(bundle *network.GetIndexAnchorResponse, set ValidatorSet) (Ver
 		return VerifiedAnchor{FrontierRound: bundle.FrontierRound, IndexRoot: bundle.IndexRoot, Epoch: set.Epoch + 1}, nil
 	}
 
-	if attesting, total := cappedStakeOf(set, atCurrentEpoch); quorumReached(attesting, total) {
+	if attesting, total := cappedStakeOf(set, unionOfProducers(atCurrentEpoch, atNextEpoch)); quorumReached(attesting, total) {
 		return VerifiedAnchor{FrontierRound: bundle.FrontierRound, IndexRoot: bundle.IndexRoot, Epoch: set.Epoch}, nil
 	}
 
 	return VerifiedAnchor{}, refusalError(bundle, set, atCurrentEpoch, atNextEpoch)
-}
-
-// refusalError explains why neither epoch's own header subset carried set's
-// quorum. It distinguishes the weak-subjectivity boundary — every header in
-// the bundle names an epoch outside {set.Epoch, set.Epoch+1}, so nothing this
-// committee is authorized to weigh even exists in the bundle — from an
-// ordinary shortfall, which reads identically as "0 of N capped stake" unless
-// called out on its own.
-func refusalError(bundle *network.GetIndexAnchorResponse, set ValidatorSet, atCurrentEpoch, atNextEpoch map[[32]byte]bool) error {
-	if len(atCurrentEpoch) == 0 && len(atNextEpoch) == 0 && len(bundle.Headers) > 0 && allHeadersOutsideWindow(bundle, set) {
-		return fmt.Errorf("bundle at frontier %d: no header falls inside the handoff window {%d, %d}: obtain a fresh checkpoint:\n%w",
-			bundle.FrontierRound, set.Epoch, set.Epoch+1, ErrCheckpointBehind)
-	}
-
-	currentAttesting, total := cappedStakeOf(set, atCurrentEpoch)
-	nextAttesting, _ := cappedStakeOf(set, atNextEpoch)
-
-	return fmt.Errorf("bundle at frontier %d carries %d of %d capped stake at epoch %d and %d of %d at epoch %d, short of two thirds at either epoch on its own",
-		bundle.FrontierRound, currentAttesting, total, set.Epoch, nextAttesting, total, set.Epoch+1)
-}
-
-// allHeadersOutsideWindow reports whether every header the bundle carries
-// names an epoch outside {set.Epoch, set.Epoch+1}, regardless of whether it
-// otherwise repeats the bundle's claim or comes from a known member. That is
-// what separates a checkpoint that has fallen behind the chain from a bundle
-// that simply lacks a quorum.
-func allHeadersOutsideWindow(bundle *network.GetIndexAnchorResponse, set ValidatorSet) bool {
-	for _, record := range bundle.Headers {
-		header, err := parseAnchorRecord(record)
-		if err != nil {
-			continue
-		}
-
-		if header.Epoch == set.Epoch || header.Epoch == set.Epoch+1 {
-			return false
-		}
-	}
-
-	return true
 }
 
 // cappedStakeOf sums the attesting producers' voting weight and the committee's
@@ -206,11 +167,12 @@ func saturatingMul(a, b uint64) uint64 {
 // set.Epoch+1. A record that fails any check is skipped rather than fatal: a
 // bundle may legitimately carry a header from a producer this set does not
 // know (one that joined at the boundary), and the quorum test in VerifyAnchor
-// decides whether what remains, PER BUCKET, is enough.
+// decides whether what remains is enough.
 //
-// The two buckets are returned separately, never merged into one member set,
-// because VerifyAnchor must test each epoch's quorum against its own headers
-// only — see VerifyAnchor for why.
+// The two buckets are returned separately rather than pre-merged, because
+// VerifyAnchor tests them differently: N+1 only ever gets its OWN bucket, on
+// its own — merging in N's headers there is the label attack. N gets the
+// union of both — see VerifyAnchor for why that side is safe.
 func countedProducers(bundle *network.GetIndexAnchorResponse, set ValidatorSet) (atCurrentEpoch, atNextEpoch map[[32]byte]bool) {
 	members := membersByPubkey(set)
 	atCurrentEpoch = make(map[[32]byte]bool, len(bundle.Headers))
@@ -255,6 +217,24 @@ func attestsBundle(header anchorHeader, bundle *network.GetIndexAnchorResponse, 
 	}
 
 	return header.Epoch == set.Epoch || header.Epoch == set.Epoch+1
+}
+
+// unionOfProducers merges two producer sets, counting a producer once even
+// when it appears in both — the case of a member who, legitimately or not,
+// signed a header at each label. It is only ever used to test N's quorum
+// against the combined bucket; see VerifyAnchor.
+func unionOfProducers(a, b map[[32]byte]bool) map[[32]byte]bool {
+	union := make(map[[32]byte]bool, len(a)+len(b))
+
+	for producer := range a {
+		union[producer] = true
+	}
+
+	for producer := range b {
+		union[producer] = true
+	}
+
+	return union
 }
 
 // membersByPubkey indexes a set's leaves by validator pubkey.

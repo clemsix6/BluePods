@@ -175,9 +175,9 @@ func TestLightClient_AncestryMustBeOneChain(t *testing.T) {
 }
 
 // nilAnswerSource wraps a fixture but returns (nil, nil) from every proved
-// read — no error, but no answer either. That is the defensive case F7 (see
-// pkg/client review) exists for: a transport implementation that forgets its
-// own contract must be met with an error, not a nil-pointer dereference.
+// read — no error, but no answer either. A transport implementation that
+// forgets its own contract this way must be met with an error, not a
+// nil-pointer dereference on the answer it never sent.
 type nilAnswerSource struct {
 	*fixture
 }
