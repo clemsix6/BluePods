@@ -4,15 +4,15 @@ import { links } from '../links';
 const parts = [
   {
     title: 'Objects',
-    body: 'The global state is not a tree. It is a set of discrete objects, each carrying an ID, a version, an owner, a replication factor, and up to 4 KB of content. Two transactions touching different objects can never collide, and when they touch the same one, catching it is a version check rather than a lock.',
+    body: 'The global state is a set of discrete objects rather than a tree. Each one carries an ID, a version, an owner, a replication factor, and up to 4 KB of content. Two transactions touching different objects can never collide, and when they touch the same one, a version check catches it where a lock would otherwise be needed.',
   },
   {
     title: 'Consensus',
-    body: 'Ordering runs on a leaderless DAG. Every validator produces one vertex per round, linking to a stake supermajority of the round before, so there is no proposer to wait on and none to bribe. Committing an anchor applies its whole causal history in an order that is a pure function of the hash links, identical on every node.',
+    body: 'Ordering runs on a leaderless DAG. Every validator produces one vertex per round, linking to a stake supermajority of the round before, so a round advances on the group rather than on one proposer you have to wait for or bribe. Committing an anchor applies its whole causal history in an order that is a pure function of the hash links, identical on every node.',
   },
   {
     title: 'Pods',
-    body: 'Backends are Rust compiled to WebAssembly, running in a sandbox that exposes four host functions and nothing else: declare gas, ask for the input size, read the input, write the output. No filesystem, no network, no clock. That is the entire attack surface.',
+    body: 'Backends are Rust compiled to WebAssembly, running in a sandbox whose entire interface is four host functions: declare gas, ask for the input size, read the input, write the output. A pod reaches no filesystem, network or clock, because the sandbox has no way to hand it one. Those four functions are the whole attack surface.',
   },
 ];
 ---

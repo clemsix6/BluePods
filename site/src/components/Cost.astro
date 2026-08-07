@@ -2,7 +2,7 @@
 const consequences = [
   {
     title: 'No horizontal scaling',
-    body: 'Total capacity is bounded by what one node can ingest and validate, not by the sum of all nodes. Adding validators spreads storage and execution around, but it does not raise the ceiling.',
+    body: 'Total capacity is whatever one node can ingest and validate. Adding validators spreads storage and execution around, and the ceiling stays exactly where it was.',
     note: 'Validators added → ceiling unchanged',
   },
   {
@@ -29,7 +29,7 @@ const consequences = [
           operation, from every app, passes through it and is seen by every validator, even
           though each validator only stores and executes a fraction of the state.
         </p>
-        <p>Two things follow, and neither is a footnote.</p>
+        <p>Two things follow from that, and both are load-bearing.</p>
       </div>
     </div>
 
@@ -49,8 +49,8 @@ const consequences = [
 
     <p class="closer">
       The bet that makes this worth taking is bandwidth. Per-node bandwidth keeps climbing,
-      and a data availability split that puts only hashes on the consensus path makes the
-      same bet easier to win without giving up the total order.
+      and putting only hashes on the consensus path, with the data available elsewhere,
+      makes that bet easier to win while the total order stays whole.
     </p>
   </div>
 </section>

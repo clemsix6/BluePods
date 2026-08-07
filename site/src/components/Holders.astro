@@ -18,7 +18,8 @@ const holders = [
           Who stores an object is computed, never assigned. Every validator gets a score of
           <span class="code">BLAKE3(objectID &#8214; validatorPubkey)</span>, and the highest
           scorers become the holders. Anyone can recompute that list offline from the object
-          ID, its replication factor, and the validator set. No coordination, no registry.
+          ID, its replication factor, and the validator set, so nobody has to coordinate and
+          nothing has to keep a registry.
         </p>
         <p>
           When a validator leaves, only the next one in line takes over. The others stay
@@ -56,7 +57,7 @@ const holders = [
         }
       </div>
       <p class="fan-caption">
-        One object. Five of its ten holders. Every other validator stores none of it.
+        One object. Five of its ten holders. The rest of the network never sees it.
       </p>
     </div>
   </div>
