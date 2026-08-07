@@ -1,22 +1,22 @@
 :root {
-  /* Palette. Linen, wine and ash are the brief; shell and cellar are the two
-     shades derived from them so surfaces and the dark band stay in family. */
+  /* Palette. Linen, wine and ash are the brief; shell is the deeper linen that
+     card surfaces sit on. */
   --linen: #f0e5de;
   --shell: #e5d7cf;
   --wine: #6f1d1b;
-  --cellar: #2b0f0e;
   --ash: #adbdab;
 
-  /* Ink. Long-form text runs on cellar, wine is kept for accents. */
+  /* Ink. Long-form text runs on a near-black drawn from the wine family, so
+     wine itself stays available as an accent. */
   --ink: #2b0f0e;
   --ink-soft: rgba(43, 15, 14, 0.6);
   --ink-faint: rgba(43, 15, 14, 0.38);
   --rule: rgba(43, 15, 14, 0.18);
 
-  /* Ink on the dark band. */
-  --ink-inv: #f0e5de;
-  --ink-inv-soft: rgba(240, 229, 222, 0.62);
-  --rule-inv: rgba(240, 229, 222, 0.2);
+  /* Ink on the ash band. The same ink, given more weight because it sits on a
+     colour rather than on paper. */
+  --ink-tint: rgba(43, 15, 14, 0.74);
+  --rule-tint: rgba(43, 15, 14, 0.24);
 
   --display: 'Bricolage Grotesque Variable', ui-sans-serif, system-ui, sans-serif;
   --sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;

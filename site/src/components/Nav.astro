@@ -13,9 +13,9 @@ import { links } from '../links';
   const nav = document.getElementById('site-nav');
 
   if (nav) {
-    /* The bar sits over both the linen page and the dark band, so it reads what
-       is behind it and flips its own colours to stay legible. */
-    const bands = Array.from(document.querySelectorAll('.band--dark'));
+    /* The bar sits over both the linen page and the ash band, so it reads what
+       is behind it and takes that colour rather than cutting a stripe into it. */
+    const bands = Array.from(document.querySelectorAll('.band--tint'));
     let queued = false;
 
     const paint = () => {
@@ -24,7 +24,7 @@ import { links } from '../links';
 
       nav.classList.toggle('is-stuck', window.scrollY > 48);
       nav.classList.toggle(
-        'is-dark',
+        'is-tinted',
         bands.some((band) => {
           const box = band.getBoundingClientRect();
           return box.top <= probe && box.bottom > probe;

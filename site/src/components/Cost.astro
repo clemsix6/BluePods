@@ -11,12 +11,10 @@ const consequences = [
 ];
 ---
 
-<section class="band band--dark" id="cost">
+<section class="band band--tint" id="cost">
   <div class="wrap reveal">
     <div class="split">
-      <div>
-        <h2>The part we don't hide.</h2>
-      </div>
+      <h2>The part we don't hide.</h2>
 
       <div class="prose">
         <p>
@@ -28,10 +26,10 @@ const consequences = [
       </div>
     </div>
 
-    <div class="grid grid--2">
+    <div class="pair">
       {
         consequences.map((item) => (
-          <article class="card">
+          <article>
             <h3>{item.title}</h3>
             <p>{item.body}</p>
           </article>
@@ -48,11 +46,58 @@ const consequences = [
 </section>
 
 <style>
+  /* Two consequences, side by side, parted by a rule. No boxes: the band's own
+     colour is the only surface this section gets. */
+  .pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: clamp(3rem, 6vw, 5rem);
+    padding-top: clamp(1.75rem, 3vw, 2.5rem);
+    border-top: 1px solid var(--rule-tint);
+  }
+
+  .pair > * {
+    padding-right: clamp(1.5rem, 4vw, 3.5rem);
+  }
+
+  .pair > * + * {
+    padding-right: 0;
+    padding-left: clamp(1.5rem, 4vw, 3.5rem);
+    border-left: 1px solid var(--rule-tint);
+  }
+
+  h3 {
+    margin-bottom: 1rem;
+  }
+
+  .pair p {
+    max-width: 42ch;
+    color: var(--ink-tint);
+  }
+
   .closer {
     max-width: 62ch;
     margin-top: clamp(2.5rem, 5vw, 4rem);
     padding-top: 1.5rem;
-    border-top: 1px solid var(--rule-inv);
-    color: var(--ink-inv-soft);
+    border-top: 1px solid var(--rule-tint);
+    color: var(--ink-tint);
+  }
+
+  @media (max-width: 720px) {
+    .pair {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .pair > * {
+      padding-right: 0;
+    }
+
+    .pair > * + * {
+      margin-top: 2.5rem;
+      padding-top: 2.5rem;
+      padding-left: 0;
+      border-top: 1px solid var(--rule-tint);
+      border-left: 0;
+    }
   }
 </style>

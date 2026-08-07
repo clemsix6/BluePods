@@ -152,18 +152,13 @@ svg {
   box-shadow: 0 1px 0 var(--rule);
 }
 
-#site-nav.is-dark {
-  background: var(--cellar);
-  box-shadow: 0 1px 0 var(--rule-inv);
-  color: var(--ink-inv);
+#site-nav.is-tinted {
+  background: var(--ash);
+  box-shadow: 0 1px 0 var(--rule-tint);
 }
 
-#site-nav.is-dark .repo {
-  color: var(--ink-inv-soft);
-}
-
-#site-nav.is-dark .repo:hover {
-  color: var(--ash);
+#site-nav.is-tinted .repo {
+  color: var(--ink-tint);
 }
 
 /* --- Layout -------------------------------------------------------------- */
@@ -179,15 +174,9 @@ svg {
   border-top: 1px solid var(--rule);
 }
 
-.band--dark {
+.band--tint {
   border-top-color: transparent;
-  background: var(--cellar);
-  color: var(--ink-inv);
-}
-
-.band--dark h2,
-.band--dark h3 {
-  color: var(--ink-inv);
+  background: var(--ash);
 }
 
 /* --- Section headers ----------------------------------------------------- */
@@ -218,14 +207,9 @@ svg {
   border-color: var(--wine);
 }
 
-.band--dark .jump {
-  color: var(--ink-inv-soft);
-  border-color: var(--rule-inv);
-}
-
-.band--dark .jump:hover {
-  color: var(--ash);
-  border-color: var(--ash);
+.band--tint .jump {
+  color: var(--ink-tint);
+  border-color: var(--rule-tint);
 }
 
 /* Title on the left, argument on the right. */
@@ -245,8 +229,8 @@ svg {
   overflow-wrap: break-word;
 }
 
-.band--dark .prose {
-  color: var(--ink-inv-soft);
+.band--tint .prose {
+  color: var(--ink-tint);
 }
 
 .prose strong {
@@ -254,8 +238,8 @@ svg {
   color: var(--ink);
 }
 
-.band--dark .prose strong {
-  color: var(--ink-inv);
+.band--tint .prose strong {
+  color: var(--ink);
 }
 
 .lede {
@@ -285,19 +269,6 @@ svg {
 .card p {
   color: var(--ink-soft);
   font-size: 1rem;
-}
-
-.band--dark .card {
-  border: 1px solid var(--rule-inv);
-  background:
-    radial-gradient(120% 130% at 8% -10%, rgba(173, 189, 171, 0.16), transparent 60%),
-    radial-gradient(95% 115% at 100% 110%, rgba(111, 29, 27, 0.55), transparent 62%),
-    rgba(240, 229, 222, 0.04);
-  box-shadow: none;
-}
-
-.band--dark .card p {
-  color: var(--ink-inv-soft);
 }
 
 .grid {
