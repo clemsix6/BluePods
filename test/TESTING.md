@@ -61,6 +61,7 @@ runs the corpus. The current corpus:
 | functional | `TestScenarioHierarchy` | 5 |
 | functional | `TestScenarioDomains` | 5 |
 | functional | `TestScenarioStake` | 5 |
+| functional | `TestScenarioDeregisterWithDelegators` | 5 |
 | functional | `TestScenarioJoining` | 5+ |
 | functional | `TestScenarioStress` | 12 |
 | functional | `TestScenarioChurn` | 2+3 |
@@ -70,6 +71,7 @@ runs the corpus. The current corpus:
 | adversarial | `TestScenarioPartition` | 5 |
 | adversarial | `TestScenarioEpochCrash` | 10 |
 | adversarial | `TestScenarioColdRestart` | 5 |
+| adversarial | `TestScenarioColdRestartEpochs` | 5 |
 
 ## Writing a scenario
 
@@ -151,7 +153,11 @@ checkpointed epoch's validator tree from the holder snapshot it imported,
 requires it to hash to the pinned root, and requires a stake quorum of that set
 to attest the index root it recomputed for itself; anything else aborts the
 join with `node.stopping reason=sync_unverified`, and `sync.completed` never
-lands.
+lands. `cluster.SpawnWithCheckpoint(checkpoint)` bypasses that derivation to
+hand a scenario-supplied checkpoint straight to the new node instead — the
+hook `TestScenarioJoining` uses to drive the refusal path with a checkpoint
+that names no committee the cluster actually has, asserting on the returned
+node's journal since `sync.completed` never lands for it either.
 
 The split matters for the scenarios that stop nodes. A restart that had to
 prove its state to a live quorum could never bring a fully stopped cluster back
@@ -175,7 +181,7 @@ journal spans process runs: each `Restart` opens a new segment.
 
 ```go
 n.WaitEvent(ctx, "tx.committed", harness.Attr("tx", hash))   // block until matched
-n.Events("consensus.anchor.committed")                        // read what's there, no blocking
+n.Journal().Events("consensus.anchor.committed")              // read what's there, no blocking
 cluster.WaitAll(ctx, "epoch.transitioned", harness.AttrGE("epoch", 2))
 ```
 
@@ -226,15 +232,15 @@ what to do when the checker is right to fail.
 |---|---|
 | `harness.NewCluster(t, size, opts...) *Cluster` | Builds and starts a cluster, registers teardown |
 | `(*Cluster) Node(i) *Node` / `Nodes() []*Node` / `Alive() []*Node` | Access started nodes |
-| `(*Cluster) Client(i) *client.Client` / `Daemon(i) *daemon.Daemon` | Client/daemon connected to node `i` |
-| `(*Cluster) SystemPod() [32]byte` | System pod ID every client and daemon in the cluster is configured with |
-| `(*Cluster) Kill(i)` / `Restart(i)` / `Spawn() *Node` | Node lifecycle |
+| `(*Cluster) Client(i) *client.Client` | Client connected to node `i`, the same code a real client runs |
+| `(*Cluster) SystemPod() [32]byte` | System pod ID every client in the cluster is configured with |
+| `(*Cluster) Kill(i)` / `Restart(i)` / `Spawn() *Node` / `SpawnWithCheckpoint(checkpoint string) *Node` | Node lifecycle |
 | `(*Cluster) Partition(a, b []int)` / `Heal()` | Network partitioning |
 | `(*Cluster) WaitAll(ctx, name, preds...) error` | Wait for an event on every alive node |
 | `(*Cluster) CheckInvariants(t)` | The teardown invariant pass (usually automatic) |
 | `(*Cluster) Dump(t)` | Print per-node diagnostics (last events, live status, log paths) |
 | `(*Node) WaitEvent(ctx, name, preds...) (Event, error)` | Block until a matching event lands |
-| `(*Node) Events(name, preds...) []Event` | Read the journal without blocking |
+| `(*Journal) Events(name, preds...) []Event` | Read a node's journal (`n.Journal()`) without blocking |
 | `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` / `SetTrustCheckpoint(cp string)` | Process control |
 | `(*Node) Alive() bool` / `Journal() *Journal` / `ParseError() error` | Node introspection |
 | `harness.Attr(key, want) Pred` / `AttrGE(key, min) Pred` | Event attribute predicates |
@@ -242,10 +248,19 @@ what to do when the checker is right to fail.
 | `harness.WithoutStakeSetup()` / `WithoutInvariants()` | Opt out of a default |
 
 Client and daemon operations (`pkg/client`, `pkg/daemon`) are the same code
-a real client uses: `Wallet.Split/Transfer/CreateObject/TransferObject/
-SetObject/Bond/RegisterValidator/DeregisterValidator`, `Client.Faucet/
-Status/GetObject/GetTxStatus/Validators/Fingerprint/SetPartition/
-ClearPartition`. Events say what happened; these queries say what is;
+a real client uses. `pkg/daemon` is not wrapped by the cluster: a scenario
+builds one directly off a node's address (`daemon.New(nodeAddrs)`) when it
+needs attested reads. `Wallet` covers `Split/Transfer/CreateObject/
+TransferObject/SetObject/Reparent/DeleteObject/Bond/RegisterValidator/
+DeregisterValidator/DomainRegister/DomainRenew/DomainUpdate/
+DomainTransfer/DomainDelete/RecoverObjects`; `Client` covers `Faucet/
+Status/GetObject/GetTxStatus/Validators/Fingerprint/GetIndexAnchor/
+DomainResolve/ListChildren/Parent/Holders/WaitForTx/SetPartition/
+ClearPartition`. `client.NewLightClient` wraps a `Client` with a pinned
+checkpoint for verified reads (`Anchor/WaitForFrontier/ResolveDomain/
+ListChildren/Ancestors`) — the surface a scenario uses to check a proof
+against a different node's `GetIndexAnchor` bundle rather than trust the
+answer outright. Events say what happened; these queries say what is;
 scenarios confront the two.
 
 ## Event catalog
@@ -268,7 +283,7 @@ must be called out in the commit that does it.
 | `ingress.tx.received` | tx, kind |
 | `ingress.tx.rejected` | reason, detail |
 | `consensus.vertex.produced` | vertex, round, txs |
-| `consensus.vertex.received` | vertex, round, producer |
+| `consensus.vertex.received` | vertex, producer, round |
 | `consensus.vertex.rejected` | vertex, reason |
 | `consensus.vertex.quarantined` | vertex, producer, round, frontier |
 | `consensus.round.advanced` | round, designated |
