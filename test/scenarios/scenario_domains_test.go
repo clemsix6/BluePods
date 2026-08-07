@@ -159,8 +159,16 @@ func testRegisterResolveDuplicate(t *testing.T, c *harness.Cluster, cli *client.
 // resulting attested root (LightClient.ResolveDomain) — the whole spec §5
 // chain a wallet or a foreign observer walks, never the serving node's bare
 // word the way testRegisterResolveDuplicate's unproven DomainResolve is.
+//
+// "demo.config" is a dotted name: spec §8's namespace rule requires the
+// sender to already own its immediate parent (the suffix "config"), so that
+// root is registered first, by the same wallet, before the dotted name that
+// depends on it.
 func testResolveProvedFromADifferentNode(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, target [32]byte) {
 	t.Helper()
+
+	const suffix = "config"
+	registerDomain(t, c, cli, w, gasCoin, suffix, target, domainsLongTerm)
 
 	const name = "demo.config"
 	registerDomain(t, c, cli, w, gasCoin, name, target, domainsLongTerm)
