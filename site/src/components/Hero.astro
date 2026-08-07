@@ -5,7 +5,7 @@ const facts = [
   'Leaderless DAG',
   'Objects up to 4 KB',
   'Four host functions',
-  'Go and Rust',
+  'Ten holders minimum',
 ];
 ---
 
@@ -20,10 +20,14 @@ const facts = [
         that hold what it touches instead of on every machine in the network.
       </p>
 
-      <div class="actions">
-        <a class="button" href={links.whitepaper} rel="noopener">Read the whitepaper</a>
-        <a class="jump" href={links.repo} rel="noopener">Source on GitHub &#8627;</a>
-      </div>
+      <nav class="entries" aria-label="Read more">
+        <a class="entry entry--lead" href={links.whitepaper} rel="noopener">
+          Read the whitepaper<span class="arrow" aria-hidden="true">&#8627;</span>
+        </a>
+        <a class="entry" href={links.repo} rel="noopener">
+          Source on GitHub<span class="arrow" aria-hidden="true">&#8627;</span>
+        </a>
+      </nav>
     </div>
 
     <ul class="facts">
@@ -61,29 +65,55 @@ const facts = [
     margin-top: clamp(2.5rem, 5vw, 4rem);
   }
 
-  .actions {
-    display: flex;
-    align-items: center;
-    gap: 1.75rem;
-    flex-wrap: wrap;
+  /* Read as two lines of a contents page: a rule, a title, a folio arrow. */
+  .entries {
+    width: min(100%, 24rem);
   }
 
-  .button {
-    padding: 0.85rem 1.6rem;
-    border-radius: 999px;
-    background: var(--wine);
-    color: var(--linen);
-    font-family: var(--mono);
-    font-size: var(--step-meta);
-    letter-spacing: 0.06em;
+  .entry {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding-block: 0.7rem 0.6rem;
+    border-top: 1px solid var(--ink);
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.02em;
     text-transform: uppercase;
     text-decoration: none;
-    transition: background 0.25s ease, transform 0.25s ease;
+    transition: color 0.25s ease;
   }
 
-  .button:hover {
-    background: var(--cellar);
-    transform: translateY(-1px);
+  .entry:last-child {
+    border-bottom: 1px solid var(--ink);
+    font-size: 1rem;
+    color: var(--ink-soft);
+  }
+
+  .entry--lead {
+    font-size: 1.5rem;
+  }
+
+  .entry:hover {
+    color: var(--wine);
+  }
+
+  .arrow {
+    flex: none;
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .entry:hover .arrow {
+    transform: translateX(4px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .arrow,
+    .entry:hover .arrow {
+      transition: none;
+      transform: none;
+    }
   }
 
   .facts {
