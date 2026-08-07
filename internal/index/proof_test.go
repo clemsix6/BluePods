@@ -216,10 +216,10 @@ func TestDeserializeRejectsTruncated(t *testing.T) {
 	full := tr.Prove(keys[7]).Serialize()
 
 	cases := [][]byte{
-		nil,                    // empty input
-		full[:2],               // partial count header
-		full[:4],               // count header, no sibling data
-		full[:6],               // mid-sibling truncation
+		nil,                             // empty input
+		full[:2],                        // partial count header
+		full[:4],                        // count header, no sibling data
+		full[:6],                        // mid-sibling truncation
 		append(bytes.Clone(full), 0x00), // trailing byte, leaf length mismatch
 	}
 	for i, c := range cases {

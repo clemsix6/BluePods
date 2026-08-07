@@ -27,7 +27,7 @@ func TestExecuteTx_ReplicatedDeletionAccountsUniformly(t *testing.T) {
 		replication = 3
 	)
 	expectedRefund := uint64(deposit) * refundBPS / 10000 // 9500
-	expectedBurn := uint64(deposit) - expectedRefund       // 500
+	expectedBurn := uint64(deposit) - expectedRefund      // 500
 
 	owner := Hash{0xAA}
 	objID := Hash{0x88}
