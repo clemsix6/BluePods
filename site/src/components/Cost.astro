@@ -13,7 +13,7 @@ const consequences = [
 ];
 ---
 
-<section class="band band--tint" id="cost">
+<section class="band" id="cost">
   <div class="field" aria-hidden="true">
     <span class="orb"></span>
     <span class="orb orb--low"></span>
@@ -56,48 +56,51 @@ const consequences = [
 </section>
 
 <style>
-  /* The band dissolves at both edges, so the bodies inside it have to dissolve
-     with it. Without the mask they stop dead on the section boundary and the
-     seam is the first thing the eye finds. */
+  /* The section changes register through light, not through a painted rectangle.
+     The mask is what does it: the field arrives, fills the section and leaves,
+     so the ground stays the same paper as every other section. */
   .field {
     mask-image: linear-gradient(
       to bottom,
       transparent 0%,
-      #000 14%,
-      #000 86%,
+      rgba(0, 0, 0, 0.55) 9%,
+      #000 22%,
+      #000 76%,
+      rgba(0, 0, 0, 0.5) 92%,
       transparent 100%
     );
   }
 
-  /* Bleeding off the left, where the hero's runs off the right, so the two
-     read as the same body seen from opposite sides of the page. Both stay far
-     enough out that their dense centres never sit under a line of text.
-
-     Retuned to ash and linen: the band already carries a colour, and wine is
-     already spoken for by the numbers and the readouts. */
+  /* Ash-dominant, where the hero's runs on wine. Large enough to carry the whole
+     section on its own now that nothing else colours it. */
   .orb {
-    --spin: 128deg;
-    --c1: #9eb09b;
-    --c2: #b3c1b0;
-    --c3: #cfd6c8;
-    --c4: #efe6dc;
+    --spin: 96deg;
+    --c1: #8ba689;
+    --c2: #a8bca6;
+    --c3: #c7d2c2;
+    --c4: #eee6dc;
 
-    top: -34vw;
-    left: -42vw;
-    width: 68vw;
+    top: -30vw;
+    left: -34vw;
+    width: 96vw;
     aspect-ratio: 1;
-    opacity: 0.85;
+    opacity: 0.78;
+    filter: blur(64px) saturate(112%);
   }
 
   .orb--low {
-    --spin: 292deg;
+    --spin: 272deg;
+    --c1: #96a892;
+    --c2: #b6c2ae;
+    --c3: #d6d5c6;
+    --c4: #f0e5de;
 
     top: auto;
-    bottom: -26vw;
+    bottom: -34vw;
     left: auto;
-    right: -22vw;
-    width: 48vw;
-    opacity: 0.7;
+    right: -28vw;
+    width: 78vw;
+    opacity: 0.62;
     animation-duration: 61s;
     animation-direction: alternate-reverse;
   }
@@ -114,7 +117,7 @@ const consequences = [
      other, not two cells of a table read at once. */
   .cost {
     padding-top: 1.25rem;
-    border-top: 1px solid var(--rule-tint);
+    border-top: 1px solid var(--rule);
   }
 
   .cost:first-child {
@@ -141,7 +144,7 @@ const consequences = [
 
   .body {
     max-width: 40ch;
-    color: var(--ink-tint);
+    color: var(--ink-soft);
     font-size: 1rem;
   }
 
@@ -157,10 +160,10 @@ const consequences = [
     max-width: 34ch;
     margin-top: clamp(4rem, 8vw, 7rem);
     padding-top: 1.5rem;
-    border-top: 1px solid var(--rule-tint);
+    border-top: 1px solid var(--rule);
     font-size: var(--step-lede);
     line-height: 1.5;
-    color: var(--ink-tint);
+    color: var(--ink-soft);
   }
 
   @media (max-width: 720px) {

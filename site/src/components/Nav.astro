@@ -13,23 +13,14 @@ import { links } from '../links';
   const nav = document.getElementById('site-nav');
 
   if (nav) {
-    /* The bar sits over both the linen page and the ash band, so it reads what
-       is behind it and takes that colour rather than cutting a stripe into it. */
-    const bands = Array.from(document.querySelectorAll('.band--tint'));
+    /* Over the hero the bar sits on the field and needs no ground of its own.
+       Once the page has moved it takes one, so text scrolling under it stays
+       readable. */
     let queued = false;
 
     const paint = () => {
       queued = false;
-      const probe = nav.offsetHeight * 0.6;
-
       nav.classList.toggle('is-stuck', window.scrollY > 48);
-      nav.classList.toggle(
-        'is-tinted',
-        bands.some((band) => {
-          const box = band.getBoundingClientRect();
-          return box.top <= probe && box.bottom > probe;
-        }),
-      );
     };
 
     const schedule = () => {
@@ -40,7 +31,6 @@ import { links } from '../links';
 
     paint();
     window.addEventListener('scroll', schedule, { passive: true });
-    window.addEventListener('resize', schedule, { passive: true });
   }
 </script>
 

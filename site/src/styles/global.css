@@ -155,22 +155,13 @@ svg {
   background-image: var(--noise);
 }
 
-/* --- Navigation states ---------------------------------------------------
-   The bar carries these classes from a script, so they live outside the
-   component's scoped styles, which Astro resolves against the template only.
-   Both states fade out downward: a bar with an edge would cut a stripe across
-   whatever it is passing over. */
+/* --- Navigation state ----------------------------------------------------
+   The bar carries this class from a script, so it lives outside the component's
+   scoped styles, which Astro resolves against the template only. It fades out
+   downward: a bar with an edge would cut a stripe across what it passes over. */
 
 #site-nav.is-stuck {
   background: linear-gradient(to bottom, var(--linen) 74%, rgba(240, 229, 222, 0));
-}
-
-#site-nav.is-tinted {
-  background: linear-gradient(to bottom, var(--ash) 74%, rgba(173, 189, 171, 0));
-}
-
-#site-nav.is-tinted .repo {
-  color: var(--ink-tint);
 }
 
 /* --- Layout -------------------------------------------------------------- */
@@ -180,21 +171,12 @@ svg {
   margin-inline: auto;
 }
 
-/* Sections are parted by space, not by a rule. The one exception is the tint
-   band, and even that dissolves at both edges instead of stopping. */
+/* One ground from top to bottom. Sections are parted by space, and where one
+   has to change register it does it with a field, never with a block of colour
+   laid over the paper. */
 .band {
   position: relative;
   padding-block: var(--band);
-}
-
-.band--tint {
-  background: linear-gradient(
-    to bottom,
-    rgba(173, 189, 171, 0) 0%,
-    var(--ash) 11%,
-    var(--ash) 89%,
-    rgba(173, 189, 171, 0) 100%
-  );
 }
 
 /* --- Fields --------------------------------------------------------------
@@ -292,11 +274,6 @@ svg {
   border-color: var(--wine);
 }
 
-.band--tint .jump {
-  color: var(--ink-tint);
-  border-color: var(--rule-tint);
-}
-
 /* Title on the left, argument on the right. */
 .split {
   display: grid;
@@ -312,10 +289,6 @@ svg {
   max-width: 46ch;
   color: var(--ink-soft);
   overflow-wrap: break-word;
-}
-
-.band--tint .prose {
-  color: var(--ink-tint);
 }
 
 .prose strong {
@@ -339,10 +312,6 @@ svg {
   border-top: 1px solid var(--rule);
 }
 
-.band--tint .card {
-  border-top-color: var(--rule-tint);
-}
-
 .card h3 {
   margin-bottom: 0.9rem;
 }
@@ -351,10 +320,6 @@ svg {
   max-width: 44ch;
   color: var(--ink-soft);
   font-size: 1rem;
-}
-
-.band--tint .card p {
-  color: var(--ink-tint);
 }
 
 .grid {
