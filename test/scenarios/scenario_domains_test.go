@@ -69,6 +69,10 @@ func TestScenarioDomains(t *testing.T) {
 		testRegisterResolveDuplicate(t, c, cli, w, gasCoin, target)
 	})
 
+	t.Run("resolve_proved_from_a_different_node", func(t *testing.T) {
+		testResolveProvedFromADifferentNode(t, c, cli, w, gasCoin, target)
+	})
+
 	t.Run("renew_moves_expiry", func(t *testing.T) {
 		testRenewMovesExpiry(t, c, cli, w, gasCoin, target)
 	})
@@ -144,6 +148,39 @@ func testRegisterResolveDuplicate(t *testing.T, c *harness.Cluster, cli *client.
 	hash, err := rival.DomainRegister(cli, name, rivalTarget, domainsLongTerm, rivalGas)
 	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, false, "declared_ops")
+}
+
+// testResolveProvedFromADifferentNode registers "demo.config", then resolves
+// it through the FULL light-client verification chain from a node OTHER than
+// the one that submitted the registration: a checkpoint minted from that
+// node's own served state (mintCheckpoint), its GetIndexAnchor bundle
+// verified against the checkpointed committee (VerifyAnchor, inside
+// LightClient.Anchor), and the domain's inclusion proof checked against the
+// resulting attested root (LightClient.ResolveDomain) — the whole spec §5
+// chain a wallet or a foreign observer walks, never the serving node's bare
+// word the way testRegisterResolveDuplicate's unproven DomainResolve is.
+func testResolveProvedFromADifferentNode(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, target [32]byte) {
+	t.Helper()
+
+	const name = "demo.config"
+	registerDomain(t, c, cli, w, gasCoin, name, target, domainsLongTerm)
+
+	const otherIdx = 2
+	transport := client.NewQUICTransport(c.Node(otherIdx).QUICAddr)
+	checkpoint := mintCheckpoint(t, transport)
+	lc := client.NewLightClient(c.Client(otherIdx), checkpoint)
+
+	leaf, found := resolveDomainProved(stepCtx(t), t, lc, name)
+	if !found {
+		t.Fatalf("node %d: proved resolve of %q found nothing", otherIdx, name)
+	}
+	if leaf.ObjectID != target {
+		t.Fatalf("node %d: proved resolve of %q = %x, want %x", otherIdx, name, leaf.ObjectID[:8], target[:8])
+	}
+	registrant := w.Pubkey()
+	if leaf.Owner != registrant {
+		t.Fatalf("node %d: proved resolve of %q carries owner %x, want registrant %x", otherIdx, name, leaf.Owner[:8], registrant[:8])
+	}
 }
 
 // testRenewMovesExpiry registers "beta", captures the epoch just before

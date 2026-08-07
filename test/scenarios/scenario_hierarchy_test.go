@@ -72,6 +72,10 @@ func TestScenarioHierarchy(t *testing.T) {
 	t.Run("sponsored_transfer", func(t *testing.T) {
 		testSponsoredHierarchyTransfer(t, c, node0, cli)
 	})
+
+	t.Run("proved_subtree_transfer_and_recovery", func(t *testing.T) {
+		testProvedSubtreeTransferAndRecovery(t, c, cli, w, gasCoin)
+	})
 }
 
 // buildHierarchy creates two objects under w's own KeyRoot (root then leaf),
@@ -353,5 +357,65 @@ func testSponsoredHierarchyTransfer(t *testing.T, c *harness.Cluster, node0 *har
 	requireNoErr(t, err)
 	if after.Owner != recipientPub {
 		t.Fatalf("sponsored object transfer did not move ownership: got %x, want recipient %x", after.Owner[:8], recipientPub[:8])
+	}
+}
+
+// testProvedSubtreeTransferAndRecovery builds a fresh root/leaf pair,
+// transfers the root to a brand-new recipient key, then walks the whole
+// proved surface from that bare key through a light client wired to a node
+// OTHER than the one that submitted the transfer: ListChildren(recipientPub)
+// returns the transferred subtree's root with a verifying completeness
+// proof, recursing into ListChildren(root) returns its own leaf the same
+// way, GetAncestors walks the leaf all the way up to the recipient's
+// KeyRoot, and finally Wallet.RecoverObjects — wired to that same light
+// client, the proved path 6.3 left uncovered (bpctl and the console still
+// only ever recover through the unproven Client) — repopulates the
+// recipient's tracked set from nothing but its bare key.
+func testProvedSubtreeTransferAndRecovery(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin [32]byte) {
+	t.Helper()
+
+	root, leaf := buildHierarchy(t, c, cli, w, gasCoin, "proved-root", "proved-leaf")
+
+	recipient := client.NewWallet()
+	recipientPub := recipient.Pubkey()
+
+	hash, err := w.TransferObject(cli, root, recipientPub, gasCoin)
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
+	requireReparentedAll(t, c, root, keyRootKind, recipientPub)
+
+	const otherIdx = 2
+	transport := client.NewQUICTransport(c.Node(otherIdx).QUICAddr)
+	checkpoint := mintCheckpoint(t, transport)
+	lc := client.NewLightClient(c.Client(otherIdx), checkpoint)
+
+	topChildren := listChildrenProved(stepCtx(t), t, lc, recipientPub)
+	if len(topChildren) != 1 || topChildren[0] != root {
+		t.Fatalf("proved children of recipient key %x: got %v, want [%x]", recipientPub[:8], topChildren, root[:8])
+	}
+
+	rootChildren := listChildrenProved(stepCtx(t), t, lc, root)
+	if len(rootChildren) != 1 || rootChildren[0] != leaf {
+		t.Fatalf("proved children of root %x: got %v, want [%x]", root[:8], rootChildren, leaf[:8])
+	}
+
+	ancestry := ancestorsProved(stepCtx(t), t, lc, leaf)
+	if len(ancestry) != 2 {
+		t.Fatalf("proved ancestry of leaf %x: got %d hops, want 2: %+v", leaf[:8], len(ancestry), ancestry)
+	}
+	if ancestry[0].ChildID != leaf || ancestry[0].ParentKind != objectParentKind || ancestry[0].Parent != root {
+		t.Fatalf("proved ancestry hop 0: got %+v, want child=%x kind=%d parent=%x", ancestry[0], leaf[:8], objectParentKind, root[:8])
+	}
+	if ancestry[1].ChildID != root || ancestry[1].ParentKind != keyRootKind || ancestry[1].Parent != recipientPub {
+		t.Fatalf("proved ancestry hop 1: got %+v, want child=%x kind=%d parent=%x", ancestry[1], root[:8], keyRootKind, recipientPub[:8])
+	}
+
+	discovered, err := recipient.RecoverObjects(lc)
+	requireNoErr(t, err)
+	if !containsID(discovered, root) || !containsID(discovered, leaf) {
+		t.Fatalf("proved recovery from a bare key discovered %v, want both root %x and leaf %x", discovered, root[:8], leaf[:8])
+	}
+	if !containsID(recipient.ObjectIDs(), root) || !containsID(recipient.ObjectIDs(), leaf) {
+		t.Fatalf("recovered wallet does not track both root %x and leaf %x: has %v", root[:8], leaf[:8], recipient.ObjectIDs())
 	}
 }
