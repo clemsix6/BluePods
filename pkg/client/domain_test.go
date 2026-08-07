@@ -103,9 +103,14 @@ func TestDomainTransferOpTxCarriesNameAndNewOwner(t *testing.T) {
 	}
 }
 
-// TestDomainUpdateOpTxCarriesNameAndObject verifies a domain_update build
-// carries a single kind-4 declared op with the name and the repointed object,
-// and no mutable ref (a repoint touches neither owner nor object version).
+// TestDomainUpdateOpTxCarriesNameAndObject verifies a domain_update build —
+// through domainUpdateOpFor, the exact op-construction helper Wallet.
+// DomainUpdate itself calls, not a hand-rolled duplicate — carries a single
+// kind-4 declared op with the name and the repointed object, and no mutable
+// ref (a repoint touches neither owner nor object version). The kind is
+// asserted against the literal protocol value 4, not the domainUpdateOpKind
+// constant that also feeds the builder, so a wrong constant would still fail
+// the test rather than trivially agreeing with itself.
 func TestDomainUpdateOpTxCarriesNameAndObject(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	w := &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
@@ -114,7 +119,7 @@ func TestDomainUpdateOpTxCarriesNameAndObject(t *testing.T) {
 	objectID[0] = 0x12
 	gasCoin[0] = 0x34
 
-	op := genesis.DeclaredOp{Kind: domainUpdateOpKind, Name: "alpha", ObjectID: objectID[:]}
+	op := domainUpdateOpFor("alpha", objectID)
 	txBytes, _ := w.buildOpsTx(nil, gasCoin, op)
 
 	assertPureOpsTx(t, txBytes)
@@ -122,8 +127,8 @@ func TestDomainUpdateOpTxCarriesNameAndObject(t *testing.T) {
 	assertNoMutableRefs(t, txBytes)
 
 	ops := extractOps(t, txBytes)
-	if ops[0].Kind != domainUpdateOpKind {
-		t.Errorf("kind: got %d, want %d", ops[0].Kind, domainUpdateOpKind)
+	if ops[0].Kind != 4 {
+		t.Errorf("kind: got %d, want 4", ops[0].Kind)
 	}
 	if ops[0].Name != "alpha" {
 		t.Errorf("name: got %q, want alpha", ops[0].Name)
@@ -133,8 +138,12 @@ func TestDomainUpdateOpTxCarriesNameAndObject(t *testing.T) {
 	}
 }
 
-// TestDomainDeleteOpTxCarriesName verifies a domain_delete build carries a
-// single kind-6 declared op with just the name, and no mutable ref.
+// TestDomainDeleteOpTxCarriesName verifies a domain_delete build — through
+// domainDeleteOpFor, the exact op-construction helper Wallet.DomainDelete
+// itself calls — carries a single kind-6 declared op with just the name, and
+// no mutable ref. The kind is asserted against the literal protocol value 6,
+// not the domainDeleteOpKind constant, for the same reason given in
+// TestDomainUpdateOpTxCarriesNameAndObject.
 func TestDomainDeleteOpTxCarriesName(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	w := &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
@@ -142,7 +151,7 @@ func TestDomainDeleteOpTxCarriesName(t *testing.T) {
 	var gasCoin [32]byte
 	gasCoin[0] = 0x56
 
-	op := genesis.DeclaredOp{Kind: domainDeleteOpKind, Name: "alpha"}
+	op := domainDeleteOpFor("alpha")
 	txBytes, _ := w.buildOpsTx(nil, gasCoin, op)
 
 	assertPureOpsTx(t, txBytes)
@@ -150,8 +159,8 @@ func TestDomainDeleteOpTxCarriesName(t *testing.T) {
 	assertNoMutableRefs(t, txBytes)
 
 	ops := extractOps(t, txBytes)
-	if ops[0].Kind != domainDeleteOpKind {
-		t.Errorf("kind: got %d, want %d", ops[0].Kind, domainDeleteOpKind)
+	if ops[0].Kind != 6 {
+		t.Errorf("kind: got %d, want 6", ops[0].Kind)
 	}
 	if ops[0].Name != "alpha" {
 		t.Errorf("name: got %q, want alpha", ops[0].Name)

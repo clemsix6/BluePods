@@ -8,15 +8,21 @@ import (
 	"BluePods/internal/network"
 )
 
-// The UNPROVEN index reads: thin Client wrappers around the QUIC transport's
-// proved verbs (pkg/client/provedtransport.go) that discard the proof and the
-// anchoring block, returning only the node's own word. They exist for
-// callers with no trusted checkpoint to verify against — bpctl and the
-// interactive console are the two today, since neither acquires one (no
+// The UNPROVEN index reads: thin Client wrappers around the QUIC transport,
+// returning only the node's own word. ListChildren and Parent wrap the
+// transport's proved verbs (pkg/client/provedtransport.go), discarding the
+// proof and the anchoring block those carry; DomainResolve wraps the
+// transport's own already-unproven verb (QUICTransport.DomainResolve,
+// pkg/client/quic.go), which has no proof to discard in the first place. They
+// exist for callers with no trusted checkpoint to verify against — bpctl and
+// the interactive console are the two today, since neither acquires one (no
 // --checkpoint flag, no persisted trust-on-first-use pin). A caller that
 // holds a Checkpoint should read through a LightClient instead
 // (pkg/client/lightclient.go), which checks every answer against a
-// quorum-attested root; nothing here checks anything.
+// quorum-attested root; nothing here checks a proof against one — Parent
+// still rejects an edge or leaf that names a different object (see its own
+// doc comment), but that is self-consistency, not cryptographic
+// verification.
 
 // txPollInterval is how often WaitForTx re-polls a transaction's status.
 const txPollInterval = 100 * time.Millisecond
@@ -54,6 +60,12 @@ func (c *Client) ListChildren(parent [32]byte) ([][32]byte, error) {
 // false only when the object carries no edge at all. This is the unproven,
 // single-hop counterpart of LightClient.Ancestors, which walks and verifies
 // the whole chain up to a KeyRoot.
+//
+// No proof is checked here — there is none to check — but the two identity
+// checks that don't need one still run, mirroring verifyEdge
+// (provedanswers.go): the served edge must actually be objectID's, and the
+// leaf it carries must name the same child, so a node cannot answer with a
+// neighbor's edge and have it printed as objectID's parent.
 func (c *Client) Parent(objectID [32]byte) (kind byte, parent [32]byte, hasParent bool, err error) {
 	resp, err := c.transport.GetAncestors(objectID)
 	if err != nil {
@@ -64,9 +76,18 @@ func (c *Client) Parent(objectID [32]byte) (kind byte, parent [32]byte, hasParen
 		return 0, [32]byte{}, false, nil
 	}
 
-	leaf, ok := index.DecodeParentLeaf(resp.Edges[0].Leaf)
+	edge := resp.Edges[0]
+	if edge.ChildID != objectID {
+		return 0, [32]byte{}, false, fmt.Errorf("node answered with the edge for %x, not the requested %x", edge.ChildID[:8], objectID[:8])
+	}
+
+	leaf, ok := index.DecodeParentLeaf(edge.Leaf)
 	if !ok {
 		return 0, [32]byte{}, false, fmt.Errorf("parent leaf does not decode")
+	}
+
+	if leaf.ChildID != edge.ChildID {
+		return 0, [32]byte{}, false, fmt.Errorf("leaf belongs to %x, not the requested %x", leaf.ChildID[:8], objectID[:8])
 	}
 
 	return leaf.ParentKind, leaf.Parent, true, nil

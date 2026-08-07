@@ -74,19 +74,25 @@ func dispatchObjectCreate(c *client.Client, w *client.Wallet, cmd command) (stri
 // (pubkey) plus recursion into object-parented subtrees, MERGED into what is
 // already tracked rather than replacing it — reading the node's unproven
 // word (the console holds no trusted checkpoint; see pkg/client/
-// indexreads.go). It then lists each object with its full hex ID and current
+// indexreads.go). A recovery failure (including the transport's single-frame
+// ceiling for a large wallet — spec §10, 6.1's as-built) does not hide the
+// verb's whole output: it falls back to whatever the wallet already tracks
+// locally, with a warning line, since a stale-but-present list is more useful
+// than none. It then lists each object with its full hex ID and current
 // version/owner, so the full ID can be copied for object show/set/transfer.
 func dispatchObjects(c *client.Client, w *client.Wallet) (string, [32]byte, error) {
+	var warning string
 	if _, err := w.RecoverObjects(c); err != nil {
-		return "", [32]byte{}, fmt.Errorf("recover objects from index:\n%w", err)
+		warning = fmt.Sprintf("warning: recover objects from index failed, showing the locally tracked set:\n  %v\n", err)
 	}
 
 	ids := w.ObjectIDs()
 	if len(ids) == 0 {
-		return "no objects yet (use object create)", [32]byte{}, nil
+		return warning + "no objects yet (use object create)", [32]byte{}, nil
 	}
 
 	var b strings.Builder
+	b.WriteString(warning)
 	fmt.Fprintf(&b, "objects (%d):", len(ids))
 
 	for _, id := range ids {

@@ -115,11 +115,7 @@ func (w *Wallet) DomainTransfer(c *Client, name string, newOwner [32]byte, gasCo
 // owner are untouched. The caller supplies an owned singleton coin
 // (gasCoinID) to pay gas. Returns the transaction hash.
 func (w *Wallet) DomainUpdate(c *Client, name string, objectID [32]byte, gasCoinID [32]byte) ([32]byte, error) {
-	op := genesis.DeclaredOp{
-		Kind:     domainUpdateOpKind,
-		Name:     name,
-		ObjectID: objectID[:],
-	}
+	op := domainUpdateOpFor(name, objectID)
 
 	txBytes, txHash := w.buildOpsTx(nil, gasCoinID, op)
 
@@ -136,7 +132,7 @@ func (w *Wallet) DomainUpdate(c *Client, name string, objectID [32]byte, gasCoin
 // the name becomes registrable again immediately. The caller supplies an
 // owned singleton coin (gasCoinID) to pay gas. Returns the transaction hash.
 func (w *Wallet) DomainDelete(c *Client, name string, gasCoinID [32]byte) ([32]byte, error) {
-	op := genesis.DeclaredOp{Kind: domainDeleteOpKind, Name: name}
+	op := domainDeleteOpFor(name)
 
 	txBytes, txHash := w.buildOpsTx(nil, gasCoinID, op)
 
@@ -147,35 +143,69 @@ func (w *Wallet) DomainDelete(c *Client, name string, gasCoinID [32]byte) ([32]b
 	return txHash, nil
 }
 
+// domainUpdateOpFor builds a kind-4 declared operation repointing name at
+// objectID, factored out of DomainUpdate so tests can exercise the exact
+// op-construction logic the real call runs, without a live node to submit
+// against.
+func domainUpdateOpFor(name string, objectID [32]byte) genesis.DeclaredOp {
+	return genesis.DeclaredOp{
+		Kind:     domainUpdateOpKind,
+		Name:     name,
+		ObjectID: objectID[:],
+	}
+}
+
+// domainDeleteOpFor builds a kind-6 declared operation removing name from the
+// registry, factored out of DomainDelete for the same reason
+// domainUpdateOpFor is factored out of DomainUpdate.
+func domainDeleteOpFor(name string) genesis.DeclaredOp {
+	return genesis.DeclaredOp{Kind: domainDeleteOpKind, Name: name}
+}
+
 // RegisterNewObjectDomain runs the spec §8 two-transaction saga for naming a
-// brand-new object: create it, wait for that transaction to commit, then
-// register name against the created ID. The wait is required, not a caution —
-// domain_register demands the sender already control the pointed object, and
-// the either-ops-or-pod rule forbids folding the create pod call and the
-// declared register op into a single transaction, so there is no way to
-// shrink this to one round trip. A failure creating the object leaves nothing
-// registered; a failure while waiting or registering leaves the object
-// created but unnamed, and the caller can retry DomainRegister directly with
-// the returned object ID rather than re-running the whole saga. Returns the
-// created object ID and the register transaction's hash.
+// brand-new object: create it, wait for that transaction to commit, register
+// name against the created ID, then wait for THAT transaction to commit too.
+// Both waits are required, not a caution — spec §8's "wait for commit" holds
+// for either half of the saga, since domain_register can itself revert at
+// commit (the name was already taken, the term exceeds the registry's cap, or
+// a dotted name's namespace is not owned by the sender) after the object has
+// already been created and paid for; a caller that only waited on the create
+// half could be told the saga "succeeded" while the name never bound. The
+// either-ops-or-pod rule forbids folding the create pod call and the declared
+// register op into a single transaction, so there is no way to shrink this to
+// one round trip. A failure creating the object leaves nothing registered; a
+// failure at either wait or while submitting the register call leaves the
+// object created but unnamed (or its registration unconfirmed), and the
+// caller can retry DomainRegister directly with the returned object ID rather
+// than re-running the whole saga. Returns the created object ID and the
+// register transaction's hash.
 func (w *Wallet) RegisterNewObjectDomain(c *Client, name string, replication uint16, metadata []byte, termEpochs uint32, gasCoinID [32]byte) ([32]byte, [32]byte, error) {
 	objectID, createHash, err := w.CreateObject(c, replication, metadata, gasCoinID)
 	if err != nil {
 		return [32]byte{}, [32]byte{}, fmt.Errorf("create object:\n%w", err)
 	}
 
-	status, err := c.WaitForTx(createHash, domainRegisterCommitTimeout)
+	createStatus, err := c.WaitForTx(createHash, domainRegisterCommitTimeout)
 	if err != nil {
 		return objectID, [32]byte{}, fmt.Errorf("wait for object creation to commit:\n%w", err)
 	}
 
-	if status.State != network.TxStateFinalized {
-		return objectID, [32]byte{}, fmt.Errorf("object creation did not finalize (state %d, reason %d)", status.State, status.Reason)
+	if createStatus.State != network.TxStateFinalized {
+		return objectID, [32]byte{}, fmt.Errorf("object creation did not finalize (state %d, reason %d)", createStatus.State, createStatus.Reason)
 	}
 
 	registerHash, err := w.DomainRegister(c, name, objectID, termEpochs, gasCoinID)
 	if err != nil {
-		return objectID, [32]byte{}, fmt.Errorf("register domain:\n%w", err)
+		return objectID, [32]byte{}, fmt.Errorf("register domain on already-created object %x:\n%w", objectID[:8], err)
+	}
+
+	registerStatus, err := c.WaitForTx(registerHash, domainRegisterCommitTimeout)
+	if err != nil {
+		return objectID, registerHash, fmt.Errorf("wait for domain registration to commit on already-created object %x (retry DomainRegister directly rather than re-running the saga):\n%w", objectID[:8], err)
+	}
+
+	if registerStatus.State != network.TxStateFinalized {
+		return objectID, registerHash, fmt.Errorf("domain registration did not finalize on already-created object %x (state %d, reason %d; retry DomainRegister directly rather than re-running the saga)", objectID[:8], registerStatus.State, registerStatus.Reason)
 	}
 
 	return objectID, registerHash, nil

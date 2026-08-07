@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"math"
 	"strconv"
 
 	"BluePods/pkg/client"
@@ -57,8 +58,23 @@ func cmdDomainRegister(e *env, args []string) error {
 		return fmt.Errorf("usage: domain register --name <name> --term <epochs> (--object <id-hex> | --replication N [--content STR]) --gas-coin <hex>")
 	}
 
+	// --term is flag.Uint (platform uint, no bit-size limit): reject anything
+	// that would silently truncate to a different value on the uint32 narrow
+	// below — including truncating to 0, which the consensus commit rejects
+	// only after gas was already spent (domainExpiry in
+	// internal/consensus/domainops.go). This is the same rejection domain
+	// renew's strconv.ParseUint(..., 32) already gives up front.
+	if *term > math.MaxUint32 {
+		return fmt.Errorf("--term must be at most %d epochs", uint32(math.MaxUint32))
+	}
+
 	if (*objectHex == "") == (*replication == 0) {
 		return fmt.Errorf("domain register: exactly one of --object or --replication is required")
+	}
+
+	// Same narrowing hazard as --term above, for the uint16 replication factor.
+	if *replication > math.MaxUint16 {
+		return fmt.Errorf("--replication must be at most %d", uint16(math.MaxUint16))
 	}
 
 	gasCoin, err := parseHash(*gasCoinHex)
@@ -101,8 +117,15 @@ func registerExistingObjectDomain(cli *client.Client, w *client.Wallet, name, ob
 }
 
 // registerNewObjectDomain runs the spec §8 two-transaction saga
-// (Wallet.RegisterNewObjectDomain): create a brand-new object, then register
-// name against it once the creating transaction has committed.
+// (Wallet.RegisterNewObjectDomain): create a brand-new object, wait for that
+// to commit, register name against it, then wait for the register
+// transaction to commit too — the saga only prints success once both halves
+// are confirmed, since domain_register can itself revert at commit (name
+// taken, term over the cap, an unowned namespace) after the object was
+// already created and paid for. A failure from either wait or from the
+// register submission names the already-created object in its error, so the
+// name can be retried with `domain register --object` instead of re-running
+// the whole saga.
 func registerNewObjectDomain(cli *client.Client, w *client.Wallet, name string, replication uint16, content string, term uint32, gasCoin [32]byte) error {
 	objectID, _, err := w.RegisterNewObjectDomain(cli, name, replication, []byte(content), term, gasCoin)
 	if err != nil {
