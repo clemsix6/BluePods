@@ -1,231 +1,17 @@
 package client
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"testing"
 
-	"BluePods/internal/index"
 	"BluePods/internal/network"
 )
 
-// =============================================================================
-// Fixture: a scripted node backed by a real index manager
-// =============================================================================
-
-// testValidator is one committee member: the key that signs vertex headers and
-// the leaf the validator tree hashes for it.
-type testValidator struct {
-	pub  ed25519.PublicKey  // pub is the producer identity inside a header
-	priv ed25519.PrivateKey // priv signs the vertex identity
-	leaf index.ValidatorLeaf
-}
-
-// newCommittee returns n validators, each carrying the same capped weight, so
-// a quorum is a plain member count and a test's arithmetic is obvious.
-func newCommittee(t *testing.T, n int, stake uint64) []testValidator {
-	t.Helper()
-
-	out := make([]testValidator, 0, n)
-
-	for i := 0; i < n; i++ {
-		pub, priv, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("generate key: %v", err)
-		}
-
-		var pubkey [32]byte
-		copy(pubkey[:], pub)
-
-		out = append(out, testValidator{
-			pub:  pub,
-			priv: priv,
-			leaf: index.ValidatorLeaf{Pubkey: pubkey, CappedStake: stake, Status: index.ValidatorActive},
-		})
-	}
-
-	return out
-}
-
-// leavesOf returns a committee's validator leaves.
-func leavesOf(committee []testValidator) []index.ValidatorLeaf {
-	out := make([]index.ValidatorLeaf, len(committee))
-	for i, v := range committee {
-		out[i] = v.leaf
-	}
-
-	return out
-}
-
-// headerRecord builds one bundle record the way a producer does: the NORMATIVE
-// 120-byte header (internal/consensus/header.go) followed by the producer's
-// signature over BLAKE3(0x01 || header). It is written out field by field on
-// purpose — this is the external reimplementation the wire contract is
-// addressed to, and TestAnchorHeader_GoldenLayout pins it to the same vector
-// consensus pins itself to.
-func headerRecord(v testValidator, round, epoch, frontier uint64, root [32]byte) []byte {
-	var bodyHash [32]byte
-	bodyHash[0] = 0xEE
-
-	header := make([]byte, 0, anchorHeaderSize)
-	header = append(header, v.pub...)
-	header = binary.BigEndian.AppendUint64(header, round)
-	header = binary.BigEndian.AppendUint64(header, epoch)
-	header = binary.BigEndian.AppendUint64(header, frontier)
-	header = append(header, root[:]...)
-	header = append(header, bodyHash[:]...)
-
-	identity := headerIdentity(header)
-
-	return append(header, ed25519.Sign(v.priv, identity[:])...)
-}
-
-// fixture is a scripted node: a real index.Manager serving proved answers, a
-// committee whose members sign the anchor bundle, and the knobs a test uses to
-// script what that node says.
-type fixture struct {
-	mgr       *index.Manager
-	epoch     uint64          // epoch is the epoch the served validator tree describes
-	signers   []testValidator // signers are the producers whose headers ride in the bundle
-	headers   uint64          // headers is the epoch the produced headers carry
-	duplicate bool            // duplicate repeats the first signer's record
-
-	owner  [32]byte // owner is the key the fixture's object tree hangs off
-	child  [32]byte // child is the object parented to owner
-	other  [32]byte // other is a second object parented to owner
-	nested [32]byte // nested is the object parented to child
-	name   string   // name is the registered domain name
-}
-
-// newFixture builds the node's state: one registered name, a two-level object
-// tree under owner, and committee A frozen as epoch 1's validator tree,
-// committed at frontier 10.
-func newFixture(t *testing.T, committee []testValidator) *fixture {
-	t.Helper()
-
-	f := &fixture{
-		mgr:     index.NewManager(),
-		epoch:   1,
-		signers: committee,
-		headers: 1,
-		owner:   [32]byte{0x0F},
-		child:   [32]byte{0xA1},
-		other:   [32]byte{0xC3},
-		nested:  [32]byte{0xB2},
-		name:    "demo.config",
-	}
-
-	f.mgr.ApplyDomain(f.name, [32]byte{0x11}, f.owner, 100)
-	f.mgr.ApplyEdge(f.child, index.KeyRootKind, f.owner)
-	f.mgr.ApplyEdge(f.other, index.KeyRootKind, f.owner)
-	f.mgr.ApplyEdge(f.nested, index.ObjectParentKind, f.child)
-	f.mgr.RebuildValidators(leavesOf(committee))
-	f.mgr.SetFrontier(10)
-
-	return f
-}
-
-// GetIndexAnchor serves the bundle: the manager's committed frontier and root,
-// attested by the scripted signers at the scripted header epoch.
-func (f *fixture) GetIndexAnchor() (*network.GetIndexAnchorResponse, error) {
-	round, root := f.mgr.CommittedFrontier()
-
-	records := make([][]byte, 0, len(f.signers)+1)
-	for _, v := range f.signers {
-		records = append(records, headerRecord(v, round+2, f.headers, round, root))
-	}
-
-	if f.duplicate && len(records) > 0 {
-		records = append(records, records[0])
-	}
-
-	return &network.GetIndexAnchorResponse{
-		Found:         true,
-		FrontierRound: round,
-		IndexRoot:     root,
-		Epoch:         f.headers,
-		Headers:       records,
-	}, nil
-}
-
-// GetValidatorTree serves the current tree, and only for the epoch it
-// describes — the manager keeps no versioned validator trees.
-func (f *fixture) GetValidatorTree(epoch uint64) (*network.GetValidatorTreeResponse, error) {
-	answer := f.mgr.ValidatorSet()
-
-	resp := &network.GetValidatorTreeResponse{Anchor: wireAnchor(answer.Anchor), Epoch: f.epoch}
-	if epoch == f.epoch {
-		resp.Found = true
-		resp.Leaves = answer.Values
-	}
-
-	return resp, nil
-}
-
-// ResolveDomainProved serves a proved resolution.
-func (f *fixture) ResolveDomainProved(name string) (*network.DomainResolveResponse, error) {
-	answer := f.mgr.ResolveDomain(name)
-
-	return &network.DomainResolveResponse{
-		Anchor: wireAnchor(answer.Anchor),
-		Found:  len(answer.Value) != 0,
-		Leaf:   answer.Value,
-		Proof:  answer.Proof.Serialize(),
-	}, nil
-}
-
-// ListChildren serves a proved enumeration.
-func (f *fixture) ListChildren(parent [32]byte) (*network.ListChildrenResponse, error) {
-	answer := f.mgr.ListChildren(parent)
-
-	return &network.ListChildrenResponse{
-		Anchor:      wireAnchor(answer.Anchor),
-		Found:       answer.Found,
-		SubtreeRoot: answer.SubtreeRoot,
-		Proof:       answer.Proof.Serialize(),
-		Children:    answer.Children,
-	}, nil
-}
-
-// GetAncestors serves a proved ancestry walk.
-func (f *fixture) GetAncestors(object [32]byte) (*network.GetAncestorsResponse, error) {
-	answer := f.mgr.Ancestors(object)
-
-	edges := make([]network.AncestorEdge, len(answer.Edges))
-	for i, e := range answer.Edges {
-		edges[i] = network.AncestorEdge{ChildID: e.ChildID, Leaf: e.Value, Proof: e.Proof.Serialize()}
-	}
-
-	return &network.GetAncestorsResponse{Anchor: wireAnchor(answer.Anchor), Edges: edges}, nil
-}
-
-// wireAnchor converts an index anchor into the block every proved response
-// opens with, exactly as cmd/node does.
-func wireAnchor(a index.Anchor) network.ProvedIndexAnchor {
-	return network.ProvedIndexAnchor{
-		Anchored:      a.Anchored,
-		FrontierRound: a.Round,
-		IndexRoot:     a.Roots.Combined,
-		DomainRoot:    a.Roots.Domain,
-		ParentRoot:    a.Roots.Parent,
-		ChildrenRoot:  a.Roots.Children,
-		ValidatorRoot: a.Roots.Validator,
-	}
-}
-
-// checkpointOf pins the fixture's current state as a light client's trust
-// anchor.
-func (f *fixture) checkpointOf(committee []testValidator) Checkpoint {
-	_, root := f.mgr.CommittedFrontier()
-
-	return Checkpoint{
-		Epoch:            f.epoch,
-		IndexRoot:        root,
-		ValidatorSetHash: index.ValidatorRootOf(leavesOf(committee)),
-	}
-}
+// The fixture this file's tests script (testValidator, newCommittee, fixture,
+// checkpointOf, and friends) lives in fixture_test.go, shared with
+// lightclient_test.go.
 
 // =============================================================================
 // The header wire contract
@@ -439,6 +225,93 @@ func TestVerifyAnchor_EpochWindowIsTheHandoffRule(t *testing.T) {
 	f.headers = f.epoch + 2
 	if _, err := VerifyAnchor(bundleFrom(t, f, committee), set); err == nil {
 		t.Fatal("headers two epochs ahead were weighed by a stale committee")
+	}
+}
+
+// TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays is the fix for the label
+// attack: the bundle's attested epoch must not be the served node's word, nor
+// the mere maximum among whichever headers happened to count. Three of a
+// four-member committee sign a GENUINE (frontier, root) pair at epoch N; the
+// fourth member alone signs the SAME genuine pair claiming epoch N+1. Every
+// header is individually valid and the overall bundle clears quorum, but the
+// N+1 subset does not carry the committee's quorum on its own — only the N
+// subset does. The attested epoch must therefore be N: one byzantine header
+// must not be able to relabel a genuine N-quorum as N+1 and drag the
+// checkpoint's epoch walk forward with it (see
+// TestLightClient_OneByzantineHeaderDoesNotForceTheEpochWalk for the
+// consequence at the LightClient seat).
+func TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+
+	round, root := f.mgr.CommittedFrontier()
+	set := ValidatorSet{Epoch: f.epoch, Leaves: leavesOf(committee)}
+
+	records := make([][]byte, 0, 4)
+	for _, v := range committee[:3] {
+		records = append(records, headerRecord(v, round+2, f.epoch, round, root))
+	}
+	records = append(records, headerRecord(committee[3], round+2, f.epoch+1, round, root))
+
+	bundle := &network.GetIndexAnchorResponse{
+		Found:         true,
+		FrontierRound: round,
+		IndexRoot:     root,
+		Epoch:         f.epoch + 1, // the serving node's own unauthenticated label
+		Headers:       records,
+	}
+
+	attested, err := VerifyAnchor(bundle, set)
+	if err != nil {
+		t.Fatalf("a quorate bundle mixing an honest N-majority with one byzantine N+1 header was refused outright: %v", err)
+	}
+
+	if attested.Epoch != f.epoch {
+		t.Fatalf("attested epoch = %d, want %d: the N+1 subset (one header) does not carry the committee's own quorum", attested.Epoch, f.epoch)
+	}
+}
+
+// TestVerifyAnchor_HeadersOutsideTheWindowReportTheWeakSubjectivityBoundary
+// verifies the epoch-window exhaustion is reported as its own distinct
+// condition rather than folded into the generic "short of two thirds"
+// message a stalled chain would also produce: when every header names an
+// epoch outside {set.Epoch, set.Epoch+1}, VerifyAnchor wraps
+// ErrCheckpointBehind, which tells the caller to obtain a fresh checkpoint
+// instead of retrying a poll that can never succeed.
+func TestVerifyAnchor_HeadersOutsideTheWindowReportTheWeakSubjectivityBoundary(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+	f.headers = f.epoch + 5
+
+	set := ValidatorSet{Epoch: f.epoch, Leaves: leavesOf(committee)}
+
+	_, err := VerifyAnchor(bundleFrom(t, f, committee), set)
+	if err == nil {
+		t.Fatal("headers five epochs ahead were weighed by a stale committee")
+	}
+
+	if !errors.Is(err, ErrCheckpointBehind) {
+		t.Fatalf("error does not wrap ErrCheckpointBehind: %v", err)
+	}
+}
+
+// TestVerifyAnchor_BelowQuorumInsideTheWindowIsNotReportedAsCheckpointBehind
+// is the negative case beside it: a bundle whose headers DO fall inside the
+// window but simply do not carry a quorum is an ordinary shortfall, not the
+// weak-subjectivity boundary, and must not be misreported as one.
+func TestVerifyAnchor_BelowQuorumInsideTheWindowIsNotReportedAsCheckpointBehind(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+
+	set := ValidatorSet{Epoch: f.epoch, Leaves: leavesOf(committee)}
+
+	_, err := VerifyAnchor(bundleFrom(t, f, committee[:2]), set)
+	if err == nil {
+		t.Fatal("two of four validators reached quorum")
+	}
+
+	if errors.Is(err, ErrCheckpointBehind) {
+		t.Fatalf("an ordinary quorum shortfall inside the handoff window was reported as the checkpoint falling behind: %v", err)
 	}
 }
 

@@ -65,6 +65,12 @@ type LightClient struct {
 
 	checkpoint Checkpoint   // checkpoint is the trust anchor, advanced by the epoch walk
 	set        ValidatorSet // set is the authenticated committee for checkpoint.Epoch, empty until first use
+
+	// advanceErr is the outcome of the most recent opportunistic epoch walk
+	// this client attempted (see advance and AdvanceError): nil when Anchor
+	// last either had no need to walk or walked successfully, non-nil when it
+	// tried and could not.
+	advanceErr error
 }
 
 // NewLightClient returns a light client reading through c and trusting cp.
@@ -77,6 +83,18 @@ func NewLightClient(c *Client, cp Checkpoint) *LightClient {
 // client from needing a fresh out-of-band pin.
 func (lc *LightClient) Checkpoint() Checkpoint {
 	return lc.checkpoint
+}
+
+// AdvanceError reports the outcome of the epoch walk Anchor most recently
+// attempted. nil covers both "there was nothing to walk to" and "the walk
+// succeeded" — either way the checkpoint is exactly where the caller would
+// want it. A non-nil error means Anchor saw a newer epoch attested and tried
+// to re-pin the checkpoint to it but could not, including a plain transport
+// failure talking to the node — a case Anchor itself does not fail on, since
+// declining to advance costs nothing immediately (see Anchor), but one this
+// method lets a caller distinguish from routine, opportunistic non-advancement.
+func (lc *LightClient) AdvanceError() error {
+	return lc.advanceErr
 }
 
 // Anchor fetches the node's quorum bundle and verifies it against the
@@ -111,7 +129,9 @@ func (lc *LightClient) Anchor() (VerifiedAnchor, error) {
 	}
 
 	if attested.Epoch > set.Epoch {
-		lc.advance(attested)
+		lc.advanceErr = lc.advance(attested)
+	} else {
+		lc.advanceErr = nil
 	}
 
 	return attested, nil
@@ -155,6 +175,10 @@ func (lc *LightClient) ResolveDomain(name string) (index.DomainLeaf, bool, error
 		return index.DomainLeaf{}, false, err
 	}
 
+	if resp == nil {
+		return index.DomainLeaf{}, false, fmt.Errorf("domain %q: no answer", name)
+	}
+
 	attested, err := lc.attest(resp.Anchor)
 	if err != nil {
 		return index.DomainLeaf{}, false, err
@@ -169,6 +193,10 @@ func (lc *LightClient) ListChildren(parent [32]byte) ([][32]byte, error) {
 	resp, err := lc.src.ListChildren(parent)
 	if err != nil {
 		return nil, err
+	}
+
+	if resp == nil {
+		return nil, fmt.Errorf("children of %x: no answer", parent[:8])
 	}
 
 	attested, err := lc.attest(resp.Anchor)
@@ -187,6 +215,10 @@ func (lc *LightClient) Ancestors(object [32]byte) ([]index.ParentLeaf, error) {
 		return nil, err
 	}
 
+	if resp == nil {
+		return nil, fmt.Errorf("ancestry of %x: no answer", object[:8])
+	}
+
 	attested, err := lc.attest(resp.Anchor)
 	if err != nil {
 		return nil, err
@@ -203,7 +235,7 @@ func (lc *LightClient) Ancestors(object [32]byte) ([]index.ParentLeaf, error) {
 // the roots still differ, the answer is stale and the caller re-reads.
 func (lc *LightClient) attest(anchor network.ProvedIndexAnchor) (VerifiedAnchor, error) {
 	if !anchor.Anchored {
-		return VerifiedAnchor{}, errUnanchored
+		return VerifiedAnchor{}, ErrUnanchored
 	}
 
 	attested, err := lc.Anchor()
@@ -251,17 +283,25 @@ func (lc *LightClient) validatorSet() (ValidatorSet, error) {
 }
 
 // advance re-pins the checkpoint to the committee the attested root commits
-// to, the second half of the epoch walk. It gives up quietly on any failure:
-// see Anchor for why declining to advance is safe.
-func (lc *LightClient) advance(attested VerifiedAnchor) {
+// to, the second half of the epoch walk. Anchor never fails the call over
+// what this returns — see Anchor for why declining to advance is safe — but
+// the error is not thrown away either: it distinguishes a plain transport
+// failure from the node from the ordinary "not yet possible" case (the
+// serving node's index has already moved past the attested root), and
+// AdvanceError is how a caller that cares can tell the two apart.
+func (lc *LightClient) advance(attested VerifiedAnchor) error {
 	resp, err := lc.src.GetValidatorTree(attested.Epoch)
-	if err != nil || resp == nil || resp.Epoch != attested.Epoch {
-		return
+	if err != nil {
+		return fmt.Errorf("validator tree for epoch %d:\n%w", attested.Epoch, err)
+	}
+
+	if resp == nil || resp.Epoch != attested.Epoch {
+		return fmt.Errorf("node does not yet serve epoch %d's validator tree", attested.Epoch)
 	}
 
 	set, err := attested.VerifyValidatorSet(resp)
 	if err != nil {
-		return
+		return err
 	}
 
 	lc.checkpoint = Checkpoint{
@@ -270,4 +310,6 @@ func (lc *LightClient) advance(attested VerifiedAnchor) {
 		ValidatorSetHash: index.ValidatorRootOf(set.Leaves),
 	}
 	lc.set = set
+
+	return nil
 }

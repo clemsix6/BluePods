@@ -8,15 +8,22 @@ import (
 	"BluePods/internal/network"
 )
 
-// errUnanchored reports an answer taken against tree state no committed
+// ErrUnanchored reports an answer taken against tree state no committed
 // frontier has recorded yet: the serving node sits between a mutation and the
 // commit that closes its batch, so no bundle for that root can exist. It is
-// the spec §5 live unproven read, and the caller's move is to retry.
-var errUnanchored = errors.New("answer is not anchored: the node's index sits ahead of its last committed frontier")
+// the spec §5 live unproven read, and the caller's move is to retry. Every
+// LightClient method that reads a proved answer can return it.
+var ErrUnanchored = errors.New("answer is not anchored: the node's index sits ahead of its last committed frontier")
 
-// Component names which of the four trees a proof folds to. A proof authenticates
-// a key against ONE component root; the combination of all four is what a
-// quorum signs, which is why a component root alone proves nothing.
+// Component names which tree a per-key proof folds to. A proof authenticates
+// a key against ONE component root; the combination of all four index trees
+// (domain, parent, children, and the validator tree besides) is what a quorum
+// signs, which is why a component root alone proves nothing. The validator
+// tree carries no Component of its own: a light client never asks it for a
+// per-key proof, only for its whole leaf set, authenticated by rebuilding the
+// set and comparing the root (VerifyValidatorSet) — the 2/3 test needs the
+// committee's full membership and total weight, which one key's inclusion
+// proof cannot give it.
 type Component int
 
 const (
@@ -28,9 +35,6 @@ const (
 
 	// ChildrenComponent is the children top tree: a parent to its subtree root.
 	ChildrenComponent
-
-	// ValidatorComponent is the validator tree: an epoch's committee.
-	ValidatorComponent
 )
 
 // VerifyProof ties one proved answer to this attested root, in the two steps
@@ -74,7 +78,7 @@ func (a VerifiedAnchor) VerifyProof(anchor network.ProvedIndexAnchor, c Componen
 // the real one.
 func (a VerifiedAnchor) bind(anchor network.ProvedIndexAnchor) error {
 	if !anchor.Anchored {
-		return errUnanchored
+		return ErrUnanchored
 	}
 
 	combined := index.CombinedRoot(anchor.DomainRoot, anchor.ParentRoot, anchor.ChildrenRoot, anchor.ValidatorRoot)
@@ -94,8 +98,6 @@ func componentRoot(anchor network.ProvedIndexAnchor, c Component) ([32]byte, err
 		return anchor.ParentRoot, nil
 	case ChildrenComponent:
 		return anchor.ChildrenRoot, nil
-	case ValidatorComponent:
-		return anchor.ValidatorRoot, nil
 	default:
 		return [32]byte{}, fmt.Errorf("unknown index component %d", c)
 	}

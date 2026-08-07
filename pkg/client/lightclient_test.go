@@ -1,21 +1,16 @@
 package client
 
 import (
+	"errors"
 	"testing"
-	"time"
 
 	"BluePods/internal/index"
 	"BluePods/internal/network"
 )
 
-// attestedFor returns the fixture's current committed root as a verified
-// anchor, for the checks that exercise one answer rather than the whole
-// client.
-func attestedFor(f *fixture) VerifiedAnchor {
-	round, root := f.mgr.CommittedFrontier()
-
-	return VerifiedAnchor{FrontierRound: round, IndexRoot: root, Epoch: f.epoch}
-}
+// The epoch walk and checkpoint authentication. The proved-read verbs
+// (ResolveDomain, ListChildren, Ancestors) and the freshness primitive
+// (WaitForFrontier) have their own tests in lightclient_reads_test.go.
 
 // crossBoundary moves the fixture's node past an epoch boundary: the new
 // committee is frozen into the validator tree, the index commits at the next
@@ -100,6 +95,107 @@ func TestLightClient_WalksAnEpochBoundaryAndVerifiesADomainProof(t *testing.T) {
 	}
 }
 
+// failingValidatorTreeSource wraps a fixture and turns GetValidatorTree into
+// a plain transport failure at one scripted epoch, leaving every other epoch
+// (and every other call) to the underlying fixture.
+type failingValidatorTreeSource struct {
+	*fixture
+
+	failAt uint64 // failAt is the epoch whose request errors
+}
+
+// GetValidatorTree fails for failAt and delegates otherwise.
+func (s *failingValidatorTreeSource) GetValidatorTree(epoch uint64) (*network.GetValidatorTreeResponse, error) {
+	if epoch == s.failAt {
+		return nil, errors.New("dial validator tree: connection refused")
+	}
+
+	return s.fixture.GetValidatorTree(epoch)
+}
+
+// TestLightClient_AdvanceErrorDistinguishesTransportFailureFromNoNeed
+// verifies the two states AdvanceError exists to tell apart. Right after
+// construction, before Anchor has ever run, there is nothing to report: nil.
+// At the checkpoint's own epoch, Anchor has no epoch to walk to: also nil —
+// "didn't need to". Once a newer epoch is attested and the walk's own
+// transport call fails, AdvanceError must turn non-nil — "could not" — and
+// Anchor itself must still succeed, since declining to advance costs nothing
+// immediately (see Anchor), and the checkpoint must stay exactly where it was.
+func TestLightClient_AdvanceErrorDistinguishesTransportFailureFromNoNeed(t *testing.T) {
+	epochN := newCommittee(t, 4, 100)
+	f := newFixture(t, epochN)
+
+	pinned := f.checkpointOf(epochN)
+	src := &failingValidatorTreeSource{fixture: f}
+	lc := &LightClient{src: src, checkpoint: pinned}
+
+	if err := lc.AdvanceError(); err != nil {
+		t.Fatalf("AdvanceError before any call: %v, want nil", err)
+	}
+
+	if _, err := lc.Anchor(); err != nil {
+		t.Fatalf("anchor at the checkpointed epoch: %v", err)
+	}
+
+	if err := lc.AdvanceError(); err != nil {
+		t.Fatalf("AdvanceError with nothing to walk to: %v, want nil", err)
+	}
+
+	epochNext := append(append([]testValidator{}, epochN[1:]...), newCommittee(t, 1, 100)...)
+	crossBoundary(f, epochNext)
+	f.signers = epochN[:3]
+	src.failAt = f.epoch
+
+	attested, err := lc.Anchor()
+	if err != nil {
+		t.Fatalf("anchor still verifies despite the walk's own transport failure: %v", err)
+	}
+
+	if attested.Epoch != f.epoch {
+		t.Fatalf("attested epoch = %d, want %d", attested.Epoch, f.epoch)
+	}
+
+	if err := lc.AdvanceError(); err == nil {
+		t.Fatal("AdvanceError is nil after the walk's transport call failed")
+	}
+
+	if walked := lc.Checkpoint(); walked != pinned {
+		t.Fatalf("checkpoint moved to %+v despite the walk failing, want it to stay pinned at %+v", walked, pinned)
+	}
+}
+
+// TestLightClient_OneByzantineHeaderDoesNotForceTheEpochWalk is
+// TestVerifyAnchor_EpochIsWhatItsOwnQuorumSays carried through to the walk it
+// would otherwise trigger: three of the four checkpointed committee members
+// sign the genuine (frontier, root) pair at epoch N, and the fourth alone
+// signs the SAME pair claiming N+1. The bundle still verifies — the N subset
+// alone already carries the committee's quorum — but the epoch walk must not
+// follow the lone byzantine label. A client that attributed the anchor to
+// N+1 here would pin Checkpoint{Epoch: N+1} to a committee it never
+// authenticated and PERSIST it, sliding the handoff window to {N+1, N+2} and
+// making every subsequent genuine N header stop counting.
+func TestLightClient_OneByzantineHeaderDoesNotForceTheEpochWalk(t *testing.T) {
+	committee := newCommittee(t, 4, 100)
+	f := newFixture(t, committee)
+	f.stragglerEpoch = f.epoch + 1
+
+	pinned := f.checkpointOf(committee)
+	lc := &LightClient{src: f, checkpoint: pinned}
+
+	attested, err := lc.Anchor()
+	if err != nil {
+		t.Fatalf("a quorate bundle mixing an honest N-majority with one byzantine N+1 header was refused outright: %v", err)
+	}
+
+	if attested.Epoch != f.epoch {
+		t.Fatalf("attested epoch = %d, want %d", attested.Epoch, f.epoch)
+	}
+
+	if walked := lc.Checkpoint(); walked != pinned {
+		t.Fatalf("checkpoint moved to %+v off one byzantine header, want it to stay pinned at %+v", walked, pinned)
+	}
+}
+
 // TestLightClient_RefusesACommitteeTheCheckpointDoesNotPin verifies the
 // bootstrap link: a node serving some other committee for the checkpointed
 // epoch is refused before it can weigh a single quorum, which is the whole
@@ -121,155 +217,35 @@ func TestLightClient_RefusesACommitteeTheCheckpointDoesNotPin(t *testing.T) {
 	}
 }
 
-// advancingSource is a fixture whose committed frontier advances while a
-// client polls it, the shape a live node has.
-type advancingSource struct {
-	*fixture
+// TestLightClient_FallbackRejectsAWrongCommitteeEvenWhenItSelfAttests is the
+// missing witness for authenticate's fallback link (verify.go, the
+// ValidatorSetHash branch below the index-root strong link). The sibling
+// test above happens to fail for an unrelated reason: its fixture keeps
+// signing the bundle with the OLD committee, so VerifyAnchor's own membership
+// check would refuse it downstream even if the fallback accepted the served
+// committee outright — the fallback itself is never exercised as the thing
+// that blocks the substitution.
+//
+// Here the served committee is entirely self-consistent: it is also the one
+// that signs the bundle, at a quorum. Nothing downstream of authenticate
+// could tell it apart from a real handoff. The node's index has also moved
+// past the checkpointed root (SetFrontier past the pinned round), which
+// forces authenticate past the strong link and into the fallback — so only
+// the checkpoint's pinned ValidatorSetHash can catch the substitution.
+func TestLightClient_FallbackRejectsAWrongCommitteeEvenWhenItSelfAttests(t *testing.T) {
+	original := newCommittee(t, 4, 100)
+	f := newFixture(t, original)
 
-	calls     int    // calls counts the bundle requests made so far
-	advanceAt int    // advanceAt is the request that moves the frontier
-	to        uint64 // to is the frontier it moves to
-}
+	pinned := f.checkpointOf(original)
 
-// GetIndexAnchor advances the fixture's frontier on the scripted request, then
-// serves the bundle for whatever frontier is current.
-func (s *advancingSource) GetIndexAnchor() (*network.GetIndexAnchorResponse, error) {
-	s.calls++
+	wrong := newCommittee(t, 4, 100)
+	f.mgr.RebuildValidators(leavesOf(wrong))
+	f.mgr.SetFrontier(11)
+	f.signers = wrong
 
-	if s.calls == s.advanceAt {
-		s.fixture.mgr.SetFrontier(s.to)
-	}
+	lc := &LightClient{src: f, checkpoint: pinned}
 
-	return s.fixture.GetIndexAnchor()
-}
-
-// TestLightClient_WaitForFrontierReturnsOnTheCoveringBundle verifies the
-// freshness primitive: a client that just saw its transaction finalize at a
-// round waits for a bundle attesting that round or later, and returns as soon
-// as one exists rather than on a fixed delay.
-func TestLightClient_WaitForFrontierReturnsOnTheCoveringBundle(t *testing.T) {
-	committee := newCommittee(t, 4, 100)
-	f := newFixture(t, committee)
-
-	src := &advancingSource{fixture: f, advanceAt: 3, to: 11}
-	lc := &LightClient{src: src, checkpoint: f.checkpointOf(committee)}
-
-	// Already covered: the bundle at frontier 10 answers a wait for round 10
-	// on the first poll.
-	if _, err := lc.WaitForFrontier(10, time.Second); err != nil {
-		t.Fatalf("wait for an already-attested frontier: %v", err)
-	}
-
-	before := src.calls
-
-	attested, err := lc.WaitForFrontier(11, 5*time.Second)
-	if err != nil {
-		t.Fatalf("wait for frontier 11: %v", err)
-	}
-
-	if attested.FrontierRound < 11 {
-		t.Fatalf("returned a bundle at frontier %d, want 11 or later", attested.FrontierRound)
-	}
-
-	if src.calls-before < 2 {
-		t.Fatalf("returned after %d polls without the frontier having moved", src.calls-before)
-	}
-}
-
-// TestLightClient_UnanchoredAnswerIsRetriedNotTrusted verifies the spec §5
-// live unproven read is reported as such: between a tree mutation and the
-// commit that records it, no bundle for that root can exist, and the answer
-// must come back as unverifiable rather than as an answer.
-func TestLightClient_UnanchoredAnswerIsRetriedNotTrusted(t *testing.T) {
-	committee := newCommittee(t, 4, 100)
-	f := newFixture(t, committee)
-
-	lc := &LightClient{src: f, checkpoint: f.checkpointOf(committee)}
-
-	// A mutation with no SetFrontier behind it: the trees are now ahead of
-	// every committed round.
-	f.mgr.ApplyDomain("late.config", [32]byte{0x22}, f.owner, 100)
-
-	if _, _, err := lc.ResolveDomain("late.config"); err == nil {
-		t.Fatal("an answer taken against uncommitted tree state was accepted")
-	}
-}
-
-// TestLightClient_EnumerationMustBeComplete verifies the completeness half of
-// a proved enumeration: the streamed leaves are unauthenticated on their own,
-// so a server that withholds one must be caught by the subtree root the top
-// tree proves — at any set size, with no threshold below which the stream is
-// taken on trust.
-func TestLightClient_EnumerationMustBeComplete(t *testing.T) {
-	committee := newCommittee(t, 4, 100)
-	f := newFixture(t, committee)
-
-	lc := &LightClient{src: f, checkpoint: f.checkpointOf(committee)}
-
-	children, err := lc.ListChildren(f.owner)
-	if err != nil {
-		t.Fatalf("proved enumeration: %v", err)
-	}
-
-	if len(children) != 2 {
-		t.Fatalf("enumerated %d children, want 2", len(children))
-	}
-
-	resp, err := f.ListChildren(f.owner)
-	if err != nil {
-		t.Fatalf("children: %v", err)
-	}
-
-	resp.Children = resp.Children[:1]
-
-	if _, err := attestedFor(f).VerifyChildren(resp, f.owner); err == nil {
-		t.Fatal("a withheld child leaf was accepted as a complete enumeration")
-	}
-}
-
-// TestLightClient_AncestryMustBeOneChain verifies the chaining requirement
-// stated on network.GetAncestorsResponse: every edge below is individually
-// proved against the attested parent root, and the walk is still a forgery,
-// because the second hop belongs to an unrelated object. Verifying each edge
-// on its own accepts it; chaining each hop's own parent reference into the
-// next edge's key is what rejects it.
-func TestLightClient_AncestryMustBeOneChain(t *testing.T) {
-	committee := newCommittee(t, 4, 100)
-	f := newFixture(t, committee)
-
-	lc := &LightClient{src: f, checkpoint: f.checkpointOf(committee)}
-
-	chain, err := lc.Ancestors(f.nested)
-	if err != nil {
-		t.Fatalf("proved ancestry: %v", err)
-	}
-
-	if len(chain) != 2 || chain[0].Parent != f.child || chain[1].ParentKind != index.KeyRootKind {
-		t.Fatalf("walk did not terminate at the owner key: %+v", chain)
-	}
-
-	spliced, err := f.GetAncestors(f.nested)
-	if err != nil {
-		t.Fatalf("ancestors: %v", err)
-	}
-
-	unrelated, err := f.GetAncestors(f.other)
-	if err != nil {
-		t.Fatalf("ancestors: %v", err)
-	}
-
-	spliced.Edges[1] = unrelated.Edges[0]
-
-	attested := attestedFor(f)
-
-	// The spliced edge is genuinely proved on its own, which is exactly why a
-	// per-edge check is not enough.
-	if err := attested.VerifyProof(spliced.Anchor, ParentComponent,
-		unrelated.Edges[0].ChildID[:], unrelated.Edges[0].Leaf, unrelated.Edges[0].Proof); err != nil {
-		t.Fatalf("the spliced edge is not individually valid, so the test proves nothing: %v", err)
-	}
-
-	if _, err := attested.VerifyAncestry(spliced, f.nested); err == nil {
-		t.Fatal("a walk spliced from unrelated but individually proved edges was accepted")
+	if _, err := lc.Anchor(); err == nil {
+		t.Fatal("a wrong committee that signs its own quorate bundle was authenticated against a checkpoint pinning a different one")
 	}
 }
