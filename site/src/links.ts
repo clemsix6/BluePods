@@ -11,7 +11,6 @@ export const links = {
 export const author = {
   name: 'Clément Dreiski',
   role: 'Designed and built BluePods',
-  /* Served from public/. Swap the file and this path together to use a photo
-     instead of the monogram. */
-  photo: '/author.svg',
+  /* Served from public/. Replacing the file is enough to change the portrait. */
+  photo: '/author.jpg',
 };
