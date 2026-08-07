@@ -22,13 +22,23 @@ type TrackerEntry struct {
 // committed round. It is derived state: BuildFromState rebuilds every tree
 // from the tracker, domain store, and validator snapshot a caller already
 // persists elsewhere, and nothing here is itself persisted.
-//
-// The trees themselves carry no lock, because they have exactly one writer:
-// the commit path. Two callers sit outside that loop and are ordered against
-// it rather than locked against it — the construction backfill, which runs
-// before the loop's goroutine exists, and the genesis ledger seed, which holds
-// the DAG's commitMu while it feeds the reserve coin's edge.
 type Manager struct {
+	// treeMu guards EVERY access to the three tree fields below, reads
+	// included. The commit path is their only writer — two callers sit outside
+	// that loop and are ordered against it rather than locked against it: the
+	// construction backfill, which runs before the loop's goroutine exists,
+	// and the genesis ledger seed, which holds the DAG's commitMu while it
+	// feeds the reserve coin's edge. The client query path (query.go) is not
+	// one of them: it serves proofs from arbitrary connection goroutines while
+	// the loop writes. It takes an EXCLUSIVE lock rather than a shared one
+	// because reading an SMT is not a read — Root and Prove memoize the node
+	// hashes a preceding mutation dirtied, so two concurrent "readers" race
+	// each other just as a reader races the writer.
+	//
+	// Wherever both locks are held, treeMu is taken FIRST and frontierMu
+	// second; no path ever takes them the other way round.
+	treeMu sync.Mutex
+
 	hierarchy *HierarchyTrees
 	domain    *DomainTree
 	validator *ValidatorTree
@@ -84,22 +94,34 @@ func NewManager() *Manager {
 // ApplyEdge upserts child's parent-tree and children-tree edge, covering both
 // a newly created object's declared parent and a reparent's edge move.
 func (m *Manager) ApplyEdge(child [32]byte, kind byte, parent [32]byte) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.hierarchy.SetEdge(child, kind, parent)
 }
 
 // RemoveObject drops child from every tree it can appear in (parent tree and
 // its old parent's children subtree), on deletion.
 func (m *Manager) RemoveObject(child [32]byte) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.hierarchy.RemoveEdge(child)
 }
 
 // ApplyDomain upserts a domain tree leaf.
 func (m *Manager) ApplyDomain(name string, objectID, owner [32]byte, expiryEpoch uint64) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.domain.Set(DomainLeaf{Name: name, ObjectID: objectID, Owner: owner, ExpiryEpoch: expiryEpoch})
 }
 
 // RemoveDomain drops a domain tree leaf; removing an absent name is a no-op.
 func (m *Manager) RemoveDomain(name string) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.domain.Remove(name)
 }
 
@@ -109,6 +131,9 @@ func (m *Manager) RemoveDomain(name string) {
 // is marked as an epoch checkpoint and retained indefinitely, past the
 // bounded history window.
 func (m *Manager) RebuildValidators(entries []ValidatorLeaf) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.validator.Rebuild(entries)
 
 	m.frontierMu.Lock()
@@ -123,7 +148,24 @@ func (m *Manager) RebuildValidators(entries []ValidatorLeaf) {
 // it against a received vertex's index_root: use CommittedFrontier for both,
 // which returns the root AT the committed frontier, not the live one.
 func (m *Manager) Root() [32]byte {
-	return CombinedRoot(m.domain.Root(), m.hierarchy.Parent.Root(), m.hierarchy.Children.Root(), m.validator.Root())
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
+	return m.roots().Combined
+}
+
+// roots reads the four component roots and their combination as one set.
+// Caller holds treeMu.
+func (m *Manager) roots() Roots {
+	r := Roots{
+		Domain:    m.domain.Root(),
+		Parent:    m.hierarchy.Parent.Root(),
+		Children:  m.hierarchy.Children.Root(),
+		Validator: m.validator.Root(),
+	}
+	r.Combined = CombinedRoot(r.Domain, r.Parent, r.Children, r.Validator)
+
+	return r
 }
 
 // SetFrontier records the current combined root as the anchor for round,
@@ -138,8 +180,14 @@ func (m *Manager) Root() [32]byte {
 // a preceding RebuildValidators call, which is retained indefinitely.
 //
 // The whole body runs under frontierMu's write lock, so a concurrent RootAt
-// or CommittedFrontier reader never observes a half-recorded round.
+// or CommittedFrontier reader never observes a half-recorded round. It runs
+// under treeMu too, taken first: the root recorded here must be the root of
+// the tree state as of this call, which a query serving proofs from another
+// goroutine must not be walking through mid-record.
 func (m *Manager) SetFrontier(round uint64) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	m.frontierMu.Lock()
 	defer m.frontierMu.Unlock()
 
@@ -147,10 +195,9 @@ func (m *Manager) SetFrontier(round uint64) {
 		return
 	}
 
-	// Root walks the trees, which the commit path owns exclusively and no
-	// reader of this lock touches, so taking it here costs the readers only
-	// the few rehashes the last batch dirtied.
-	root := m.Root()
+	// Walking the trees here costs the frontier readers only the few rehashes
+	// the last batch dirtied.
+	root := m.roots().Combined
 
 	m.history[round] = root
 	m.order = append(m.order, round)
@@ -220,6 +267,9 @@ func (m *Manager) RootAt(round uint64) ([32]byte, bool) {
 // It does not touch history or epoch checkpoints: those describe rounds
 // already committed, which BuildFromState does not know about.
 func (m *Manager) BuildFromState(trackerEntries []TrackerEntry, domainEntries []DomainLeaf, validatorEntries []ValidatorLeaf) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
 	hierarchy := NewHierarchyTrees()
 	for _, e := range trackerEntries {
 		hierarchy.SetEdge(e.ID, e.ParentKind, e.Parent)

@@ -42,8 +42,16 @@ func (t *DomainTree) Get(name string) (DomainLeaf, bool) {
 		return DomainLeaf{}, false
 	}
 
-	leaf, ok := decodeDomainLeaf(value)
+	leaf, ok := DecodeDomainLeaf(value)
 	return leaf, ok
+}
+
+// value returns the raw leaf bytes stored for name, exactly as the tree hashed
+// them, and whether one exists. A proved answer carries these verbatim so a
+// verifier folds the identical value into the leaf hash rather than re-encoding
+// a decoded copy.
+func (t *DomainTree) value(name string) ([]byte, bool) {
+	return t.smt.Get([]byte(name))
 }
 
 // Root returns the tree's current Merkle root.
@@ -69,9 +77,11 @@ func encodeDomainLeaf(l DomainLeaf) []byte {
 	return buf
 }
 
-// decodeDomainLeaf reverses encodeDomainLeaf, reporting ok=false on any
-// truncation or length mismatch.
-func decodeDomainLeaf(data []byte) (DomainLeaf, bool) {
+// DecodeDomainLeaf reverses encodeDomainLeaf, reporting ok=false on any
+// truncation or length mismatch. Exported because a proved response carries
+// the raw leaf value and its recipient has no other way to read the name,
+// object, owner and expiry the proof authenticated.
+func DecodeDomainLeaf(data []byte) (DomainLeaf, bool) {
 	if len(data) < 4 {
 		return DomainLeaf{}, false
 	}

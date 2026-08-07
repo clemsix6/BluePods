@@ -58,6 +58,10 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleGetVertexRange(data)
 	case network.MsgTagGetIndexAnchor:
 		return n.handleGetIndexAnchor()
+	case network.MsgTagListChildren:
+		return n.handleListChildren(data)
+	case network.MsgTagGetAncestors:
+		return n.handleGetAncestors(data)
 	case network.MsgTagStateFingerprint:
 		return n.handleStateFingerprint()
 	case network.MsgTagTestControl:
@@ -521,25 +525,6 @@ func (n *Node) reserveCoinVersion(reserveCoinID [32]byte) uint64 {
 	}
 
 	return types.GetRootAsObject(data, 0).Version()
-}
-
-// handleDomainResolve resolves a domain name to an object ID via state.
-func (n *Node) handleDomainResolve(data []byte) ([]byte, error) {
-	req, err := network.DecodeDomainResolve(data)
-	if err != nil {
-		return nil, err
-	}
-
-	if n.state == nil {
-		return nil, fmt.Errorf("domain resolution not available")
-	}
-
-	objectID, found := n.state.ResolveDomain(req.Name)
-
-	return network.EncodeDomainResolveResp(&network.DomainResolveResponse{
-		Found:    found,
-		ObjectID: objectID,
-	}), nil
 }
 
 // faucetTxHash extracts the embedded transaction hash from a faucet split ATX.

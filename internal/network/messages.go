@@ -111,6 +111,21 @@ const (
 	// MsgTagGetIndexAnchorResp carries the quorum bundle, or Found=false when the
 	// serving node has no quorate frontier to serve yet.
 	MsgTagGetIndexAnchorResp = 0x1E
+
+	// MsgTagListChildren requests the children of an owner key or an object ID,
+	// with the top-tree proof of that parent's children subtree root.
+	MsgTagListChildren = 0x1F
+
+	// MsgTagListChildrenResp carries the proven subtree root and the raw
+	// child-leaf stream the client rebuilds that root from.
+	MsgTagListChildrenResp = 0x20
+
+	// MsgTagGetAncestors requests an object's proved ancestry walk.
+	MsgTagGetAncestors = 0x21
+
+	// MsgTagGetAncestorsResp carries one proved parent edge per hop, the
+	// queried object's own edge first.
+	MsgTagGetAncestorsResp = 0x22
 )
 
 // EncodeGossipTx wraps a transaction body for gossip on the one-way message
@@ -152,6 +167,8 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagStateFingerprint: {},
 	MsgTagTestControl:      {},
 	MsgTagGetIndexAnchor:   {},
+	MsgTagListChildren:     {},
+	MsgTagGetAncestors:     {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
@@ -624,35 +641,72 @@ func DecodeDomainResolve(data []byte) (*DomainResolveRequest, error) {
 	return &DomainResolveRequest{Name: string(data[1:])}, nil
 }
 
-// DomainResolveResponse is the response to a domain-resolution request.
+// DomainResolveResponse is the response to a domain-resolution request. Found
+// and ObjectID are the resolution itself, expiry applied: a lease past its
+// expiry does not resolve even while its leaf is still in the tree awaiting the
+// sweep. Leaf and Proof are the authenticated view of that same name — the raw
+// domain-tree leaf and its inclusion proof, or an absence proof — and Anchor is
+// what ties them to a quorum-attested root. A client that wants the lease's own
+// terms reads them out of Leaf, which the proof covers.
 type DomainResolveResponse struct {
-	Found    bool     // Found reports whether the domain resolved
-	ObjectID [32]byte // ObjectID is the resolved object ID when Found
+	Found    bool              // Found reports whether the domain currently resolves
+	ObjectID [32]byte          // ObjectID is the resolved object ID when Found
+	Anchor   ProvedIndexAnchor // Anchor is the index state Proof was taken against
+	Leaf     []byte            // Leaf is the raw domain-tree leaf, empty when the name has none
+	Proof    []byte            // Proof is the serialized inclusion or absence proof against Anchor.DomainRoot
 }
 
 // EncodeDomainResolveResp encodes a domain-resolution response.
-// Format: [1B tag] [1B found] [32B objectID].
+// Format: [1B tag] [provedAnchorSize anchor] [1B found] [32B objectID]
+// [4B leafLen] [leaf] [4B proofLen] [proof]. All integers are big-endian.
 func EncodeDomainResolveResp(resp *DomainResolveResponse) []byte {
-	buf := make([]byte, 34)
+	buf := make([]byte, 1+provedAnchorSize+1+32+4+len(resp.Leaf)+4+len(resp.Proof))
 	buf[0] = MsgTagDomainResolveResp
 
-	if resp.Found {
-		buf[1] = 1
-	}
+	off := 1 + putProvedAnchor(buf[1:], resp.Anchor)
 
-	copy(buf[2:34], resp.ObjectID[:])
+	if resp.Found {
+		buf[off] = 1
+	}
+	off++
+
+	copy(buf[off:off+32], resp.ObjectID[:])
+	off += 32
+
+	off += putBlob(buf[off:], resp.Leaf)
+	putBlob(buf[off:], resp.Proof)
 
 	return buf
 }
 
 // DecodeDomainResolveResp decodes a domain-resolution response.
 func DecodeDomainResolveResp(data []byte) (*DomainResolveResponse, error) {
-	if len(data) < 34 || data[0] != MsgTagDomainResolveResp {
+	const fixed = 1 + provedAnchorSize + 1 + 32
+
+	if len(data) < fixed || data[0] != MsgTagDomainResolveResp {
 		return nil, fmt.Errorf("not a domain-resolve response")
 	}
 
-	resp := &DomainResolveResponse{Found: data[1] == 1}
-	copy(resp.ObjectID[:], data[2:34])
+	resp := &DomainResolveResponse{Anchor: readProvedAnchor(data[1:])}
+
+	off := 1 + provedAnchorSize
+	resp.Found = data[off] == 1
+	off++
+
+	copy(resp.ObjectID[:], data[off:off+32])
+	off += 32
+
+	leaf, rest, ok := readBlob(data[off:])
+	if !ok {
+		return nil, fmt.Errorf("domain-resolve response truncated in leaf")
+	}
+
+	proof, _, ok := readBlob(rest)
+	if !ok {
+		return nil, fmt.Errorf("domain-resolve response truncated in proof")
+	}
+
+	resp.Leaf, resp.Proof = leaf, proof
 
 	return resp, nil
 }

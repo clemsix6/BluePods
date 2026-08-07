@@ -58,7 +58,14 @@ func (t *ParentTree) Get(child [32]byte) (ParentLeaf, bool) {
 		return ParentLeaf{}, false
 	}
 
-	return decodeParentLeaf(value)
+	return DecodeParentLeaf(value)
+}
+
+// value returns the raw leaf bytes stored for child, exactly as the tree
+// hashed them, and whether one exists. A proved ancestry hop carries these
+// verbatim so a verifier folds the identical value into the leaf hash.
+func (t *ParentTree) value(child [32]byte) ([]byte, bool) {
+	return t.smt.Get(child[:])
 }
 
 // Root returns the tree's current Merkle root.
@@ -81,9 +88,11 @@ func encodeParentLeaf(l ParentLeaf) []byte {
 	return buf
 }
 
-// decodeParentLeaf reverses encodeParentLeaf, reporting ok=false on any length
-// mismatch.
-func decodeParentLeaf(data []byte) (ParentLeaf, bool) {
+// DecodeParentLeaf reverses encodeParentLeaf, reporting ok=false on any length
+// mismatch. Exported because a proved ancestry hop carries the raw leaf value,
+// and reading the kind and parent out of the bytes the proof authenticated is
+// exactly what makes the walk's terminus verifiable.
+func DecodeParentLeaf(data []byte) (ParentLeaf, bool) {
 	if len(data) != 65 {
 		return ParentLeaf{}, false
 	}
