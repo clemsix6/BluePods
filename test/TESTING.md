@@ -133,21 +133,32 @@ Node verbs, used on `c.Node(i)` or through the cluster:
 
 - `cluster.Kill(i)`: SIGKILL, a real crash.
 - `cluster.Restart(i)`: starts the same node again with the same key, data
-  directory and port, syncing from another alive node. This is a re-sync
-  over existing data, not a resume: it is the node's real recovery path, and
-  what the harness tests.
+  directory and port. A node that has been running **resumes** from the
+  committed state in that directory (`node.resumed`) and catches up through
+  gossip: it owns that history, so it fetches no snapshot and verifies
+  nothing. This is the node's real recovery path, and what the harness tests.
 - `cluster.Spawn()`: starts a brand-new node that must register and sync,
   returning once it reports `sync.completed`.
 
-Every node that syncs joins on the **verified path**. The node binary refuses
-to sync without a trust anchor, so `Spawn` and `Restart` read the checkpoint
-their sync source published (its newest `epoch.validators.frozen`: the epoch
-and that epoch's validator-set root) and pass it as `--trust-checkpoint
-<epoch>:<root hex>`. The joiner then rebuilds the checkpointed epoch's
-validator tree from the holder snapshot it imported, requires it to hash to
-the pinned root, and requires a stake quorum of that set to attest the index
-root it recomputed for itself; anything else aborts the join with
-`node.stopping reason=sync_unverified`, and `sync.completed` never lands.
+A node **syncs only when it holds nothing of its own**, and that is the join
+the **verified path** governs. The node binary refuses to sync without a trust
+anchor, so `Spawn` and `Restart` alike read the checkpoint their source
+published (its newest `epoch.validators.frozen`: the epoch and that epoch's
+validator-set root) and pass it as `--trust-checkpoint <epoch>:<root hex>` —
+the binary decides which path it is on from its data directory, not from the
+flags, and a restart simply leaves the anchor unused. A joiner rebuilds the
+checkpointed epoch's validator tree from the holder snapshot it imported,
+requires it to hash to the pinned root, and requires a stake quorum of that set
+to attest the index root it recomputed for itself; anything else aborts the
+join with `node.stopping reason=sync_unverified`, and `sync.completed` never
+lands.
+
+The split matters for the scenarios that stop nodes. A restart that had to
+prove its state to a live quorum could never bring a fully stopped cluster back
+(`TestScenarioColdRestart`): the first node to return sees no quorum, and none
+can exist until it and others are up. Resuming has nothing to prove — and a
+join cannot reach that path, because the state a refused join leaves on disk is
+never marked as the node's own.
 
 The cluster's FOUNDING members are the one exception: they start with
 `--insecure-bootstrap`, because the genesis committee is refrozen on every
@@ -252,6 +263,7 @@ must be called out in the commit that does it.
 |---|---|
 | `node.started` | pubkey, quic_addr |
 | `node.ready` | round |
+| `node.resumed` | round |
 | `node.stopping` | reason |
 | `ingress.tx.received` | tx, kind |
 | `ingress.tx.rejected` | reason, detail |
@@ -302,6 +314,12 @@ success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
 `duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
 `delete_has_children`.
+
+`node.resumed` marks a start that booted from the committed state already in
+its data directory instead of taking state from a peer: no snapshot was
+fetched and no join was verified, because nothing about that state was
+foreign. It is emitted just before `node.ready`, and never together with
+`sync.completed` in the same journal segment — a start does one or the other.
 
 `node.stopping`'s `reason` attribute is a signal name (`interrupt`,
 `terminated`) or `sync_unverified`: a joining node aborted rather than go live

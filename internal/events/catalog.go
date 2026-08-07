@@ -10,6 +10,9 @@ const (
 	EvNodeStarted = "node.started"
 	// EvNodeReady marks a node's listener coming up.
 	EvNodeReady = "node.ready"
+	// EvNodeResumed marks a node booting from committed state it already owns
+	// rather than syncing it from a peer.
+	EvNodeResumed = "node.resumed"
 	// EvNodeStopping marks a node beginning shutdown. Its reason is a signal
 	// name, a close cause, or "sync_unverified" when a joining node refused to
 	// go live on state no stake quorum attested.
@@ -125,6 +128,7 @@ const (
 var Names = []string{
 	EvNodeStarted,
 	EvNodeReady,
+	EvNodeResumed,
 	EvNodeStopping,
 
 	EvIngressTxReceived,

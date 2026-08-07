@@ -597,6 +597,10 @@ func ApplySnapshot(db *storage.Storage, data []byte) (*types.Snapshot, error) {
 			return nil, fmt.Errorf("read object %d", i)
 		}
 
+		if err := checkObjectKey(obj.IdBytes()); err != nil {
+			return nil, fmt.Errorf("object %d: %w", i, err)
+		}
+
 		pairs[i] = storage.KeyValue{
 			Key:   obj.IdBytes(),
 			Value: obj.DataBytes(),
@@ -617,6 +621,30 @@ func ApplySnapshot(db *storage.Storage, data []byte) (*types.Snapshot, error) {
 	}
 
 	return snapshot, nil
+}
+
+// checkObjectKey bounds what a snapshot is allowed to write, mirroring
+// collectObjects on the reading side: an object key is exactly 32 bytes and
+// carries no consensus prefix. An applied snapshot's object keys are used as
+// raw storage keys, so without this an entry could name ANY key in the
+// receiver's database — the commit cursor, an epoch's frozen holder snapshot,
+// the live validator set, the marker that tells a restart its state is its
+// own — and a source would be writing consensus state directly into a node
+// that has not verified a single byte of its snapshot yet. Refusing the whole
+// snapshot rather than skipping the entry is the fail-closed direction: a
+// snapshot shaped like this is corrupt or hostile, and neither should be half
+// applied. No honest snapshot can be rejected here, because CreateSnapshot
+// collects nothing else.
+func checkObjectKey(key []byte) error {
+	if len(key) != objectKeySize {
+		return fmt.Errorf("key is %d bytes, want %d: not an object key", len(key), objectKeySize)
+	}
+
+	if isConsensusKey(key) {
+		return fmt.Errorf("key %x is in the consensus namespace: a snapshot may not write consensus state", key[:4])
+	}
+
+	return nil
 }
 
 // sigStorageKey builds the objsig: storage key for an object ID.

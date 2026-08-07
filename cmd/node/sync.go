@@ -212,6 +212,15 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 		return fmt.Errorf("verify synced state:\n%w", err)
 	}
 
+	// Proven, and only now the node's own: a later restart resumes from this
+	// directory instead of asking a peer for the state again (see resume.go).
+	// The mark is written strictly after the gate, so the directory a REFUSED
+	// join leaves behind — the source's snapshot, already applied here — stays
+	// foreign and faces the gate again on the next start.
+	if err := consensus.MarkStateAdopted(n.storage); err != nil {
+		return err
+	}
+
 	logger.Info("sync complete", "round", n.dag.Round())
 	events.SyncCompleted(n.dag.Round())
 

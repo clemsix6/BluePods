@@ -31,6 +31,21 @@ func requireNoErr(t *testing.T, err error) {
 	}
 }
 
+// inSegmentAfter returns a predicate matching events recorded in a journal
+// segment newer than n's current one: a restart opens a new segment, so this is
+// how an assertion names the restarted generation rather than the one that ran
+// before it. Build the predicate BEFORE the restart — it reads the journal at
+// call time, so a call made afterwards can capture the new generation's own
+// segment and then match nothing.
+func inSegmentAfter(n *harness.Node) harness.Pred {
+	var current int
+	if ready := n.Journal().Events("node.ready"); len(ready) > 0 {
+		current = ready[len(ready)-1].Seg
+	}
+
+	return func(e harness.Event) bool { return e.Seg > current }
+}
+
 // fundedWallet creates a fresh wallet, faucets it amount through cli, waits
 // for the faucet transaction to commit successfully on n, and refreshes the
 // resulting coin so the wallet's local version and balance are current. It

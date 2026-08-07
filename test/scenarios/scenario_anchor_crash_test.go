@@ -31,7 +31,8 @@ const (
 // (matching scenario_crash_test's non-bootstrap-victim scope). Either way
 // the network must keep deciding: the target round is either explicitly
 // skipped or covered by a later anchor's causal batch, and new traffic
-// keeps committing. The killed node is restarted and must resync.
+// keeps committing. The killed node is restarted and must resume from the
+// committed state it owns.
 //
 // Zero rollback is proven in-scenario (requireZeroRollback), independent of
 // teardown's automatic convergence check.
@@ -63,11 +64,13 @@ func TestScenarioAnchorCrash(t *testing.T) {
 	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
 
+	newSegment := inSegmentAfter(c.Node(victim))
+
 	c.Restart(victim)
 
-	if _, err := c.Node(victim).WaitEvent(stepCtx(t), "sync.completed"); err != nil {
+	if resumed := c.Node(victim).Journal().Events("node.resumed", newSegment); len(resumed) != 1 {
 		c.Dump(t)
-		t.Fatalf("restarted anchor-crash victim %d did not resync: %v", victim, err)
+		t.Fatalf("restarted anchor-crash victim %d recorded %d node.resumed events, want 1", victim, len(resumed))
 	}
 
 	requireZeroRollback(t, c)

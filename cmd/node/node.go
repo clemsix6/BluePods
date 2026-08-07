@@ -111,9 +111,11 @@ func NewNode(cfg *Config) (*Node, error) {
 		return nil, err
 	}
 
-	// Skip DAG creation for validators that will sync.
-	// They will create their DAG after receiving the snapshot.
-	if cfg.BootstrapAddr == "" {
+	// Skip DAG creation for validators that will sync: they create theirs after
+	// receiving the snapshot. A node restarting over state it already owns is
+	// not one of them, however much its flags look alike — it builds its DAG
+	// here, from the data directory, and syncs nothing (see resume.go).
+	if cfg.BootstrapAddr == "" || n.resumesFromLocalState() {
 		if err := n.initConsensus(); err != nil {
 			n.Close()
 			return nil, err
@@ -130,6 +132,11 @@ func (n *Node) Run() error {
 		return n.runListener()
 	}
 
+	// Restart over the node's own committed state: boot from it and rejoin.
+	if n.resumesFromLocalState() {
+		return n.runResume()
+	}
+
 	// Validator mode: sync then participate (not bootstrap, has bootstrap-addr)
 	if !n.cfg.Bootstrap && n.cfg.BootstrapAddr != "" {
 		return n.runValidator()
@@ -141,6 +148,13 @@ func (n *Node) Run() error {
 
 // runBootstrap starts the node in bootstrap mode (genesis validator).
 func (n *Node) runBootstrap() error {
+	// A genesis node originates the state in its data directory, so it owns it
+	// outright: should it ever be restarted with an upstream, it resumes from
+	// its own history instead of re-adopting it from a peer.
+	if err := consensus.MarkStateAdopted(n.storage); err != nil {
+		return err
+	}
+
 	if err := n.network.Start(); err != nil {
 		return fmt.Errorf("start network:\n%w", err)
 	}

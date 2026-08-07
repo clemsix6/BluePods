@@ -65,7 +65,8 @@ const (
 // node.stopping event path (graceful SIGTERM), which no other scenario
 // triggers (every other adversarial scenario uses Kill). Phase C brings the
 // bootstrap node back first, in bootstrap mode, over its own data directory,
-// then resyncs the other four against it. Phase D confirms the cardinal
+// then brings the other four back one at a time, each resuming from the
+// committed state it stopped on. Phase D confirms the cardinal
 // properties hold across the cold restart, with founder_stake_preserved as
 // the discriminating sub-test for the durable validator-set restore.
 //
@@ -179,31 +180,37 @@ func coldRestartPhaseB(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
 // --bootstrap and no --bootstrap-addr — see test/harness/node.go), waited
 // for via node.ready in the NEW journal segment (mirroring
 // Cluster.Restart's own e.Seg >= nextSeg pattern, test/harness/cluster.go);
-// then the other four through the ordinary Cluster.Restart, now that
-// node 0 is alive to serve as their sync source.
+// then the other four through the ordinary Cluster.Restart.
+//
+// Every one of the four resumes from its own data directory (node.resumed):
+// this is the recovery that CANNOT go through a join. The four come back one
+// at a time, so the first of them sees a single live node holding a minority
+// of the stake — no quorum exists to attest anything to it, and none can
+// exist until enough of them are back. A restart that had to prove its state
+// to the network before going live would deadlock the whole cluster here, by
+// construction. Resuming is what makes extinction recoverable: each node
+// already owns the history it stopped on.
 func coldRestartPhaseC(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
 	t.Helper()
 
-	var preSeg int
-	if ready := node0.Journal().Events("node.ready"); len(ready) > 0 {
-		preSeg = ready[len(ready)-1].Seg
-	}
-	nextSeg := preSeg + 1
-	inNewSegment := func(e harness.Event) bool { return e.Seg >= nextSeg }
+	bootstrapSegment := inSegmentAfter(node0)
 
 	requireNoErr(t, node0.Restart(""))
-	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", inNewSegment); err != nil {
+
+	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", bootstrapSegment); err != nil {
 		c.Dump(t)
 		t.Fatalf("bootstrap node did not become ready after cold restart: %v", err)
 	}
 
 	for i := 1; i < coldRestartScenarioSize; i++ {
+		n := c.Node(i)
+		newSegment := inSegmentAfter(n)
+
 		c.Restart(i)
 
-		n := c.Node(i)
-		if _, err := n.WaitEvent(stepCtx(t), "sync.completed"); err != nil {
+		if resumed := n.Journal().Events("node.resumed", newSegment); len(resumed) != 1 {
 			c.Dump(t)
-			t.Fatalf("node %d did not report sync.completed after cold restart: %v", i, err)
+			t.Fatalf("node %d recorded %d node.resumed events after the cold restart, want 1: it tried to re-adopt its own committed state from a peer, which no quorum is alive to attest", i, len(resumed))
 		}
 	}
 }

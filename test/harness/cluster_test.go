@@ -109,20 +109,57 @@ func TestClusterSpawnJoinsOnTheVerifiedPath(t *testing.T) {
 		t.Fatal("the spawned node warned about an insecure bootstrap: the checkpoint was not honoured")
 	}
 
-	// A restart is a re-sync, so it runs the same gate over an existing data
-	// directory. Restart waits for node.ready in the new segment, which is
-	// past the gate; the second verified join proves it took the checkpointed
-	// path rather than the hatch its founders use.
-	c.Kill(n.Index)
+	// Resuming needs state the node OWNS, and proving the join is only half of
+	// that: the other half is the committed state a resume rebuilds from, the
+	// commit cursor and the live validator set its own commit loop persists.
+	// Spawn returns the instant sync.completed lands, before either exists, so
+	// wait for the newcomer to commit rounds for itself first. A node stopped
+	// with nothing of its own on disk has nothing to resume and correctly joins
+	// again, which is a different claim from the one under test here.
+	waitCtx, cancel := context.WithTimeout(context.Background(), nodeReadyTimeout)
+	defer cancel()
+
+	if _, err := n.WaitEvent(waitCtx, "node.ready"); err != nil {
+		t.Fatalf("the spawned node never became ready: %v", err)
+	}
+
+	if _, err := n.Journal().waitCount(waitCtx, "consensus.anchor.committed", 2); err != nil {
+		t.Fatalf("the spawned node committed no round of its own: %v", err)
+	}
+
+	// A restart is NOT a second join. The state in that data directory is the
+	// node's own — it proved it above, before going live on it, and has been
+	// committing into it since — so the restart resumes from it: no snapshot is
+	// fetched, no quorum is asked to attest anything, and the gate is not re-run
+	// because there is nothing foreign to judge. Restart already waited for
+	// node.ready in the new segment. The stop is graceful so the durability of
+	// the last committed round is not what this test turns on (node_test.go
+	// owns SIGKILL's semantics, and the crash scenarios own crash recovery).
+	nextSeg := n.Journal().currentSegment() + 1
+
+	if err := n.Stop(); err != nil {
+		t.Fatalf("stop the spawned node: %v", err)
+	}
+
 	c.Restart(n.Index)
+
+	inNewSegment := func(e Event) bool { return e.Seg >= nextSeg }
+
+	if resumed := n.Journal().Events("node.resumed", inNewSegment); len(resumed) != 1 {
+		t.Fatalf("the restarted node recorded %d node.resumed events in its new segment, want 1: it re-adopted its own state as foreign", len(resumed))
+	}
+
+	if synced := n.Journal().Events("sync.completed", inNewSegment); len(synced) != 0 {
+		t.Fatal("the restarted node synced: it threw away committed state it owns and took it back from a peer")
+	}
 
 	logs, err = os.ReadFile(filepath.Join(n.Dir, "stdout.log"))
 	if err != nil {
 		t.Fatalf("read restarted node log: %v", err)
 	}
 
-	if got := strings.Count(string(logs), verifiedJoinLog); got < 2 {
-		t.Fatalf("the restarted node reported %d verified joins, want the spawn's and the restart's", got)
+	if got := strings.Count(string(logs), verifiedJoinLog); got != 1 {
+		t.Fatalf("the node reported %d verified joins, want exactly the spawn's: a restart proves nothing to anyone", got)
 	}
 }
 

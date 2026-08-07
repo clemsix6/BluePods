@@ -212,9 +212,11 @@ func (n *Node) buildArgs(args NodeArgs) []string {
 
 // SetTrustCheckpoint pins the checkpoint this node's NEXT start verifies its
 // join against, replacing whatever it started with. The cluster sets it before
-// restarting a node that will re-sync, so a founder that started unverified
-// (nothing stable to pin while the committee forms) restarts on the verified
-// path. A node restarting as the bootstrap ignores it: it has no upstream.
+// restarting any node handed an upstream, because the node binary requires an
+// anchor from one and only decides on its own data directory whether it will
+// need it: a restart over adopted state resumes and leaves it unused, while a
+// directory holding nothing joins and is judged against it. A node restarting
+// as the bootstrap ignores it: it has no upstream.
 func (n *Node) SetTrustCheckpoint(checkpoint string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

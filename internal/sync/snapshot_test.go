@@ -1086,3 +1086,36 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 		t.Error("different validators should produce different checksums")
 	}
 }
+
+// TestApplySnapshot_RefusesForeignKeys pins the write surface a snapshot is
+// allowed to reach. CreateSnapshot only ever collects keys that are exactly 32
+// bytes and carry no consensus prefix (collectObjects), so an entry outside
+// that shape is either corruption or a source aiming a write at a key it was
+// never allowed to touch: the commit cursor, an epoch holder snapshot, the
+// live validator set, or the marker that tells a restart its state is its own.
+// Applying it is refused outright, and nothing lands.
+func TestApplySnapshot_RefusesForeignKeys(t *testing.T) {
+	hostile := [][]byte{
+		[]byte("m:stateAdopted"),
+		[]byte("m:commitCursor"),
+		append([]byte("v:"), bytes.Repeat([]byte{0xAA}, 30)...),
+		bytes.Repeat([]byte{0x01}, 31),
+		nil,
+	}
+
+	for _, key := range hostile {
+		db, cleanup := createTestStorage(t)
+
+		data := buildSnapshot(9, []objectEntry{{id: key, data: []byte{0x01}}}, nil, nil, nil, nil, nil, 0, 0, 0, nil)
+
+		if _, err := ApplySnapshot(db, data); err == nil {
+			t.Errorf("ApplySnapshot accepted an object keyed %q: a snapshot can write outside the object namespace", key)
+		}
+
+		if got, err := db.Get(key); err == nil && len(got) > 0 {
+			t.Errorf("key %q was written despite the refusal", key)
+		}
+
+		cleanup()
+	}
+}

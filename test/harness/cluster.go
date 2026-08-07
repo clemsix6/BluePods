@@ -407,10 +407,13 @@ func (c *Cluster) Kill(i int) {
 	c.Node(i).Kill()
 }
 
-// Restart restarts node i, syncing from the first other alive node, and
-// waits for it to become ready again in its new journal segment. A restarted
-// non-bootstrap node re-syncs, so it pins a real checkpoint derived from the
-// node it syncs from and takes the verified path.
+// Restart restarts node i with the same key, data directory and port, and
+// waits for it to become ready again in its new journal segment. A node that
+// has been running resumes from the committed state in that directory: it
+// syncs nothing and verifies nothing, because there is no foreign state to
+// judge. The upstream and the checkpoint are still passed (the node binary
+// requires an anchor from anything holding a --bootstrap-addr, and a directory
+// that turns out to be empty would need one), they simply go unused.
 func (c *Cluster) Restart(i int) {
 	c.t.Helper()
 
@@ -431,10 +434,11 @@ func (c *Cluster) Restart(i int) {
 	}
 }
 
-// restartNode restarts n on the path its identity dictates: the cluster's
-// bootstrap resumes its own data with no upstream, so it syncs nothing and
-// verifies nothing, while every other node re-syncs and therefore pins the
-// checkpoint its source publishes, exactly like a fresh join.
+// restartNode restarts n with the flags its identity dictates: the cluster's
+// bootstrap comes back with --bootstrap and no upstream, every other node with
+// the upstream and checkpoint a join would need. Which path the binary then
+// takes is ITS decision, read off the data directory — a restart over adopted
+// state resumes; only a node holding nothing of its own syncs and verifies.
 func (c *Cluster) restartNode(n *Node) error {
 	c.t.Helper()
 
