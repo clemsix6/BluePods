@@ -429,9 +429,20 @@ table DeclaredOp {
 
 **Interfaces — Produces:** `ResolveDomain(name) -> {leaf, proof}` (inclusion or absence); `ListChildren(parentID) -> {topProof, leaves}`; `GetAncestors(objectID) -> {edges: [{childID, kind, parent, proof}]}`; all responses carry `{frontier_round, index_root}` and are verified against the `GetIndexAnchor` bundle.
 
-- [ ] **Test:** resolve/enumerate/ancestry round-trips verify against the bundle; absence proof for an unregistered name verifies; a truncated leaf stream fails the client-side subtree-root check.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Proved index queries over QUIC`.
+- [x] **Test:** resolve/enumerate/ancestry round-trips verify against the bundle; absence proof for an unregistered name verifies; a truncated leaf stream fails the client-side subtree-root check.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `Proved index queries over QUIC`.
+
+**As-built (32c4e5c, review-adjudicated):**
+
+- Responses carry `ProvedIndexAnchor{Anchored, FrontierRound, IndexRoot, DomainRoot, ParentRoot, ChildrenRoot, ValidatorRoot}` — the four component roots, not `index_root` alone. A proof folds to one component root and the quorum signs only the combined root, so without the other three components no served proof is verifiable at all.
+- `Anchored=false` is the answer between a tree mutation and the `SetFrontier` that closes the commit batch: the manager keeps no versioned trees, so a proof can only be taken against the live tree, and serving a `(round, root)` pair no frontier recorded would be unverifiable by construction. The client retries (spec §5's live unproven read). Anchor and proofs are read in the same critical section.
+- Proved values travel as the raw leaf bytes the SMT hashed; `index.DecodeDomainLeaf`/`DecodeParentLeaf` exported so a verifier can read what the proof covered.
+- `index.Manager` gained an exclusive `treeMu` (SMT `Root`/`Prove` memoize dirty-node hashes, so concurrent readers write shared state). Lock order: `commitMu` → `treeMu` → `frontierMu`, acyclic; no handler holds it across a network write.
+- `handleDomainResolve` lives in `cmd/node/indexqueries.go` with the two new handlers. An expired-but-unswept name answers `Found=false` plus an inclusion proof whose leaf carries the expiry; the authenticated answer is the leaf, not `Found`.
+- Ancestor walk bounded at 256, mirroring consensus's `walkDepthLimit` (constant duplicated: `internal/index` imports nothing from the repo by design).
+- `ListChildren` travels in one frame under the transport's frame cap; a parent whose child set exceeds it is unserveable through this verb and the client sees a refused stream, not a defined answer. Known ceiling to keep in view when 6.3 makes `ListChildren(pubkey)` the wallet's recovery path.
+- `pkg/client` gained NO transport verbs for `ListChildren`/`GetAncestors`, and its `DomainResolve` verb still returns only `(objectID, found)`, discarding the proof. Task 6.2 adds the proved verbs; its library docs must also state the freshness rule: a query answers at the node's committed frontier while the bundle serves the highest quorate frontier, so the client matches `IndexRoot`, not `FrontierRound`, and waits for the bundle when the index just moved.
 
 ### Task 6.2: Light-client verification library
 
