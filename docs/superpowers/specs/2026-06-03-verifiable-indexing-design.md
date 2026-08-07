@@ -209,7 +209,7 @@ Whitepaper consequences (edited in place):
 - The fees section gains the domain rental, the term cap, and the `index_entry_fee` deposit term; the 95/5 refund and the two-bucket split are unchanged.
 - The sync section gains the verifiable fail-closed snapshot and the trusted-checkpoint caveat; the network section gains the new QUIC messages.
 
-VISION is unaffected: this strengthens the existing positioning (synchronous atomic composability within a transaction, off-chain orchestration across transactions) rather than changing the tradeoff.
+VISION is retouched by the documentation batch. The doctrine is unchanged (synchronous atomic composability within a transaction, off-chain orchestration across transactions), but VISION's literal wording overpromises it: "any pod can call any other pod" and "no asynchronous boundary between applications" describe an inter-pod call primitive that does not exist, and this design's saga non-goal (section 1) makes that gap permanent. VISION's cardinal property and its ICP positioning line are reworded to state the per-transaction guarantee.
 
 ---
 

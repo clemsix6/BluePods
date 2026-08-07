@@ -49,7 +49,7 @@ The old `test/integration` `TestSim*` suite is gone. Validation runs on the scen
 | 5 | Sync: index rebuild, fail-closed verification, join scenarios | 9 | 3 |
 | 6 | QUIC + bpctl surface; light-client library; wallet switchover | 10 | 4 |
 | 7 | Dead code removal | 11 | 2 |
-| 8 | Whitepaper updates | 11 | 2 |
+| 8 | Whitepaper and VISION updates | 11 | 3 |
 
 ## Code-quality guardrails (enforced every batch)
 
@@ -79,7 +79,7 @@ The old `test/integration` `TestSim*` suite is gone. Validation runs on the scen
 - `cmd/cli/` — `bpctl` domain/object verbs: `main.go` dispatch, `object.go`, new `domain.go`, `tui/dispatch.go` (batch 6).
 - `pods/pod-system/src/lib.rs` — remove `transfer`/`transfer_object` dispatch (batch 1); `pods/pod-sdk/src/domain_generated.rs` — deleted (batch 7).
 - `test/scenarios/scenario_hierarchy_test.go` (new, batch 1), `scenario_domains_test.go` (new, batch 4), extensions to consensus/joining scenarios (batches 3, 5, 6); `test/TESTING.md` kept current throughout.
-- `docs/WHITEPAPER.md` (batch 8).
+- `docs/WHITEPAPER.md` and `docs/VISION.md` (batch 8).
 
 ---
 
@@ -478,7 +478,7 @@ table DeclaredOp {
 
 # Batch 8 — Documentation
 
-**Spec:** §11 (whitepaper consequences; the §5 commit-rule text landed with the prerequisite).
+**Spec:** §11 (whitepaper consequences and the VISION retouch; the §5 commit-rule text landed with the prerequisite).
 
 ### Task 8.1: Whitepaper sections
 
@@ -486,7 +486,20 @@ table DeclaredOp {
 
 - [ ] **Commit:** title `Whitepaper: verifiable indexing`.
 
-### Task 8.2: Final review
+### Task 8.2: VISION composability wording
+
+**Why:** the chantier's doctrine is "synchronous atomic composability within a transaction, off-chain orchestration across transactions" (spec §1 non-goals, §11), but VISION's literal wording promises more than the protocol offers: "any pod can call any other pod atomically... in a single finalized step" and "there is no asynchronous boundary between applications" describe an inter-pod call primitive that does not exist — a transaction targets one pod and one function, the host interface has no cross-pod call, and a chain of dependent transactions is a client-orchestrated saga by design (spec §1). External copy (the landing) inherits its claims from VISION, so the overpromise propagates until VISION carries the doctrine.
+
+**Files:** Modify `docs/VISION.md` only (spec §11 records this retouch):
+
+- Cardinal properties, the "Global synchronous atomic composability" paragraph: the guarantee is per-transaction — a single transaction touches its declared objects (up to the reference cap) atomically and consistently in one finalized step, regardless of which holders own them; across transactions the client orchestrates, and zero rollback makes each finalized step solid ground that needs no compensating logic. Drop "any pod can call any other pod" and "no asynchronous boundary between applications".
+- Positioning versus ICP: mirror the same correction — the contrast is holder-independent atomic multi-object transactions plus zero rollback, versus asynchronous, non-atomic cross-subnet calls with application-level rollback; do not claim synchronous cross-application calls.
+- Sweep the rest of VISION for wording that leans on the old claim (the non-goals and Sui paragraphs reference "the synchronous composability above" and "uniform atomic composability") and keep them consistent with the reworded property.
+- Keep VISION's register (opinionated, positioning; sentence-case headings, straight quotes, no em dashes) per the root `CLAUDE.md` conventions. The wedge stands: no fragmented blockchain offers holder-independent atomicity plus zero rollback.
+
+- [ ] **Commit:** title `VISION: composability stated as the per-transaction guarantee`.
+
+### Task 8.3: Final review
 
 - [ ] **Check** `test/TESTING.md` is fully current: corpus table (2 new scenarios), event table (4 new events + new attributes/reasons), maintenance rule respected across the branch.
 - [ ] **Run** the final whole-branch review (most capable model); fix findings autonomously; mark the PR ready when CI is green.
