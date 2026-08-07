@@ -468,9 +468,17 @@ table DeclaredOp {
 
 **Files:** Modify `cmd/cli/main.go` dispatch + new `cmd/cli/domain.go` + `cmd/cli/object.go` + `cmd/cli/tui/dispatch.go` (`domain register|renew|update|transfer|delete|resolve`, `objects [owner|parent]`, `object parent <id>`, `object reparent|delete`; `object transfer` rebuilt on the batch-1 builder); `domain register` on a freshly created object is the named home of the spec §8 two-transaction saga (create, wait for commit, register); `pkg/client/wallet.go` becomes a cache: `objects` reads `ListChildren(pubkey)` recursively (depth-limited) and reconciles the local file; Test client-level.
 
-- [ ] **Test:** wallet recovery from a bare key repopulates tracked objects from the index; console verbs build valid declared-op transactions.
-- [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `bpctl index verbs and wallet recovery from the index`.
+- [x] **Test:** wallet recovery from a bare key repopulates tracked objects from the index; console verbs build valid declared-op transactions.
+- [x] **Run, expect FAIL → implement → PASS.**
+- [x] **Commit:** title `bpctl index verbs and wallet recovery from the index`.
+
+**As-built (4afafcd, review-adjudicated):**
+
+- Recovery lives in `pkg/client/recovery.go` (`Wallet.RecoverObjects`, `Client.EnumerateSubtree`, depth bound mirroring the consensus walk limit), not inside `wallet.go`; it never writes the wallet file itself — the console persists on exit, one-shot `bpctl` commands rebuild from the key and discard the recovered set.
+- `childrenSource` seam: the walk accepts either `*LightClient` (verified) or `*Client` (unproven); both return `(nil, nil)` for a childless parent, so the two walks agree at the seam.
+- Unproven CLI reads are permanent as shipped: nothing in `cmd/cli` can construct a `LightClient` (no checkpoint flag, no trust-on-first-use). Adjudicated OUT OF PLAN — spec §10 settles verification as a library function and 6.4's proved reads run through `pkg/client` directly. Known issue, supervisor decision.
+- The saga is library-shaped (`Wallet.RegisterNewObjectDomain` + `Client.WaitForTx`); bpctl's `domain register` is flag-shaped, the console's is positional and exposes no saga.
+- `tui/dispatch.go` split into three files (object/domain siblings) under the size rule; kind constants for domain ops consolidated in `pkg/client/domain.go`, `transactions.go`'s reparent/delete constants left in place.
 
 ### Task 6.4: End-to-end proved scenarios
 
