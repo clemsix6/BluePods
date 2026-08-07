@@ -149,6 +149,55 @@ func testWrongCheckpointRefused(t *testing.T, c *harness.Cluster) {
 	if got := len(c.Alive()); got != before {
 		t.Fatalf("the cluster's alive set changed after a refused join: had %d, now %d", before, got)
 	}
+
+	testRefusedJoinRestartRetakesGate(t, c, refused)
+}
+
+// testRefusedJoinRestartRetakesGate restarts the node the gate just refused,
+// same data directory, same wrong checkpoint it was spawned with (Restart
+// reuses the last stored args unless SetTrustCheckpoint changes them). That
+// directory holds a cursor and a live validator set from the snapshot
+// performSync already applied — the residue a refused join always leaves
+// behind, since the sync path writes the applied state and runs the commit
+// loop over it BEFORE verifySyncedState decides anything (see
+// internal/consensus/adopted.go). This is exactly the shape a routing bug
+// could launder into permanently-adopted state on a second start; it must
+// not: the restart takes the SAME gate again (node.stopping
+// reason=sync_unverified, no sync.completed), and the directory must never
+// resume — zero node.resumed events, across either generation.
+func testRefusedJoinRestartRetakesGate(t *testing.T, c *harness.Cluster, refused *harness.Node) {
+	t.Helper()
+
+	var source *harness.Node
+	for _, n := range c.Alive() {
+		if n.Index != refused.Index {
+			source = n
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("no alive node left to restart the refused node against")
+	}
+
+	newSegment := inSegmentAfter(refused)
+
+	requireNoErr(t, refused.Restart(source.QUICAddr))
+
+	ctx := stepCtx(t)
+
+	if _, err := refused.WaitEvent(ctx, "node.stopping", newSegment, harness.Attr("reason", "sync_unverified")); err != nil {
+		t.Fatalf("restarting the refused node's poisoned directory must retake the gate (reason=sync_unverified): %v", err)
+	}
+
+	if completed := refused.Journal().Events("sync.completed", newSegment); len(completed) != 0 {
+		t.Fatalf("node %d reported sync.completed on restart despite the still-wrong checkpoint", refused.Index)
+	}
+
+	if resumed := refused.Journal().Events("node.resumed"); len(resumed) != 0 {
+		t.Fatalf("node %d recorded %d node.resumed event(s) across its generations: a directory the gate refused must never resume from local state", refused.Index, len(resumed))
+	}
+
+	waitProcessExited(ctx, t, refused)
 }
 
 // waitProcessExited polls until n's process is no longer running, bounded by

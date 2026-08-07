@@ -146,13 +146,22 @@ func (n *Node) Run() error {
 	return n.runBootstrap()
 }
 
-// runBootstrap starts the node in bootstrap mode (genesis validator).
+// runBootstrap starts the node in bootstrap mode. It is not exclusively the
+// genesis path: it is also Run's general fallthrough, reached by any
+// non-genesis node started with neither --bootstrap nor a resumable local
+// state (an operator/supervisor mistake — e.g. retrying a refused join
+// without --bootstrap-addr — not a fresh genesis). Only a genuine genesis
+// start (cfg.Bootstrap) originates the state in its data directory and owns
+// it outright, so only that case marks the state adopted below; marking the
+// fallthrough case too would launder a directory the join gate refused
+// (residue: cursor and live validator set, no marker — see
+// internal/consensus/adopted.go) into permanently-adopted state on the
+// strength of one misconfigured start.
 func (n *Node) runBootstrap() error {
-	// A genesis node originates the state in its data directory, so it owns it
-	// outright: should it ever be restarted with an upstream, it resumes from
-	// its own history instead of re-adopting it from a peer.
-	if err := consensus.MarkStateAdopted(n.storage); err != nil {
-		return err
+	if n.cfg.Bootstrap {
+		if err := consensus.MarkStateAdopted(n.storage); err != nil {
+			return fmt.Errorf("mark state adopted:\n%w", err)
+		}
 	}
 
 	if err := n.network.Start(); err != nil {

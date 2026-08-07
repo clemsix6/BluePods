@@ -23,12 +23,16 @@ var stateAdoptedMark = []byte{1}
 // state from a peer.
 //
 // It is called at exactly two points, both of them after the state has stopped
-// being anyone else's claim: when a genesis bootstrap starts (it is the origin
-// of its own state) and when a join completes verification (the snapshot has
-// been attested by a stake quorum of the checkpointed validator set). A join
-// the gate refuses never reaches it, which is what keeps the unverified
-// snapshot such a join leaves on disk from being resumed as if it were the
-// node's own.
+// being anyone else's claim: in cmd/node's runBootstrap, gated on cfg.Bootstrap
+// so only a genuine genesis start marks — that function is also Run's general
+// fallthrough for any node started with neither --bootstrap nor a resumable
+// local state, and marking on that branch too would launder a refused join's
+// residue into adopted state; and in performSync, strictly after
+// verifySyncedState returns nil, when a join completes verification (the
+// snapshot has been attested by a stake quorum of the checkpointed validator
+// set). A join the gate refuses never reaches it, which is what keeps the
+// unverified snapshot such a join leaves on disk from being resumed as if it
+// were the node's own.
 func MarkStateAdopted(db *storage.Storage) error {
 	if err := db.Set(stateAdoptedKey, stateAdoptedMark); err != nil {
 		return fmt.Errorf("persist adopted-state marker:\n%w", err)

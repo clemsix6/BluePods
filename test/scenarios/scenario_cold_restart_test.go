@@ -320,19 +320,14 @@ func TestScenarioColdRestartEpochs(t *testing.T) {
 func coldRestartEpochsRestartBootstrap(t *testing.T, c *harness.Cluster, node0 *harness.Node) {
 	t.Helper()
 
-	var preSeg int
-	if ready := node0.Journal().Events("node.ready"); len(ready) > 0 {
-		preSeg = ready[len(ready)-1].Seg
-	}
-	nextSeg := preSeg + 1
-	inNewSegment := func(e harness.Event) bool { return e.Seg >= nextSeg }
+	newSegment := inSegmentAfter(node0)
 
 	// Restart spawns a new process without stopping the old one (its contract
 	// delegates that to the caller); stop first, or the new process loses the
 	// storage lock to the still-live old one and dies at boot.
 	requireNoErr(t, node0.Stop())
 	requireNoErr(t, node0.Restart(""))
-	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", inNewSegment); err != nil {
+	if _, err := node0.WaitEvent(stepCtx(t), "node.ready", newSegment); err != nil {
 		c.Dump(t)
 		t.Fatalf("bootstrap node did not become ready after restart past a boundary: %v", err)
 	}

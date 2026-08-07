@@ -218,7 +218,7 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	// join leaves behind — the source's snapshot, already applied here — stays
 	// foreign and faces the gate again on the next start.
 	if err := consensus.MarkStateAdopted(n.storage); err != nil {
-		return err
+		return fmt.Errorf("mark state adopted:\n%w", err)
 	}
 
 	logger.Info("sync complete", "round", n.dag.Round())

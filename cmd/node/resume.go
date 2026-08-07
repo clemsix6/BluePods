@@ -23,7 +23,10 @@ import (
 //     runValidator, performSync, verifySyncedState — unchanged.
 //
 //   - ADOPTED STATE (consensus.HasAdoptedState): the node already owns the
-//     committed history in this directory, either because it originated it or
+//     committed history in this directory, either because it originated it
+//     (a genuine genesis start, cfg.Bootstrap — runBootstrap is ALSO Run's
+//     general fallthrough for any node with no upstream, and marks the state
+//     adopted only when that flag is set, never on the fallthrough alone) or
 //     because it proved it before going live on it. It is its own witness: it
 //     lived that history, so there is no foreign claim to judge and nothing to
 //     fetch. It boots from local state (initConsensus, the same path a
