@@ -38,7 +38,26 @@ Commands:
   object show <id-hex>                   Show owner, version, replication, content
   object set <id-hex> <STRING>           Overwrite content via set_object
   object transfer <id-hex> <to-hex>      Transfer ownership
+  object reparent <id-hex> <new-parent-hex> <gas-coin-hex>
+                                         Move an object under a new ObjectParent
+  object delete <id-hex> <gas-coin-hex>  Destroy an object (must have no children)
+  object parent <id-hex>                 Show an object's immediate parent edge
   object holders <id-hex>                Show actual vs rendezvous-expected holders
+  objects [owner-or-parent-id-hex]       List objects: recovered from the index
+                                         under this wallet's key, or under the
+                                         given owner key / object ID
+  domain register --name <name> --term <epochs> --gas-coin <hex>
+                   (--object <id-hex> | --replication N [--content STRING])
+                                         Register a name against an existing or
+                                         brand-new object
+  domain renew <name> <term-epochs> <gas-coin-hex>
+                                         Extend a name's lease
+  domain update <name> <object-id-hex> <gas-coin-hex>
+                                         Repoint a name at another owned object
+  domain transfer <name> <new-owner-hex> <gas-coin-hex>
+                                         Hand a name to a new owner
+  domain delete <name> <gas-coin-hex>    Remove a name from the registry
+  domain resolve <name>                  Resolve a name to its object ID
 `)
 }
 
@@ -139,6 +158,10 @@ func dispatch(e *env, cmd string, args []string) error {
 		return cmdCoin(e, args)
 	case "object":
 		return cmdObject(e, args)
+	case "objects":
+		return cmdObjects(e, args)
+	case "domain":
+		return cmdDomain(e, args)
 	default:
 		usage()
 		return fmt.Errorf("unknown command: %s", cmd)

@@ -1,0 +1,278 @@
+package main
+
+import (
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"strconv"
+
+	"BluePods/pkg/client"
+)
+
+// cmdDomain dispatches the domain subcommands.
+func cmdDomain(e *env, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("domain requires a subcommand: register, renew, update, transfer, delete, resolve")
+	}
+
+	switch args[0] {
+	case "register":
+		return cmdDomainRegister(e, args[1:])
+	case "renew":
+		return cmdDomainRenew(e, args[1:])
+	case "update":
+		return cmdDomainUpdate(e, args[1:])
+	case "transfer":
+		return cmdDomainTransfer(e, args[1:])
+	case "delete":
+		return cmdDomainDelete(e, args[1:])
+	case "resolve":
+		return cmdDomainResolve(e, args[1:])
+	default:
+		return fmt.Errorf("unknown domain subcommand: %s", args[0])
+	}
+}
+
+// cmdDomainRegister registers --name against an object: an existing one given
+// by --object, or a brand-new one created on the spot when --replication is
+// given instead — the spec §8 two-transaction saga (create, wait for commit,
+// register) that pkg/client's Wallet.RegisterNewObjectDomain carries out,
+// since domain_register requires the sender to already control the pointed
+// object and either-ops-or-pod forbids folding the create call and the
+// declared op into one transaction.
+func cmdDomainRegister(e *env, args []string) error {
+	fs := flag.NewFlagSet("domain register", flag.ContinueOnError)
+	name := fs.String("name", "", "name to register")
+	term := fs.Uint("term", 0, "rental term in epochs")
+	objectHex := fs.String("object", "", "hex ID of an existing owned object to name")
+	replication := fs.Uint("replication", 0, "replication factor for a brand-new object (mutually exclusive with --object)")
+	content := fs.String("content", "", "initial content for a brand-new object")
+	gasCoinHex := fs.String("gas-coin", "", "hex ID of an owned coin to pay gas")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *name == "" || *term == 0 {
+		return fmt.Errorf("usage: domain register --name <name> --term <epochs> (--object <id-hex> | --replication N [--content STR]) --gas-coin <hex>")
+	}
+
+	if (*objectHex == "") == (*replication == 0) {
+		return fmt.Errorf("domain register: exactly one of --object or --replication is required")
+	}
+
+	gasCoin, err := parseHash(*gasCoinHex)
+	if err != nil {
+		return fmt.Errorf("parse --gas-coin:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if *objectHex != "" {
+		return registerExistingObjectDomain(cli, w, *name, *objectHex, uint32(*term), gasCoin)
+	}
+
+	return registerNewObjectDomain(cli, w, *name, uint16(*replication), *content, uint32(*term), gasCoin)
+}
+
+// registerExistingObjectDomain runs the ordinary (non-saga) domain_register
+// path: name an object the wallet already owns.
+func registerExistingObjectDomain(cli *client.Client, w *client.Wallet, name, objectHex string, term uint32, gasCoin [32]byte) error {
+	objectID, err := parseHash(objectHex)
+	if err != nil {
+		return fmt.Errorf("parse --object:\n%w", err)
+	}
+
+	if _, err := w.DomainRegister(cli, name, objectID, term, gasCoin); err != nil {
+		return fmt.Errorf("register domain:\n%w", err)
+	}
+
+	fmt.Printf("registered %s -> %s\n", name, hex.EncodeToString(objectID[:]))
+
+	return nil
+}
+
+// registerNewObjectDomain runs the spec §8 two-transaction saga
+// (Wallet.RegisterNewObjectDomain): create a brand-new object, then register
+// name against it once the creating transaction has committed.
+func registerNewObjectDomain(cli *client.Client, w *client.Wallet, name string, replication uint16, content string, term uint32, gasCoin [32]byte) error {
+	objectID, _, err := w.RegisterNewObjectDomain(cli, name, replication, []byte(content), term, gasCoin)
+	if err != nil {
+		return fmt.Errorf("register domain on a new object:\n%w", err)
+	}
+
+	fmt.Printf("created and registered %s -> %s\n", name, hex.EncodeToString(objectID[:]))
+
+	return nil
+}
+
+// cmdDomainRenew handles: domain renew <name> <term-epochs> <gas-coin-hex>
+func cmdDomainRenew(e *env, args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: domain renew <name> <term-epochs> <gas-coin-hex>")
+	}
+
+	term, err := strconv.ParseUint(args[1], 10, 32)
+	if err != nil {
+		return fmt.Errorf("parse term-epochs:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.DomainRenew(cli, args[0], uint32(term), gasCoin); err != nil {
+		return fmt.Errorf("renew domain:\n%w", err)
+	}
+
+	fmt.Printf("renewed %s for %d epochs\n", args[0], term)
+
+	return nil
+}
+
+// cmdDomainUpdate handles: domain update <name> <object-id-hex> <gas-coin-hex>
+func cmdDomainUpdate(e *env, args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: domain update <name> <object-id-hex> <gas-coin-hex>")
+	}
+
+	objectID, err := parseHash(args[1])
+	if err != nil {
+		return fmt.Errorf("parse object id:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.DomainUpdate(cli, args[0], objectID, gasCoin); err != nil {
+		return fmt.Errorf("update domain:\n%w", err)
+	}
+
+	fmt.Printf("repointed %s -> %s\n", args[0], hex.EncodeToString(objectID[:]))
+
+	return nil
+}
+
+// cmdDomainTransfer handles: domain transfer <name> <new-owner-hex> <gas-coin-hex>
+func cmdDomainTransfer(e *env, args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: domain transfer <name> <new-owner-hex> <gas-coin-hex>")
+	}
+
+	newOwner, err := parseHash(args[1])
+	if err != nil {
+		return fmt.Errorf("parse new owner:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.DomainTransfer(cli, args[0], newOwner, gasCoin); err != nil {
+		return fmt.Errorf("transfer domain:\n%w", err)
+	}
+
+	fmt.Printf("transferred %s -> %s\n", args[0], hex.EncodeToString(newOwner[:]))
+
+	return nil
+}
+
+// cmdDomainDelete handles: domain delete <name> <gas-coin-hex>
+func cmdDomainDelete(e *env, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: domain delete <name> <gas-coin-hex>")
+	}
+
+	gasCoin, err := parseHash(args[1])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.DomainDelete(cli, args[0], gasCoin); err != nil {
+		return fmt.Errorf("delete domain:\n%w", err)
+	}
+
+	fmt.Printf("deleted %s\n", args[0])
+
+	return nil
+}
+
+// cmdDomainResolve handles: domain resolve <name>. It reads the node's
+// unproven word — bpctl acquires no trusted checkpoint, so there is nothing
+// to verify a proof against (see pkg/client/indexreads.go).
+func cmdDomainResolve(e *env, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: domain resolve <name>")
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	objectID, found, err := cli.DomainResolve(args[0])
+	if err != nil {
+		return fmt.Errorf("resolve domain:\n%w", err)
+	}
+
+	if !found {
+		fmt.Printf("%s: not registered\n", args[0])
+		return nil
+	}
+
+	fmt.Printf("%s -> %s\n", args[0], hex.EncodeToString(objectID[:]))
+
+	return nil
+}

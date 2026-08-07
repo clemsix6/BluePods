@@ -103,6 +103,61 @@ func TestDomainTransferOpTxCarriesNameAndNewOwner(t *testing.T) {
 	}
 }
 
+// TestDomainUpdateOpTxCarriesNameAndObject verifies a domain_update build
+// carries a single kind-4 declared op with the name and the repointed object,
+// and no mutable ref (a repoint touches neither owner nor object version).
+func TestDomainUpdateOpTxCarriesNameAndObject(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	w := &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
+
+	var objectID, gasCoin [32]byte
+	objectID[0] = 0x12
+	gasCoin[0] = 0x34
+
+	op := genesis.DeclaredOp{Kind: domainUpdateOpKind, Name: "alpha", ObjectID: objectID[:]}
+	txBytes, _ := w.buildOpsTx(nil, gasCoin, op)
+
+	assertPureOpsTx(t, txBytes)
+	assertGasCoinTx(t, txBytes, gasCoin)
+	assertNoMutableRefs(t, txBytes)
+
+	ops := extractOps(t, txBytes)
+	if ops[0].Kind != domainUpdateOpKind {
+		t.Errorf("kind: got %d, want %d", ops[0].Kind, domainUpdateOpKind)
+	}
+	if ops[0].Name != "alpha" {
+		t.Errorf("name: got %q, want alpha", ops[0].Name)
+	}
+	if !bytes.Equal(ops[0].ObjectID, objectID[:]) {
+		t.Errorf("object_id mismatch: got %x, want %x", ops[0].ObjectID, objectID[:])
+	}
+}
+
+// TestDomainDeleteOpTxCarriesName verifies a domain_delete build carries a
+// single kind-6 declared op with just the name, and no mutable ref.
+func TestDomainDeleteOpTxCarriesName(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	w := &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
+
+	var gasCoin [32]byte
+	gasCoin[0] = 0x56
+
+	op := genesis.DeclaredOp{Kind: domainDeleteOpKind, Name: "alpha"}
+	txBytes, _ := w.buildOpsTx(nil, gasCoin, op)
+
+	assertPureOpsTx(t, txBytes)
+	assertGasCoinTx(t, txBytes, gasCoin)
+	assertNoMutableRefs(t, txBytes)
+
+	ops := extractOps(t, txBytes)
+	if ops[0].Kind != domainDeleteOpKind {
+		t.Errorf("kind: got %d, want %d", ops[0].Kind, domainDeleteOpKind)
+	}
+	if ops[0].Name != "alpha" {
+		t.Errorf("name: got %q, want alpha", ops[0].Name)
+	}
+}
+
 // TestDomainRegisterOpTxRoundTripsAuthenticity confirms a domain-op
 // transaction's canonical body — reconstructed the same way commit-time
 // authenticity does — hashes back to the declared hash and verifies the

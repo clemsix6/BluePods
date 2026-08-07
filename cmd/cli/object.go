@@ -4,12 +4,14 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+
+	"BluePods/internal/index"
 )
 
 // cmdObject dispatches the object subcommands.
 func cmdObject(e *env, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("object requires a subcommand: create, show, set, transfer, holders")
+		return fmt.Errorf("object requires a subcommand: create, show, set, transfer, reparent, delete, parent, holders")
 	}
 
 	switch args[0] {
@@ -21,6 +23,12 @@ func cmdObject(e *env, args []string) error {
 		return cmdObjectSet(e, args[1:])
 	case "transfer":
 		return cmdObjectTransfer(e, args[1:])
+	case "reparent":
+		return cmdObjectReparent(e, args[1:])
+	case "delete":
+		return cmdObjectDelete(e, args[1:])
+	case "parent":
+		return cmdObjectParent(e, args[1:])
 	case "holders":
 		return cmdObjectHolders(e, args[1:])
 	default:
@@ -173,6 +181,125 @@ func cmdObjectTransfer(e *env, args []string) error {
 
 	fmt.Printf("transferred object %s to %s\n",
 		hex.EncodeToString(id[:8]), hex.EncodeToString(recipient[:8]))
+
+	return nil
+}
+
+// cmdObjectReparent moves an object under a new ObjectParent through the
+// daemon aggregation path. The trailing gas-coin ID (an owned coin) pays the
+// transaction's gas.
+func cmdObjectReparent(e *env, args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: object reparent <id-hex> <new-parent-id-hex> <gas-coin-hex>")
+	}
+
+	id, err := parseHash(args[0])
+	if err != nil {
+		return fmt.Errorf("parse object id:\n%w", err)
+	}
+
+	newParent, err := parseHash(args[1])
+	if err != nil {
+		return fmt.Errorf("parse new parent id:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[2])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.Reparent(cli, id, newParent, gasCoin); err != nil {
+		return fmt.Errorf("reparent object:\n%w", err)
+	}
+
+	fmt.Printf("reparented object %s under %s\n",
+		hex.EncodeToString(id[:8]), hex.EncodeToString(newParent[:8]))
+
+	return nil
+}
+
+// cmdObjectDelete destroys an object; it must have no remaining children. The
+// trailing gas-coin ID (an owned coin) pays the transaction's gas and
+// receives the storage-deposit refund.
+func cmdObjectDelete(e *env, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: object delete <id-hex> <gas-coin-hex>")
+	}
+
+	id, err := parseHash(args[0])
+	if err != nil {
+		return fmt.Errorf("parse object id:\n%w", err)
+	}
+
+	gasCoin, err := parseHash(args[1])
+	if err != nil {
+		return fmt.Errorf("parse gas-coin id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	if _, err := w.DeleteObject(cli, id, gasCoin); err != nil {
+		return fmt.Errorf("delete object:\n%w", err)
+	}
+
+	fmt.Printf("deleted object %s\n", hex.EncodeToString(id[:8]))
+
+	return nil
+}
+
+// cmdObjectParent shows an object's immediate parent edge: an owner key
+// (KeyRoot) or another object (ObjectParent). It reads the node's unproven
+// word (pkg/client/indexreads.go's Client.Parent) — bpctl acquires no
+// trusted checkpoint to verify a proof against.
+func cmdObjectParent(e *env, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: object parent <id-hex>")
+	}
+
+	id, err := parseHash(args[0])
+	if err != nil {
+		return fmt.Errorf("parse object id:\n%w", err)
+	}
+
+	cli, err := connect(e)
+	if err != nil {
+		return err
+	}
+
+	kind, parent, hasParent, err := cli.Parent(id)
+	if err != nil {
+		return fmt.Errorf("get parent:\n%w", err)
+	}
+
+	if !hasParent {
+		fmt.Printf("%s: no parent edge\n", hex.EncodeToString(id[:8]))
+		return nil
+	}
+
+	kindName := "key"
+	if kind == index.ObjectParentKind {
+		kindName = "object"
+	}
+
+	fmt.Printf("%s parent (%s): %s\n", hex.EncodeToString(id[:8]), kindName, hex.EncodeToString(parent[:]))
 
 	return nil
 }
