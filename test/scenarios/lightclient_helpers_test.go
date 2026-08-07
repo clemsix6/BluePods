@@ -11,23 +11,30 @@ import (
 	"BluePods/pkg/client"
 )
 
-// mintCheckpoint pins a light client's trust anchor by reading it off the
-// node behind transport through the exact public primitives a real light
-// client uses: GetIndexAnchor for the bundle's frontier and index root, then
-// GetValidatorTree for the epoch the bundle names. The validator-set hash is
-// rebuilt from the served leaves with the same function Checkpoint.
-// authenticate itself uses to check it (index.ValidatorRootOf), so the pin
-// is exactly what an operator publishing epoch.validators.frozen would hand
-// a real light client out of band — never a value picked by hand (mirroring
-// how test/harness's Cluster.trustCheckpointFrom mints a joiner's checkpoint
-// from a founder's own published state, and how cmd/node/checkpoint.go
-// verifies one).
+// networkPollInterval paces retries whose every attempt is a network round
+// trip, following pkg/client's own polling convention rather than
+// eventPollInterval's journal-read period.
+const networkPollInterval = 100 * time.Millisecond
+
+// mintCheckpoint is a TEST FIXTURE, not a bootstrap model: it reads the pin
+// off the very node the LightClient will then verify, so the check is
+// satisfied by construction and the trust story is empty. A real light
+// client's checkpoint comes from a channel INDEPENDENT of the serving node
+// (an operator, a published epoch.validators.frozen event read elsewhere —
+// the harness's Cluster.trustCheckpointFrom reads another node's journal for
+// exactly that reason). This helper is sound here only because the harness's
+// nodes are honest; do not copy it as a client bootstrap.
+//
+// Mechanically it uses the public primitives (GetIndexAnchor, then
+// GetValidatorTree for the epoch the bundle names) and rebuilds the
+// validator-set hash from the served leaves with index.ValidatorRootOf.
 //
 // GetValidatorTree only answers Found for the epoch its own index tree
 // currently describes (cmd/node/indexqueries.go), so when the bundle's
-// epoch hint has already gone stale this re-asks once with the epoch the
-// node reports actually serving — the same opportunistic re-ask a light
-// client's own epoch walk performs (pkg/client/lightclient.go's advance).
+// epoch hint has already gone stale this re-asks once with the epoch label
+// the node reports serving. That label is unauthenticated — acceptable in
+// this fixture, unlike the client's own epoch walk (lightclient.go's
+// advance), which only ever re-asks for an epoch its quorum authenticated.
 func mintCheckpoint(t *testing.T, transport *client.QUICTransport) client.Checkpoint {
 	t.Helper()
 
@@ -72,7 +79,9 @@ func mintCheckpoint(t *testing.T, transport *client.QUICTransport) client.Checkp
 func retryUnanchored(ctx context.Context, t *testing.T, what string, read func() error) {
 	t.Helper()
 
-	ticker := time.NewTicker(eventPollInterval)
+	// Each attempt is several QUIC round trips, so the poll period follows
+	// pkg/client's own network polling convention, not the journal-read one.
+	ticker := time.NewTicker(networkPollInterval)
 	defer ticker.Stop()
 
 	for {
