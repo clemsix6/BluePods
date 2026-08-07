@@ -90,6 +90,44 @@ func (n *Node) handleGetAncestors(data []byte) ([]byte, error) {
 	}), nil
 }
 
+// handleGetValidatorTree serves the current epoch's validator leaf set, the
+// light client's input for weighing an anchor quorum. The whole set travels
+// with no Merkle proof: a quorum test divides a capped-stake sum by the set's
+// capped TOTAL, and no inclusion proof authenticates a total, so the client
+// rebuilds the tree from these leaves and checks its root against the anchor's
+// validator component instead (spec §5).
+//
+// Only the epoch this node's index tree currently describes is serveable: the
+// manager keeps no versioned validator trees, so a set from another epoch
+// would rebuild a root no live anchor carries and prove nothing. The epoch
+// label comes from the commit path's lock-free mirror rather than from the
+// index, which holds no epoch of its own; across an epoch boundary the freeze
+// lands before the counter moves, so the label can trail the served set by an
+// instant. That costs a client nothing: what authenticates the set is its root
+// inside the anchored index root, never this label.
+func (n *Node) handleGetValidatorTree(data []byte) ([]byte, error) {
+	req, err := network.DecodeGetValidatorTree(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if n.dag == nil || n.idxManager == nil {
+		return nil, fmt.Errorf("validator tree not available")
+	}
+
+	epoch := n.dag.LiveEpoch()
+	answer := n.idxManager.ValidatorSet()
+
+	resp := &network.GetValidatorTreeResponse{Anchor: provedAnchor(answer.Anchor), Epoch: epoch}
+
+	if req.Epoch == epoch {
+		resp.Found = true
+		resp.Leaves = answer.Values
+	}
+
+	return network.EncodeGetValidatorTreeResp(resp), nil
+}
+
 // ancestorEdges converts the index package's proved hops into their wire form,
 // serializing each proof through the index package's own pinned contract.
 func ancestorEdges(edges []index.AncestorEdge) []network.AncestorEdge {

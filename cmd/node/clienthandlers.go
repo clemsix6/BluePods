@@ -62,6 +62,8 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleListChildren(data)
 	case network.MsgTagGetAncestors:
 		return n.handleGetAncestors(data)
+	case network.MsgTagGetValidatorTree:
+		return n.handleGetValidatorTree(data)
 	case network.MsgTagStateFingerprint:
 		return n.handleStateFingerprint()
 	case network.MsgTagTestControl:

@@ -75,6 +75,28 @@ type AncestorAnswer struct {
 	Edges  []AncestorEdge // Edges are the walk's hops, the queried object first
 }
 
+// ValidatorAnswer is the validator tree's whole leaf set, anchored. It carries
+// no Merkle proof and needs none: what a quorum verifier must authenticate is
+// the capped-stake TOTAL as much as the members, and an inclusion proof
+// authenticates a member while saying nothing about how many others exist. The
+// client rebuilds the tree from Values (ValidatorRootOf) and checks that root
+// against Anchor.Roots.Validator, which covers membership, weights and count
+// at once.
+type ValidatorAnswer struct {
+	Anchor Anchor   // Anchor is the state Values must reproduce the validator root of
+	Values [][]byte // Values are the raw validator leaves, exactly as the tree hashed them
+}
+
+// ValidatorSet answers with the validator tree's whole leaf set, read
+// atomically with the anchor: a set read apart from its anchor could pair
+// one epoch's members with another epoch's root and authenticate neither.
+func (m *Manager) ValidatorSet() ValidatorAnswer {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+
+	return ValidatorAnswer{Anchor: m.anchor(), Values: m.validator.Values()}
+}
+
 // ResolveDomain answers a domain lookup with the leaf and its inclusion or
 // absence proof, anchored as one atomic read of the trees and the frontier.
 func (m *Manager) ResolveDomain(name string) DomainAnswer {

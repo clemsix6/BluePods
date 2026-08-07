@@ -35,6 +35,14 @@ type ValidatorLeaf struct {
 // regardless of the snapshot's iteration order.
 type ValidatorTree struct {
 	smt *SMT
+
+	// values retains the encoded leaf of every entry the last Rebuild took, in
+	// no meaningful order. The SMT itself cannot be enumerated, and a quorum
+	// verifier needs the WHOLE set rather than any subset of it: the capped
+	// total is the denominator of the 2/3 test, and no inclusion proof
+	// authenticates a total. Retaining what Rebuild already encoded is what
+	// lets Values serve the set a client rebuilds Root() from.
+	values [][]byte
 }
 
 // NewValidatorTree returns an empty validator tree.
@@ -48,11 +56,30 @@ func NewValidatorTree() *ValidatorTree {
 // SMT already provides for Insert order.
 func (t *ValidatorTree) Rebuild(entries []ValidatorLeaf) {
 	fresh := New()
+	values := make([][]byte, 0, len(entries))
+
 	for _, e := range entries {
-		fresh.Insert(e.Pubkey[:], encodeValidatorLeaf(e))
+		value := encodeValidatorLeaf(e)
+		fresh.Insert(e.Pubkey[:], value)
+		values = append(values, value)
 	}
 
 	t.smt = fresh
+	t.values = values
+}
+
+// Values returns the encoded leaves the tree currently holds, exactly as it
+// hashed them, so a verifier folds the identical bytes rather than re-encoding
+// a decoded copy. Rebuilding a tree from them (ValidatorRootOf over
+// DecodeValidatorLeaf) reproduces Root(), which is what authenticates the set
+// as complete rather than merely as members.
+func (t *ValidatorTree) Values() [][]byte {
+	out := make([][]byte, len(t.values))
+	for i, v := range t.values {
+		out[i] = append([]byte(nil), v...)
+	}
+
+	return out
 }
 
 // ValidatorRootOf returns the root a validator tree holding exactly entries
@@ -75,7 +102,7 @@ func (t *ValidatorTree) Get(pubkey [32]byte) (ValidatorLeaf, bool) {
 		return ValidatorLeaf{}, false
 	}
 
-	return decodeValidatorLeaf(value)
+	return DecodeValidatorLeaf(value)
 }
 
 // Root returns the tree's current Merkle root.
@@ -99,9 +126,11 @@ func encodeValidatorLeaf(l ValidatorLeaf) []byte {
 	return buf
 }
 
-// decodeValidatorLeaf reverses encodeValidatorLeaf, reporting ok=false on any
-// length mismatch.
-func decodeValidatorLeaf(data []byte) (ValidatorLeaf, bool) {
+// DecodeValidatorLeaf reverses encodeValidatorLeaf, reporting ok=false on any
+// length mismatch. Exported because a served validator set carries the raw
+// leaf values, and reading the pubkey and capped stake out of the bytes the
+// root covers is exactly what makes a client's quorum weighing authenticated.
+func DecodeValidatorLeaf(data []byte) (ValidatorLeaf, bool) {
 	if len(data) != 32+8+48+1 {
 		return ValidatorLeaf{}, false
 	}

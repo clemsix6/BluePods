@@ -110,3 +110,49 @@ func TestCombinedRoot_Deterministic(t *testing.T) {
 		t.Error("CombinedRoot is not deterministic for identical inputs")
 	}
 }
+
+// TestValidatorTree_ValuesRebuildTheRoot verifies the served leaf set is a
+// complete, self-authenticating description of the tree: decoding Values and
+// rebuilding from them reproduces Root(), which is the check a light client
+// runs before weighing a quorum with those stakes.
+func TestValidatorTree_ValuesRebuildTheRoot(t *testing.T) {
+	tree := NewValidatorTree()
+	tree.Rebuild(snapshotEntries())
+
+	values := tree.Values()
+	if len(values) != len(snapshotEntries()) {
+		t.Fatalf("values: got %d leaves, want %d", len(values), len(snapshotEntries()))
+	}
+
+	decoded := make([]ValidatorLeaf, 0, len(values))
+	for i, v := range values {
+		leaf, ok := DecodeValidatorLeaf(v)
+		if !ok {
+			t.Fatalf("leaf %d did not decode: %x", i, v)
+		}
+		decoded = append(decoded, leaf)
+	}
+
+	if root := ValidatorRootOf(decoded); root != tree.Root() {
+		t.Errorf("rebuilt root %x != tree root %x", root, tree.Root())
+	}
+}
+
+// TestValidatorTree_ValuesFollowRebuild verifies a rebuild replaces the served
+// set wholesale, so a client can never be handed a stale epoch's members
+// beside the current root.
+func TestValidatorTree_ValuesFollowRebuild(t *testing.T) {
+	tree := NewValidatorTree()
+	tree.Rebuild(snapshotEntries())
+	tree.Rebuild([]ValidatorLeaf{{Pubkey: [32]byte{0x09}, CappedStake: 5, Status: ValidatorActive}})
+
+	values := tree.Values()
+	if len(values) != 1 {
+		t.Fatalf("values: got %d leaves, want 1", len(values))
+	}
+
+	leaf, ok := DecodeValidatorLeaf(values[0])
+	if !ok || leaf.Pubkey != ([32]byte{0x09}) {
+		t.Fatalf("stale leaf served: %+v", leaf)
+	}
+}

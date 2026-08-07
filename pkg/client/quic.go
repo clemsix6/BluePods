@@ -143,6 +143,12 @@ func (t *QUICTransport) Health() (bool, error) {
 
 // DomainResolve resolves a domain name to an object ID over QUIC. It returns the
 // object ID and a found flag.
+//
+// This is the UNPROVEN live read of spec §5's freshness choice: the answer is
+// the serving node's own word, taken at whatever state its trees are in, with
+// the proof the response also carries discarded. It is the right verb only
+// when the answer is not worth verifying; ResolveDomainProved, and
+// LightClient.ResolveDomain above it, are the verifiable side of that choice.
 func (t *QUICTransport) DomainResolve(name string) ([32]byte, bool, error) {
 	resp, err := t.roundTrip(network.EncodeDomainResolve(&network.DomainResolveRequest{Name: name}))
 	if err != nil {

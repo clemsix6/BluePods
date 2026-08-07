@@ -126,6 +126,14 @@ const (
 	// MsgTagGetAncestorsResp carries one proved parent edge per hop, the
 	// queried object's own edge first.
 	MsgTagGetAncestorsResp = 0x22
+
+	// MsgTagGetValidatorTree requests an epoch's validator leaf set, the light
+	// client's input for weighing an anchor quorum.
+	MsgTagGetValidatorTree = 0x23
+
+	// MsgTagGetValidatorTreeResp carries that leaf set and the anchor its root
+	// is a component of.
+	MsgTagGetValidatorTreeResp = 0x24
 )
 
 // EncodeGossipTx wraps a transaction body for gossip on the one-way message
@@ -169,6 +177,7 @@ var clientRequestTags = map[byte]struct{}{
 	MsgTagGetIndexAnchor:   {},
 	MsgTagListChildren:     {},
 	MsgTagGetAncestors:     {},
+	MsgTagGetValidatorTree: {},
 }
 
 // IsClientMessage reports whether data carries a known client request tag. It is
