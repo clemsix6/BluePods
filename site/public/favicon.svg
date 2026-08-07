@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Bricolage Grotesque, wght 800 wdth 75 opsz 12, flattened to outlines
+       so the mark carries no font dependency. -->
+  <defs>
+    <linearGradient id="bp" x1="0.06" y1="0" x2="0.94" y2="1">
+      <stop offset="0" stop-color="#6f1d1b"/>
+      <stop offset="0.38" stop-color="#8b4232"/>
+      <stop offset="0.72" stop-color="#adbdab"/>
+      <stop offset="1" stop-color="#dfdccd"/>
+    </linearGradient>
+  </defs>
+  <circle cx="16" cy="16" r="16" fill="url(#bp)"/>
+  <g fill="#ffffff"><g transform="translate(7.650 21.194) scale(0.01574 -0.01574)"><path transform="translate(0 0)" d="M54 0V660H264Q306 660 344.0 650.5Q382 641 412.5 619.5Q443 598 460.5 564.0Q478 530 478 480Q478 435 463.5 406.5Q449 378 419.0 363.0Q389 348 343 343V328Q426 323 464.0 285.0Q502 247 502 176Q502 116 476.0 77.0Q450 38 399.5 19.0Q349 0 276 0ZM205 119H263Q303 119 322.5 138.5Q342 158 342 196Q342 234 318.0 258.0Q294 282 256 282H205ZM205 380H240Q284 380 304.5 399.0Q325 418 325 460Q325 500 307.5 520.5Q290 541 251 541H205Z"/><path transform="translate(503 0)" d="M170 158V281H243Q293 281 317.5 312.5Q342 344 342 411Q342 477 318.5 507.5Q295 538 244 538H170V660H260Q300 660 342.5 648.5Q385 637 421.5 608.5Q458 580 481.0 532.0Q504 484 504 410Q504 320 468.0 264.5Q432 209 369.0 183.5Q306 158 226 158ZM54 0V660H208V0Z"/></g></g>
+</svg>
