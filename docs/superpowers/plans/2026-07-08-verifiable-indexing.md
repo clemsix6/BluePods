@@ -450,7 +450,19 @@ table DeclaredOp {
 
 - [ ] **Test:** a full flow against a fixture: checkpoint at epoch N → bundle whose headers carry epoch N+1 within the boundary window verified through the epoch-N validator tree (the spec §5 handoff rule) → the first N+1-attested root proves the new set → a domain proof verified against the bundle; a forged bundle below quorum fails; `WaitForFrontier` returns once a bundle covers the requested round.
 - [ ] **Run, expect FAIL → implement → PASS.**
-- [ ] **Commit:** title `Light-client verification: checkpoint, epoch walk, proofs`.
+- [x] **Commit:** title `Light-client verification: checkpoint, epoch walk, proofs`.
+
+**As-built (29dc0b6, review-adjudicated):**
+
+- `VerifyProof` is a method on `VerifiedAnchor` taking `(anchor, component, key, value, proof)`: the combination check (`index.CombinedRoot == attested IndexRoot`) runs inside, where it cannot be forgotten. `bind` calls the `internal/index` function itself, so the combination order cannot drift.
+- `WaitForFrontier(round, timeout)` takes an explicit bound.
+- `GetValidatorTree` serves only the epoch the node's index tree currently describes: the manager keeps no versioned validator trees (`RebuildValidators` replaces wholesale), so this is forced, not chosen. User-visible property: a client more than one boundary behind cannot walk forward and needs a fresh checkpoint — weak subjectivity, stated on the wire doc.
+- The served set is the whole leaf list with no Merkle proof: the quorum denominator is the committee's capped total and no inclusion proof authenticates a total; the client rebuilds the tree and matches the anchor's `ValidatorRoot`. `Manager.ValidatorSet()` reads set+anchor under one `treeMu` hold; the 6.1 lock order is preserved.
+- `Checkpoint.authenticate` tries the strong link (components combine to the pinned index root) and falls back to the pinned `ValidatorSetHash` once the chain has moved past the checkpointed root — the ordinary case. Spec §5's light-client sentence amended to match; the security chain (out-of-band committee hash + capped-stake quorum) is the standard PoS light-client construction.
+- The epoch walk is opportunistic: re-pin when the attested root proves the next committee, keep the old checkpoint otherwise; hard refusal at a full epoch of distance (window `{N, N+1}`, exact).
+- Spec §5's "frontier falls within the boundary window" clause is NOT client-enforceable: nothing on the wire carries the epoch length. Adjudicated bounded — the hard stop at N+2 caps exposure at one epoch of stale-committee weighing, which the capped-churn overlap argument covers.
+- The proved `ListChildren`/`GetAncestors` client verbs and their verification landed here (authorised by 6.1's as-built record); tests split `verify_test.go` / `lightclient_test.go`.
+- The `GetValidatorTreeResponse` epoch label is unauthenticated by design (the set is authenticated by its root); task 6.4 must not assert on that field.
 
 ### Task 6.3: bpctl verbs and wallet switchover
 
