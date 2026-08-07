@@ -1,37 +1,43 @@
 :root {
   /* Palette. Linen, wine and ash are the brief; shell is the deeper linen that
-     card surfaces sit on. */
+     the holder cards sit on, the one place the page still needs a surface. */
   --linen: #f0e5de;
-  --shell: #e5d7cf;
+  --shell: #e6d9d1;
   --wine: #6f1d1b;
   --ash: #adbdab;
 
   /* Ink. Long-form text runs on a near-black drawn from the wine family, so
      wine itself stays available as an accent. */
   --ink: #2b0f0e;
-  --ink-soft: rgba(43, 15, 14, 0.6);
-  --ink-faint: rgba(43, 15, 14, 0.38);
-  --rule: rgba(43, 15, 14, 0.18);
+  --ink-soft: rgba(43, 15, 14, 0.62);
+  --ink-faint: rgba(43, 15, 14, 0.36);
+  --rule: rgba(43, 15, 14, 0.16);
 
   /* Ink on the ash band. The same ink, given more weight because it sits on a
      colour rather than on paper. */
   --ink-tint: rgba(43, 15, 14, 0.74);
-  --rule-tint: rgba(43, 15, 14, 0.24);
+  --rule-tint: rgba(43, 15, 14, 0.22);
 
   --display: 'Bricolage Grotesque Variable', ui-sans-serif, system-ui, sans-serif;
   --sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
   --mono: 'Chivo Mono Variable', ui-monospace, 'SF Mono', monospace;
 
+  /* Two registers and almost nothing between them: display sizes large enough
+     to carry a sentence on their own, and a mono size that carries a label.
+     The gap is the point, so resist filling it. */
   --step-label: 0.6875rem;
   --step-meta: 0.75rem;
   --step-body: 1.0625rem;
-  --step-lede: clamp(1.125rem, 0.95rem + 0.7vw, 1.375rem);
-  --step-h3: clamp(1.25rem, 1.05rem + 0.9vw, 1.75rem);
-  --step-h2: clamp(2rem, 1.2rem + 3.4vw, 4rem);
-  --step-h1: clamp(2.75rem, 1.4rem + 5.6vw, 6rem);
+  --step-lede: clamp(1.125rem, 0.98rem + 0.6vw, 1.3125rem);
+  --step-h3: clamp(1.375rem, 1.2rem + 0.7vw, 1.75rem);
+  --step-h2: clamp(2.375rem, 1.3rem + 4.4vw, 5rem);
+  --step-h1: clamp(3rem, 1.1rem + 7.6vw, 8rem);
 
-  --gap: clamp(1.5rem, 3vw, 3rem);
-  --band: clamp(4.5rem, 9vw, 9rem);
+  --gap: clamp(2rem, 4vw, 3.5rem);
+  --band: clamp(5rem, 10vw, 10rem);
   --frame: 14px;
-  --radius: 20px;
+  --radius: 18px;
+
+  /* The grain, tiled once and reused wherever a surface needs film on it. */
+  --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }

@@ -29,6 +29,8 @@ const holders = [
     </div>
 
     <div class="fan-frame">
+      <div class="field" aria-hidden="true"><span class="orb"></span></div>
+
       <div class="fan">
         {
           holders.map((key, index) => (
@@ -72,35 +74,56 @@ const holders = [
   }
 
   .fan-frame {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1.75rem;
     align-items: center;
   }
 
+  /* The object the five cards are copies of, showing through from behind them.
+     The same body as the hero, one section on and much quieter. */
+  /* No clipping here: the body is small enough to fall off on its own, and a
+     clipped field shows its box the moment there is nothing else at the edge. */
+  .field {
+    inset: 0;
+    overflow: visible;
+  }
+
+  .orb {
+    --spin: 208deg;
+
+    top: 2%;
+    left: 50%;
+    width: 78%;
+    aspect-ratio: 1;
+    margin-left: -39%;
+    opacity: 0.5;
+    filter: blur(42px) saturate(118%);
+  }
+
   .fan {
-    /* Four gaps plus one card width has to stay inside the column, so both
-       track the viewport rather than stepping at a breakpoint. */
-    --spread: clamp(30px, 6.5vw, 62px);
-    --tilt: 5deg;
+    /* Four gaps plus one card width has to stay inside the column, and each
+       card has to keep enough of itself uncovered to be read, so both track
+       the viewport rather than stepping at a breakpoint. */
+    --spread: clamp(56px, 7.8vw, 100px);
+    --tilt: 4deg;
 
     position: relative;
     width: 100%;
-    height: 340px;
+    height: 250px;
   }
 
   .fan-card {
     position: absolute;
     top: 30px;
     left: 50%;
-    width: min(200px, 42vw);
-    padding: 1.1rem 1.2rem 1.3rem;
-    border-radius: 18px;
-    background:
-      radial-gradient(120% 120% at 15% 0%, rgba(173, 189, 171, 0.62), transparent 62%),
-      radial-gradient(100% 100% at 100% 100%, rgba(111, 29, 27, 0.2), transparent 58%),
-      var(--shell);
-    box-shadow: 0 26px 46px -32px rgba(43, 15, 14, 0.7);
+    width: min(168px, 36vw);
+    padding: 1rem 1.05rem 1.15rem;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    background: var(--shell);
+    box-shadow: 0 30px 48px -34px rgba(43, 15, 14, 0.6);
     transform-origin: 50% 130%;
     transform: translateX(calc(-50% + (var(--i) - 2) * var(--spread)))
       rotate(calc((var(--i) - 2) * var(--tilt)));
@@ -108,24 +131,24 @@ const holders = [
   }
 
   .fan:hover {
-    --spread: clamp(36px, 7.6vw, 74px);
-    --tilt: 6.5deg;
+    --spread: clamp(62px, 8.2vw, 104px);
+    --tilt: 6deg;
   }
 
   .fan-role {
     font-family: var(--mono);
     font-size: var(--step-label);
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--ink-faint);
   }
 
   .fan-key {
-    margin-top: 0.5rem;
+    margin-top: 0.45rem;
     font-family: var(--display);
-    font-size: 1.35rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-size: 1.0625rem;
+    font-weight: 400;
+    letter-spacing: -0.03em;
     color: var(--wine);
   }
 
@@ -172,8 +195,9 @@ const holders = [
 
   @media (max-width: 720px) {
     .fan {
+      --spread: clamp(40px, 12vw, 64px);
       --tilt: 4.5deg;
-      height: 300px;
+      height: 230px;
     }
   }
 </style>

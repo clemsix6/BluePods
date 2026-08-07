@@ -3,15 +3,22 @@ const consequences = [
   {
     title: 'No horizontal scaling',
     body: 'Total capacity is bounded by what one node can ingest and validate, not by the sum of all nodes. Adding validators spreads storage and execution around, but it does not raise the ceiling.',
+    note: 'Validators added → ceiling unchanged',
   },
   {
     title: 'It halts rather than fork',
     body: 'Under a network partition the system is CP. It stops instead of risking a rollback, so a global partition can take the cloud down until it heals.',
+    note: 'Partition → stop, never diverge',
   },
 ];
 ---
 
 <section class="band band--tint" id="cost">
+  <div class="field" aria-hidden="true">
+    <span class="orb"></span>
+    <span class="orb orb--low"></span>
+  </div>
+
   <div class="wrap reveal">
     <div class="split">
       <h2>The part we don't hide.</h2>
@@ -26,16 +33,19 @@ const consequences = [
       </div>
     </div>
 
-    <div class="pair">
+    <!-- Numbered because the sentence above counts them: two, in order. -->
+    <ol class="costs">
       {
-        consequences.map((item) => (
-          <article>
+        consequences.map((item, index) => (
+          <li class="cost">
+            <p class="num">{String(index + 1).padStart(2, '0')}</p>
             <h3>{item.title}</h3>
-            <p>{item.body}</p>
-          </article>
+            <p class="body">{item.body}</p>
+            <p class="note">{item.note}</p>
+          </li>
         ))
       }
-    </div>
+    </ol>
 
     <p class="closer">
       The bet that makes this worth taking is bandwidth. Per-node bandwidth keeps climbing,
@@ -46,58 +56,121 @@ const consequences = [
 </section>
 
 <style>
-  /* Two consequences, side by side, parted by a rule. No boxes: the band's own
-     colour is the only surface this section gets. */
-  .pair {
+  /* The band dissolves at both edges, so the bodies inside it have to dissolve
+     with it. Without the mask they stop dead on the section boundary and the
+     seam is the first thing the eye finds. */
+  .field {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      #000 14%,
+      #000 86%,
+      transparent 100%
+    );
+  }
+
+  /* Bleeding off the left, where the hero's runs off the right, so the two
+     read as the same body seen from opposite sides of the page. Both stay far
+     enough out that their dense centres never sit under a line of text. */
+  .orb {
+    --spin: 128deg;
+
+    top: -24vw;
+    left: -36vw;
+    width: 62vw;
+    aspect-ratio: 1;
+    opacity: 0.42;
+  }
+
+  .orb--low {
+    --spin: 292deg;
+
+    top: auto;
+    bottom: -26vw;
+    left: auto;
+    right: -22vw;
+    width: 48vw;
+    opacity: 0.34;
+    animation-duration: 61s;
+    animation-direction: alternate-reverse;
+  }
+
+  .costs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: clamp(3rem, 6vw, 5rem);
-    padding-top: clamp(1.75rem, 3vw, 2.5rem);
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    margin: clamp(4rem, 9vw, 8rem) 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* Staggered on purpose. Two landings the reader arrives at one after the
+     other, not two cells of a table read at once. */
+  .cost {
+    padding-top: 1.25rem;
     border-top: 1px solid var(--rule-tint);
   }
 
-  .pair > * {
-    padding-right: clamp(1.5rem, 4vw, 3.5rem);
+  .cost:first-child {
+    grid-column: 1 / span 5;
   }
 
-  .pair > * + * {
-    padding-right: 0;
-    padding-left: clamp(1.5rem, 4vw, 3.5rem);
-    border-left: 1px solid var(--rule-tint);
+  .cost:last-child {
+    grid-column: 7 / span 6;
+    margin-top: clamp(3.5rem, 8vw, 7rem);
   }
 
-  h3 {
-    margin-bottom: 1rem;
+  .num {
+    font-family: var(--display);
+    font-size: clamp(3rem, 6vw, 5.5rem);
+    font-weight: 200;
+    line-height: 0.8;
+    letter-spacing: -0.06em;
+    color: var(--wine);
   }
 
-  .pair p {
-    max-width: 42ch;
+  .cost h3 {
+    margin: 1.5rem 0 0.9rem;
+  }
+
+  .body {
+    max-width: 40ch;
     color: var(--ink-tint);
+    font-size: 1rem;
+  }
+
+  .note {
+    margin-top: 1.5rem;
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    color: var(--wine);
   }
 
   .closer {
-    max-width: 62ch;
-    margin-top: clamp(2.5rem, 5vw, 4rem);
+    max-width: 34ch;
+    margin-top: clamp(4rem, 8vw, 7rem);
     padding-top: 1.5rem;
     border-top: 1px solid var(--rule-tint);
+    font-size: var(--step-lede);
+    line-height: 1.5;
     color: var(--ink-tint);
   }
 
   @media (max-width: 720px) {
-    .pair {
+    .costs {
       grid-template-columns: minmax(0, 1fr);
+      gap: 3rem;
     }
 
-    .pair > * {
-      padding-right: 0;
+    .cost:first-child,
+    .cost:last-child {
+      grid-column: 1;
+      margin-top: 0;
     }
 
-    .pair > * + * {
-      margin-top: 2.5rem;
-      padding-top: 2.5rem;
-      padding-left: 0;
-      border-top: 1px solid var(--rule-tint);
-      border-left: 0;
+    .body,
+    .closer {
+      max-width: none;
     }
   }
 </style>
