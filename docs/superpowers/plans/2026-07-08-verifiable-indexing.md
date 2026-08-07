@@ -484,9 +484,16 @@ table DeclaredOp {
 
 **Files:** Extend `TestScenarioDomains` and `TestScenarioHierarchy` (batches 4 and 1) with the proved read path.
 
-- [ ] **Scenario extensions:** register `demo.config` → resolve WITH proof verification from a *different* node against its `GetIndexAnchor` bundle; transfer an object subtree → `ListChildren` from the new owner's bare key returns the subtree with a verifying completeness proof; `GetAncestors` walks to the `KeyRoot`; wallet bare-key recovery repopulates from the live cluster.
-- [ ] **Run, one at a time, bounded:** `TestScenarioDomains`, `TestScenarioHierarchy`, `TestScenarioBootstrap`, `TestScenarioStress`.
-- [ ] **Commit:** title `End-to-end proved indexing scenarios`. **Push the batch.**
+- [x] **Scenario extensions:** register `demo.config` → resolve WITH proof verification from a *different* node against its `GetIndexAnchor` bundle; transfer an object subtree → `ListChildren` from the new owner's bare key returns the subtree with a verifying completeness proof; `GetAncestors` walks to the `KeyRoot`; wallet bare-key recovery repopulates from the live cluster.
+- [x] **Run, one at a time, bounded:** `TestScenarioDomains`, `TestScenarioHierarchy`, `TestScenarioBootstrap`, `TestScenarioStress`.
+- [x] **Commit:** title `End-to-end proved indexing scenarios`. **Push the batch.**
+
+**As-built (f4ffc6a + dd38d27 + e6b0e82, review-adjudicated):**
+
+- `demo.config` requires owning its suffix first (spec §8's parent-is-suffix rule): the scenario registers `config` then `demo.config`, same wallet, first registration fully awaited. The plan's named scenario was unimplementable as written — batch 8's documentation rewrite must not re-inherit that wording.
+- `mintCheckpoint` is a self-certified test fixture (pin read off the node it then verifies), documented as such — sound only among honest harness nodes, never a client bootstrap model.
+- The proved-read retry covers only `ErrUnanchored`. Two other transients hard-fail the scenario if hit: the stale-root re-read (formatted error, no sentinel) and a boundary-window quorum shortfall while a bundle mixes producer epochs. Four green runs say the window is narrow; exporting sentinels for them is a `pkg/client` API change deliberately not made here — Known issue.
+- The `TestScenarioBootstrap`/`TestScenarioStress` legs of the run list were closed by the batch review's own runs (6.9s / 63.0s green at this HEAD).
 
 ---
 
@@ -502,7 +509,7 @@ table DeclaredOp {
 
 ### Task 7.2: Repo-wide regression
 
-- [ ] **Run:** `go build ./... && go vet ./... && go test -short ./... -timeout 300s`; then one scenario per family, one at a time, bounded: `TestScenarioBootstrap`, `TestScenarioConsensusBasics`, `TestScenarioCrash`.
+- [ ] **Run:** `go build ./... && go vet ./... && go test -short ./... -timeout 300s`; `gofmt -l` repo-wide (three test files predating this batch are unformatted on the branch — format them here); then one scenario per family, one at a time, bounded: `TestScenarioBootstrap`, `TestScenarioConsensusBasics`, `TestScenarioCrash`.
 - [ ] **Commit:** title `Post-removal regression pass`. **Push the batch.**
 
 ---
