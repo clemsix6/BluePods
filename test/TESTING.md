@@ -126,10 +126,9 @@ func TestScenarioExample(t *testing.T) {
 ```
 
 `Option` values tune the cluster at construction: `WithEpochLength`,
-`WithMinValidators`, `WithGossipFanout`, `WithSyncBuffer`, `WithInitialMint`,
-`WithTransitionGrace`, `WithTransitionBuffer`, `WithMaxChurn`, `WithStake`,
-`WithoutStakeSetup` (leaves only the founder's genesis self-stake, for
-testing the founder-heavy regime), and `WithoutInvariants` (below).
+`WithMaxChurn`, `WithoutStakeSetup` (leaves only the founder's genesis
+self-stake, for testing the founder-heavy regime), and `WithoutInvariants`
+(below).
 
 Node verbs, used on `c.Node(i)` or through the cluster:
 
@@ -244,7 +243,7 @@ what to do when the checker is right to fail.
 | `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` / `SetTrustCheckpoint(cp string)` | Process control |
 | `(*Node) Alive() bool` / `Journal() *Journal` / `ParseError() error` | Node introspection |
 | `harness.Attr(key, want) Pred` / `AttrGE(key, min) Pred` | Event attribute predicates |
-| `harness.WithEpochLength/WithMinValidators/WithGossipFanout/WithSyncBuffer/WithInitialMint/WithTransitionGrace/WithTransitionBuffer/WithMaxChurn/WithStake` | Cluster tuning options |
+| `harness.WithEpochLength/WithMaxChurn/WithoutStakeSetup/WithoutInvariants` | Cluster tuning options |
 | `harness.WithoutStakeSetup()` / `WithoutInvariants()` | Opt out of a default |
 
 Client and daemon operations (`pkg/client`, `pkg/daemon`) are the same code
