@@ -71,15 +71,22 @@ const consequences = [
 
   /* Bleeding off the left, where the hero's runs off the right, so the two
      read as the same body seen from opposite sides of the page. Both stay far
-     enough out that their dense centres never sit under a line of text. */
+     enough out that their dense centres never sit under a line of text.
+
+     Retuned to ash and linen: the band already carries a colour, and wine is
+     already spoken for by the numbers and the readouts. */
   .orb {
     --spin: 128deg;
+    --c1: #9eb09b;
+    --c2: #b3c1b0;
+    --c3: #cfd6c8;
+    --c4: #efe6dc;
 
-    top: -24vw;
-    left: -36vw;
-    width: 62vw;
+    top: -34vw;
+    left: -42vw;
+    width: 68vw;
     aspect-ratio: 1;
-    opacity: 0.42;
+    opacity: 0.85;
   }
 
   .orb--low {
@@ -90,7 +97,7 @@ const consequences = [
     left: auto;
     right: -22vw;
     width: 48vw;
-    opacity: 0.34;
+    opacity: 0.7;
     animation-duration: 61s;
     animation-direction: alternate-reverse;
   }

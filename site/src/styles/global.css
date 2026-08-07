@@ -211,22 +211,37 @@ svg {
   pointer-events: none;
 }
 
+/* A field is positioned and its siblings are not, so without this it paints
+   over the section's own content instead of behind it. */
+.field ~ * {
+  position: relative;
+  z-index: 1;
+}
+
 .orb {
+  /* The four stops run dark to light. A section that already has a colour of
+     its own overrides them with tones of that colour, so its field reads as
+     light inside the band rather than as a second hue arguing with it. */
+  --c1: #6f1d1b;
+  --c2: #8b4232;
+  --c3: #adbdab;
+  --c4: #d7d8c8;
+
   position: absolute;
   border-radius: 50%;
   background:
     radial-gradient(circle at 30% 74%, rgba(255, 251, 247, 0.6), rgba(255, 251, 247, 0) 34%),
     conic-gradient(
       from var(--spin, 0deg) at 50% 50%,
-      #6f1d1b 0deg,
-      #6f1d1b 122deg,
-      #8b4232 160deg,
-      #adbdab 196deg,
-      #d7d8c8 224deg,
-      #a4bcb1 256deg,
-      #93463a 286deg,
-      #6f1d1b 314deg,
-      #6f1d1b 360deg
+      var(--c1) 0deg,
+      var(--c1) 122deg,
+      var(--c2) 160deg,
+      var(--c3) 196deg,
+      var(--c4) 224deg,
+      var(--c3) 256deg,
+      var(--c2) 286deg,
+      var(--c1) 314deg,
+      var(--c1) 360deg
     );
   filter: blur(48px) saturate(118%);
   will-change: transform;
