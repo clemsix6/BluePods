@@ -6,9 +6,9 @@ const guarantees = [
     meta: 'The committed log is append-only',
   },
   {
-    title: 'Global atomic composability',
-    body: 'Any pod can call any other pod atomically and consistently, in one finalized step, whichever validators hold the objects involved. There is no asynchronous boundary between applications.',
-    meta: 'No cross-shard callbacks, no compensating writes',
+    title: 'Holder-independent atomicity',
+    body: 'A transaction touches every object it declares, up to the reference cap, atomically and consistently in one finalized step, whichever validators hold them. Across transactions the client orchestrates, and zero rollback makes each finalized step solid ground that needs no compensating logic.',
+    meta: 'The atomic boundary is the transaction, never a chain',
   },
 ];
 ---

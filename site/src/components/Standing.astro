@@ -2,11 +2,11 @@
 const peers = [
   {
     name: 'Internet Computer',
-    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets of a few dozen nodes, which scales by adding subnets but turns cross-subnet calls asynchronous and non-atomic, with rollback left to the developer. BluePods keeps one global DAG and pays for it in throughput.',
+    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets of a few dozen nodes, which scales by adding subnets but turns cross-subnet calls asynchronous and non-atomic, with rollback left to the developer. BluePods keeps one global DAG, so a transaction stays atomic across its objects whoever holds them and nothing rolls back, and it pays for that in throughput.',
   },
   {
     name: 'Sui',
-    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a consensus-less fast path for single-owner objects, quicker on simple transfers but not globally composable on that path, and puts large storage in a separate network. BluePods folds storage and execution into one protocol.',
+    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a consensus-less fast path for single-owner objects, quicker on simple transfers but finalized outside the total order, so the guarantee is not uniform across operations, and it puts large storage in a separate network. BluePods folds storage and execution into one protocol.',
   },
   {
     name: 'Solana',
