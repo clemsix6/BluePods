@@ -148,13 +148,14 @@ func (n *Node) Run() error {
 
 // runBootstrap starts the node in bootstrap mode. It is not exclusively the
 // genesis path: it is also Run's general fallthrough, reached by any
-// non-genesis node started with neither --bootstrap nor a resumable local
-// state (an operator/supervisor mistake — e.g. retrying a refused join
-// without --bootstrap-addr — not a fresh genesis). Only a genuine genesis
-// start (cfg.Bootstrap) originates the state in its data directory and owns
-// it outright, so only that case marks the state adopted below; marking the
-// fallthrough case too would launder a directory the join gate refused
-// (residue: cursor and live validator set, no marker — see
+// non-genesis node with no upstream — started with neither --bootstrap nor
+// --bootstrap-addr — and no resumable local state (an operator/supervisor
+// mistake — e.g. retrying a refused join without --bootstrap-addr — not a
+// fresh genesis). Only a genuine genesis start (cfg.Bootstrap) originates the
+// state in its data directory and owns it outright, so only that case marks
+// the state adopted below; marking the fallthrough case too would launder a
+// directory the join gate refused (residue: cursor and live validator set,
+// no marker — see
 // internal/consensus/adopted.go) into permanently-adopted state on the
 // strength of one misconfigured start.
 func (n *Node) runBootstrap() error {
