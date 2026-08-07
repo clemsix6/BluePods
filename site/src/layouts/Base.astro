@@ -1,0 +1,61 @@
+---
+import '@fontsource-variable/bricolage-grotesque';
+import '@fontsource-variable/instrument-sans';
+import '@fontsource-variable/chivo-mono';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f0e5de" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f0e5de'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='%236f1d1b'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div class="crop" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+    <div class="grain" aria-hidden="true"></div>
+    <slot />
+
+    <script>
+      const targets = document.querySelectorAll<HTMLElement>('.reveal');
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      if (reduced || !('IntersectionObserver' in window)) {
+        targets.forEach((el) => el.classList.add('is-in'));
+      } else {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              entry.target.classList.add('is-in');
+              observer.unobserve(entry.target);
+            });
+          },
+          { rootMargin: '0px 0px -4% 0px' },
+        );
+
+        targets.forEach((el) => observer.observe(el));
+      }
+    </script>
+  </body>
+</html>

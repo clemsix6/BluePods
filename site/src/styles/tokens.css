@@ -1,0 +1,37 @@
+:root {
+  /* Palette. Linen, wine and ash are the brief; shell and cellar are the two
+     shades derived from them so surfaces and the dark band stay in family. */
+  --linen: #f0e5de;
+  --shell: #e5d7cf;
+  --wine: #6f1d1b;
+  --cellar: #2b0f0e;
+  --ash: #adbdab;
+
+  /* Ink. Long-form text runs on cellar, wine is kept for accents. */
+  --ink: #2b0f0e;
+  --ink-soft: rgba(43, 15, 14, 0.6);
+  --ink-faint: rgba(43, 15, 14, 0.38);
+  --rule: rgba(43, 15, 14, 0.18);
+
+  /* Ink on the dark band. */
+  --ink-inv: #f0e5de;
+  --ink-inv-soft: rgba(240, 229, 222, 0.62);
+  --rule-inv: rgba(240, 229, 222, 0.2);
+
+  --display: 'Bricolage Grotesque Variable', ui-sans-serif, system-ui, sans-serif;
+  --sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'Chivo Mono Variable', ui-monospace, 'SF Mono', monospace;
+
+  --step-label: 0.6875rem;
+  --step-meta: 0.75rem;
+  --step-body: 1.0625rem;
+  --step-lede: clamp(1.125rem, 0.95rem + 0.7vw, 1.375rem);
+  --step-h3: clamp(1.25rem, 1.05rem + 0.9vw, 1.75rem);
+  --step-h2: clamp(2rem, 1.2rem + 3.4vw, 4rem);
+  --step-h1: clamp(2.75rem, 1.4rem + 5.6vw, 6rem);
+
+  --gap: clamp(1.5rem, 3vw, 3rem);
+  --band: clamp(4.5rem, 9vw, 9rem);
+  --frame: 14px;
+  --radius: 20px;
+}

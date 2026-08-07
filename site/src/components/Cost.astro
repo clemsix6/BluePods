@@ -1,0 +1,59 @@
+---
+const consequences = [
+  {
+    title: 'No horizontal scaling',
+    body: 'Total capacity is bounded by what one node can ingest and validate, not by the sum of all nodes. Adding validators spreads storage and execution around, but it does not raise the ceiling.',
+  },
+  {
+    title: 'It halts rather than fork',
+    body: 'Under a network partition the system is CP. It stops instead of risking a rollback, so a global partition can take the cloud down until it heals.',
+  },
+];
+---
+
+<section class="band band--dark" id="cost">
+  <div class="wrap reveal">
+    <div class="split">
+      <div>
+        <p class="label">The cost</p>
+        <h2>The part we don't hide.</h2>
+      </div>
+
+      <div class="prose">
+        <p>
+          Holding both guarantees requires a single global DAG with one total order. Every
+          operation, from every app, passes through it and is seen by every validator, even
+          though each validator only stores and executes a fraction of the state.
+        </p>
+        <p>Two things follow, and neither is a footnote.</p>
+      </div>
+    </div>
+
+    <div class="grid grid--2">
+      {
+        consequences.map((item) => (
+          <article class="card">
+            <h3>{item.title}</h3>
+            <p>{item.body}</p>
+          </article>
+        ))
+      }
+    </div>
+
+    <p class="closer">
+      The bet that makes this worth taking is bandwidth. Per-node bandwidth keeps climbing,
+      and a data availability split that puts only hashes on the consensus path makes the
+      same bet easier to win without giving up the total order.
+    </p>
+  </div>
+</section>
+
+<style>
+  .closer {
+    max-width: 62ch;
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule-inv);
+    color: var(--ink-inv-soft);
+  }
+</style>

@@ -1,0 +1,114 @@
+---
+import { links } from '../links';
+
+const facts = [
+  'Leaderless DAG',
+  'Objects up to 4 KB',
+  'Four host functions',
+  'Go and Rust',
+];
+---
+
+<section class="hero" id="top">
+  <div class="wrap hero-inner">
+    <p class="label">Decentralized cloud</p>
+
+    <h1>A backend the network runs, stores, and never rolls back.</h1>
+
+    <div class="hero-foot">
+      <p class="lede">
+        Backends run as WebAssembly modules called pods. State splits into objects, each
+        held by a handful of validators, so a transaction runs on the ten or fifty machines
+        that hold what it touches instead of on every machine in the network.
+      </p>
+
+      <div class="actions">
+        <a class="button" href={links.whitepaper} rel="noopener">Read the whitepaper</a>
+        <a class="jump" href={links.repo} rel="noopener">Source on GitHub &#8627;</a>
+      </div>
+    </div>
+
+    <ul class="facts">
+      {facts.map((fact) => <li>{fact}</li>)}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .hero {
+    display: flex;
+    align-items: flex-end;
+    min-height: 100svh;
+    padding-block: 9rem 3.5rem;
+    background:
+      radial-gradient(110% 70% at 50% -18%, rgba(111, 29, 27, 0.9), rgba(111, 29, 27, 0) 62%),
+      radial-gradient(96% 64% at 44% 20%, rgba(173, 189, 171, 0.66), transparent 66%),
+      var(--linen);
+  }
+
+  .hero-inner {
+    width: min(100% - 2 * clamp(1.5rem, 4vw, 3.5rem), 1240px);
+  }
+
+  h1 {
+    max-width: 15ch;
+  }
+
+  .hero-foot {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 2.5rem clamp(2rem, 6vw, 6rem);
+    flex-wrap: wrap;
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 1.75rem;
+    flex-wrap: wrap;
+  }
+
+  .button {
+    padding: 0.85rem 1.6rem;
+    border-radius: 999px;
+    background: var(--wine);
+    color: var(--linen);
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    text-decoration: none;
+    transition: background 0.25s ease, transform 0.25s ease;
+  }
+
+  .button:hover {
+    background: var(--cellar);
+    transform: translateY(-1px);
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    margin: clamp(3rem, 7vw, 5.5rem) 0 0;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--rule);
+    list-style: none;
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    color: var(--ink-faint);
+  }
+
+  @media (max-width: 720px) {
+    .hero {
+      padding-block: 7.5rem 2.5rem;
+    }
+
+    h1 {
+      max-width: none;
+    }
+  }
+</style>

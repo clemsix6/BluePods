@@ -1,0 +1,49 @@
+---
+const guarantees = [
+  {
+    title: 'Zero rollback',
+    body: 'A finalized operation is never reverted. Finality is deterministic and absolute, not probabilistic. A backend can treat a finalized write as permanent and build on it without defensive logic.',
+    meta: 'The committed log is append-only',
+  },
+  {
+    title: 'Global atomic composability',
+    body: 'Any pod can call any other pod atomically and consistently, in one finalized step, whichever validators hold the objects involved. There is no asynchronous boundary between applications.',
+    meta: 'No cross-shard callbacks, no compensating writes',
+  },
+];
+---
+
+<section class="band" id="guarantees">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <p class="label">Two guarantees</p>
+        <h2>Neither of these bends.</h2>
+      </div>
+      <p class="aside">
+        They are what make a decentralized cloud usable rather than merely possible.
+      </p>
+    </div>
+
+    <div class="grid grid--2">
+      {
+        guarantees.map((item) => (
+          <article class="card">
+            <h3>{item.title}</h3>
+            <p>{item.body}</p>
+            <p class="meta">{item.meta}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .aside {
+    max-width: 30ch;
+    padding-bottom: 0.5rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+</style>

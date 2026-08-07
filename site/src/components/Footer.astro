@@ -1,0 +1,125 @@
+---
+import { links } from '../links';
+
+const columns = [
+  {
+    title: 'Documents',
+    items: [
+      { label: 'Whitepaper', href: links.whitepaper },
+      { label: 'Vision', href: links.vision },
+      { label: 'Testing guide', href: links.testing },
+    ],
+  },
+  {
+    title: 'Code',
+    items: [
+      { label: 'Repository', href: links.repo },
+      { label: 'Pod SDK', href: links.sdk },
+      { label: 'System pod', href: links.systemPod },
+    ],
+  },
+];
+---
+
+<footer class="band foot">
+  <div class="wrap foot-inner">
+    <div>
+      <p class="mark">BluePods</p>
+      <p class="tag">A decentralized cloud, written from scratch in Go.</p>
+      <p class="legal">Apache License 2.0</p>
+    </div>
+
+    <div class="cols">
+      {
+        columns.map((column) => (
+          <nav aria-label={column.title}>
+            <p class="col-title">[{column.title}]</p>
+            <ul>
+              {column.items.map((item) => (
+                <li>
+                  <a href={item.href} rel="noopener">
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        ))
+      }
+    </div>
+  </div>
+</footer>
+
+<style>
+  .foot {
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .foot-inner {
+    display: flex;
+    justify-content: space-between;
+    gap: 3rem clamp(2rem, 6vw, 6rem);
+    flex-wrap: wrap;
+  }
+
+  .mark {
+    font-family: var(--display);
+    font-size: clamp(2rem, 5vw, 3.25rem);
+    font-weight: 700;
+    letter-spacing: -0.035em;
+    text-transform: uppercase;
+    line-height: 1;
+  }
+
+  .tag {
+    max-width: 32ch;
+    margin-top: 1rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  .legal {
+    margin-top: 2.5rem;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .cols {
+    display: flex;
+    gap: clamp(2.5rem, 6vw, 5rem);
+    flex-wrap: wrap;
+  }
+
+  .col-title {
+    margin-bottom: 1.25rem;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  ul {
+    display: grid;
+    gap: 0.6rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  a {
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    color: var(--ink-soft);
+    transition: color 0.25s ease;
+  }
+
+  a:hover {
+    color: var(--wine);
+  }
+</style>

@@ -1,0 +1,33 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Hero from '../components/Hero.astro';
+import Problem from '../components/Problem.astro';
+import Guarantees from '../components/Guarantees.astro';
+import Mechanics from '../components/Mechanics.astro';
+import Holders from '../components/Holders.astro';
+import Cost from '../components/Cost.astro';
+import Standing from '../components/Standing.astro';
+import Pods from '../components/Pods.astro';
+import RunNode from '../components/RunNode.astro';
+import Footer from '../components/Footer.astro';
+---
+
+<Base
+  title="BluePods — a decentralized cloud that never rolls back"
+  description="BluePods hosts backends as WebAssembly pods. State splits into objects held by a subset of validators, so a transaction runs only on the machines that hold what it touches. Nothing finalized is ever reverted."
+>
+  <Nav />
+  <main>
+    <Hero />
+    <Problem />
+    <Guarantees />
+    <Mechanics />
+    <Holders />
+    <Cost />
+    <Standing />
+    <Pods />
+    <RunNode />
+  </main>
+  <Footer />
+</Base>

@@ -1,0 +1,80 @@
+---
+const peers = [
+  {
+    name: 'Internet Computer',
+    note: 'Same ambition, opposite center. ICP hosts WASM backends on subnets of a few dozen nodes, which scales by adding subnets but turns cross-subnet calls asynchronous and non-atomic, with rollback left to the developer. BluePods keeps one global DAG and pays for it in throughput.',
+  },
+  {
+    name: 'Sui',
+    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a consensus-less fast path for single-owner objects, quicker on simple transfers but not globally composable on that path, and puts large storage in a separate network. BluePods folds storage and execution into one protocol.',
+  },
+  {
+    name: 'Solana',
+    note: 'The same bandwidth bet, a different shape. Solana is leader-based, and its roadmap isolates execution into domains that cannot touch each other’s state. BluePods is leaderless and keeps composition global.',
+  },
+  {
+    name: 'Ethereum',
+    note: 'An account model over a global state trie means every validator processes every transaction, and scaling happens on layer 2. BluePods decouples unrelated state into objects. The honest cost is that composability is bounded by the per-transaction reference cap, so the deep multi-contract compositions Ethereum allows are harder here.',
+  },
+];
+---
+
+<section class="band" id="standing">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <p class="label">Where it stands</p>
+        <h2>Against the neighbours.</h2>
+      </div>
+      <p class="aside">Every one of them made a choice BluePods refused, or refused one it made.</p>
+    </div>
+
+    <div class="rows">
+      {
+        peers.map((peer) => (
+          <article class="row">
+            <h3>{peer.name}</h3>
+            <p>{peer.note}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .aside {
+    max-width: 28ch;
+    padding-bottom: 0.5rem;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  .rows {
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 1rem clamp(2rem, 5vw, 5rem);
+    padding-block: clamp(1.75rem, 3vw, 2.5rem);
+    border-top: 1px solid var(--rule);
+  }
+
+  .row:last-child {
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .row p {
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 1rem;
+  }
+
+  @media (max-width: 720px) {
+    .row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

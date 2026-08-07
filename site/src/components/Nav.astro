@@ -1,0 +1,113 @@
+---
+import { links } from '../links';
+---
+
+<header class="nav" id="site-nav">
+  <div class="wrap nav-inner">
+    <a class="mark" href="#top">BluePods</a>
+    <nav aria-label="Sections">
+      <a href="#guarantees">Guarantees</a>
+      <a href="#mechanics">Mechanics</a>
+      <a href="#cost">Cost</a>
+      <a href="#pods">Pods</a>
+      <a href={links.repo} rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<script>
+  const nav = document.getElementById('site-nav');
+
+  if (nav) {
+    /* The bar sits over both the linen page and the dark band, so it reads what
+       is behind it and flips its own colours to stay legible. */
+    const bands = Array.from(document.querySelectorAll('.band--dark'));
+    let queued = false;
+
+    const paint = () => {
+      queued = false;
+      const probe = nav.offsetHeight * 0.6;
+
+      nav.classList.toggle('is-stuck', window.scrollY > 48);
+      nav.classList.toggle(
+        'is-dark',
+        bands.some((band) => {
+          const box = band.getBoundingClientRect();
+          return box.top <= probe && box.bottom > probe;
+        }),
+      );
+    };
+
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(paint);
+    };
+
+    paint();
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule, { passive: true });
+  }
+</script>
+
+<style>
+  .nav {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 60;
+    padding-block: calc(var(--frame) + 0.75rem) 0.85rem;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .mark {
+    font-family: var(--display);
+    font-size: 1.0625rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
+    text-decoration: none;
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.5rem;
+  }
+
+  nav a {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--ink-soft);
+    transition: color 0.25s ease;
+  }
+
+  nav a::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    background: currentColor;
+  }
+
+  nav a:hover {
+    color: var(--wine);
+  }
+
+  @media (max-width: 720px) {
+    nav a:not(:last-child) {
+      display: none;
+    }
+  }
+</style>

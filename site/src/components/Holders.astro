@@ -1,0 +1,180 @@
+---
+const holders = [
+  'a41c…7f02',
+  '9d38…b1ee',
+  '0x6b7a…44c9',
+  'e207…5a13',
+  '3fc9…ad80',
+];
+---
+
+<section class="band" id="holders">
+  <div class="wrap split reveal">
+    <div>
+      <p class="label">Storage distribution</p>
+      <h2>The same object, ten times over.</h2>
+
+      <div class="prose holders-prose">
+        <p>
+          Who stores an object is computed, never assigned. Every validator gets a score of
+          <span class="code">BLAKE3(objectID &#8214; validatorPubkey)</span>, and the highest
+          scorers become the holders. Anyone can recompute that list offline from the object
+          ID, its replication factor, and the validator set. No coordination, no registry.
+        </p>
+        <p>
+          When a validator leaves, only the next one in line takes over. The others stay
+          exactly where they are, so an epoch change reshuffles a fraction of the state
+          instead of all of it.
+        </p>
+      </div>
+    </div>
+
+    <div class="fan-frame">
+      <div class="fan">
+        {
+          holders.map((key, index) => (
+            <article class="fan-card" style={`--i: ${index}`}>
+              <p class="fan-role">Holder {String(index + 1).padStart(2, '0')} / 10</p>
+              <p class="fan-key">{key}</p>
+              <dl>
+                <div>
+                  <dt>object</dt>
+                  <dd>4e1f…9b7c</dd>
+                </div>
+                <div>
+                  <dt>version</dt>
+                  <dd>12</dd>
+                </div>
+                <div>
+                  <dt>replication</dt>
+                  <dd>10</dd>
+                </div>
+              </dl>
+            </article>
+          ))
+        }
+      </div>
+      <p class="fan-caption">
+        One object. Five of its ten holders. Every other validator stores none of it.
+      </p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .holders-prose {
+    margin-top: 2rem;
+  }
+
+  .code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    color: var(--wine);
+  }
+
+  .fan-frame {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    align-items: center;
+  }
+
+  .fan {
+    /* Four gaps plus one card width has to stay inside the column, so both
+       track the viewport rather than stepping at a breakpoint. */
+    --spread: clamp(30px, 6.5vw, 62px);
+    --tilt: 5deg;
+
+    position: relative;
+    width: 100%;
+    height: 340px;
+  }
+
+  .fan-card {
+    position: absolute;
+    top: 30px;
+    left: 50%;
+    width: min(200px, 42vw);
+    padding: 1.1rem 1.2rem 1.3rem;
+    border-radius: 18px;
+    background:
+      radial-gradient(120% 120% at 15% 0%, rgba(173, 189, 171, 0.62), transparent 62%),
+      radial-gradient(100% 100% at 100% 100%, rgba(111, 29, 27, 0.2), transparent 58%),
+      var(--shell);
+    box-shadow: 0 26px 46px -32px rgba(43, 15, 14, 0.7);
+    transform-origin: 50% 130%;
+    transform: translateX(calc(-50% + (var(--i) - 2) * var(--spread)))
+      rotate(calc((var(--i) - 2) * var(--tilt)));
+    transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .fan:hover {
+    --spread: clamp(36px, 7.6vw, 74px);
+    --tilt: 6.5deg;
+  }
+
+  .fan-role {
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .fan-key {
+    margin-top: 0.5rem;
+    font-family: var(--display);
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--wine);
+  }
+
+  dl {
+    display: grid;
+    gap: 0.3rem;
+    margin: 1.1rem 0 0;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+  }
+
+  dl > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  dt {
+    color: var(--ink-faint);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--ink-soft);
+  }
+
+  .fan-caption {
+    max-width: 34ch;
+    font-family: var(--mono);
+    font-size: var(--step-meta);
+    line-height: 1.6;
+    text-align: center;
+    color: var(--ink-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fan-card,
+    .fan:hover .fan-card {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .fan {
+      --tilt: 4.5deg;
+      height: 300px;
+    }
+  }
+</style>

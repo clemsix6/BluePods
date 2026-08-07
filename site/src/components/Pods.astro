@@ -1,0 +1,118 @@
+---
+import { Code } from 'astro:components';
+import { codeTheme } from '../codeTheme';
+import { links } from '../links';
+
+const dispatcher = `pod_sdk::dispatcher! {
+    "transfer" => functions::transfer::execute,
+    "split" => functions::split::execute,
+    "merge" => functions::merge::execute,
+    "delegate" => functions::delegate::execute,
+}`;
+
+const transfer = `/// Transfers ownership of a coin object to a new owner.
+/// Does not modify the coin's balance, only changes the owner.
+///
+/// # Objects
+/// - \`0\`: Coin to transfer (Coin)
+pub fn execute(ctx: &Context) -> ExecuteResult {
+    let args: Args = match ctx.args() {
+        Some(a) => a,
+        None => return ExecuteResult::err(ERR_INVALID_ARGS),
+    };
+
+    let coin: Coin = match ctx.object(0) {
+        Some(c) => c,
+        None => return ExecuteResult::err(ERR_MISSING_OBJECT),
+    };
+
+    let mut meta: ObjectMeta = match ctx.object_meta(0) {
+        Some(m) => m,
+        None => return ExecuteResult::err(ERR_MISSING_OBJECT),
+    };
+
+    meta.owner = args.new_owner;
+
+    let mut content = alloc::vec::Vec::new();
+    coin.serialize(&mut content).unwrap();
+
+    ExecuteResult::ok().with_updated(UpdatedObject { meta, content })
+}`;
+---
+
+<section class="band" id="pods">
+  <div class="wrap reveal">
+    <div class="head">
+      <div>
+        <p class="label">Writing a pod</p>
+        <h2>Objects arrive as parameters.</h2>
+      </div>
+      <a class="jump" href={links.sdk} rel="noopener">Read the SDK &#8627;</a>
+    </div>
+
+    <div class="pod-grid">
+      <div class="prose">
+        <p>
+          A pod is a Rust crate compiled to <span class="code">wasm32-unknown-unknown</span>.
+          Calls are routed by name through a dispatcher macro, and the objects a call touches
+          arrive as explicit parameters instead of being reached for in a global tree. You
+          declare what you are going to modify up front.
+        </p>
+        <p>
+          Gas metering is stitched into the bytecode before deployment, so it is neither the
+          author's job nor something they can opt out of.
+        </p>
+
+        <figure>
+          <Code code={dispatcher} lang="rust" theme={codeTheme} />
+          <figcaption>Routing, from the system pod</figcaption>
+        </figure>
+      </div>
+
+      <figure class="wide">
+        <Code code={transfer} lang="rust" theme={codeTheme} />
+        <figcaption>
+          <span class="code">pods/pod-system/src/functions/transfer/execute.rs</span>, unabridged
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<style>
+  .pod-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 4fr) minmax(0, 6fr);
+    gap: clamp(2rem, 5vw, 4rem);
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+    align-items: start;
+  }
+
+  .code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    color: var(--wine);
+  }
+
+  figure {
+    margin: 0;
+  }
+
+  .prose figure {
+    margin-top: 0.6rem;
+  }
+
+  figcaption {
+    margin-top: 0.9rem;
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+  }
+
+  @media (max-width: 900px) {
+    .pod-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

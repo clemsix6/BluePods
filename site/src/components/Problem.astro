@@ -1,0 +1,41 @@
+---
+import { links } from '../links';
+---
+
+<section class="band" id="problem">
+  <div class="wrap split reveal">
+    <div>
+      <p class="label">The problem</p>
+      <h2>Every validator does everything.</h2>
+    </div>
+
+    <div class="prose">
+      <p>
+        Most layer 1 blockchains make you pick two of throughput, decentralization, and
+        state. Ethereum keeps decentralization, but every validator stores and processes
+        the whole state, which caps throughput. Solana reaches high throughput through a
+        leader-based pipeline, where the leader is the bottleneck and the hardware bar
+        decides who gets to take part. Sui parallelizes execution with an object model and
+        still has every validator process every transaction.
+      </p>
+      <p>
+        The usual way out is to trust fewer validators or push the work to a layer 2.
+        BluePods does neither. Each object has a defined set of <strong>holder
+        validators</strong> that store it, attest to it, and execute the transactions that
+        touch it. A transfer involves the ten to fifty holders of the objects in play, not
+        the entire network.
+      </p>
+      <p>
+        State and execution are sharded. The order everything passes through is not.
+      </p>
+      <a class="jump" href={links.vision} rel="noopener">Read the vision &#8627;</a>
+    </div>
+  </div>
+</section>
+
+<style>
+  .prose .jump {
+    justify-self: start;
+    margin-top: 0.4rem;
+  }
+</style>
