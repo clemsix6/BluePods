@@ -8,4 +8,10 @@ export const links = {
   author: 'https://www.linkedin.com/in/cl%C3%A9ment-dreiski/',
 };
 
-export const author = 'Clément Dreiski';
+export const author = {
+  name: 'Clément Dreiski',
+  role: 'Designed and built BluePods',
+  /* Served from public/. Swap the file and this path together to use a photo
+     instead of the monogram. */
+  photo: '/author.svg',
+};

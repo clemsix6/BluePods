@@ -18,9 +18,14 @@ const columns = [
       <p class="mark">BluePods</p>
       <p class="tag">A decentralized cloud, written from scratch.</p>
 
-      <p class="byline">
-        Designed and built by <a class="who" href={links.author} rel="noopener me">{author}</a>
-      </p>
+      <a class="author" href={links.author} rel="noopener me">
+        <img class="face" src={author.photo} width="112" height="112" alt="" loading="lazy" />
+        <span class="who">
+          <span class="name">{author.name}</span>
+          <span class="role">{author.role}</span>
+        </span>
+        <span class="arrow" aria-hidden="true">&#8627;</span>
+      </a>
 
       <p class="legal">Apache License 2.0</p>
     </div>
@@ -29,7 +34,7 @@ const columns = [
       {
         columns.map((column) => (
           <nav aria-label={column.title}>
-                      <p class="col-title">{column.title}</p>
+            <p class="col-title">{column.title}</p>
             <ul>
               {column.items.map((item) => (
                 <li>
@@ -73,28 +78,64 @@ const columns = [
     font-size: 1rem;
   }
 
-  .byline {
-    margin-top: 1.1rem;
-    color: var(--ink-soft);
-    font-size: 1rem;
-  }
-
-  /* Set at reading size rather than in the footer's mono link register, so the
-     name reads as a byline and not as one more entry in a list of links. */
-  .who {
-    font-family: var(--sans);
-    font-size: inherit;
-    letter-spacing: normal;
-    color: var(--ink);
+  /* Read as a contents entry, like the hero's: a rule, a face, a name, an
+     arrow. The whole row is the link, so the target is the person rather than
+     five words inside a sentence. */
+  .author {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    width: min(100%, 21rem);
+    margin-top: clamp(2rem, 4vw, 2.75rem);
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--rule);
     text-decoration: none;
-    padding-bottom: 1px;
-    border-bottom: 1px solid var(--rule);
-    transition: color 0.25s ease, border-color 0.25s ease;
+    transition: color 0.25s ease;
   }
 
-  .who:hover {
+  .face {
+    flex: none;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--shell);
+  }
+
+  .who {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  .name {
+    font-family: var(--display);
+    font-size: 1.125rem;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
+
+  .role {
+    font-family: var(--mono);
+    font-size: var(--step-label);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .arrow {
+    flex: none;
+    margin-left: auto;
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .author:hover {
     color: var(--wine);
-    border-color: var(--wine);
+  }
+
+  .author:hover .arrow {
+    transform: translateX(4px);
   }
 
   .legal {
@@ -129,7 +170,7 @@ const columns = [
     list-style: none;
   }
 
-  a {
+  .cols a {
     font-family: var(--mono);
     font-size: var(--step-meta);
     letter-spacing: 0.04em;
@@ -138,7 +179,15 @@ const columns = [
     transition: color 0.25s ease;
   }
 
-  a:hover {
+  .cols a:hover {
     color: var(--wine);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .arrow,
+    .author:hover .arrow {
+      transition: none;
+      transform: none;
+    }
   }
 </style>
