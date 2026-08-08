@@ -128,10 +128,10 @@ func genVertex(t *testing.T, v testValidator, round uint64, parents []parentRef,
 	t.Helper()
 
 	atx := objTaggedATX(t, idx)
-	unsigned := buildObjVertex(nil, v, round, parents, atx, Hash{})
-	hash := hashVertex(unsigned)
+	unsigned := buildObjVertex(nil, v, round, parents, atx, Hash{}, Hash{})
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
-	data := buildObjVertex(sig, v, round, parents, atx, hash)
+	data := buildObjVertex(sig, v, round, parents, atx, hash, bodyHash)
 
 	return scenarioVertex{data: data, hash: hash, round: round, producer: v.pubKey, tag: fmt.Sprintf("t%d", idx)}
 }
@@ -140,7 +140,7 @@ func genVertex(t *testing.T, v testValidator, round uint64, parents []parentRef,
 // produces the unsigned form (hash and signature fields omitted) whose bytes are
 // hashed; passing the signature and hash produces the final signed form. Both passes
 // lay out identical round/producer/parents/tx/epoch fields so the hash covers them.
-func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentRef, atx []byte, hash Hash) []byte {
+func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentRef, atx []byte, hash, bodyHash Hash) []byte {
 	builder := flatbuffers.NewBuilder(4096)
 
 	atxOff := rebuildATXInBuilder(builder, atx)
@@ -150,10 +150,23 @@ func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentR
 	builder.PrependUOffsetT(atxOff)
 	txsVec := builder.EndVector(1)
 
+	// The tagged transaction carries no gas_coin (this harness tests delivery-order
+	// determinism, not fee mechanics), so a real fee system would summarize it at
+	// zero (computeTxFeeSplit/validateFeeSummary both skip a gas-coin-less tx).
+	// mustFeeParams now requires the observer DAG to have fee params wired
+	// regardless, so the declared summary must be present to satisfy
+	// validateFeeSummary's "missing fee_summary with N transactions" check.
+	types.FeeSummaryStart(builder)
+	types.FeeSummaryAddTotalFees(builder, 0)
+	types.FeeSummaryAddTotalBurned(builder, 0)
+	types.FeeSummaryAddTotalEpoch(builder, 0)
+	feeSummaryOff := types.FeeSummaryEnd(builder)
+
 	producerVec := builder.CreateByteVector(v.pubKey[:])
-	var hashVec, sigVec flatbuffers.UOffsetT
+	var hashVec, bodyHashVec, sigVec flatbuffers.UOffsetT
 	if sig != nil {
 		hashVec = builder.CreateByteVector(hash[:])
+		bodyHashVec = builder.CreateByteVector(bodyHash[:])
 		sigVec = builder.CreateByteVector(sig)
 	}
 
@@ -161,11 +174,13 @@ func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentR
 	if sig != nil {
 		types.VertexAddHash(builder, hashVec)
 		types.VertexAddSignature(builder, sigVec)
+		types.VertexAddBodyHash(builder, bodyHashVec)
 	}
 	types.VertexAddRound(builder, round)
 	types.VertexAddProducer(builder, producerVec)
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
+	types.VertexAddFeeSummary(builder, feeSummaryOff)
 	types.VertexAddEpoch(builder, 0)
 	builder.Finish(types.VertexEnd(builder))
 
@@ -242,7 +257,16 @@ func newUnfrozenObserver(t *testing.T, vals []testValidator, opts ...Option) *DA
 	t.Helper()
 
 	observer := newTestValidator()
-	dag := New(newTestStorage(t), NewValidatorSet(keysOf(vals)), nil, testSystemPod, 0, observer.privKey, nil, opts...)
+
+	// mustFeeParams forbids a DAG built with none: this harness carries no gas
+	// coins (buildObjVertex's tagged transactions summarize at zero), but
+	// validateFeeSummary still requires feeParams wired to reach that zero
+	// rather than panic. Prepended so a caller's own WithFeeParams (none today)
+	// would still win.
+	feeParams := DefaultFeeParams()
+	wiredOpts := append([]Option{WithFeeParams(&feeParams)}, opts...)
+
+	dag := New(newTestStorage(t), NewValidatorSet(keysOf(vals)), nil, testSystemPod, 0, observer.privKey, nil, wiredOpts...)
 	t.Cleanup(func() { dag.Close() })
 
 	for _, v := range vals {

@@ -73,13 +73,13 @@ func rebuildUnsignedTxBody(tx *types.Transaction) []byte {
 		string(tx.FunctionName()),
 		tx.ArgsBytes(),
 		cor,
-		tx.MaxCreateDomains(),
 		tx.MaxGas(),
 		tx.GasCoinBytes(),
 		mutableRefs,
 		readRefs,
 		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 		tx.DeletedObjectsBytes(),
+		genesis.ExtractOperations(tx),
 	)
 }
 

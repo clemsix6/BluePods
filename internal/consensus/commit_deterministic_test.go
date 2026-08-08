@@ -533,9 +533,10 @@ func TestCheckCommits_DecidedEpochTailNotReDerivedAfterChurn(t *testing.T) {
 
 	// Simulate the state after the first epoch transition: epoch-1 holders frozen and
 	// a one-epoch-ahead proxy frozen, so round-9 producers (epoch 2) can be weighed.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.epochHolders = snapshotOf(dag.validators)
 	dag.nextEpochHolders = snapshotOf(dag.validators)
+	dag.publishEpochMirror() // HoldersForEpoch resolves through the mirror, not these fields directly
 
 	// Round 8 is the epoch-1 tail (2*epochLength); it is undecided directly and
 	// resolves through a round-9 (epoch 2) certified anchor weighed via the proxy.

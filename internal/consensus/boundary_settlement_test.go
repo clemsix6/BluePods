@@ -162,7 +162,7 @@ func TestStraddleCreditsRoundEpochBucket(t *testing.T) {
 	copy(h[:], types.GetRootAsVertex(data, 0).HashBytes())
 
 	dag.commitMu.Lock()
-	dag.currentEpoch = 7
+	dag.setCurrentEpoch(7)
 	dag.store.add(data, h, 10, sender)
 	dag.applyBatch(10, []Hash{h})
 	dag.commitMu.Unlock()

@@ -56,6 +56,14 @@ func (n *Node) handleClientMessage(data []byte) ([]byte, error) {
 		return n.handleGetVertex(data)
 	case network.MsgTagGetVertexRange:
 		return n.handleGetVertexRange(data)
+	case network.MsgTagGetIndexAnchor:
+		return n.handleGetIndexAnchor()
+	case network.MsgTagListChildren:
+		return n.handleListChildren(data)
+	case network.MsgTagGetAncestors:
+		return n.handleGetAncestors(data)
+	case network.MsgTagGetValidatorTree:
+		return n.handleGetValidatorTree(data)
 	case network.MsgTagStateFingerprint:
 		return n.handleStateFingerprint()
 	case network.MsgTagTestControl:
@@ -82,9 +90,9 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 		return submitErr("consensus not available"), nil
 	}
 
-	atx, hash, kind, err := n.ingestSubmission(req.Body)
+	atx, hash, kind, reason, err := n.ingestSubmission(req.Body)
 	if err != nil {
-		events.IngressTxRejected("invalid_submission", err.Error())
+		events.IngressTxRejected(reason, err.Error())
 		return submitErr(err.Error()), nil
 	}
 
@@ -107,15 +115,16 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 // validates as a raw Transaction (hash and signature check out) is a raw
 // singleton-only intent and is wrapped; otherwise it is treated as a full ATX.
 // kind reports which path was taken ("raw" or "attested"), for the ingress
-// event the caller emits.
-func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, kind string, err error) {
+// event the caller emits. reason is the ingress.tx.rejected reason to use when
+// err is non-nil; it is meaningless on success.
+func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, kind, reason string, err error) {
 	if validation.ValidateTx(body) == nil {
 		atx, hash, err = n.ingestRawTx(body)
-		return atx, hash, "raw", err
+		return atx, hash, "raw", "invalid_submission", err
 	}
 
-	atx, hash, err = ingestATX(body)
-	return atx, hash, "attested", err
+	atx, hash, reason, err = ingestATX(body)
+	return atx, hash, "attested", reason, err
 }
 
 // ingestRawTx wraps a validated raw transaction into a trivial ATX after
@@ -133,26 +142,52 @@ func (n *Node) ingestRawTx(body []byte) (atx []byte, hash []byte, err error) {
 
 // ingestATX validates the structure of a full ATX and returns it unchanged. The
 // quorum proofs are reverified by the epoch-aware verifier at commit time, so
-// ingress only checks that the nested transaction is structurally sound.
-func ingestATX(body []byte) (atx []byte, hash []byte, err error) {
+// ingress only checks that the nested transaction is structurally sound and
+// that its shape is one a node may carry: the wrapper is otherwise a way to
+// submit the very shape the raw path refuses, and an accepted submission is
+// included in this node's own vertex and gossiped onward. reason mirrors
+// innerTx's: "invalid_submission" for a structural failure, "malformed_shape"
+// for a shape-gate refusal.
+func ingestATX(body []byte) (atx []byte, hash []byte, reason string, err error) {
+	tx, reason, err := innerTx(body)
+	if err != nil {
+		return nil, nil, reason, err
+	}
+
+	return body, copyHash(tx.HashBytes()), "", nil
+}
+
+// innerTx returns an ATX body's nested transaction once it is structurally
+// sound and its shape passes the network-wide gate. It recovers from the panic
+// FlatBuffers raises on malformed bytes, so every path handing it untrusted
+// bytes — a client submission, a gossiped body — is covered. reason names
+// which class of ingress.tx.rejected failure occurred when err is non-nil:
+// "invalid_submission" for a structural failure (parse/presence/hash, the same
+// vocabulary the raw-transaction path uses) or "malformed_shape" for a
+// ValidateShape refusal — so every seam calling innerTx labels the same way.
+func innerTx(body []byte) (tx *types.Transaction, reason string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("malformed attested transaction")
+			tx, reason, err = nil, "invalid_submission", fmt.Errorf("malformed attested transaction")
 		}
 	}()
 
 	parsed := types.GetRootAsAttestedTransaction(body, 0)
 
-	tx := parsed.Transaction(nil)
+	tx = parsed.Transaction(nil)
 	if tx == nil {
-		return nil, nil, fmt.Errorf("attested transaction missing transaction")
+		return nil, "invalid_submission", fmt.Errorf("attested transaction missing transaction")
 	}
 
 	if len(tx.HashBytes()) != 32 {
-		return nil, nil, fmt.Errorf("attested transaction has invalid hash")
+		return nil, "invalid_submission", fmt.Errorf("attested transaction has invalid hash")
 	}
 
-	return body, copyHash(tx.HashBytes()), nil
+	if err := validation.ValidateShape(tx); err != nil {
+		return nil, "malformed_shape", fmt.Errorf("attested transaction shape rejected:\n%w", err)
+	}
+
+	return tx, "", nil
 }
 
 // referencesOnlySingletons reports an error if the transaction references any
@@ -519,25 +554,6 @@ func (n *Node) reserveCoinVersion(reserveCoinID [32]byte) uint64 {
 	}
 
 	return types.GetRootAsObject(data, 0).Version()
-}
-
-// handleDomainResolve resolves a domain name to an object ID via state.
-func (n *Node) handleDomainResolve(data []byte) ([]byte, error) {
-	req, err := network.DecodeDomainResolve(data)
-	if err != nil {
-		return nil, err
-	}
-
-	if n.state == nil {
-		return nil, fmt.Errorf("domain resolution not available")
-	}
-
-	objectID, found := n.state.ResolveDomain(req.Name)
-
-	return network.EncodeDomainResolveResp(&network.DomainResolveResponse{
-		Found:    found,
-		ObjectID: objectID,
-	}), nil
 }
 
 // faucetTxHash extracts the embedded transaction hash from a faucet split ATX.

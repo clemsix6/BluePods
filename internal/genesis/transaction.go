@@ -24,14 +24,14 @@ func BuildSplitTx(privKey ed25519.PrivateKey, systemPod [32]byte, reserveCoinID 
 
 	pubKey := privKey.Public().(ed25519.PublicKey)
 	unsignedBytes := BuildUnsignedTxBytesWithRefs(
-		pubKey, systemPod, "split", args, []uint16{0}, 0, faucetSplitMaxGas, reserveCoinID[:], mutableRefs, nil,
+		pubKey, systemPod, "split", args, []uint16{0}, faucetSplitMaxGas, reserveCoinID[:], mutableRefs, nil,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := BuildTxTableWithRefs(
-		builder, pubKey, systemPod, "split", args, []uint16{0}, 0, faucetSplitMaxGas, reserveCoinID[:], hash, sig, mutableRefs, nil,
+		builder, pubKey, systemPod, "split", args, []uint16{0}, faucetSplitMaxGas, reserveCoinID[:], hash, sig, mutableRefs, nil,
 	)
 
 	return finishAttestedTx(builder, txOffset)
@@ -43,13 +43,13 @@ func BuildSplitTx(privKey ed25519.PrivateKey, systemPod [32]byte, reserveCoinID 
 // lifted onto a different body. The sponsor's coin pays the gas; the gas coin must
 // be owned by the sponsor (enforced at commit). createdReps/mutableRefs/readRefs
 // describe the operation exactly as a self-paid build would.
-func BuildSponsoredTx(senderKey, sponsorKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdReps []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin [32]byte, validUntil uint64, mutableRefs, readRefs []ObjectRefData) []byte {
+func BuildSponsoredTx(senderKey, sponsorKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdReps []uint16, maxGas uint64, gasCoin [32]byte, validUntil uint64, mutableRefs, readRefs []ObjectRefData) []byte {
 	senderPub := senderKey.Public().(ed25519.PublicKey)
 	sponsorPub := sponsorKey.Public().(ed25519.PublicKey)
 
 	sponsor := Sponsorship{FeePayer: sponsorPub, ValidUntil: validUntil}
 	body := BuildUnsignedTxBytesSponsored(
-		senderPub, pod, funcName, args, createdReps, maxCreateDomains, maxGas, gasCoin[:], mutableRefs, readRefs, sponsor, nil,
+		senderPub, pod, funcName, args, createdReps, maxGas, gasCoin[:], mutableRefs, readRefs, sponsor, nil, nil,
 	)
 
 	hash := blake3.Sum256(body)
@@ -58,7 +58,7 @@ func BuildSponsoredTx(senderKey, sponsorKey ed25519.PrivateKey, pod [32]byte, fu
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := BuildTxTableSponsored(
-		builder, senderPub, pod, funcName, args, createdReps, maxCreateDomains, maxGas, gasCoin[:], hash, senderSig, mutableRefs, readRefs, sponsor, sponsorSig, nil,
+		builder, senderPub, pod, funcName, args, createdReps, maxGas, gasCoin[:], hash, senderSig, mutableRefs, readRefs, sponsor, sponsorSig, nil, nil,
 	)
 
 	return finishAttestedTx(builder, txOff)
@@ -94,12 +94,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 	args := EncodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey, rewardCoin)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, nil)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, []uint16{0}, 0, 0, nil, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "register_validator", args, []uint16{0}, 0, nil, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -111,12 +111,12 @@ func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte,
 func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, nil, 0, 0, nil)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "deregister_validator", nil, nil, 0, nil)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
 	builder := flatbuffers.NewBuilder(512)
-	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, nil, 0, 0, nil, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, systemPod, "deregister_validator", nil, nil, 0, nil, hash, sig)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
@@ -124,11 +124,11 @@ func BuildDeregisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byt
 
 // BuildAttestedTx creates a signed transaction wrapped in AttestedTransaction.
 // Genesis transactions have no objects or proofs since they don't reference existing objects.
-func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte) []byte {
+func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte) []byte {
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	// Build unsigned tx first to compute hash
-	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin)
+	unsignedBytes := BuildUnsignedTxBytes(pubKey, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(privKey, hash[:])
 
@@ -136,7 +136,7 @@ func BuildAttestedTx(privKey ed25519.PrivateKey, pod [32]byte, funcName string, 
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Build Transaction table first (must be done before AttestedTransaction)
-	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig)
+	txOffset := BuildTxTable(builder, pubKey, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin, hash, sig)
 
 	// Empty objects vector
 	types.AttestedTransactionStartObjectsVector(builder, 0)
@@ -227,6 +227,10 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	// behind after the commit loop already released the object's deposit.
 	deletedVec := buildDeletedObjectsVector(builder, tx.DeletedObjectsBytes())
 
+	// Preserve the declared operations: a re-serialized (gossiped) transaction
+	// must not silently lose its protocol-level ops.
+	opsVec := buildDeclaredOpsVector(builder, ExtractOperations(tx))
+
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
@@ -234,7 +238,7 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateDomains(builder, tx.MaxCreateDomains())
+	types.TransactionAddMaxCreateDomains(builder, 0) // deprecated field, outside the signed body: builders always encode zero, matching the canonical-body sites
 	types.TransactionAddMaxGas(builder, tx.MaxGas())
 
 	if corVec != 0 {
@@ -267,6 +271,10 @@ func RebuildTxInBuilder(builder *flatbuffers.Builder, tx *types.Transaction) fla
 
 	if deletedVec != 0 {
 		types.TransactionAddDeletedObjects(builder, deletedVec)
+	}
+
+	if opsVec != 0 {
+		types.TransactionAddOperations(builder, opsVec)
 	}
 
 	return types.TransactionEnd(builder)
@@ -362,13 +370,13 @@ type ObjectRefData struct {
 }
 
 // BuildTxTable builds a Transaction table in the given builder.
-func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
-	return BuildTxTableWithRefs(builder, sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig, nil, nil)
+func BuildTxTable(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte) flatbuffers.UOffsetT {
+	return BuildTxTableWithRefs(builder, sender, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin, hash, sig, nil, nil)
 }
 
 // BuildUnsignedTxBytes creates transaction bytes without hash and signature for hashing.
-func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte) []byte {
-	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, nil, nil)
+func BuildUnsignedTxBytes(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte) []byte {
+	return BuildUnsignedTxBytesWithRefs(sender, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin, nil, nil)
 }
 
 // Sponsorship carries the optional fee-payer binding of a sponsored transaction.
@@ -382,8 +390,8 @@ type Sponsorship struct {
 // BuildUnsignedTxBytesWithRefs creates transaction bytes with ObjectRef references.
 // It is the canonical unsigned-body primitive for a self-paid transaction; the
 // sponsored variant delegates here with its Sponsorship.
-func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData) []byte {
-	return BuildUnsignedTxBytesSponsored(sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, mutableRefs, readRefs, Sponsorship{}, nil)
+func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData) []byte {
+	return BuildUnsignedTxBytesSponsored(sender, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin, mutableRefs, readRefs, Sponsorship{}, nil, nil)
 }
 
 // BuildUnsignedTxBytesSponsored builds the canonical unsigned transaction body,
@@ -392,7 +400,14 @@ func BuildUnsignedTxBytesWithRefs(sender []byte, pod [32]byte, funcName string, 
 // authenticity check both reconstruct against it, so the three never drift. The
 // sponsorship fields follow the same absent-when-empty rule as gas_coin, so a
 // self-paid transaction (empty Sponsorship) serializes byte-identically to before.
-func BuildUnsignedTxBytesSponsored(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship, deletedObjects []byte) []byte {
+// operations follows the same rule: absent (nil/empty) reproduces the pre-field
+// body exactly, so a transaction with no declared ops is unaffected. max_create_domains
+// is deprecated (the pod domain write path is retired; domain registration is now
+// a declared operation) and is no longer a caller-supplied parameter: every
+// transaction this builds encodes it as zero, which is also the FlatBuffers
+// default, so the wire encoding is unchanged for every caller, all of which
+// already passed zero.
+func BuildUnsignedTxBytesSponsored(sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship, deletedObjects []byte, operations []DeclaredOp) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
 	argsVec := builder.CreateByteVector(args)
@@ -416,13 +431,13 @@ func BuildUnsignedTxBytesSponsored(sender []byte, pod [32]byte, funcName string,
 	}
 
 	deletedVec := buildDeletedObjectsVector(builder, deletedObjects)
+	opsVec := buildDeclaredOpsVector(builder, operations)
 
 	types.TransactionStart(builder)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
 	types.TransactionAddMaxGas(builder, maxGas)
 
 	if corVec != 0 {
@@ -453,6 +468,10 @@ func BuildUnsignedTxBytesSponsored(sender []byte, pod [32]byte, funcName string,
 		types.TransactionAddDeletedObjects(builder, deletedVec)
 	}
 
+	if opsVec != 0 {
+		types.TransactionAddOperations(builder, opsVec)
+	}
+
 	txOff := types.TransactionEnd(builder)
 	builder.Finish(txOff)
 
@@ -471,8 +490,8 @@ func buildDeletedObjectsVector(builder *flatbuffers.Builder, deletedObjects []by
 }
 
 // BuildTxTableWithRefs builds a Transaction table with ObjectRef references in the given builder.
-func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
-	return BuildTxTableSponsored(builder, sender, pod, funcName, args, createdObjectsReplication, maxCreateDomains, maxGas, gasCoin, hash, sig, mutableRefs, readRefs, Sponsorship{}, nil, nil)
+func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData) flatbuffers.UOffsetT {
+	return BuildTxTableSponsored(builder, sender, pod, funcName, args, createdObjectsReplication, maxGas, gasCoin, hash, sig, mutableRefs, readRefs, Sponsorship{}, nil, nil, nil)
 }
 
 // BuildTxTableSponsored builds a Transaction table, optionally carrying the
@@ -480,8 +499,10 @@ func BuildTxTableWithRefs(builder *flatbuffers.Builder, sender []byte, pod [32]b
 // (sponsorSig) over the same body hash. Empty sponsorship and a nil sponsorSig
 // reproduce the self-paid encoding byte-for-byte. The fee_payer / valid_until
 // fields are written under the SAME absent-when-empty rule the unsigned body
-// uses, so the stored body hashes back to the declared hash.
-func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxCreateDomains uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship, sponsorSig []byte, deletedObjects []byte) flatbuffers.UOffsetT {
+// uses, so the stored body hashes back to the declared hash. operations follows
+// the same rule. max_create_domains is deprecated (see BuildUnsignedTxBytesSponsored)
+// and always encodes as zero, mirroring the unsigned body so the two never drift.
+func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]byte, funcName string, args []byte, createdObjectsReplication []uint16, maxGas uint64, gasCoin []byte, hash [32]byte, sig []byte, mutableRefs, readRefs []ObjectRefData, sponsor Sponsorship, sponsorSig []byte, deletedObjects []byte, operations []DeclaredOp) flatbuffers.UOffsetT {
 	hashVec := builder.CreateByteVector(hash[:])
 	sigVec := builder.CreateByteVector(sig)
 	argsVec := builder.CreateByteVector(args)
@@ -510,6 +531,7 @@ func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]
 	}
 
 	deletedVec := buildDeletedObjectsVector(builder, deletedObjects)
+	opsVec := buildDeclaredOpsVector(builder, operations)
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
@@ -518,7 +540,6 @@ func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
 	types.TransactionAddArgs(builder, argsVec)
-	types.TransactionAddMaxCreateDomains(builder, maxCreateDomains)
 	types.TransactionAddMaxGas(builder, maxGas)
 
 	if corVec != 0 {
@@ -551,6 +572,10 @@ func BuildTxTableSponsored(builder *flatbuffers.Builder, sender []byte, pod [32]
 
 	if deletedVec != 0 {
 		types.TransactionAddDeletedObjects(builder, deletedVec)
+	}
+
+	if opsVec != 0 {
+		types.TransactionAddOperations(builder, opsVec)
 	}
 
 	return types.TransactionEnd(builder)

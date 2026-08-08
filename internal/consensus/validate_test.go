@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,16 +43,18 @@ func TestValidateSignature_InvalidSig(t *testing.T) {
 	}
 }
 
-// TestValidateEpoch_Mismatch verifies epoch mismatch is rejected.
+// TestValidateEpoch_Mismatch verifies an epoch the vertex's own ANCHORED
+// FRONTIER cannot have reached is rejected.
 func TestValidateEpoch_Mismatch(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(4)
 
-	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
 	defer dag.Close()
 
-	// Build vertex with epoch=2 while DAG is at epoch=1
-	data := buildTestVertex(t, validators[1], 0, nil, 2)
+	// A producer anchoring frontier 0 has committed nothing past the genesis
+	// epoch, so its commit clock cannot read epoch 2.
+	data := buildTestVertexAnchored(t, validators[1], 0, nil, 2, 0)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	err := dag.validateEpoch(vertex)
@@ -61,6 +64,147 @@ func TestValidateEpoch_Mismatch(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "epoch mismatch") {
 		t.Errorf("expected 'epoch mismatch', got: %v", err)
+	}
+}
+
+// TestValidateEpoch_Window pins the two-sided, receiver-independent window a
+// header's epoch must fall in: the epoch the vertex's ANCHORED FRONTIER commits
+// in, or that value plus or minus one. Both fields are stamped off the producer's
+// commit state, so the window is honest under any commit lag — while the vertex's
+// ROUND comes from the production clock and says nothing about the epoch its
+// producer had reached.
+//
+// The first three cases are the three witnesses from the batch-3 scenario
+// battery, each one an honest node whose entire production a round-derived window
+// rejected network-wide. The rest are the liar bounds: two epochs off the
+// frontier-derived value, on both sides.
+//
+// The receiver's own currentEpoch is left at 0 throughout: every case is decided
+// from the vertex's own header alone.
+func TestValidateEpoch_Window(t *testing.T) {
+	tests := []struct {
+		name        string // name describes the shape being pinned
+		epochLength uint64 // epochLength is the receiver's configured epoch length
+		round       uint64 // round is the round the vertex claims
+		frontier    uint64 // frontier is the committed round the vertex anchors
+		epoch       uint64 // epoch is the epoch the vertex's header claims
+		wantReject  bool   // wantReject is true when the claim must be rejected
+	}{
+		{
+			// TestScenarioPartition/across_epoch_boundary: the isolated node
+			// kept producing rounds it could not commit, healed with its cursor
+			// at 153 (epoch 1) while producing at round 546, and every peer
+			// rejected the lot as wrong_epoch.
+			name:        "partition heal: commit cursor 388 rounds below production",
+			epochLength: 150,
+			round:       546,
+			frontier:    152,
+			epoch:       1,
+		},
+		{
+			// A cold-restarted holder resumes production at
+			// lastProducedRound+1, which sits far BELOW the cursor it restored.
+			name:        "cold restart: production resumed 600 rounds below the cursor",
+			epochLength: 100,
+			round:       640,
+			frontier:    1250,
+			epoch:       12,
+		},
+		{
+			// TestScenarioStress runs epochLength 50, so sustained load puts
+			// the commit lag over two epoch lengths without any fault at all.
+			name:        "sustained load: commit lag above two epoch lengths",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       6,
+		},
+		{
+			// The boundary round R = k*epochLength transitions to epoch k
+			// BEFORE it is recorded as the frontier, and commitEpochForRound
+			// maps it to k-1: the +1 edge is reached on every boundary.
+			name:        "boundary round: transitioned but frontier still maps below",
+			epochLength: 150,
+			round:       151,
+			frontier:    150,
+			epoch:       1,
+		},
+		{
+			name:        "the frontier's own epoch",
+			epochLength: 50,
+			frontier:    310,
+			round:       460,
+			epoch:       7,
+		},
+		{
+			name:        "one epoch below the frontier",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       5,
+		},
+		{
+			name:        "two epochs above the frontier is forged",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       8,
+			wantReject:  true,
+		},
+		{
+			name:        "two epochs below the frontier is a stale validator set",
+			epochLength: 50,
+			round:       460,
+			frontier:    310,
+			epoch:       4,
+			wantReject:  true,
+		},
+		{
+			// An indexer-less producer anchors frontier 0 forever: its window
+			// stays [0,1] however far its live epoch runs. See validateEpoch.
+			name:        "frontier 0 past the genesis window is rejected",
+			epochLength: 150,
+			round:       546,
+			frontier:    0,
+			epoch:       2,
+			wantReject:  true,
+		},
+		{
+			name:        "epochs disabled: epoch 0 is the only claim",
+			epochLength: 0,
+			round:       5500,
+			frontier:    5400,
+			epoch:       0,
+		},
+		{
+			name:        "epochs disabled: a nonzero epoch is rejected",
+			epochLength: 0,
+			round:       5500,
+			frontier:    5400,
+			epoch:       1,
+			wantReject:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newTestStorage(t)
+			validators, vs := newTestValidatorSet(4)
+
+			dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(tt.epochLength))
+			defer dag.Close()
+
+			data := buildTestVertexAnchored(t, validators[1], tt.round, nil, tt.epoch, tt.frontier)
+			err := dag.validateEpoch(types.GetRootAsVertex(data, 0))
+
+			if tt.wantReject && !errors.Is(err, errWrongEpoch) {
+				t.Fatalf("epoch %d at frontier %d must be rejected, got: %v", tt.epoch, tt.frontier, err)
+			}
+
+			if !tt.wantReject && err != nil {
+				t.Fatalf("epoch %d at frontier %d must validate: %v", tt.epoch, tt.frontier, err)
+			}
+		})
 	}
 }
 
@@ -352,21 +496,24 @@ func TestValidateFeeSummary_NoSummaryWithTxs(t *testing.T) {
 	}
 }
 
-// TestValidateFeeSummary_FeesDisabled verifies fees disabled skips validation.
-func TestValidateFeeSummary_FeesDisabled(t *testing.T) {
+// TestValidateFeeSummary_EmptyVertex verifies a vertex with no transactions
+// and no declared fee_summary passes validation trivially — and, since
+// SetFeeSystem is never called here and feeParams stays nil, that this
+// vacuous case never reaches mustFeeParams: calculateTxFeeSplit is the sole
+// enforcement point, and a vertex with nothing to summarize never calls it.
+func TestValidateFeeSummary_EmptyVertex(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	// feeParams=nil → fees disabled
 	data := buildTestVertex(t, validators[0], 0, nil, 1)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	err := dag.validateFeeSummary(vertex)
 	if err != nil {
-		t.Fatalf("expected nil error when fees disabled, got: %v", err)
+		t.Fatalf("expected nil error for an empty vertex, got: %v", err)
 	}
 }
 
@@ -464,10 +611,10 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	parentOffsets = make([]flatbuffers.UOffsetT, len(parents))
@@ -491,6 +638,7 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	txsVec = builder.EndVector(0)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -502,6 +650,7 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)
@@ -514,16 +663,16 @@ func buildTestVertexWithParentLinks(t *testing.T, v testValidator, round uint64,
 func buildVertexWithFeeSummary(t *testing.T, v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte) []byte {
 	t.Helper()
 
-	// Two-pass build: first unsigned for hash, then signed.
-	data := buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, nil, nil)
-	hash := hashVertex(data)
+	// Two-pass build: first unsigned for the header hash, then signed.
+	data := buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, nil, nil, nil)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(data, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	return buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, hash[:], sig)
+	return buildVertexWithFeeSummaryInner(v, round, epoch, summary, atxBytesList, hash[:], bodyHash[:], sig)
 }
 
-// buildVertexWithFeeSummaryInner builds a vertex with optional hash/sig.
-func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte, hash, sig []byte) []byte {
+// buildVertexWithFeeSummaryInner builds a vertex with optional hash/body hash/sig.
+func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64, summary *feeSummaryValues, atxBytesList [][]byte, hash, bodyHash, sig []byte) []byte {
 	builder := flatbuffers.NewBuilder(8192)
 
 	// Rebuild all ATXs inside the builder
@@ -555,9 +704,12 @@ func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64,
 
 	producerVec := builder.CreateByteVector(v.pubKey[:])
 
-	var hashVec, sigVec flatbuffers.UOffsetT
+	var hashVec, bodyHashVec, sigVec flatbuffers.UOffsetT
 	if hash != nil {
 		hashVec = builder.CreateByteVector(hash)
+	}
+	if bodyHash != nil {
+		bodyHashVec = builder.CreateByteVector(bodyHash)
 	}
 	if sig != nil {
 		sigVec = builder.CreateByteVector(sig)
@@ -582,6 +734,10 @@ func buildVertexWithFeeSummaryInner(v testValidator, round uint64, epoch uint64,
 
 	if feeSummaryOff != 0 {
 		types.VertexAddFeeSummary(builder, feeSummaryOff)
+	}
+
+	if bodyHashVec != 0 {
+		types.VertexAddBodyHash(builder, bodyHashVec)
 	}
 
 	vertexOff := types.VertexEnd(builder)

@@ -179,8 +179,20 @@ func (rcv *Object) MutateFees(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(14, n)
 }
 
+func (rcv *Object) ParentKind() byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(16))
+	if o != 0 {
+		return rcv._tab.GetByte(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Object) MutateParentKind(n byte) bool {
+	return rcv._tab.MutateByteSlot(16, n)
+}
+
 func ObjectStart(builder *flatbuffers.Builder) {
-	builder.StartObject(6)
+	builder.StartObject(7)
 }
 func ObjectAddId(builder *flatbuffers.Builder, id flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(id), 0)
@@ -208,6 +220,9 @@ func ObjectStartContentVector(builder *flatbuffers.Builder, numElems int) flatbu
 }
 func ObjectAddFees(builder *flatbuffers.Builder, fees uint64) {
 	builder.PrependUint64Slot(5, fees, 0)
+}
+func ObjectAddParentKind(builder *flatbuffers.Builder, parentKind byte) {
+	builder.PrependByteSlot(6, parentKind, 0)
 }
 func ObjectEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

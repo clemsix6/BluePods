@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/zeebo/blake3"
 
 	"BluePods/internal/storage"
 	"BluePods/internal/types"
@@ -74,15 +75,117 @@ func BenchmarkAddVertexParallel(b *testing.B) {
 	})
 }
 
-func BenchmarkHashVertex(b *testing.B) {
+func BenchmarkVertexIdentity(b *testing.B) {
 	validators, _ := newBenchValidatorSet(1)
-	data := buildBenchVertex(validators[0], 0, nil, 1)
+	vertex := types.GetRootAsVertex(buildBenchVertex(validators[0], 0, nil, 1), 0)
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = hashVertex(data)
+		_, _ = vertexIdentity(vertex)
 	}
+}
+
+// BenchmarkVertexIdentityLoaded measures the identity of a REALISTIC vertex: a
+// full round of parent links and a batch of attested transactions. Re-deriving the
+// identity re-serializes the whole body, so its cost is proportional to the vertex,
+// and the empty-vertex figure above says nothing about what validation actually
+// pays per gossiped vertex.
+func BenchmarkVertexIdentityLoaded(b *testing.B) {
+	validators, _ := newBenchValidatorSet(100)
+
+	parents := make([]Hash, 67)
+	for i := range parents {
+		parents[i] = blake3.Sum256([]byte{byte(i)})
+	}
+
+	txs := make([][]byte, 50)
+	for i := range txs {
+		txs[i] = buildBenchATX(i)
+	}
+
+	db := newBenchStorage(b)
+	dag := New(db, NewValidatorSet(nil), nil, benchSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	vertex := types.GetRootAsVertex(dag.buildVertex(1, parents, txs), 0)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = vertexIdentity(vertex)
+	}
+}
+
+// buildBenchATX builds a serialized AttestedTransaction of a realistic shape: a
+// transaction with arguments, one collected object and its quorum proof.
+func buildBenchATX(n int) []byte {
+	builder := flatbuffers.NewBuilder(2048)
+
+	hashVec := builder.CreateByteVector(benchFill(byte(n), 32))
+	senderVec := builder.CreateByteVector(benchFill(byte(n+1), 32))
+	podVec := builder.CreateByteVector(benchFill(byte(n+2), 32))
+	argsVec := builder.CreateByteVector(benchFill(byte(n+3), 256))
+	funcNameOff := builder.CreateString("bench_fn")
+
+	types.TransactionStart(builder)
+	types.TransactionAddHash(builder, hashVec)
+	types.TransactionAddSender(builder, senderVec)
+	types.TransactionAddPod(builder, podVec)
+	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddArgs(builder, argsVec)
+	txOff := types.TransactionEnd(builder)
+
+	objectsVec := endOffsetVector(builder, []flatbuffers.UOffsetT{buildBenchObject(builder, n)}, types.AttestedTransactionStartObjectsVector)
+	proofsVec := endOffsetVector(builder, []flatbuffers.UOffsetT{buildBenchProof(builder, n)}, types.AttestedTransactionStartProofsVector)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddTransaction(builder, txOff)
+	types.AttestedTransactionAddObjects(builder, objectsVec)
+	types.AttestedTransactionAddProofs(builder, proofsVec)
+	builder.Finish(types.AttestedTransactionEnd(builder))
+
+	return builder.FinishedBytes()
+}
+
+// buildBenchObject writes one collected object with a realistic content payload.
+func buildBenchObject(builder *flatbuffers.Builder, n int) flatbuffers.UOffsetT {
+	idVec := builder.CreateByteVector(benchFill(byte(n+4), 32))
+	ownerVec := builder.CreateByteVector(benchFill(byte(n+5), 32))
+	contentVec := builder.CreateByteVector(benchFill(byte(n+6), 512))
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, uint64(n))
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, 10)
+	types.ObjectAddContent(builder, contentVec)
+
+	return types.ObjectEnd(builder)
+}
+
+// buildBenchProof writes one aggregated quorum proof.
+func buildBenchProof(builder *flatbuffers.Builder, n int) flatbuffers.UOffsetT {
+	objIDVec := builder.CreateByteVector(benchFill(byte(n+4), 32))
+	blsSigVec := builder.CreateByteVector(benchFill(byte(n+7), 96))
+	bitmapVec := builder.CreateByteVector(benchFill(byte(n+8), 16))
+
+	types.QuorumProofStart(builder)
+	types.QuorumProofAddObjectId(builder, objIDVec)
+	types.QuorumProofAddBlsSignature(builder, blsSigVec)
+	types.QuorumProofAddSignerBitmap(builder, bitmapVec)
+
+	return types.QuorumProofEnd(builder)
+}
+
+// benchFill returns n bytes filled with b.
+func benchFill(b byte, n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+
+	return out
 }
 
 func BenchmarkValidateSignature(b *testing.B) {
@@ -113,7 +216,7 @@ func BenchmarkStoreAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		v := validators[i%len(validators)]
 		vertices[i] = buildBenchVertex(v, uint64(i), nil, 1)
-		hashes[i] = hashVertex(vertices[i])
+		hashes[i] = blake3.Sum256(vertices[i])
 		producers[i] = v.pubKey
 	}
 
@@ -134,7 +237,7 @@ func BenchmarkStoreGet(b *testing.B) {
 	for i := 0; i < 10000; i++ {
 		v := validators[i%len(validators)]
 		data := buildBenchVertex(v, uint64(i), nil, 1)
-		hashes[i] = hashVertex(data)
+		hashes[i] = blake3.Sum256(data)
 		s.add(data, hashes[i], uint64(i%100), v.pubKey)
 	}
 
@@ -155,7 +258,7 @@ func BenchmarkStoreGetByRound(b *testing.B) {
 		for i := 0; i < 100; i++ {
 			v := validators[i%len(validators)]
 			data := buildBenchVertex(v, round, nil, 1)
-			hash := hashVertex(data)
+			hash := blake3.Sum256(data)
 			s.add(data, hash, round, v.pubKey)
 		}
 	}
@@ -188,7 +291,7 @@ func BenchmarkBuildVertex(b *testing.B) {
 
 	parents := make([]Hash, 67)
 	for i := range parents {
-		parents[i] = hashVertex([]byte{byte(i)})
+		parents[i] = blake3.Sum256([]byte{byte(i)})
 	}
 
 	b.ResetTimer()
@@ -255,12 +358,13 @@ func buildBenchVertex(v testValidator, round uint64, parents []Hash, epoch uint6
 	builder.Finish(vertexOffset)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
 	builder.Reset()
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -292,6 +396,7 @@ func buildBenchVertex(v testValidator, round uint64, parents []Hash, epoch uint6
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOffset = types.VertexEnd(builder)
 
 	builder.Finish(vertexOffset)

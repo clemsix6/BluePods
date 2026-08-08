@@ -12,8 +12,11 @@ import (
 )
 
 // hashTrackerEntries writes the tracker entries sorted by object ID (id,
-// version, replication, fees) and returns the sum of their fees: the running
-// total of locked storage deposits.
+// version, replication, fees, parent kind, parent, child count) and returns
+// the sum of their fees: the running total of locked storage deposits. The
+// parent kind, parent reference, and child count are hashed so a divergence
+// in the object parent hierarchy — not just in version, replication, or fees
+// — surfaces in the convergence fingerprint.
 func hashTrackerEntries(h *blake3.Hasher, entries []consensus.ObjectTrackerEntry) uint64 {
 	sorted := make([]consensus.ObjectTrackerEntry, len(entries))
 	copy(sorted, entries)
@@ -33,28 +36,38 @@ func hashTrackerEntries(h *blake3.Hasher, entries []consensus.ObjectTrackerEntry
 		h.Write(buf[:2])
 		binary.BigEndian.PutUint64(buf[:], e.Fees)
 		h.Write(buf[:])
+		h.Write([]byte{e.ParentKind})
+		h.Write(e.Parent[:])
+		binary.BigEndian.PutUint32(buf[:4], e.ChildCount)
+		h.Write(buf[:4])
 		deposits += e.Fees
 	}
 
 	return deposits
 }
 
-// hashDomains writes the domain entries sorted by name.
+// hashDomains writes the domain entries sorted by name (name, object,
+// owner, expiry epoch), so a divergence in either the lease's owner or its
+// expiry — not just the object it resolves to — surfaces in the convergence
+// fingerprint.
 func hashDomains(h *blake3.Hasher, entries []state.DomainEntry) {
 	sorted := make([]state.DomainEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], uint32(len(sorted)))
-	h.Write(buf[:])
+	var buf [8]byte
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(sorted)))
+	h.Write(buf[:4])
 
 	for _, e := range sorted {
 		nameBytes := []byte(e.Name)
-		binary.BigEndian.PutUint32(buf[:], uint32(len(nameBytes)))
-		h.Write(buf[:])
+		binary.BigEndian.PutUint32(buf[:4], uint32(len(nameBytes)))
+		h.Write(buf[:4])
 		h.Write(nameBytes)
 		h.Write(e.ObjectID[:])
+		h.Write(e.Owner[:])
+		binary.BigEndian.PutUint64(buf[:], e.ExpiryEpoch)
+		h.Write(buf[:])
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/sync"
@@ -43,8 +44,22 @@ func (n *Node) handleGossipMessage(peer *network.Peer, data []byte) {
 // The original tagged bytes are re-gossiped so the transaction reaches producers
 // that this peer does not connect to directly. The network layer's dedup filter
 // stops the forward from looping.
+//
+// A gossiped body passed through no ingress of this node's, so it runs the same
+// shape gate a submission does: queuing a shape this node would refuse from a
+// client makes it the carrier that includes it in a vertex and hands it to the
+// rest of the mesh. A refused body is neither queued nor forwarded. The
+// rejection reason follows innerTx's classification, the same vocabulary the
+// submission seam uses: "invalid_submission" for a structural failure,
+// "malformed_shape" for a shape-gate refusal.
 func (n *Node) ingestGossipedTx(body, tagged []byte) {
 	if n.dag == nil {
+		return
+	}
+
+	if _, reason, err := innerTx(body); err != nil {
+		logger.Warn("gossiped tx refused", "error", err)
+		events.IngressTxRejected(reason, err.Error())
 		return
 	}
 
@@ -56,7 +71,10 @@ func (n *Node) ingestGossipedTx(body, tagged []byte) {
 }
 
 // handleVertexMessage processes a vertex received over gossip and relays it on
-// first sight so vertices propagate across the mesh even without full connectivity.
+// first sight so vertices propagate across the mesh even without full
+// connectivity. AddVertex's verdict is the relay gate, not a storage report: a
+// vertex whose anchored index root this node disproved is stored and served on
+// request but comes back false here, so this node never amplifies it.
 func (n *Node) handleVertexMessage(peer *network.Peer, data []byte) {
 	v := types.GetRootAsVertex(data, 0)
 	logger.Debug("received vertex",

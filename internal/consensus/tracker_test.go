@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,7 +60,7 @@ func TestCheckAndUpdate_VersionConflict(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 5, 0, 0)
+	ot.trackObject(objID, 5, 0, 0, 0, Hash{})
 
 	tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
 
@@ -127,7 +128,7 @@ func TestTrackObject_StoresVersionAndReplication(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x42}
-	ot.trackObject(objID, 1, 10, 0)
+	ot.trackObject(objID, 1, 10, 0, 0, Hash{})
 
 	if v := ot.getVersion(objID); v != 1 {
 		t.Fatalf("expected version 1, got %d", v)
@@ -145,7 +146,7 @@ func TestTrackObject_GetReplication(t *testing.T) {
 
 	// Singleton (replication=0)
 	singleton := Hash{0x01}
-	ot.trackObject(singleton, 1, 0, 0)
+	ot.trackObject(singleton, 1, 0, 0, 0, Hash{})
 
 	if r := ot.getReplication(singleton); r != 0 {
 		t.Fatalf("expected replication 0, got %d", r)
@@ -153,7 +154,7 @@ func TestTrackObject_GetReplication(t *testing.T) {
 
 	// Standard object
 	standard := Hash{0x02}
-	ot.trackObject(standard, 1, 50, 0)
+	ot.trackObject(standard, 1, 50, 0, 0, Hash{})
 
 	if r := ot.getReplication(standard); r != 50 {
 		t.Fatalf("expected replication 50, got %d", r)
@@ -169,9 +170,9 @@ func TestExportImport_Roundtrip(t *testing.T) {
 	obj2 := Hash{0x02}
 	obj3 := Hash{0x03}
 
-	ot1.trackObject(obj1, 5, 10, 0)
-	ot1.trackObject(obj2, 10, 20, 0)
-	ot1.trackObject(obj3, 15, 0, 0)
+	ot1.trackObject(obj1, 5, 10, 0, 0, Hash{})
+	ot1.trackObject(obj2, 10, 20, 0, 0, Hash{})
+	ot1.trackObject(obj3, 15, 0, 0, 0, Hash{})
 
 	entries := ot1.Export()
 	if len(entries) != 3 {
@@ -199,7 +200,7 @@ func TestExportImport_WithReplication(t *testing.T) {
 	ot1 := newObjectTracker(db1)
 
 	objID := Hash{0xAA}
-	ot1.trackObject(objID, 3, 42, 0)
+	ot1.trackObject(objID, 3, 42, 0, 0, Hash{})
 
 	entries := ot1.Export()
 
@@ -295,7 +296,7 @@ func TestTrackAllObjects(t *testing.T) {
 		var id Hash
 		id[0] = byte(i)
 		id[1] = byte(i >> 8)
-		ot.trackObject(id, 1, uint16(i%50), 0)
+		ot.trackObject(id, 1, uint16(i%50), 0, 0, Hash{})
 	}
 
 	entries := ot.Export()
@@ -322,7 +323,7 @@ func TestPebblePersistence(t *testing.T) {
 
 	ot1 := newObjectTracker(db1)
 	objID := Hash{0x42}
-	ot1.trackObject(objID, 7, 25, 0)
+	ot1.trackObject(objID, 7, 25, 0, 0, Hash{})
 	db1.Close()
 
 	// Reopen and verify
@@ -399,7 +400,7 @@ func TestDeleteObject(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 5, 10, 0)
+	ot.trackObject(objID, 5, 10, 0, 0, Hash{})
 
 	if v := ot.getVersion(objID); v != 5 {
 		t.Fatalf("expected version 5, got %d", v)
@@ -419,7 +420,7 @@ func TestIncrementPreservesReplication(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x01}
-	ot.trackObject(objID, 0, 42, 0)
+	ot.trackObject(objID, 0, 42, 0, 0, Hash{})
 
 	tx := buildTxWithMutables(t, nil, []objectRef{{id: objID, version: 0}})
 	if !ot.checkAndUpdate(tx) {
@@ -460,5 +461,215 @@ func TestCommittedTxDedup(t *testing.T) {
 
 	if ot.wasCommitted(h2) {
 		t.Fatal("a different hash must not be reported as committed")
+	}
+}
+
+// TestGetParent_Legacy18ByteValueDecodesAsFrozenKeyRoot verifies a
+// pre-migration 18-byte tracker value (version+replication+fees only, no
+// parent/child-count fields) decodes as KeyRoot with a zero parent and never
+// panics.
+func TestGetParent_Legacy18ByteValueDecodesAsFrozenKeyRoot(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objID := Hash{0x09}
+
+	legacy := make([]byte, 18)
+	binary.LittleEndian.PutUint64(legacy[:8], 3)
+	binary.LittleEndian.PutUint16(legacy[8:10], 5)
+	binary.LittleEndian.PutUint64(legacy[10:18], 100)
+	if err := db.Set(ot.makeKey(objID), legacy); err != nil {
+		t.Fatalf("seed legacy value: %v", err)
+	}
+
+	kind, parent, ok := ot.getParent(objID)
+	if !ok {
+		t.Fatal("expected object to be tracked")
+	}
+	if kind != keyRootKind {
+		t.Fatalf("expected KeyRoot kind, got %d", kind)
+	}
+	if parent != (Hash{}) {
+		t.Fatalf("expected zero parent, got %x", parent)
+	}
+
+	if c := ot.childCount(objID); c != 0 {
+		t.Fatalf("expected zero child count for legacy value, got %d", c)
+	}
+}
+
+// TestTrackObject_RoundtripNewLayout verifies the 55-byte layout round-trips
+// an ObjectParent kind and parent through trackObject/getParent.
+func TestTrackObject_RoundtripNewLayout(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objID := Hash{0x10}
+	parentID := Hash{0x20}
+
+	ot.trackObject(objID, 2, 5, 100, objectParentKind, parentID)
+
+	kind, parent, ok := ot.getParent(objID)
+	if !ok {
+		t.Fatal("expected object to be tracked")
+	}
+	if kind != objectParentKind {
+		t.Fatalf("expected ObjectParent kind, got %d", kind)
+	}
+	if parent != parentID {
+		t.Fatalf("expected parent %x, got %x", parentID, parent)
+	}
+}
+
+// TestChildCount_FollowsReparentChain verifies child-count bookkeeping
+// through a create-under-object then reparent-to-key sequence: A is created
+// under KeyRoot K, B is created under object A (childCount(A) becomes 1),
+// then B is reparented to K (childCount(A) drops back to 0).
+func TestChildCount_FollowsReparentChain(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	keyK := Hash{0xF0} // a KeyRoot: an account key, not a tracked object
+	objA := Hash{0xA1}
+	objB := Hash{0xB2}
+
+	ot.trackObject(objA, 1, 0, 0, keyRootKind, keyK)
+	ot.trackObject(objB, 1, 0, 0, objectParentKind, objA)
+
+	if c := ot.childCount(objA); c != 1 {
+		t.Fatalf("expected A to have 1 child after B is tracked, got %d", c)
+	}
+
+	ot.setParent(objB, keyRootKind, keyK)
+
+	if c := ot.childCount(objA); c != 0 {
+		t.Fatalf("expected A to have 0 children after B is reparented, got %d", c)
+	}
+}
+
+// TestExportImport_PreservesParentAndChildCount verifies a round-trip through
+// Export/Import carries the parent reference and child count.
+func TestExportImport_PreservesParentAndChildCount(t *testing.T) {
+	db1 := newTrackerTestStorage(t)
+	ot1 := newObjectTracker(db1)
+
+	keyK := Hash{0xF1}
+	objA := Hash{0xA2}
+	objB := Hash{0xB3}
+
+	ot1.trackObject(objA, 1, 0, 0, keyRootKind, keyK)
+	ot1.trackObject(objB, 1, 0, 0, objectParentKind, objA)
+
+	entries := ot1.Export()
+
+	db2 := newTrackerTestStorage(t)
+	ot2 := newObjectTracker(db2)
+	ot2.Import(entries)
+
+	kind, parent, ok := ot2.getParent(objB)
+	if !ok || kind != objectParentKind || parent != objA {
+		t.Fatalf("expected B's parent preserved as ObjectParent(A), got kind=%d parent=%x ok=%v", kind, parent, ok)
+	}
+
+	if c := ot2.childCount(objA); c != 1 {
+		t.Fatalf("expected A's child count preserved as 1, got %d", c)
+	}
+}
+
+// TestDeleteObject_DecrementsParentChildCount verifies deleting a child
+// object decrements its ObjectParent parent's child count.
+func TestDeleteObject_DecrementsParentChildCount(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objA := Hash{0xA3}
+	objB := Hash{0xB4}
+
+	ot.trackObject(objA, 1, 0, 0, keyRootKind, Hash{})
+	ot.trackObject(objB, 1, 0, 0, objectParentKind, objA)
+
+	if c := ot.childCount(objA); c != 1 {
+		t.Fatalf("expected A to have 1 child, got %d", c)
+	}
+
+	ot.deleteObject(objB)
+
+	if c := ot.childCount(objA); c != 0 {
+		t.Fatalf("expected A to have 0 children after B deleted, got %d", c)
+	}
+}
+
+// TestGetParent_UnknownObject verifies an untracked object reports ok=false
+// with zero-value kind and parent, never panicking.
+func TestGetParent_UnknownObject(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	kind, parent, ok := ot.getParent(Hash{0xFE})
+	if ok {
+		t.Fatal("expected untracked object to report ok=false")
+	}
+	if kind != keyRootKind || parent != (Hash{}) {
+		t.Fatalf("expected zero-value kind/parent, got kind=%d parent=%x", kind, parent)
+	}
+}
+
+// TestSetParent_PreservesOtherFields verifies setParent changes only the
+// parent reference, leaving version, replication, and fees untouched.
+func TestSetParent_PreservesOtherFields(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objID := Hash{0xC1}
+	newParent := Hash{0xC2}
+
+	ot.trackObject(objID, 7, 12, 500, keyRootKind, Hash{})
+
+	ot.setParent(objID, objectParentKind, newParent)
+
+	if v := ot.getVersion(objID); v != 7 {
+		t.Fatalf("expected version preserved at 7, got %d", v)
+	}
+	if r := ot.getReplication(objID); r != 12 {
+		t.Fatalf("expected replication preserved at 12, got %d", r)
+	}
+	if f := ot.getFees(objID); f != 500 {
+		t.Fatalf("expected fees preserved at 500, got %d", f)
+	}
+
+	kind, parent, ok := ot.getParent(objID)
+	if !ok || kind != objectParentKind || parent != newParent {
+		t.Fatalf("expected new parent, got kind=%d parent=%x ok=%v", kind, parent, ok)
+	}
+}
+
+// TestIncrementMutableObjects_PreservesParent verifies a version bump through
+// checkAndUpdate does not disturb the object's parent reference or its
+// parent's child count.
+func TestIncrementMutableObjects_PreservesParent(t *testing.T) {
+	db := newTrackerTestStorage(t)
+	ot := newObjectTracker(db)
+
+	objA := Hash{0xA5}
+	parentID := Hash{0xA6}
+
+	// parentID must itself be a tracked object before it can receive
+	// child-count bookkeeping (an absent parent entry has no child-count
+	// field to bump).
+	ot.trackObject(parentID, 1, 0, 0, keyRootKind, Hash{})
+	ot.trackObject(objA, 0, 0, 0, objectParentKind, parentID)
+
+	tx := buildTxWithMutables(t, nil, []objectRef{{id: objA, version: 0}})
+	if !ot.checkAndUpdate(tx) {
+		t.Fatal("tx should succeed")
+	}
+
+	kind, parent, ok := ot.getParent(objA)
+	if !ok || kind != objectParentKind || parent != parentID {
+		t.Fatalf("expected parent preserved after version bump, got kind=%d parent=%x ok=%v", kind, parent, ok)
+	}
+
+	if c := ot.childCount(parentID); c != 1 {
+		t.Fatalf("expected parent's child count unchanged at 1 after child's version bump, got %d", c)
 	}
 }

@@ -63,27 +63,6 @@ func TestEncodeSplitArgs_ZeroAmount(t *testing.T) {
 	}
 }
 
-// TestEncodeTransferArgs verifies transfer args encode to 32 bytes = recipient pubkey.
-func TestEncodeTransferArgs(t *testing.T) {
-	var recipient [32]byte
-	for i := range recipient {
-		recipient[i] = byte(0xAA + i)
-	}
-
-	args := encodeTransferArgs(recipient)
-
-	if len(args) != 32 {
-		t.Fatalf("expected 32 bytes, got %d", len(args))
-	}
-
-	var decoded [32]byte
-	copy(decoded[:], args)
-
-	if decoded != recipient {
-		t.Error("recipient mismatch in encoded args")
-	}
-}
-
 // TestEncodeCreateObjectArgs verifies create_object args: 32(owner) + 2(rep LE) + 4(meta_len LE) + metadata.
 func TestEncodeCreateObjectArgs(t *testing.T) {
 	var owner [32]byte
@@ -182,14 +161,14 @@ func TestBuildSignedTx_Valid(t *testing.T) {
 	var pod [32]byte
 	copy(pod[:], []byte("system_pod_id_for_testing_1234567"))
 
-	txBytes, txHash := buildSignedTx(priv, pod, "transfer", []byte("args"), nil, nil, nil)
+	txBytes, txHash := buildSignedTx(priv, pod, "noop", []byte("args"), nil, nil, nil)
 
 	// Parse the FlatBuffer
 	tx := types.GetRootAsTransaction(txBytes, 0)
 
 	// Verify function name
-	if string(tx.FunctionName()) != "transfer" {
-		t.Errorf("expected function 'transfer', got %q", tx.FunctionName())
+	if string(tx.FunctionName()) != "noop" {
+		t.Errorf("expected function 'noop', got %q", tx.FunctionName())
 	}
 
 	// Verify hash matches what we got back

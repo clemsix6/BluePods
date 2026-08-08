@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	flatbuffers "github.com/google/flatbuffers/go"
-
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
+	"BluePods/internal/validation"
 )
 
 const (
@@ -119,7 +118,18 @@ func (d *DAG) commitNextRound() bool {
 
 	d.clearStall()
 	d.advanceCommitCursor(round)
+	d.setIndexFrontier(round)
 	return true
+}
+
+// setIndexFrontier records round's combined index root once the commit cursor
+// has fully decided it (a commit OR a skip), so the anchored root already
+// reflects any epoch-boundary validator rebuild advanceCommitCursor triggered
+// for this same round. No-op when no indexer is wired.
+func (d *DAG) setIndexFrontier(round uint64) {
+	if d.indexer != nil {
+		d.indexer.SetFrontier(round)
+	}
 }
 
 // onCausalStall records that the commit cursor's decided anchor is blocked on absent
@@ -414,6 +424,10 @@ func (d *DAG) applyBatch(commitRound uint64, batch []Hash) {
 			continue
 		}
 
+		// Anything that reached committed history gets its anchor checked once more,
+		// now that this node's own commit has passed the frontier it claims.
+		d.recheckCommittedAnchor(v)
+
 		// Attribute liveness and fees to the epoch the vertex's ROUND belongs to, not
 		// the epoch current when this batch commits. A vertex adjacent to a boundary is
 		// committed in different batches on different nodes (as its own anchor, or swept
@@ -580,7 +594,8 @@ func (d *DAG) processTransactions(v *types.Vertex, h Hash, commitRound uint64, v
 }
 
 // executeTx checks version conflicts, deducts fees, and executes a transaction.
-// Returns the fee split for this transaction (zero if fees disabled).
+// Returns the fee split for this transaction (zero for a transaction rejected
+// before fees are deducted — a nil, unverifiable, or shape-rejected one).
 //
 // verdicts carries the round's parallel proof-verification result; it is nil
 // only when executeTx is driven outside the round commit loop (such as direct
@@ -638,6 +653,27 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return FeeSplit{}
 	}
 
+	// Shape gate: the rules a declared-operation transaction must satisfy are
+	// re-checked here, on every node, through the very function client ingress
+	// runs. Ingress binds polite clients only — a byzantine producer includes
+	// what it likes, and a forged submission arrives wrapped in an ATX — so the
+	// exclusivity clauses and the operation bound have to hold where every node
+	// agrees or they hold nowhere. It runs per transaction and never at vertex
+	// level: producers include gossiped transactions without validating them, so
+	// rejecting a whole vertex over one malformed body would hand any client a
+	// lever to get honest vertices dropped.
+	//
+	// Nothing is charged. No honest node would have accepted this shape, so it
+	// buys neither block space nor a version bump, and the sender's coin is not
+	// touched. The gate sits after the proof verdict so the round's batch cursor
+	// stays aligned, and before every state touch below.
+	if err := validation.ValidateShape(tx); err != nil {
+		logger.Warn("tx shape rejected", "func", funcName, "error", err)
+		d.emitTransaction(tx, false, FailOps)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "malformed_shape")
+		return FeeSplit{}
+	}
+
 	// Sponsored-transaction expiry: a sponsor bounds its exposure to a stale signed
 	// artifact with valid_until (in epochs). This runs before fee deduction so an
 	// expired sponsorship never charges the sponsor's coin. A non-sponsored tx is
@@ -684,6 +720,15 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return feeSplit
 	}
 
+	// Declared protocol operations (reparent, transfer, delete) apply here, on
+	// every node, without pod execution, and never fall through to a pod call.
+	// Routing before the ownership check is deliberate: these operations answer
+	// to the cascade control model (controls/wouldCycle over parent metadata),
+	// not to the direct owner field validateMutableRefOwnership reads.
+	if tx.OperationsLength() > 0 {
+		return d.commitDeclaredOps(tx, txHash, vertexHash, commitRound, feeSplit, storageDeposit)
+	}
+
 	// Ownership check: sender must own all mutable_ref objects
 	if !d.validateMutableRefOwnership(atx, tx) {
 		logger.Warn("mutable_ref ownership rejected", "func", funcName)
@@ -714,13 +759,22 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// deletion set and the network-uniform tracker deposit — exactly as fee
 	// deduction does. Placing it before the skip is what keeps coins_total,
 	// deposits, and total_supply identical across holders and non-holders. Physical
-	// content removal stays holder-only in the execution path.
-	d.settleDeclaredDeletions(tx, txHash)
+	// content removal stays holder-only in the execution path. A declared
+	// deletion of an object that still has tracked children is rejected here,
+	// so the pod carve-out channel can never orphan a child either.
+	if !d.settleDeclaredDeletions(tx, txHash) {
+		logger.Debug("declared deletion of a parented object rejected", "func", funcName)
+		d.emitTransaction(tx, false, FailOps)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "delete_has_children")
+		return feeSplit
+	}
 
 	// Execution sharding: skip execution if not a holder of any mutable object.
-	// created_objects_replication/max_create_domains > 0 → ALL validators execute (holder unknown until after execution).
+	// created_objects_replication > 0 → ALL validators execute (holder unknown
+	// until after execution). max_create_domains is deprecated: pod-driven
+	// domain registration is retired, so it no longer forces global execution.
 	// Otherwise → only holders of mutable objects execute.
-	if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(atx, tx) {
+	if tx.CreatedObjectsReplicationLength() == 0 && !d.shouldExecute(atx, tx) {
 		logger.Debug("skipping execution (not holder)", "func", funcName)
 		d.emitTransaction(tx, true, FailNone)
 		events.TxCommitted(txHash, vertexHash, commitRound, true, "")
@@ -793,15 +847,47 @@ func poolUnlockedStorage(split FeeSplit, storage uint64) FeeSplit {
 // (tx.deleted_objects) is intersected with the mutable_refs validateMutableRefOwnership
 // already verified are owned by the sender, so only an owned, referenced object is
 // settled — a tampered ID for an object the sender does not reference is ignored.
-// It is a no-op with no coin store wired.
-func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
-	deleted := declaredDeletedSet(tx)
-	if len(deleted) == 0 || d.coinStore == nil {
-		return
+// Every such object must have no tracked children: a pod-driven delete of a
+// parented object rejects the whole transaction, exactly as the declared-operation
+// delete would, so neither channel can orphan a child. It returns false when a
+// parented object is present (nothing is settled) and true otherwise (including
+// the no-op cases: nothing declared, or no coin store wired).
+func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) bool {
+	targets := ownedDeletedRefs(tx)
+	if len(targets) == 0 {
+		return true
+	}
+
+	for _, id := range targets {
+		if d.tracker.childCount(id) != 0 {
+			return false
+		}
+	}
+
+	if d.coinStore == nil {
+		return true
 	}
 
 	gasCoinID, hasGasCoin := txGasCoinID(tx)
+	for _, id := range targets {
+		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
+		events.ObjectDeleted(id, txHash, refund)
+	}
 
+	return true
+}
+
+// ownedDeletedRefs returns the IDs a transaction both declares deleted and
+// references mutably, deduplicated and in mutable-ref order. Intersecting the
+// declared set with the mutable refs (already verified sender-owned) drops a
+// tampered ID for an object the sender does not reference.
+func ownedDeletedRefs(tx *types.Transaction) []Hash {
+	deleted := declaredDeletedSet(tx)
+	if len(deleted) == 0 {
+		return nil
+	}
+
+	var targets []Hash
 	var ref types.ObjectRef
 	for i := 0; i < tx.MutableRefsLength(); i++ {
 		if !tx.MutableRefs(&ref, i) {
@@ -814,9 +900,10 @@ func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
 		}
 
 		delete(deleted, id) // single-shot per object within this transaction
-		refund := d.settleDeletion(id, gasCoinID, hasGasCoin)
-		events.ObjectDeleted(id, txHash, refund)
+		targets = append(targets, id)
 	}
+
+	return targets
 }
 
 // settleDeletion releases a deleted object's storage deposit from the
@@ -826,22 +913,31 @@ func (d *DAG) settleDeclaredDeletions(tx *types.Transaction, txHash Hash) {
 // the deposits term of the supply identity by the same amount on every node, so
 // the identity never overstates the coins backing it. It returns the refunded
 // amount. The burn is gated on the refund landing, so a missing coin burns the
-// whole deposit rather than leaking the refund out of supply.
+// whole deposit rather than leaking the refund out of supply. This is the single
+// settlement point for both deletion channels (the declared op and the
+// pod-driven carve-out), so it is also the single point that feeds the index's
+// RemoveObject.
 func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
 	deposit := d.tracker.getFees(objID)
 	d.tracker.deleteObject(objID)
 
-	if deposit == 0 || d.feeParams == nil {
+	if d.indexer != nil {
+		d.indexer.RemoveObject(objID)
+	}
+
+	if deposit == 0 {
 		return 0
 	}
 
-	if !hasGasCoin || d.feeParams.StorageRefundBPS == 0 {
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
+
+	if !hasGasCoin || params.StorageRefundBPS == 0 {
 		d.coinStore.SubSupply(deposit) // no recipient: burn the full locked deposit
 		events.SupplyBurned(deposit, "deletion")
 		return 0
 	}
 
-	refund := deposit * d.feeParams.StorageRefundBPS / bpsMax
+	refund := deposit * params.StorageRefundBPS / bpsMax
 	burned := deposit - refund
 
 	// creditCoin also raises coins_total; gate the burn on it landing so a missing
@@ -931,13 +1027,15 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 // only on the fully-covered created-object path, where it is normally locked
 // against the object the pod creates; the caller pools it instead when execution
 // creates no object, so the debited fee never leaks from the supply identity.
-// proceed=true means fees were successfully handled (or fees are disabled).
+// proceed=true means fees were successfully handled (or no coin store is wired).
 // proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
 // insufficient funds).
 func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, uint64, bool) {
-	if d.feeParams == nil || d.coinStore == nil {
+	if d.coinStore == nil {
 		return FeeSplit{}, 0, true
 	}
+
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
 
 	// No gas coin: reject, unless this is a validator-set-management action.
 	// Genesis is seeded state and protocol actions (issuance, reward crediting,
@@ -958,8 +1056,8 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	copy(gasCoinID[:], gasCoinBytes)
 
 	// min_gas anti-spam check
-	if tx.MaxGas() < d.feeParams.MinGas {
-		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", d.feeParams.MinGas)
+	if tx.MaxGas() < params.MinGas {
+		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", params.MinGas)
 		return FeeSplit{}, 0, false
 	}
 
@@ -969,8 +1067,9 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 		return FeeSplit{}, 0, false
 	}
 
-	// Split the fee: consumed (compute+transit+domain) feeds the pool; storage is
-	// the object's locked deposit, debited from the coin but never pooled.
+	// Split the fee: the consumed part (compute, transit, domain and the declared
+	// operations' flat fees and rent) feeds the pool; storage is the object's
+	// locked deposit, debited from the coin but never pooled.
 	consumed, storage := d.calculateTxFeeSplit(tx, atx)
 	fee := consumed + storage
 	if fee == 0 {
@@ -997,23 +1096,23 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 	// Pool only the consumed portion; the storage deposit stays withheld, locked
 	// against the created object on success or pooled by the caller on failure.
-	return SplitFee(consumed, *d.feeParams), storage, true
+	return SplitFee(consumed, *params), storage, true
 }
 
 // calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
 // to the epoch reward pool) and the storage portion (locked in the created
-// objects as a refundable deposit, never pooled). The storage term sums
-// StorageDeposit over the created objects using the SAME live validator count
-// state.computeStorageDeposit reads, so the debited storage equals the stamped
-// deposit and total_supply is unchanged at create time.
+// objects as a refundable deposit, never pooled). Declared-operation fees, a
+// domain lease's rent included, are consumed: a lease buys epochs of service
+// from the validators the pool pays, not an asset to be refunded. The storage
+// term sums StorageDeposit over the created objects using the SAME live
+// validator count state.computeStorageDeposit reads, so the debited storage
+// equals the stamped deposit and total_supply is unchanged at create time.
 func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTransaction) (consumed, storage uint64) {
-	if d.feeParams == nil {
-		return 0, 0
-	}
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
 
 	totalValidators := d.validators.Len()
 	for _, rep := range extractCreatedObjectsReplication(tx) {
-		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee))
+		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, params.StorageFee, params.IndexEntryFee))
 	}
 
 	full := d.calculateTxFee(tx, atx)
@@ -1235,17 +1334,23 @@ func (d *DAG) calculateTxFee(tx *types.Transaction, atx *types.AttestedTransacti
 	repNum, repDenom := ReplicationRatio(
 		mutableRefs,
 		len(createdReps),
-		int(tx.MaxCreateDomains()),
 		d.computeHolders,
 		totalValidators,
 	)
+
+	// Declared operations are priced from the header. A transaction that carries
+	// them and no pod call runs no metered code, so it pays the flat min_gas
+	// compute term; one carrying both is a mixed transaction, rejected at commit
+	// but charged for the execution its holders were asked to run.
+	ops := genesis.ExtractOperations(tx)
 
 	return CalculateFee(
 		tx.MaxGas(),
 		repNum, repDenom,
 		standardCount,
 		createdReps,
-		int(tx.MaxCreateDomains()),
+		ops,
+		len(ops) > 0 && !txHasPodCall(tx),
 		totalValidators,
 		*d.feeParams,
 	)
@@ -1900,94 +2005,4 @@ func (d *DAG) emitTransaction(tx *types.Transaction, success bool, reason FailRe
 	case d.committed <- committed:
 	case <-d.stop:
 	}
-}
-
-// serializeAttestedTx re-serializes an AttestedTransaction as a standalone buffer.
-// This is needed because atx.Table().Bytes returns the parent Vertex buffer.
-func serializeAttestedTx(atx *types.AttestedTransaction) []byte {
-	builder := flatbuffers.NewBuilder(1024)
-
-	// Rebuild Transaction
-	tx := atx.Transaction(nil)
-	txOffset := serializeTx(builder, tx)
-
-	// Rebuild Objects vector
-	objOffsets := make([]flatbuffers.UOffsetT, atx.ObjectsLength())
-	for i := 0; i < atx.ObjectsLength(); i++ {
-		var obj types.Object
-		atx.Objects(&obj, i)
-		objOffsets[i] = serializeObject(builder, &obj)
-	}
-
-	types.AttestedTransactionStartObjectsVector(builder, len(objOffsets))
-	for i := len(objOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(objOffsets[i])
-	}
-	objectsVec := builder.EndVector(len(objOffsets))
-
-	// Rebuild Proofs vector
-	proofOffsets := make([]flatbuffers.UOffsetT, atx.ProofsLength())
-	for i := 0; i < atx.ProofsLength(); i++ {
-		var proof types.QuorumProof
-		atx.Proofs(&proof, i)
-		proofOffsets[i] = serializeQuorumProof(builder, &proof)
-	}
-
-	types.AttestedTransactionStartProofsVector(builder, len(proofOffsets))
-	for i := len(proofOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(proofOffsets[i])
-	}
-	proofsVec := builder.EndVector(len(proofOffsets))
-
-	types.AttestedTransactionStart(builder)
-	types.AttestedTransactionAddTransaction(builder, txOffset)
-	types.AttestedTransactionAddObjects(builder, objectsVec)
-	types.AttestedTransactionAddProofs(builder, proofsVec)
-	types.AttestedTransactionAddAttestationEpoch(builder, atx.AttestationEpoch())
-	atxOffset := types.AttestedTransactionEnd(builder)
-
-	builder.Finish(atxOffset)
-
-	return builder.FinishedBytes()
-}
-
-// serializeTx rebuilds a Transaction in the builder.
-func serializeTx(builder *flatbuffers.Builder, tx *types.Transaction) flatbuffers.UOffsetT {
-	if tx == nil {
-		types.TransactionStart(builder)
-		return types.TransactionEnd(builder)
-	}
-
-	return genesis.RebuildTxInBuilder(builder, tx)
-}
-
-// serializeObject rebuilds an Object in the builder.
-func serializeObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.UOffsetT {
-	idVec := builder.CreateByteVector(obj.IdBytes())
-	ownerVec := builder.CreateByteVector(obj.OwnerBytes())
-	contentVec := builder.CreateByteVector(obj.ContentBytes())
-
-	types.ObjectStart(builder)
-	types.ObjectAddId(builder, idVec)
-	types.ObjectAddVersion(builder, obj.Version())
-	types.ObjectAddOwner(builder, ownerVec)
-	types.ObjectAddReplication(builder, obj.Replication())
-	types.ObjectAddContent(builder, contentVec)
-	types.ObjectAddFees(builder, obj.Fees())
-
-	return types.ObjectEnd(builder)
-}
-
-// serializeQuorumProof rebuilds a QuorumProof in the builder.
-func serializeQuorumProof(builder *flatbuffers.Builder, proof *types.QuorumProof) flatbuffers.UOffsetT {
-	objIdVec := builder.CreateByteVector(proof.ObjectIdBytes())
-	blsSigVec := builder.CreateByteVector(proof.BlsSignatureBytes())
-	bitmapVec := builder.CreateByteVector(proof.SignerBitmapBytes())
-
-	types.QuorumProofStart(builder)
-	types.QuorumProofAddObjectId(builder, objIdVec)
-	types.QuorumProofAddBlsSignature(builder, blsSigVec)
-	types.QuorumProofAddSignerBitmap(builder, bitmapVec)
-
-	return types.QuorumProofEnd(builder)
 }

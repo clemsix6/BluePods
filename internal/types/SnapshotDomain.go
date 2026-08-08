@@ -83,8 +83,54 @@ func (rcv *SnapshotDomain) MutateObjectId(j int, n byte) bool {
 	return false
 }
 
+func (rcv *SnapshotDomain) Owner(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *SnapshotDomain) OwnerLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *SnapshotDomain) OwnerBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *SnapshotDomain) MutateOwner(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
+func (rcv *SnapshotDomain) ExpiryEpoch() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(10))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *SnapshotDomain) MutateExpiryEpoch(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(10, n)
+}
+
 func SnapshotDomainStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(4)
 }
 func SnapshotDomainAddName(builder *flatbuffers.Builder, name flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(name), 0)
@@ -94,6 +140,15 @@ func SnapshotDomainAddObjectId(builder *flatbuffers.Builder, objectId flatbuffer
 }
 func SnapshotDomainStartObjectIdVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
+}
+func SnapshotDomainAddOwner(builder *flatbuffers.Builder, owner flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(2, flatbuffers.UOffsetT(owner), 0)
+}
+func SnapshotDomainStartOwnerVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
+}
+func SnapshotDomainAddExpiryEpoch(builder *flatbuffers.Builder, expiryEpoch uint64) {
+	builder.PrependUint64Slot(3, expiryEpoch, 0)
 }
 func SnapshotDomainEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

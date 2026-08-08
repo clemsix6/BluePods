@@ -123,7 +123,7 @@ func TestHandleSubmitTx_RawTx_EmitsIngressTxReceived(t *testing.T) {
 func TestHandleSubmitTx_AttestedTx_EmitsIngressTxReceived(t *testing.T) {
 	n := submitTestNode(t)
 
-	atxBytes := genesis.BuildAttestedTx(n.cfg.PrivateKey, n.systemPod, "noop", nil, nil, 0, 0, nil)
+	atxBytes := genesis.BuildAttestedTx(n.cfg.PrivateKey, n.systemPod, "noop", nil, nil, 0, nil)
 	req := network.EncodeSubmitTx(&network.SubmitTxRequest{Body: atxBytes})
 
 	buf := captureEvents(t)

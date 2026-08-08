@@ -7,7 +7,6 @@ import (
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/zeebo/blake3"
 
 	"BluePods/internal/consensus"
 	"BluePods/internal/network"
@@ -63,7 +62,7 @@ func buildRound0Vertex(t *testing.T, priv ed25519.PrivateKey) ([]byte, consensus
 	var producer [32]byte
 	copy(producer[:], priv.Public().(ed25519.PublicKey))
 
-	build := func(hash, sig []byte) []byte {
+	build := func(hash, bodyHash, sig []byte) []byte {
 		b := flatbuffers.NewBuilder(256)
 
 		types.VertexStartParentsVector(b, 0)
@@ -71,9 +70,12 @@ func buildRound0Vertex(t *testing.T, priv ed25519.PrivateKey) ([]byte, consensus
 		types.VertexStartTransactionsVector(b, 0)
 		txs := b.EndVector(0)
 
-		var hashVec, sigVec flatbuffers.UOffsetT
+		var hashVec, bodyHashVec, sigVec flatbuffers.UOffsetT
 		if hash != nil {
 			hashVec = b.CreateByteVector(hash)
+		}
+		if bodyHash != nil {
+			bodyHashVec = b.CreateByteVector(bodyHash)
 		}
 		if sig != nil {
 			sigVec = b.CreateByteVector(sig)
@@ -92,21 +94,24 @@ func buildRound0Vertex(t *testing.T, priv ed25519.PrivateKey) ([]byte, consensus
 		types.VertexAddParents(b, parents)
 		types.VertexAddTransactions(b, txs)
 		types.VertexAddEpoch(b, 0)
+		if bodyHash != nil {
+			types.VertexAddBodyHash(b, bodyHashVec)
+		}
 		b.Finish(types.VertexEnd(b))
 
 		return b.FinishedBytes()
 	}
 
-	unsigned := build(nil, nil)
-	hash := blake3.Sum256(unsigned)
+	// The identity is the header hash: BLAKE3 over {producer, round, epoch,
+	// frontier_round, index_root, body_hash}, with body_hash covering the body.
+	hash, bodyHash, ok := consensus.VertexIdentity(build(nil, nil, nil))
+	if !ok {
+		t.Fatal("the test vertex must be readable")
+	}
+
 	sig := ed25519.Sign(priv, hash[:])
 
-	data := build(hash[:], sig)
-
-	var h consensus.Hash
-	copy(h[:], hash[:])
-
-	return data, h
+	return build(hash[:], bodyHash[:], sig), hash
 }
 
 // startServingNode builds a server node whose DAG holds the given vertex and serves

@@ -1020,9 +1020,9 @@ func TestEpochTransition_ScannerSeesNewHolders(t *testing.T) {
 	obj1 := Hash{0x10}
 	obj2 := Hash{0x20}
 	obj3 := Hash{0x30}
-	dag.tracker.trackObject(obj1, 1, 2, 0)
-	dag.tracker.trackObject(obj2, 1, 2, 0)
-	dag.tracker.trackObject(obj3, 1, 2, 0)
+	dag.tracker.trackObject(obj1, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj2, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj3, 1, 2, 0, 0, Hash{})
 
 	// Epoch 1: initial state with 3 validators
 	dag.transitionEpoch(10)
@@ -1087,8 +1087,8 @@ func TestEpochTransition_ScannerWithSingletons(t *testing.T) {
 	// Track a singleton and a standard object
 	singleton := Hash{0xAA}
 	standard := Hash{0xBB}
-	dag.tracker.trackObject(singleton, 1, 0, 0) // replication=0 → singleton
-	dag.tracker.trackObject(standard, 1, 3, 0)  // replication=3 → standard
+	dag.tracker.trackObject(singleton, 1, 0, 0, 0, Hash{}) // replication=0 → singleton
+	dag.tracker.trackObject(standard, 1, 3, 0, 0, Hash{})  // replication=3 → standard
 
 	// isHolder: singletons always held (replication=0 → true), standard NOT held
 	isHolder := func(id [32]byte, rep uint16) bool {
@@ -1141,9 +1141,9 @@ func TestScannerReplicationPassedCorrectly(t *testing.T) {
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
 	obj3 := Hash{0x03}
-	dag.tracker.trackObject(obj1, 1, 0, 0)  // singleton
-	dag.tracker.trackObject(obj2, 1, 3, 0)  // replication=3
-	dag.tracker.trackObject(obj3, 1, 10, 0) // replication=10
+	dag.tracker.trackObject(obj1, 1, 0, 0, 0, Hash{})  // singleton
+	dag.tracker.trackObject(obj2, 1, 3, 0, 0, Hash{})  // replication=3
+	dag.tracker.trackObject(obj3, 1, 10, 0, 0, Hash{}) // replication=10
 
 	// Record what replication values isHolder receives
 	receivedRep := make(map[Hash]uint16)
@@ -1182,8 +1182,8 @@ func TestEpochTransition_ValidatorLeaves_ObjectsRedistributed(t *testing.T) {
 	// Track objects
 	obj1 := Hash{0x01}
 	obj2 := Hash{0x02}
-	dag.tracker.trackObject(obj1, 1, 2, 0)
-	dag.tracker.trackObject(obj2, 1, 2, 0)
+	dag.tracker.trackObject(obj1, 1, 2, 0, 0, Hash{})
+	dag.tracker.trackObject(obj2, 1, 2, 0, 0, Hash{})
 
 	// Initialize epoch holders
 	dag.InitEpochHolders()
@@ -1369,10 +1369,10 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash + signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	parentOffsets = make([]flatbuffers.UOffsetT, len(parents))
@@ -1401,6 +1401,7 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	txsVec = builder.EndVector(0)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -1412,6 +1413,7 @@ func buildVertexWithProperParents(t *testing.T, dag *DAG, v testValidator, round
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)
@@ -1595,7 +1597,7 @@ func TestFullEpochHappyPath_ObjectRedistribution(t *testing.T) {
 	objects := make([]Hash, 50)
 	for i := range objects {
 		objects[i] = Hash{0xC0, byte(i)}
-		dag.tracker.trackObject(objects[i], 1, 2, 0)
+		dag.tracker.trackObject(objects[i], 1, 2, 0, 0, Hash{})
 	}
 
 	// Epoch 1: initial snapshot
@@ -2030,7 +2032,7 @@ func TestRewardConservation(t *testing.T) {
 
 	// Settlement is deferred one boundary, so epoch 0's bucket is minted at the next
 	// boundary. Model that: the node is in epoch 1 with epoch 0's bucket still pending.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio → rate rises, issuance > 0
 	dag.validators.AddDelegated(pk, 100)
 	dag.validators.SetRewardCoin(pk, rewardCoin)
@@ -2109,7 +2111,7 @@ func TestRunThermostat_MintsWhenDistributable(t *testing.T) {
 
 	// Bonded far below the 25% band → the rate should rise. Settlement is deferred one
 	// boundary, so drive it from epoch 1 with epoch 0's bucket pending.
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000) // 1% ratio
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 
@@ -2142,7 +2144,7 @@ func TestRunThermostat_ZeroFeeStillMints(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 3} // no fees this epoch, only issuance
 
@@ -2162,7 +2164,7 @@ func TestRunThermostat_ZeroWeightMintsNothing(t *testing.T) {
 	dag, store, pk := thermostatTestDAG(t, 1_000_000)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	// No rounds produced in the settled epoch → totalRewardWeight == 0.
 	dag.epochRoundsProduced = make(map[uint64]map[Hash]uint64)
@@ -2203,7 +2205,7 @@ func TestRunThermostat_OffByDefaultMintsNothing(t *testing.T) {
 	dag.SetFeeSystem(store, &params, nil)
 	defer dag.Close()
 
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.validators.SetSelfStake(pk, 10_000)
 	dag.epochRoundsProduced[0] = map[Hash]uint64{pk: 5}
 

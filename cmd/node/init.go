@@ -84,7 +84,7 @@ func (n *Node) initNetwork() error {
 // initConsensus initializes the DAG consensus engine.
 func (n *Node) initConsensus() error {
 	validators := n.buildValidatorSet()
-	opts := n.buildConsensusOpts()
+	opts := append(n.buildConsensusOpts(), n.committedStateOpts()...)
 
 	n.dag = consensus.New(
 		n.storage,
@@ -151,15 +151,37 @@ func restoreValidatorSet(infos []*consensus.ValidatorInfo) *consensus.ValidatorS
 	return vs
 }
 
-// buildConsensusOpts creates consensus options for the bootstrap node.
-// Genesis is seeded as state after the fee system is wired (seedGenesisState),
-// not injected as transactions.
+// buildConsensusOpts creates the consensus options for a DAG built from local
+// state: a genesis bootstrap, or a node resuming over committed state it owns
+// (resume.go). The governed parameters below belong to both — a resuming node
+// that dropped them would run a different production threshold, fanout and
+// epoch schedule from the network it is rejoining, which is a fork, not a
+// tuning difference.
 func (n *Node) buildConsensusOpts() []consensus.Option {
-	if !n.cfg.Bootstrap {
-		return nil
+	if n.cfg.Bootstrap {
+		return n.bootstrapConsensusOpts()
 	}
 
-	// Derive BLS key early so it's available for genesis seeding.
+	return n.appendEpochOpts(n.governedConsensusOpts())
+}
+
+// governedConsensusOpts returns the network-wide parameters every construction
+// path passes, mirroring initConsensusForValidator's own list.
+func (n *Node) governedConsensusOpts() []consensus.Option {
+	opts := []consensus.Option{consensus.WithMinValidators(n.cfg.MinValidators)}
+
+	if n.cfg.GossipFanout > 0 {
+		opts = append(opts, consensus.WithGossipFanout(n.cfg.GossipFanout))
+	}
+
+	return opts
+}
+
+// bootstrapConsensusOpts adds what only the genesis node carries. Genesis is
+// seeded as state after the fee system is wired (seedGenesisState), not
+// injected as transactions, so the BLS key is derived here rather than waiting
+// for initAggregation: the seed needs it.
+func (n *Node) bootstrapConsensusOpts() []consensus.Option {
 	blsKey, err := aggregation.DeriveFromED25519(n.cfg.PrivateKey)
 	if err != nil {
 		logger.Warn("failed to derive BLS key for genesis", "error", err)
@@ -168,16 +190,7 @@ func (n *Node) buildConsensusOpts() []consensus.Option {
 
 	n.blsKey = blsKey
 
-	opts := []consensus.Option{
-		consensus.WithBootstrap(),
-		consensus.WithMinValidators(n.cfg.MinValidators),
-	}
-
-	if n.cfg.GossipFanout > 0 {
-		opts = append(opts, consensus.WithGossipFanout(n.cfg.GossipFanout))
-	}
-
-	return n.appendEpochOpts(opts)
+	return n.appendEpochOpts(append(n.governedConsensusOpts(), consensus.WithBootstrap()))
 }
 
 // genesisConfig builds the genesis configuration for the bootstrap node.

@@ -29,6 +29,7 @@ impl<'a> Object<'a> {
   pub const VT_REPLICATION: ::flatbuffers::VOffsetT = 10;
   pub const VT_CONTENT: ::flatbuffers::VOffsetT = 12;
   pub const VT_FEES: ::flatbuffers::VOffsetT = 14;
+  pub const VT_PARENT_KIND: ::flatbuffers::VOffsetT = 16;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -46,6 +47,7 @@ impl<'a> Object<'a> {
     if let Some(x) = args.owner { builder.add_owner(x); }
     if let Some(x) = args.id { builder.add_id(x); }
     builder.add_replication(args.replication);
+    builder.add_parent_kind(args.parent_kind);
     builder.finish()
   }
 
@@ -92,6 +94,13 @@ impl<'a> Object<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(Object::VT_FEES, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn parent_kind(&self) -> u8 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u8>(Object::VT_PARENT_KIND, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for Object<'_> {
@@ -106,6 +115,7 @@ impl ::flatbuffers::Verifiable for Object<'_> {
      .visit_field::<u16>("replication", Self::VT_REPLICATION, false)?
      .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, u8>>>("content", Self::VT_CONTENT, false)?
      .visit_field::<u64>("fees", Self::VT_FEES, false)?
+     .visit_field::<u8>("parent_kind", Self::VT_PARENT_KIND, false)?
      .finish();
     Ok(())
   }
@@ -117,6 +127,7 @@ pub struct ObjectArgs<'a> {
     pub replication: u16,
     pub content: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, u8>>>,
     pub fees: u64,
+    pub parent_kind: u8,
 }
 impl<'a> Default for ObjectArgs<'a> {
   #[inline]
@@ -128,6 +139,7 @@ impl<'a> Default for ObjectArgs<'a> {
       replication: 0,
       content: None,
       fees: 0,
+      parent_kind: 0,
     }
   }
 }
@@ -162,6 +174,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> ObjectBuilder<'a, 'b, A> {
     self.fbb_.push_slot::<u64>(Object::VT_FEES, fees, 0);
   }
   #[inline]
+  pub fn add_parent_kind(&mut self, parent_kind: u8) {
+    self.fbb_.push_slot::<u8>(Object::VT_PARENT_KIND, parent_kind, 0);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> ObjectBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     ObjectBuilder {
@@ -185,6 +201,7 @@ impl ::core::fmt::Debug for Object<'_> {
       ds.field("replication", &self.replication());
       ds.field("content", &self.content());
       ds.field("fees", &self.fees());
+      ds.field("parent_kind", &self.parent_kind());
       ds.finish()
   }
 }

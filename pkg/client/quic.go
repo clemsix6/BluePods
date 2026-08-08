@@ -143,6 +143,12 @@ func (t *QUICTransport) Health() (bool, error) {
 
 // DomainResolve resolves a domain name to an object ID over QUIC. It returns the
 // object ID and a found flag.
+//
+// This is the UNPROVEN live read of spec §5's freshness choice: the answer is
+// the serving node's own word, taken at whatever state its trees are in, with
+// the proof the response also carries discarded. It is the right verb only
+// when the answer is not worth verifying; ResolveDomainProved, and
+// LightClient.ResolveDomain above it, are the verifiable side of that choice.
 func (t *QUICTransport) DomainResolve(name string) ([32]byte, bool, error) {
 	resp, err := t.roundTrip(network.EncodeDomainResolve(&network.DomainResolveRequest{Name: name}))
 	if err != nil {
@@ -210,6 +216,26 @@ func (t *QUICTransport) Fingerprint() (*network.FingerprintResponse, error) {
 	}
 
 	return parsed, nil
+}
+
+// GetIndexAnchor fetches the node's cached quorum-attested index anchor
+// bundle over QUIC: the highest recent committed frontier for which enough
+// producer-signed vertex headers agree with this node's own index root to
+// reach the epoch's capped-stake quorum, together with those raw header
+// records. This verb only performs the wire round-trip and decode — each
+// record is network.IndexAnchorHeaderSize (184) bytes, the normative 120-byte
+// vertex header (see internal/consensus/header.go's wire-layout comment)
+// followed by the producer's 64-byte Ed25519 signature over
+// BLAKE3(0x01 || header); decoding the record's fields and verifying the
+// signature is left to the caller, exactly as a light client would. Found is
+// false when the node has no quorate frontier yet.
+func (t *QUICTransport) GetIndexAnchor() (*network.GetIndexAnchorResponse, error) {
+	resp, err := t.roundTrip(network.EncodeGetIndexAnchor())
+	if err != nil {
+		return nil, fmt.Errorf("get index anchor:\n%w", err)
+	}
+
+	return network.DecodeGetIndexAnchorResp(resp)
 }
 
 // TestControl sends a test-only network-control operation over QUIC. It

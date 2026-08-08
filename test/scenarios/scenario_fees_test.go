@@ -30,7 +30,6 @@ func TestScenarioFees(t *testing.T) {
 	c := harness.NewCluster(t, 5)
 	node0 := c.Node(0)
 	cli := c.Client(0)
-	systemPod := cli.SystemPod()
 
 	t.Run("full_deduction", func(t *testing.T) {
 		testFullDeduction(t, c, cli, node0)
@@ -45,15 +44,15 @@ func TestScenarioFees(t *testing.T) {
 	})
 
 	t.Run("gas_coin_missing", func(t *testing.T) {
-		testGasCoinMissing(t, c, cli, node0, systemPod)
+		testGasCoinMissing(t, c, cli, node0)
 	})
 
 	t.Run("gas_coin_not_owned", func(t *testing.T) {
-		testGasCoinNotOwned(t, c, cli, node0, systemPod)
+		testGasCoinNotOwned(t, c, cli, node0)
 	})
 
 	t.Run("gas_coin_not_singleton", func(t *testing.T) {
-		testGasCoinNotSingleton(t, c, cli, node0, systemPod)
+		testGasCoinNotSingleton(t, c, cli, node0)
 	})
 }
 
@@ -186,7 +185,7 @@ func testUnderfundedGasCoin(t *testing.T, c *harness.Cluster, cli *client.Client
 
 // testGasCoinMissing submits a transfer whose gas coin does not exist:
 // fee_rejected on every node, and the operated coin untouched.
-func testGasCoinMissing(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node, systemPod [32]byte) {
+func testGasCoinMissing(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
 	priv, sender := generateRawKey(t)
@@ -199,7 +198,7 @@ func testGasCoinMissing(t *testing.T, c *harness.Cluster, cli *client.Client, no
 	requireNoErr(t, err)
 
 	fakeGas := randomID(t)
-	txBytes, hash := buildSignedTransferTxWithGasCoin(priv, systemPod, coinID, obj.Version, fakeGas, randomID(t))
+	txBytes, hash := buildSignedTransferTxWithGasCoin(priv, coinID, obj.Version, fakeGas, randomID(t))
 
 	_, err = client.NewQUICTransport(node0.QUICAddr).SubmitTx(txBytes)
 	requireNoErr(t, err) // structurally valid; the gas coin check is commit-time
@@ -210,7 +209,7 @@ func testGasCoinMissing(t *testing.T, c *harness.Cluster, cli *client.Client, no
 
 // testGasCoinNotOwned has a sender pay gas from another wallet's coin:
 // fee_rejected on every node, and the operated coin untouched.
-func testGasCoinNotOwned(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node, systemPod [32]byte) {
+func testGasCoinNotOwned(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
 	alicePriv, alice := generateRawKey(t)
@@ -227,7 +226,7 @@ func testGasCoinNotOwned(t *testing.T, c *harness.Cluster, cli *client.Client, n
 	obj, err := cli.GetObject(aliceCoin)
 	requireNoErr(t, err)
 
-	txBytes, hash := buildSignedTransferTxWithGasCoin(alicePriv, systemPod, aliceCoin, obj.Version, bobCoin, randomID(t))
+	txBytes, hash := buildSignedTransferTxWithGasCoin(alicePriv, aliceCoin, obj.Version, bobCoin, randomID(t))
 
 	_, err = client.NewQUICTransport(node0.QUICAddr).SubmitTx(txBytes)
 	requireNoErr(t, err)
@@ -239,7 +238,7 @@ func testGasCoinNotOwned(t *testing.T, c *harness.Cluster, cli *client.Client, n
 // testGasCoinNotSingleton uses a replicated (replication 3) object as the gas
 // coin: fee_rejected on every node (holders reject it as non-singleton,
 // non-holders as not found; both are commit-time fee rejections).
-func testGasCoinNotSingleton(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node, systemPod [32]byte) {
+func testGasCoinNotSingleton(t *testing.T, c *harness.Cluster, cli *client.Client, node0 *harness.Node) {
 	t.Helper()
 
 	w, gasCoin := fundedWallet(stepCtx(t), t, cli, node0, 1_000_000)
@@ -257,7 +256,7 @@ func testGasCoinNotSingleton(t *testing.T, c *harness.Cluster, cli *client.Clien
 	obj, err := cli.GetObject(coinID)
 	requireNoErr(t, err)
 
-	txBytes, hash := buildSignedTransferTxWithGasCoin(priv, systemPod, coinID, obj.Version, objectID, randomID(t))
+	txBytes, hash := buildSignedTransferTxWithGasCoin(priv, coinID, obj.Version, objectID, randomID(t))
 
 	_, err = client.NewQUICTransport(node0.QUICAddr).SubmitTx(txBytes)
 	requireNoErr(t, err)

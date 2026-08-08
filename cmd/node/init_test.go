@@ -41,10 +41,6 @@ func bootstrapTestNode(t *testing.T, dir string, privKey ed25519.PrivateKey) (*N
 	validators := consensus.NewValidatorSet([]consensus.Hash{pubHash})
 
 	systemPod := consensus.Hash{0x01, 0x02, 0x03}
-	dag := consensus.New(db, validators, nil, systemPod, 0, privKey, nil, consensus.WithBootstrap())
-
-	params := consensus.DefaultFeeParams()
-	dag.SetFeeSystem(st, &params, nil)
 
 	n := &Node{
 		cfg: &Config{
@@ -54,10 +50,19 @@ func bootstrapTestNode(t *testing.T, dir string, privKey ed25519.PrivateKey) (*N
 		},
 		storage:   db,
 		state:     st,
-		dag:       dag,
 		blsKey:    blsKey,
 		systemPod: systemPod,
 	}
+
+	// Mirror initConsensus: every consensus-visible seam — the domain registry,
+	// the governed fee parameters and the index manager — is installed as a
+	// construction option, before New starts the commit loop.
+	opts := append([]consensus.Option{consensus.WithBootstrap()}, n.committedStateOpts()...)
+	n.dag = consensus.New(db, validators, nil, systemPod, 0, privKey, nil, opts...)
+
+	// The coin store the genesis ledger seed writes through. The parameters are
+	// the same allocation the option above carries.
+	n.dag.SetFeeSystem(st, n.feeParams(), nil)
 
 	return n, db
 }

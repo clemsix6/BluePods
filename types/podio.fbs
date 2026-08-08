@@ -47,6 +47,9 @@ table PodExecuteOutput {
     // logs contains debug messages from the pod execution.
     logs:[string];
 
-    // registered_domains are domain name registrations from the pod execution.
+    // registered_domains is DEPRECATED: the pod domain write path is retired
+    // (domain registration is a declared operation, see DeclaredOp in
+    // transaction.fbs). A non-empty value here reverts the transaction. The
+    // field stays for wire-layout stability; never remove or renumber it.
     registered_domains:[RegisteredDomain];
 }

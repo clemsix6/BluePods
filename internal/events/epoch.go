@@ -19,6 +19,15 @@ func ValidatorDeregistered(validator [32]byte) {
 	emit(EvValidatorDeregistered, hexAttr("validator", validator))
 }
 
+// ValidatorsFrozen marks the index's validator tree rebuilt from epoch's
+// holder snapshot, carrying that tree's root and the number of leaves in it.
+// The root is the epoch's validator-set commitment: it is what an operator
+// reads from a node it trusts to publish the checkpoint a joining node pins
+// with --trust-checkpoint, and it changes only when the frozen set does.
+func ValidatorsFrozen(epoch uint64, root [32]byte, validators int) {
+	emit(EvValidatorsFrozen, slog.Uint64("epoch", epoch), hexAttr("root", root), slog.Int("validators", validators))
+}
+
 // RewardsDistributed marks an epoch's issuance pool credited across
 // validators active validators.
 func RewardsDistributed(epoch, pool uint64, validators int) {

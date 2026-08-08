@@ -54,9 +54,16 @@ type DAG struct {
 	executor    Executor
 	broadcaster Broadcaster
 	systemPod   Hash
-	epoch       uint64
-	privKey     ed25519.PrivateKey
-	pubKey      Hash
+
+	// epoch is the construction-time epoch argument, kept only because it is part
+	// of the New signature. It is NOT the epoch of anything: the live epoch is
+	// currentEpoch, maintained by the commit path, and it is what production
+	// stamps into a vertex header (productionEpoch) — every node is constructed
+	// with 0, so trusting this field left every header claiming the genesis epoch.
+	epoch uint64
+
+	privKey ed25519.PrivateKey
+	pubKey  Hash
 
 	// Round management
 	round             atomic.Uint64
@@ -127,18 +134,46 @@ type DAG struct {
 	nextEligibleHolders map[Hash]bool // nextEligibleHolders is the eligible subset frozen with nextEpochHolders
 
 	// Epoch: frozen validator set for Rendezvous hashing.
-	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
-	currentEpoch      uint64             // currentEpoch is the current epoch number
-	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
-	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
-	nextEpochHolders  *ValidatorSet      // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
-	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
-	epochAdditions    []Hash             // epochAdditions are validators added this epoch
-	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
-	onEpochTransition func(epoch uint64) // onEpochTransition is called when an epoch boundary is reached
+	epochLength       uint64                        // epochLength is the number of rounds per epoch (0 = disabled)
+	currentEpoch      uint64                        // currentEpoch is the current epoch number, guarded by commitMu
+	liveEpoch         atomic.Uint64                 // liveEpoch mirrors currentEpoch for readers that must not take commitMu (see setCurrentEpoch)
+	epochHolders      *ValidatorSet                 // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
+	prevEpochHolders  *ValidatorSet                 // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	nextEpochHolders  *ValidatorSet                 // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
+	epochMirror       atomic.Pointer[epochSnapshot] // epochMirror is the atomic counterpart of currentEpoch/epochHolders/prevEpochHolders/nextEpochHolders, published together (see publishEpochMirror) for readers that must not take commitMu
+	pendingRemovals   map[Hash]bool                 // pendingRemovals are validators to remove at next epoch
+	epochAdditions    []Hash                        // epochAdditions are validators added this epoch
+	maxChurnPerEpoch  int                           // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
+	onEpochTransition func(epoch uint64)            // onEpochTransition is called when an epoch boundary is reached
 
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
+
+	// onObjectDeleted fires when a declared-operation delete settles, so the
+	// holder of the object drops its stored body; a node that never held the
+	// object no-ops. It is the reverse-direction mirror of the state's
+	// SetOnObjectCreated wiring (consensus notifying state), keeping consensus
+	// free of any import of the state package.
+	onObjectDeleted func(id [32]byte)
+
+	// onObjectReparented fires when a declared reparent settles, so the holder
+	// of the object rewrites its stored body's owner bytes, parent kind, and
+	// version to the new parent reference and the tracker's already-bumped
+	// version; a node that never held the object no-ops. It mirrors
+	// onObjectDeleted in the same reverse direction (consensus notifying state).
+	onObjectReparented func(id [32]byte, newKind byte, newParent [32]byte, version uint64)
+
+	// indexer is the verifiable-index feed (indexer.go): nil-safe, wired at
+	// construction by cmd/node via WithIndexer. Every call site checks it
+	// for nil before calling, so a DAG built without an indexer behaves
+	// exactly as it did before this package existed.
+	indexer indexer
+
+	// domains is the registry declared domain operations read and write
+	// (domainops.go), wired at construction by cmd/node via WithDomainStore.
+	// Left unset, every domain operation is rejected at validation, so no
+	// apply path ever dereferences it.
+	domains DomainStore
 
 	// verifyATXProofs verifies BLS quorum proofs in a single AttestedTransaction.
 	// It receives the commit round so it can select the correct holder snapshot.
@@ -162,7 +197,7 @@ type DAG struct {
 
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore            // coinStore provides access to coin objects for fee operations
-	feeParams      *FeeParams           // feeParams holds fee constants (nil = fees disabled)
+	feeParams      *FeeParams           // feeParams holds fee constants; nil only before WithFeeParams/SetFeeSystem wires it, and reading it that way is a programming error (see mustFeeParams)
 	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
 	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
@@ -331,6 +366,42 @@ func WithImportData(vertices []VertexEntry, trackerEntries []ObjectTrackerEntry)
 	}
 }
 
+// WithIndexer wires the verifiable-index manager AT CONSTRUCTION, which is the
+// only point at which it can be wired correctly. Two failures come with any
+// later wire: the commit and production goroutines read d.indexer with no
+// happens-before edge of their own, and every round the commit loop decides
+// before the wire lands records a root computed over empty trees — a
+// permanently wrong RootAt entry for a round the rest of the network holds a
+// real root for. New backfills the manager from this DAG's committed state and
+// seeds its frontier before either goroutine starts (see backfillIndex).
+func WithIndexer(idx indexer) Option {
+	return func(d *DAG) {
+		d.indexer = idx
+	}
+}
+
+// WithDomainStore wires the committed domain registry at construction. It is
+// consensus-visible state — leases are validated, applied and swept against it,
+// and its leaves are hashed into the anchored index root — so a DAG that
+// commits rounds before the registry is wired reverts domain operations every
+// other node applies, and rebuilds its index over an empty domain tree.
+func WithDomainStore(store DomainStore) Option {
+	return func(d *DAG) {
+		d.domains = store
+	}
+}
+
+// WithFeeParams wires the governed fee parameters at construction. Every
+// construction path must supply them (this option, or SetFeeSystem in package
+// tests): the lease cap and the grace window are read straight off them with
+// no fallback, because a node applying leases by numbers no other node uses
+// forks the anchored index root permanently. See mustFeeParams.
+func WithFeeParams(params *FeeParams) Option {
+	return func(d *DAG) {
+		d.feeParams = params
+	}
+}
+
 // New creates a DAG with the given parameters.
 // Options are applied before starting the background goroutines.
 func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster, systemPod Hash, epoch uint64, privKey ed25519.PrivateKey, executor Executor, opts ...Option) *DAG {
@@ -382,6 +453,12 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 		opt(d)
 	}
 
+	// Rebuild the wired index from the committed state the options above just
+	// installed, and anchor it at the round that state describes. It runs here,
+	// after every option and before the first goroutine, because both loops
+	// below read the index and one of them writes it.
+	d.backfillIndex()
+
 	d.wg.Add(2)
 	go d.commitLoop()
 	go d.livenessLoop()
@@ -390,8 +467,13 @@ func New(db *storage.Storage, validators *ValidatorSet, broadcaster Broadcaster,
 }
 
 // AddVertex validates and adds a vertex received from the network.
-// Returns true if the vertex was new and added, false if duplicate or invalid.
+// Returns true if the vertex was new, added and fit to RELAY, false otherwise.
 // Vertices with missing parents are buffered and retried when parents arrive.
+//
+// The return value is the relay gate, not a storage report: a vertex whose
+// anchored index root this node proved wrong is quarantined — stored, so every
+// causal batch containing it can still complete, and served on request, but
+// reported as not-for-relay so this node never amplifies it.
 func (d *DAG) AddVertex(data []byte) bool {
 	vertex := types.GetRootAsVertex(data, 0)
 
@@ -411,7 +493,9 @@ func (d *DAG) AddVertex(data []byte) bool {
 	}
 
 	err := d.validateVertex(vertex, data)
-	if err != nil {
+	quarantined := isQuarantineVerdict(err)
+
+	if err != nil && !quarantined {
 		// Buffer vertex if parents are missing or producer is unknown.
 		// Missing parents arrive later via gossip.
 		// Unknown producers become known when their register_validator tx commits.
@@ -428,18 +512,40 @@ func (d *DAG) AddVertex(data []byte) bool {
 	producer := extractProducer(vertex)
 	round := vertex.Round()
 
+	// The vq/ mark must be written BEFORE the vertex, not after. Both writes go
+	// through pebble.NoSync (see storage.Storage), so neither is durable until
+	// the next periodic WAL sync; a power loss between them truncates the WAL
+	// tail, never the head. Mark-first means the only inconsistency a
+	// truncation can leave is an orphan mark for a vertex that never landed,
+	// which is harmless (provenLiar only runs on candidates read out of the
+	// store). Vertex-first would risk the opposite and unsafe outcome: the
+	// vertex durable, its quarantine verdict lost, so a restart resumes
+	// relaying and referencing a producer this node already proved lied.
+	if quarantined {
+		d.store.markQuarantined(hash)
+	}
+
 	if !d.store.add(data, hash, round, producer) {
 		return false // already exists
 	}
 
-	events.VertexReceived(hash, producer, round)
+	if quarantined {
+		d.reportQuarantine(vertex, hash, producer, round)
+	} else {
+		events.VertexReceived(hash, producer, round)
+	}
 
+	// A quarantined vertex counts everywhere a vertex counts: it was signed, its
+	// producer is accountable for it, and every node that could not disprove it
+	// holds it as an ordinary vertex. Making the round cursor, the round's
+	// producer set or the commit rule see a different DAG here is precisely the
+	// divergence that forks the committed log.
 	d.onVertexAdded(round)
 
 	// Try to process any pending vertices that might now have their parents
 	d.processPendingVertices()
 
-	return true
+	return !quarantined
 }
 
 // SubmitTx adds a transaction to be included in the next vertex.
@@ -607,12 +713,58 @@ func (d *DAG) VertexRange(from, to uint64, limit int) [][]byte {
 	return d.store.rawRange(from, to, limit)
 }
 
-// TrackObject registers a created object in the tracker.
+// TrackObject registers a created object in the tracker, threading through its
+// declared parent reference (kind + bytes, read from the object body's owner
+// and parent_kind fields) so the tracker's child-count bookkeeping stays
+// current from the moment the object is created.
 // Called by the state layer when a new object is created during execution.
-func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64) {
-	var h Hash
+func (d *DAG) TrackObject(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) {
+	var h, p Hash
 	copy(h[:], id[:])
-	d.tracker.trackObject(h, version, replication, fees)
+	copy(p[:], parent[:])
+	d.tracker.trackObject(h, version, replication, fees, parentKind, p)
+
+	if d.indexer != nil {
+		d.indexer.ApplyEdge(h, parentKind, p)
+	}
+}
+
+// ControlsParent reports whether sender is authorized to attach a newly created
+// object under the given parent reference. A KeyRoot parent is authorized only
+// when it is the sender's own key; an ObjectParent is authorized when the
+// sender's key terminates the parent's cascade walk. It backs the state layer's
+// creation-permission rule without state importing consensus.
+func (d *DAG) ControlsParent(kind byte, parent [32]byte, sender [32]byte) bool {
+	var p, s Hash
+	copy(p[:], parent[:])
+	copy(s[:], sender[:])
+
+	if kind == keyRootKind {
+		return p == s
+	}
+
+	return d.tracker.controls(s, p)
+}
+
+// SetOnObjectDeleted wires the callback consensus invokes when a declared
+// deletion settles, so the node drops the deleted object's stored body. A node
+// that never held the object no-ops. It mirrors State.SetOnObjectCreated in the
+// reverse direction (consensus notifying state), so state keeps its content
+// storage authoritative while consensus stays free of the state package.
+func (d *DAG) SetOnObjectDeleted(fn func(id [32]byte)) {
+	d.onObjectDeleted = fn
+}
+
+// SetOnObjectReparented wires the callback consensus invokes when a declared
+// reparent settles, so a node holding the object rewrites its stored body's
+// owner bytes, parent kind, and version to the new parent reference and the
+// tracker's already-bumped version. A node that never held the object no-ops.
+// It mirrors SetOnObjectDeleted, keeping the state-held body's owner and
+// version fields (which GetObject serves, pod execution reads, and the
+// daemon's attestation collection re-derives its hash from) consistent with
+// the tracker's new parent, while consensus stays free of the state package.
+func (d *DAG) SetOnObjectReparented(fn func(id [32]byte, newKind byte, newParent [32]byte, version uint64)) {
+	d.onObjectReparented = fn
 }
 
 // SetATXProofVerifier sets the inline single-ATX BLS proof verifier. The
@@ -634,8 +786,9 @@ func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction
 	d.verifyATXProofsBatch = fn
 }
 
-// SetFeeSystem configures protocol-level fee deduction.
-// When feeParams is non-nil, fees are deducted from gas_coin before execution.
+// SetFeeSystem configures protocol-level fee deduction: fees are deducted
+// from gas_coin before execution. params must be non-nil — see mustFeeParams,
+// the sole point a nil schedule fails loud through.
 func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFunc) {
 	d.coinStore = store
 	d.feeParams = params
@@ -684,7 +837,24 @@ func (d *DAG) SeedGenesisLedger(is genesis.InitialState) {
 	// an untracked reserve coin would keep its balance outside the checksum
 	// entirely.
 	coin := types.GetRootAsObject(is.Coin, 0)
-	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees())
+
+	// The reserve coin's parent is a KeyRoot: the genesis owner key it was
+	// created for (buildGenesisCoin never sets parent_kind, so it defaults to
+	// KeyRoot).
+	var parent [32]byte
+	if ownerBytes := coin.OwnerBytes(); len(ownerBytes) == 32 {
+		copy(parent[:], ownerBytes)
+	}
+
+	// Under commitMu, like SeedGenesisValidator below and for the same reason:
+	// the commit loop is already running by the time genesis is seeded, and
+	// TrackObject feeds the index trees — which the loop reads whenever it
+	// records a committed frontier. Every other writer of those trees is the
+	// commit path itself, so this lock is what keeps the genesis seed from
+	// being the one unsynchronized writer.
+	d.commitMu.Lock()
+	d.TrackObject(is.CoinID, coin.Version(), coin.Replication(), coin.Fees(), coin.ParentKind(), parent)
+	d.commitMu.Unlock()
 }
 
 // SeedGenesisValidator installs the founding validator into the validator set:
@@ -731,17 +901,35 @@ func (d *DAG) ValidatorSet() *ValidatorSet {
 }
 
 // EpochHolders returns the frozen validator set used for Rendezvous.
-// Returns the current validators if epochs are not initialized yet.
+// Returns the current validators if epochs are not initialized yet. It reads
+// the atomic epochMirror (see publishEpochMirror), not epochHolders directly:
+// callers outside the commit loop (a status handler, the onEpochTransition
+// callback) never take commitMu, and this keeps the value they see
+// consistent with whatever HoldersForEpoch would resolve at the same instant.
 func (d *DAG) EpochHolders() *ValidatorSet {
-	if d.epochHolders != nil {
-		return d.epochHolders
+	if snap := d.epochMirror.Load(); snap != nil && snap.holders != nil {
+		return snap.holders
 	}
 	return d.validators
 }
 
-// Epoch returns the current epoch number.
+// Epoch returns the current epoch number, from the same lock-free mirror
+// LiveEpoch reads. Every external caller of Epoch (status and checkpoint
+// handlers, none holding commitMu) needs the race-free value; the commit
+// path itself is never sensitive to the instant between a raw currentEpoch
+// write and its mirror publish, since setCurrentEpoch performs both
+// synchronously, in the same commitMu-held step.
 func (d *DAG) Epoch() uint64 {
-	return d.currentEpoch
+	return d.LiveEpoch()
+}
+
+// LiveEpoch returns the current epoch from the lock-free mirror the commit path
+// maintains, so a caller outside the commit loop reads it without taking
+// commitMu. On the commit path itself the mirror equals the epoch the round
+// being applied belongs to, which is what makes it a deterministic input to
+// state reads that run during execution (domain lease expiry).
+func (d *DAG) LiveEpoch() uint64 {
+	return d.liveEpoch.Load()
 }
 
 // EpochLength returns the number of rounds per epoch (0 when epochs are disabled).
@@ -752,11 +940,7 @@ func (d *DAG) EpochLength() uint64 {
 // EpochHoldersCount returns the number of validators in the frozen epoch set.
 // Falls back to the active validator count if epochs are not initialized.
 func (d *DAG) EpochHoldersCount() int {
-	if d.epochHolders != nil {
-		return d.epochHolders.Len()
-	}
-
-	return d.validators.Len()
+	return d.EpochHolders().Len()
 }
 
 // OnEpochTransition sets a callback that fires on epoch boundaries.
@@ -879,10 +1063,30 @@ func (d *DAG) updateRound(round uint64) {
 	}
 }
 
-// tryProduceVertex attempts to produce a vertex if conditions are met.
+// tryProduceVertex attempts to produce a vertex if conditions are met, then
+// gossips whatever the attempt decided to send.
+//
+// The gossip runs OUTSIDE roundMu, and that separation is load-bearing. A fan-out
+// costs up to sendStreamTimeout per peer that is not keeping up, and roundMu is
+// the production lock every caller of SubmitTx takes — including handleSubmitTx,
+// which calls it inline on the client's request goroutine. Holding it across the
+// send queued every producer and every client submission behind the slowest peer
+// in the mesh, and the queue grew with the number of concurrent submitters until
+// the client's own request deadline expired. Nothing sent here needs the lock:
+// the round decision, the vertex bytes and the cursor moves are all complete
+// before the first byte goes out.
 func (d *DAG) tryProduceVertex() {
+	for _, data := range d.produceVertex() {
+		d.sendVertex(data)
+	}
+}
+
+// produceVertex runs one production attempt under roundMu and returns the
+// vertices its caller must gossip once the lock is released: the vertex just
+// built, or the frontier leaf to re-announce when the round cannot advance.
+func (d *DAG) produceVertex() [][]byte {
 	if d.listenerMode {
-		return
+		return nil
 	}
 
 	// Security and liveness gate: a node produces once it is itself a registered
@@ -898,7 +1102,7 @@ func (d *DAG) tryProduceVertex() {
 		logger.Debug("cannot produce: not in validator set",
 			"pubkey", hex.EncodeToString(d.pubKey[:8]),
 			"validators", d.validators.Len())
-		return
+		return nil
 	}
 
 	d.roundMu.Lock()
@@ -917,8 +1121,8 @@ func (d *DAG) tryProduceVertex() {
 		if round%20 == 0 {
 			d.debugRoundVertices(prevRound)
 		}
-		d.rebroadcastFrontierLeaf()
-		return
+
+		return d.frontierLeafToRebroadcast()
 	}
 
 	parents := d.collectParents(round)
@@ -929,7 +1133,7 @@ func (d *DAG) tryProduceVertex() {
 	// Validate our own vertex before accepting it
 	if !d.addOwnVertex(data, round) {
 		d.pendingTxs = append(txs, d.pendingTxs...)
-		return
+		return nil
 	}
 
 	builtVertex := types.GetRootAsVertex(data, 0)
@@ -943,14 +1147,16 @@ func (d *DAG) tryProduceVertex() {
 	// Disable sync mode after first successful vertex production.
 	d.disableSyncMode()
 
-	d.sendVertex(data)
 	d.lastProducedRound.Store(round)
 	d.updateRound(round + 1)
+
+	return [][]byte{data}
 }
 
-// rebroadcastFrontierLeaf re-gossips this node's own latest produced vertex while
-// the node cannot advance for lack of quorum. Forward gossip sends a vertex once,
-// at production, so a node stuck at its frontier round never re-announces the leaf
+// frontierLeafToRebroadcast returns this node's own latest produced vertex for
+// re-gossip while the node cannot advance for lack of quorum, and nil when there
+// is nothing to re-announce yet. Forward gossip sends a vertex once, at
+// production, so a node stuck at its frontier round never re-announces the leaf
 // its stalled peers are missing. When two sides of a symmetric freeze reconnect,
 // each holds only its own subset of the frozen round's vertices and forward gossip
 // is silent about exactly the leaves the other needs to reach quorum there; walking
@@ -958,31 +1164,36 @@ func (d *DAG) tryProduceVertex() {
 // Re-announcing the own leaf on the liveness tick carries it across: an
 // already-signed vertex is idempotent on receipt (peers deduplicate) and neutral
 // for safety. The re-gossip is throttled to at most once per liveness interval so a
-// production trigger firing faster than the tick cannot turn it into a storm. The
-// caller holds roundMu.
-func (d *DAG) rebroadcastFrontierLeaf() {
+// production trigger firing faster than the tick cannot turn it into a storm.
+//
+// It selects, it does not send: the caller holds roundMu here and gossips only
+// after releasing it (see tryProduceVertex).
+func (d *DAG) frontierLeafToRebroadcast() [][]byte {
 	lastRound := d.lastProducedRound.Load()
 	if lastRound == 0 {
-		return
+		return nil
 	}
 
 	now := time.Now()
 	if !d.lastRebroadcast.IsZero() && now.Sub(d.lastRebroadcast) < livenessTimeout {
-		return
+		return nil
 	}
 
 	hashes, ok := d.store.getByRoundProducer(lastRound, d.pubKey)
 	if !ok {
-		return
+		return nil
 	}
 
 	d.lastRebroadcast = now
 
+	leaves := make([][]byte, 0, len(hashes))
 	for _, h := range hashes {
 		if data := d.store.getRaw(h); data != nil {
-			d.sendVertex(data)
+			leaves = append(leaves, data)
 		}
 	}
+
+	return leaves
 }
 
 // nextProductionRound returns the round to produce at.
@@ -1228,7 +1439,10 @@ func (d *DAG) debugRoundVertices(round uint64) {
 	}
 }
 
-// collectParents gathers parent hashes from the previous round.
+// collectParents gathers the parents a vertex at round may reference: the
+// previous round's vertices, minus the ones whose anchored index root this node
+// has proved wrong (referenceableParents, the production stage of anchor
+// enforcement).
 // During sync mode, only includes vertices from trusted producers (from snapshot)
 // to avoid referencing vertices that other nodes may not have.
 // During transition, references ALL parents to form cross-references immediately.
@@ -1237,7 +1451,7 @@ func (d *DAG) collectParents(round uint64) []Hash {
 		return nil
 	}
 
-	allParents := d.store.getByRound(round - 1)
+	candidates := d.store.getByRound(round - 1)
 
 	// Check if we need to filter parents (sync mode only)
 	d.syncModeMu.Lock()
@@ -1245,29 +1459,34 @@ func (d *DAG) collectParents(round uint64) []Hash {
 	trusted := d.trustedProducers
 	d.syncModeMu.Unlock()
 
-	// Normal mode or transition: return all parents.
-	// During transition, parent validation is skipped on receiving nodes,
-	// so cross-references are safe and help the network converge faster.
-	if !syncActive {
-		return allParents
+	// Sync mode: the first vertex after importing a snapshot references only
+	// producers the snapshot vouches for. Normal mode and the transition window
+	// keep every candidate: during the transition receiving nodes skip parent
+	// validation, so cross-references are safe and converge the network faster.
+	if syncActive {
+		candidates = d.trustedParents(candidates, trusted)
 	}
 
-	// Sync mode: only reference trusted producers from snapshot.
-	// This is the first vertex after importing a snapshot.
-	filtered := make([]Hash, 0, len(allParents))
-	for _, h := range allParents {
+	return d.referenceableParents(candidates)
+}
+
+// trustedParents keeps the candidates produced by a validator the imported
+// snapshot vouches for.
+func (d *DAG) trustedParents(candidates []Hash, trusted map[Hash]bool) []Hash {
+	kept := make([]Hash, 0, len(candidates))
+
+	for _, h := range candidates {
 		v := d.store.get(h)
 		if v == nil {
 			continue
 		}
 
-		producer := extractProducer(v)
-		if trusted != nil && trusted[producer] {
-			filtered = append(filtered, h)
+		if trusted != nil && trusted[extractProducer(v)] {
+			kept = append(kept, h)
 		}
 	}
 
-	return filtered
+	return kept
 }
 
 // takePendingTxs takes and clears pending transactions.
@@ -1447,7 +1666,9 @@ func (d *DAG) tryProcessPending() int {
 		vertex := types.GetRootAsVertex(entry.data, 0)
 
 		err := d.validateVertex(vertex, entry.data)
-		if err != nil {
+		quarantined := isQuarantineVerdict(err)
+
+		if err != nil && !quarantined {
 			// Keep in buffer if parents are missing or producer is unknown.
 			// These conditions resolve when parents arrive or producer registers.
 			if d.isMissingParentError(err) || d.isUnknownProducerError(err) {
@@ -1460,10 +1681,24 @@ func (d *DAG) tryProcessPending() int {
 			continue
 		}
 
-		// Validation passed, add to store
+		// Validation passed (or the anchor was disproved, which quarantines rather
+		// than rejects), add to store.
 		producer := extractProducer(vertex)
 
+		// Same mark-before-vertex ordering as AddVertex, and for the same reason:
+		// both writes are pebble.NoSync, so the vq/ mark must be durable-ordered
+		// ahead of the vertex, not after it. A WAL truncation here can only leave
+		// an orphan mark for a vertex that never made it into the store —
+		// harmless — never a stored proven-liar vertex with its verdict lost.
+		if quarantined {
+			d.store.markQuarantined(entry.hash)
+		}
+
 		if d.store.add(entry.data, entry.hash, entry.round, producer) {
+			if quarantined {
+				d.reportQuarantine(vertex, entry.hash, producer, entry.round)
+			}
+
 			d.onVertexAdded(entry.round)
 			processed++
 			logger.Debug("processed pending vertex", "round", entry.round)

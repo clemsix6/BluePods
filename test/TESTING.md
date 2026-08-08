@@ -58,7 +58,10 @@ runs the corpus. The current corpus:
 | functional | `TestScenarioObjects` | 12 |
 | functional | `TestScenarioAggregation` | 5 |
 | functional | `TestScenarioSponsored` | 5 |
+| functional | `TestScenarioHierarchy` | 5 |
+| functional | `TestScenarioDomains` | 5 |
 | functional | `TestScenarioStake` | 5 |
+| functional | `TestScenarioDeregisterWithDelegators` | 5 |
 | functional | `TestScenarioJoining` | 5+ |
 | functional | `TestScenarioStress` | 12 |
 | functional | `TestScenarioChurn` | 2+3 |
@@ -68,6 +71,7 @@ runs the corpus. The current corpus:
 | adversarial | `TestScenarioPartition` | 5 |
 | adversarial | `TestScenarioEpochCrash` | 10 |
 | adversarial | `TestScenarioColdRestart` | 5 |
+| adversarial | `TestScenarioColdRestartEpochs` | 5 |
 
 ## Writing a scenario
 
@@ -122,20 +126,50 @@ func TestScenarioExample(t *testing.T) {
 ```
 
 `Option` values tune the cluster at construction: `WithEpochLength`,
-`WithMinValidators`, `WithGossipFanout`, `WithSyncBuffer`, `WithInitialMint`,
-`WithTransitionGrace`, `WithTransitionBuffer`, `WithMaxChurn`, `WithStake`,
-`WithoutStakeSetup` (leaves only the founder's genesis self-stake, for
-testing the founder-heavy regime), and `WithoutInvariants` (below).
+`WithMaxChurn`, `WithoutStakeSetup` (leaves only the founder's genesis
+self-stake, for testing the founder-heavy regime), and `WithoutInvariants`
+(below).
 
 Node verbs, used on `c.Node(i)` or through the cluster:
 
 - `cluster.Kill(i)`: SIGKILL, a real crash.
 - `cluster.Restart(i)`: starts the same node again with the same key, data
-  directory and port, syncing from another alive node. This is a re-sync
-  over existing data, not a resume: it is the node's real recovery path, and
-  what the harness tests.
+  directory and port. A node that has been running **resumes** from the
+  committed state in that directory (`node.resumed`) and catches up through
+  gossip: it owns that history, so it fetches no snapshot and verifies
+  nothing. This is the node's real recovery path, and what the harness tests.
 - `cluster.Spawn()`: starts a brand-new node that must register and sync,
   returning once it reports `sync.completed`.
+
+A node **syncs only when it holds nothing of its own**, and that is the join
+the **verified path** governs. The node binary refuses to sync without a trust
+anchor, so `Spawn` and `Restart` alike read the checkpoint their source
+published (its newest `epoch.validators.frozen`: the epoch and that epoch's
+validator-set root) and pass it as `--trust-checkpoint <epoch>:<root hex>` —
+the binary decides which path it is on from its data directory, not from the
+flags, and a restart simply leaves the anchor unused. A joiner rebuilds the
+checkpointed epoch's validator tree from the holder snapshot it imported,
+requires it to hash to the pinned root, and requires a stake quorum of that set
+to attest the index root it recomputed for itself; anything else aborts the
+join with `node.stopping reason=sync_unverified`, and `sync.completed` never
+lands. `cluster.SpawnWithCheckpoint(checkpoint)` bypasses that derivation to
+hand a scenario-supplied checkpoint straight to the new node instead — the
+hook `TestScenarioJoining` uses to drive the refusal path with a checkpoint
+that names no committee the cluster actually has, asserting on the returned
+node's journal since `sync.completed` never lands for it either.
+
+The split matters for the scenarios that stop nodes. A restart that had to
+prove its state to a live quorum could never bring a fully stopped cluster back
+(`TestScenarioColdRestart`): the first node to return sees no quorum, and none
+can exist until it and others are up. Resuming has nothing to prove — and a
+join cannot reach that path, because the state a refused join leaves on disk is
+never marked as the node's own.
+
+The cluster's FOUNDING members are the one exception: they start with
+`--insecure-bootstrap`, because the genesis committee is refrozen on every
+committed registration until the strict latch arms, so no stable set exists to
+pin while they are joining. Production has the same shape, a founding set is
+provisioned out of band. Every join after the cluster is up is verified.
 
 ### The event journal
 
@@ -146,7 +180,7 @@ journal spans process runs: each `Restart` opens a new segment.
 
 ```go
 n.WaitEvent(ctx, "tx.committed", harness.Attr("tx", hash))   // block until matched
-n.Events("consensus.anchor.committed")                        // read what's there, no blocking
+n.Journal().Events("consensus.anchor.committed")              // read what's there, no blocking
 cluster.WaitAll(ctx, "epoch.transitioned", harness.AttrGE("epoch", 2))
 ```
 
@@ -197,26 +231,35 @@ what to do when the checker is right to fail.
 |---|---|
 | `harness.NewCluster(t, size, opts...) *Cluster` | Builds and starts a cluster, registers teardown |
 | `(*Cluster) Node(i) *Node` / `Nodes() []*Node` / `Alive() []*Node` | Access started nodes |
-| `(*Cluster) Client(i) *client.Client` / `Daemon(i) *daemon.Daemon` | Client/daemon connected to node `i` |
-| `(*Cluster) SystemPod() [32]byte` | System pod ID every client and daemon in the cluster is configured with |
-| `(*Cluster) Kill(i)` / `Restart(i)` / `Spawn() *Node` | Node lifecycle |
+| `(*Cluster) Client(i) *client.Client` | Client connected to node `i`, the same code a real client runs |
+| `(*Cluster) SystemPod() [32]byte` | System pod ID every client in the cluster is configured with |
+| `(*Cluster) Kill(i)` / `Restart(i)` / `Spawn() *Node` / `SpawnWithCheckpoint(checkpoint string) *Node` | Node lifecycle |
 | `(*Cluster) Partition(a, b []int)` / `Heal()` | Network partitioning |
 | `(*Cluster) WaitAll(ctx, name, preds...) error` | Wait for an event on every alive node |
 | `(*Cluster) CheckInvariants(t)` | The teardown invariant pass (usually automatic) |
 | `(*Cluster) Dump(t)` | Print per-node diagnostics (last events, live status, log paths) |
 | `(*Node) WaitEvent(ctx, name, preds...) (Event, error)` | Block until a matching event lands |
-| `(*Node) Events(name, preds...) []Event` | Read the journal without blocking |
-| `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` | Process control |
+| `(*Journal) Events(name, preds...) []Event` | Read a node's journal (`n.Journal()`) without blocking |
+| `(*Node) Stop() error` / `Kill()` / `Restart(syncFrom string) error` / `SetTrustCheckpoint(cp string)` | Process control |
 | `(*Node) Alive() bool` / `Journal() *Journal` / `ParseError() error` | Node introspection |
 | `harness.Attr(key, want) Pred` / `AttrGE(key, min) Pred` | Event attribute predicates |
-| `harness.WithEpochLength/WithMinValidators/WithGossipFanout/WithSyncBuffer/WithInitialMint/WithTransitionGrace/WithTransitionBuffer/WithMaxChurn/WithStake` | Cluster tuning options |
+| `harness.WithEpochLength/WithMaxChurn/WithoutStakeSetup/WithoutInvariants` | Cluster tuning options |
 | `harness.WithoutStakeSetup()` / `WithoutInvariants()` | Opt out of a default |
 
 Client and daemon operations (`pkg/client`, `pkg/daemon`) are the same code
-a real client uses: `Wallet.Split/Transfer/CreateObject/TransferObject/
-SetObject/Bond/RegisterValidator/DeregisterValidator`, `Client.Faucet/
-Status/GetObject/GetTxStatus/Validators/Fingerprint/SetPartition/
-ClearPartition`. Events say what happened; these queries say what is;
+a real client uses. `pkg/daemon` is not wrapped by the cluster: a scenario
+builds one directly off a node's address (`daemon.New(nodeAddrs)`) when it
+needs attested reads. `Wallet` covers `Split/Transfer/CreateObject/
+TransferObject/SetObject/Reparent/DeleteObject/Bond/RegisterValidator/
+DeregisterValidator/DomainRegister/DomainRenew/DomainUpdate/
+DomainTransfer/DomainDelete/RecoverObjects`; `Client` covers `Faucet/
+Status/GetObject/GetTxStatus/Validators/Fingerprint/GetIndexAnchor/
+DomainResolve/ListChildren/Parent/Holders/WaitForTx/SetPartition/
+ClearPartition`. `client.NewLightClient` wraps a `Client` with a pinned
+checkpoint for verified reads (`Anchor/WaitForFrontier/ResolveDomain/
+ListChildren/Ancestors`) — the surface a scenario uses to check a proof
+against a different node's `GetIndexAnchor` bundle rather than trust the
+answer outright. Events say what happened; these queries say what is;
 scenarios confront the two.
 
 ## Event catalog
@@ -234,23 +277,29 @@ must be called out in the commit that does it.
 |---|---|
 | `node.started` | pubkey, quic_addr |
 | `node.ready` | round |
+| `node.resumed` | round |
 | `node.stopping` | reason |
 | `ingress.tx.received` | tx, kind |
 | `ingress.tx.rejected` | reason, detail |
 | `consensus.vertex.produced` | vertex, round, txs |
-| `consensus.vertex.received` | vertex, round, producer |
+| `consensus.vertex.received` | vertex, producer, round |
 | `consensus.vertex.rejected` | vertex, reason |
+| `consensus.vertex.quarantined` | vertex, producer, round, frontier |
 | `consensus.round.advanced` | round, designated |
 | `consensus.anchor.committed` | round, anchor, producer, vertices |
 | `consensus.round.skipped` | round |
+| `consensus.anchor.fault` | producer, round, claimed, computed |
 | `tx.committed` | tx, vertex, round, success, reason |
 | `tx.executed` | tx, success, error_code |
 | `state.object.created` | object, tx, version, replication, owner |
 | `state.object.updated` | object, tx, version |
 | `state.object.deleted` | object, tx, refund |
+| `state.object.reparented` | object, tx, kind, parent, version |
 | `state.domain.registered` | name, object, tx |
 | `state.domain.updated` | name, object, tx |
-| `state.domain.deleted` | name, tx |
+| `state.domain.renewed` | name, expiry, tx |
+| `state.domain.transferred` | name, owner, tx |
+| `state.domain.deleted` | name, tx, reason |
 | `fees.deducted` | tx, coin, amount, covered |
 | `fees.deposit.locked` | object, amount |
 | `fees.deposit.refunded` | object, coin, amount |
@@ -265,6 +314,7 @@ must be called out in the commit that does it.
 | `epoch.validator.registered` | validator, quic_addr |
 | `epoch.validator.deregistered` | validator |
 | `epoch.rewards.distributed` | epoch, pool, validators |
+| `epoch.validators.frozen` | epoch, root, validators |
 | `sync.snapshot.created` | round, checksum |
 | `sync.snapshot.applied` | round, checksum, objects |
 | `sync.completed` | round |
@@ -276,12 +326,70 @@ must be called out in the commit that does it.
 `tx.committed`'s `reason` attribute is always present: an empty string on
 success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
-`duplicate`, `expired_sponsorship`, `execution_error`.
+`duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
+`delete_has_children`, `malformed_shape`.
+
+`malformed_shape` is the verdict on a transaction whose shape no node may
+carry: declared operations alongside a pod call or alongside
+`created_objects_replication`, or an operation list past its bound. Client
+ingress refuses the same shape through the same gate, so a transaction reaching
+commit with it was never offered to an honest node: it is rejected before fee
+deduction and its sender is charged nothing.
+
+`ingress.tx.rejected`'s `reason` attribute is one of a fixed set, applied the
+same way at both ingress seams (a client submission and a gossiped body this
+node did not itself receive from a client): `invalid_submission` for a
+structural failure (an unparseable body, a missing nested transaction, a
+malformed hash) and `malformed_shape` for the same shape-gate refusal
+`tx.committed`'s `malformed_shape` names above, caught before the body ever
+reaches consensus.
+
+`node.resumed` marks a start that booted from the committed state already in
+its data directory instead of taking state from a peer: no snapshot was
+fetched and no join was verified, because nothing about that state was
+foreign. It is emitted just before `node.ready`, and never together with
+`sync.completed` in the same journal segment — a start does one or the other.
+
+`node.stopping`'s `reason` attribute is a signal name (`interrupt`,
+`terminated`) or `sync_unverified`: a joining node aborted rather than go live
+on a snapshot no stake quorum of its checkpointed validator set attested (a
+wrong or stale `--trust-checkpoint`, a tampered snapshot, or a network too
+silent to attest anything within the wait). Such a node never emits
+`sync.completed` and never joins the convergence set.
 
 `consensus.vertex.rejected`'s `reason` attribute is one of a fixed set:
 `bad_signature`, `wrong_epoch`, `parent_round`, `parent_quorum`,
 `fee_summary`, or `unknown` (a defensive fallback for a validation failure
 path that does not map to any of the above; should not occur in practice).
+A rejected vertex is dropped: not stored, not served, not relayed.
+
+`consensus.vertex.quarantined` is the verdict for a vertex whose anchored
+index root the receiving node disproved against its own committed history at
+`frontier`. It is not a rejection: the vertex IS stored and IS served to a
+peer that asks for it by hash, so any causal batch containing it stays
+completable — a vertex a node refuses to store wedges that node's commit
+cursor forever, which is a partition lever. What quarantine withholds is
+relay (this node never amplifies it) and reference (its production never
+builds on it). Like `consensus.anchor.fault` the event is node-local: whether
+a node could disprove the anchor depends on how far its own commit had
+advanced when the vertex arrived, so two honest nodes legitimately quarantine
+different sets and must still converge on identical state. The mark is
+persisted outside every convergence-checked structure, so a scenario that
+provokes a quarantine still passes the teardown convergence check.
+
+`consensus.anchor.fault` is emitted from the commit path when a vertex that
+reached committed history anchored an index root the emitting node's own
+recomputation contradicts, once per lying vertex. It is node-local by design:
+a node convicts a liar only when it had committed the claimed frontier, so
+two honest nodes may emit different fault sets for the same history. The
+evidence behind it (the producer's signed header plus the recomputed root)
+is persisted outside every convergence-checked structure, so a scenario that
+provokes a fault still passes the teardown convergence check.
+
+`state.domain.deleted`'s `reason` attribute is empty for an owner's declared
+deletion (`tx` names the deleting transaction) and `"expired"` for the epoch
+boundary's expiry sweep (`tx` is the zero hash — a sweep carries no
+transaction).
 
 Attribute values use stable encodings: hashes and object/validator IDs as
 lowercase hex, rounds and versions as integers, reasons as short snake_case

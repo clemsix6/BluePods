@@ -31,6 +31,31 @@ func requireNoErr(t *testing.T, err error) {
 	}
 }
 
+// inSegmentAfter returns a predicate matching events recorded in a journal
+// segment newer than a boundary derived from n's own node.ready history: the
+// segment of the last node.ready event observed on n, or 0 if n has never
+// been ready. That boundary stands in for the Journal's own current segment,
+// which is unexported and unreadable from here — it is only a faithful proxy
+// once n has been ready at least once. A restart opens a new segment, so
+// pairing this boundary with the restarted generation's own node.ready is how
+// an assertion names that generation rather than the one that ran before it.
+// Build the predicate BEFORE the restart — it reads the journal at call
+// time, so a call made afterwards can capture the new generation's own
+// segment and then match nothing.
+//
+// Consequence for callers: a node that has never been ready yields a boundary
+// of 0 no matter how many segments it has actually opened, so a second
+// restart of a never-ready node cannot distinguish its two later generations
+// from each other — both compare against the same 0 boundary.
+func inSegmentAfter(n *harness.Node) harness.Pred {
+	var current int
+	if ready := n.Journal().Events("node.ready"); len(ready) > 0 {
+		current = ready[len(ready)-1].Seg
+	}
+
+	return func(e harness.Event) bool { return e.Seg > current }
+}
+
 // fundedWallet creates a fresh wallet, faucets it amount through cli, waits
 // for the faucet transaction to commit successfully on n, and refreshes the
 // resulting coin so the wallet's local version and balance are current. It

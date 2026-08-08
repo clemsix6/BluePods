@@ -232,8 +232,88 @@ func (rcv *Vertex) MutateTimestamp(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(20, n)
 }
 
+func (rcv *Vertex) FrontierRound() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(22))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *Vertex) MutateFrontierRound(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(22, n)
+}
+
+func (rcv *Vertex) IndexRoot(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *Vertex) IndexRootLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *Vertex) IndexRootBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *Vertex) MutateIndexRoot(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(24))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
+func (rcv *Vertex) BodyHash(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *Vertex) BodyHashLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *Vertex) BodyHashBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *Vertex) MutateBodyHash(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(26))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
 func VertexStart(builder *flatbuffers.Builder) {
-	builder.StartObject(9)
+	builder.StartObject(12)
 }
 func VertexAddHash(builder *flatbuffers.Builder, hash flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(hash), 0)
@@ -276,6 +356,21 @@ func VertexAddFeeSummary(builder *flatbuffers.Builder, feeSummary flatbuffers.UO
 }
 func VertexAddTimestamp(builder *flatbuffers.Builder, timestamp uint64) {
 	builder.PrependUint64Slot(8, timestamp, 0)
+}
+func VertexAddFrontierRound(builder *flatbuffers.Builder, frontierRound uint64) {
+	builder.PrependUint64Slot(9, frontierRound, 0)
+}
+func VertexAddIndexRoot(builder *flatbuffers.Builder, indexRoot flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(10, flatbuffers.UOffsetT(indexRoot), 0)
+}
+func VertexStartIndexRootVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
+}
+func VertexAddBodyHash(builder *flatbuffers.Builder, bodyHash flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(11, flatbuffers.UOffsetT(bodyHash), 0)
+}
+func VertexStartBodyHashVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
 }
 func VertexEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

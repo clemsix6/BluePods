@@ -94,7 +94,7 @@ func buildSilenceForkDAGs(t *testing.T) (well, starved *DAG, v2 Hash) {
 	v4 := feed(both, p4, 4, r3all)
 	citeV3 := append([]Hash{v3}, r3noV3[:2]...)
 	x4 := feed(both, holderX, 4, citeV3)
-	y4 := feed(both, holderY, 4, r3noV3)  // blames v3
+	y4 := feed(both, holderY, 4, r3noV3)   // blames v3
 	feed([]*DAG{well}, holderH, 4, citeV3) // delayed: well-informed only
 
 	// Round 5: the three non-H holders certify v4. Each cites the three round-4

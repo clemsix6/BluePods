@@ -230,7 +230,7 @@ func TestStrictLatchArmsPastGenesisEpoch(t *testing.T) {
 
 	// The bootstrap outlives epoch 0: boundaries pass before the bonds commit.
 	dag.commitMu.Lock()
-	dag.currentEpoch = 2
+	dag.setCurrentEpoch(2)
 
 	// The bonds complete in epoch 2, exactly as the commit path reports them.
 	const bondRound = 120
@@ -316,7 +316,7 @@ func TestSyncCarriesRegimeStatePastBoundary_C2(t *testing.T) {
 	t.Cleanup(func() { src.Close() })
 	setEqualStake(src, vals, 25)
 	src.commitMu.Lock()
-	src.currentEpoch = 1
+	src.setCurrentEpoch(1)
 	src.epochHolders = snapshotOf(src.validators)
 	src.prevEpochHolders = snapshotOf(src.validators)
 	src.strictLatched = true
@@ -494,7 +494,7 @@ func TestExportRegimeStateAtomicCursorEpoch_I3(t *testing.T) {
 	// Park the DAG exactly at boundary round 4: it is next-to-decide, still epoch 0.
 	dag.commitMu.Lock()
 	dag.lastCommitted = 4
-	dag.currentEpoch = 0
+	dag.setCurrentEpoch(0)
 	dag.epochHolders = snapshotOf(dag.validators)
 	dag.commitMu.Unlock()
 
@@ -505,7 +505,7 @@ func TestExportRegimeStateAtomicCursorEpoch_I3(t *testing.T) {
 	// and incrementing the epoch together under commitMu (as advanceCommitCursor does)...
 	dag.commitMu.Lock()
 	dag.lastCommitted = 5
-	dag.currentEpoch = 1
+	dag.setCurrentEpoch(1)
 	dag.commitMu.Unlock()
 
 	// ...then the epoch state is read post-boundary. The pair is torn: a pre-boundary

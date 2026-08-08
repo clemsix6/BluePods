@@ -12,11 +12,16 @@ import (
 // dispatch executes a parsed command against the client and wallet and returns a
 // one-line activity result plus, when a transaction was submitted, its hash to
 // track. An empty hash means nothing to track. This is the console's adapter over
-// the typed pkg/client action surface; it adds no protocol logic.
+// the typed pkg/client action surface; it adds no protocol logic. lc is the
+// session's LightClient when the wallet holds a trust checkpoint, nil
+// otherwise; only the index-reading verbs (object parent, domain resolve,
+// objects) consume it.
 //
-// Hash tracking: faucet, transfer, split, object create/set/transfer all return
-// a non-zero txHash that flows into the console's tracked map for live status polling.
-func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, track [32]byte, err error) {
+// Hash tracking: faucet, transfer, split, object create/set/transfer/reparent/
+// delete and domain register/renew/update/transfer/delete all return a
+// non-zero txHash that flows into the console's tracked map for live status
+// polling.
+func dispatch(c *client.Client, w *client.Wallet, lc *client.LightClient, cmd command) (line string, track [32]byte, err error) {
 	switch cmd.verb {
 	case "faucet":
 		return dispatchFaucet(c, w, cmd)
@@ -27,7 +32,9 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 	case "split":
 		return dispatchSplit(c, w, cmd)
 	case "object":
-		return dispatchObject(c, w, cmd)
+		return dispatchObject(c, w, lc, cmd)
+	case "domain":
+		return dispatchDomain(c, w, lc, cmd)
 	case "validators":
 		return dispatchValidators(c)
 	case "balance":
@@ -35,7 +42,7 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 	case "coins":
 		return dispatchCoins(c, w)
 	case "objects":
-		return dispatchObjects(c, w)
+		return dispatchObjects(c, w, lc)
 	case "pubkey":
 		return dispatchPubkey(w)
 	case "help":
@@ -124,180 +131,6 @@ func dispatchSplit(c *client.Client, w *client.Wallet, cmd command) (string, [32
 		amount, hex.EncodeToString(coinID[:4]), hex.EncodeToString(newCoin[:4]), hex.EncodeToString(recipient[:4])), txHash, nil
 }
 
-// dispatchObject routes object sub-commands.
-func dispatchObject(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
-	if len(cmd.args) == 0 {
-		return "", [32]byte{}, fmt.Errorf("usage: object <create|set|transfer|show|holders>")
-	}
-
-	sub := cmd.args[0]
-	rest := command{verb: sub, args: cmd.args[1:]}
-
-	switch sub {
-	case "create":
-		return dispatchObjectCreate(c, w, rest)
-	case "set":
-		return dispatchObjectSet(c, w, rest)
-	case "transfer":
-		return dispatchObjectTransfer(c, w, rest)
-	case "show":
-		return dispatchObjectShow(c, rest)
-	case "holders":
-		return dispatchObjectHolders(c, rest)
-	default:
-		return "", [32]byte{}, fmt.Errorf("unknown object subcommand: %s", sub)
-	}
-}
-
-// dispatchObjectCreate handles: object create <replication> <gasCoin> [content]
-func dispatchObjectCreate(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
-	rep64, err := strconv.ParseUint(arg(cmd, 0), 10, 16)
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object create <replication> <gasCoin-hex> [content]")
-	}
-
-	gasCoinID, err := parseHexID(arg(cmd, 1))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object create <replication> <gasCoin-hex> [content]")
-	}
-
-	content := strings.Join(cmd.args[2:], " ")
-
-	if err := w.RefreshCoin(c, gasCoinID); err != nil {
-		return "", [32]byte{}, fmt.Errorf("refresh gas coin:\n%w", err)
-	}
-
-	objectID, txHash, err := w.CreateObject(c, uint16(rep64), []byte(content), gasCoinID)
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-
-	w.TrackObject(objectID)
-
-	return fmt.Sprintf("object created %s (replication %d)", hex.EncodeToString(objectID[:]), rep64), txHash, nil
-}
-
-// dispatchObjects handles: objects. It lists each tracked object with its full
-// hex ID and current version/owner, so the full ID can be copied for object
-// show/set/transfer.
-func dispatchObjects(c *client.Client, w *client.Wallet) (string, [32]byte, error) {
-	ids := w.ObjectIDs()
-	if len(ids) == 0 {
-		return "no objects yet (use object create)", [32]byte{}, nil
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "objects (%d):", len(ids))
-
-	for _, id := range ids {
-		obj, err := c.GetObject(id)
-		if err != nil {
-			fmt.Fprintf(&b, "\n  %s  (unavailable)", hex.EncodeToString(id[:]))
-			continue
-		}
-		fmt.Fprintf(&b, "\n  %s  v%d  owner=%s  rep=%d",
-			hex.EncodeToString(id[:]), obj.Version, hex.EncodeToString(obj.Owner[:4]), obj.Replication)
-	}
-
-	return b.String(), [32]byte{}, nil
-}
-
-// dispatchObjectSet handles: object set <id> <gasCoin> <content...>
-func dispatchObjectSet(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
-	objectID, err := parseHexID(arg(cmd, 0))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object set <id-hex> <gasCoin-hex> <content...>")
-	}
-
-	gasCoinID, err := parseHexID(arg(cmd, 1))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object set <id-hex> <gasCoin-hex> <content...>")
-	}
-
-	content := strings.Join(cmd.args[2:], " ")
-
-	if err := w.RefreshCoin(c, gasCoinID); err != nil {
-		return "", [32]byte{}, fmt.Errorf("refresh gas coin:\n%w", err)
-	}
-
-	txHash, err := w.SetObject(c, objectID, []byte(content), gasCoinID)
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-
-	return fmt.Sprintf("object %s content updated", hex.EncodeToString(objectID[:4])), txHash, nil
-}
-
-// dispatchObjectTransfer handles: object transfer <id> <to> <gasCoin>
-func dispatchObjectTransfer(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
-	objectID, err := parseHexID(arg(cmd, 0))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object transfer <id-hex> <to-hex> <gasCoin-hex>")
-	}
-
-	recipient, err := parseHexID(arg(cmd, 1))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object transfer <id-hex> <to-hex> <gasCoin-hex>")
-	}
-
-	gasCoinID, err := parseHexID(arg(cmd, 2))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object transfer <id-hex> <to-hex> <gasCoin-hex>")
-	}
-
-	if err := w.RefreshCoin(c, gasCoinID); err != nil {
-		return "", [32]byte{}, fmt.Errorf("refresh gas coin:\n%w", err)
-	}
-
-	txHash, err := w.TransferObject(c, objectID, recipient, gasCoinID)
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-
-	return fmt.Sprintf("object %s transferred to %s",
-		hex.EncodeToString(objectID[:4]), hex.EncodeToString(recipient[:4])), txHash, nil
-}
-
-// dispatchObjectShow handles: object show <id>
-func dispatchObjectShow(c *client.Client, cmd command) (string, [32]byte, error) {
-	objectID, err := parseHexID(arg(cmd, 0))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object show <id-hex>")
-	}
-
-	obj, err := c.GetObject(objectID)
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-
-	line := fmt.Sprintf("object %s  owner=%s  v%d  rep=%d  content=%q",
-		hex.EncodeToString(objectID[:4]),
-		hex.EncodeToString(obj.Owner[:4]),
-		obj.Version,
-		obj.Replication,
-		obj.Content)
-
-	return line, [32]byte{}, nil
-}
-
-// dispatchObjectHolders handles: object holders <id>
-func dispatchObjectHolders(c *client.Client, cmd command) (string, [32]byte, error) {
-	objectID, err := parseHexID(arg(cmd, 0))
-	if err != nil {
-		return "", [32]byte{}, fmt.Errorf("usage: object holders <id-hex>")
-	}
-
-	report, err := c.Holders(objectID)
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-
-	line := fmt.Sprintf("object %s  expected=%d actual=%d",
-		hex.EncodeToString(objectID[:4]), len(report.Expected), len(report.Actual))
-
-	return line, [32]byte{}, nil
-}
-
 // dispatchValidators handles: validators
 func dispatchValidators(c *client.Client) (string, [32]byte, error) {
 	vals, err := c.Validators()
@@ -366,14 +199,38 @@ commands:
   object create <rep> <gasCoin> [text]   create a replicated object
   object set <id> <gasCoin> <text>       update object content
   object transfer <id> <to> <gasCoin>    transfer object ownership
+  object reparent <id> <newParent> <gasCoin>
+                                          move an object under a new parent
+  object delete <id> <gasCoin>           destroy an object (no children)
+  object parent <id>                     show an object's immediate parent
   object show <id>                       show object info
   object holders <id>                    show holder report
+  domain register <name> <objectId> <term> <gasCoin>
+                                          register a name against an owned object
+  domain renew <name> <term> <gasCoin>   extend a name's lease
+  domain update <name> <objectId> <gasCoin>
+                                          repoint a name at another owned object
+  domain transfer <name> <newOwner> <gasCoin>
+                                          hand a name to a new owner
+  domain delete <name> <gasCoin>         remove a name from the registry
+  domain resolve <name>                  resolve a name to its object ID
   validators                             list active validators
   balance                                show total balance
   coins                                  list known coins with full ids
-  objects                                list created objects with full ids
+  objects                                objects recovered from the index under
+                                          this wallet's key (merged with tracked)
   pubkey                                 show this wallet's public key
   quit                                   exit the console`)
+}
+
+// readLabel discreetly tags a printed index answer with the guarantee it
+// carries, so a user cannot mistake one for the other.
+func readLabel(proved bool) string {
+	if proved {
+		return "(proved)"
+	}
+
+	return "(unproven)"
 }
 
 // arg returns the i-th argument or an empty string.

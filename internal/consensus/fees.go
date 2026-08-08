@@ -3,18 +3,28 @@ package consensus
 import (
 	"math"
 	"math/bits"
+
+	"BluePods/internal/genesis"
 )
 
 // FeeParams holds protocol-level fee constants.
 // Initially hardcoded, later stored in a system singleton.
 type FeeParams struct {
-	GasPrice         uint64 // GasPrice is the price per unit of gas
-	MinGas           uint64 // MinGas is the minimum gas per transaction (anti-spam)
-	TransitFee       uint64 // TransitFee is the fixed fee per standard object in the ATX
-	StorageFee       uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
-	DomainFee        uint64 // DomainFee is the fixed fee per registered domain
-	BurnBPS          uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
-	StorageRefundBPS uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
+	GasPrice           uint64 // GasPrice is the price per unit of gas
+	MinGas             uint64 // MinGas is the minimum gas per transaction (anti-spam), and the flat compute a declared-operation transaction pays for running no metered code
+	TransitFee         uint64 // TransitFee is the fixed fee per standard object in the ATX
+	StorageFee         uint64 // StorageFee is the fixed fee per created object (flat 4 KB)
+	RentalRatePerEpoch uint64 // RentalRatePerEpoch is what one epoch of a domain lease costs; a register or renew pays it times the term declared in the header
+	MaxTermEpochs      uint64 // MaxTermEpochs caps how far past the current epoch a lease may run; an operation whose term would exceed it reverts rather than being clamped, because the rent charged is the rate times the DECLARED term
+	GraceEpochs        uint64 // GraceEpochs is how many epochs past expiry a lease stays in the registry, reserving its owner's renewal right until the boundary sweep removes it
+	ReparentFee        uint64 // ReparentFee is the flat fee a declared reparent pays for the tracker edge every node rewrites
+	DeleteFee          uint64 // DeleteFee is the flat fee a declared delete pays for the tracker and index entries every node removes
+	DomainUpdateFee    uint64 // DomainUpdateFee is the flat fee a domain repoint pays for the name leaf every node rewrites; the lease it runs under bought epochs, not writes
+	DomainTransferFee  uint64 // DomainTransferFee is the flat fee a domain handover pays for the name leaf every node rewrites
+	DomainDeleteFee    uint64 // DomainDeleteFee is the flat fee a domain removal pays for the name leaf every node drops
+	IndexEntryFee      uint64 // IndexEntryFee is the flat term an object's hierarchy-index entry adds to its creation deposit
+	BurnBPS            uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
+	StorageRefundBPS   uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
 }
 
 // FeeSplit holds the breakdown of a consumed fee into its two components.
@@ -24,17 +34,37 @@ type FeeSplit struct {
 	Epoch  uint64 // Epoch is the epoch reward share (100% of consumed fees)
 }
 
+// defaultMaxTermEpochs is the lease cap DefaultFeeParams carries. It is never
+// 0: a zero cap reverts every lease. Nothing falls back to it — a DAG with no
+// fee parameters wired stops rather than pricing leases from a constant no
+// other node reads (see mustFeeParams).
+const defaultMaxTermEpochs uint64 = 256
+
+// defaultGraceEpochs is the post-expiry grace window DefaultFeeParams
+// carries. Never 0: a zero window would sweep every lease the instant it
+// expired, forfeiting the owner's exclusive renewal right the window exists to
+// give. Like the lease cap, it is a default, never a fallback.
+const defaultGraceEpochs uint64 = 8
+
 // DefaultFeeParams returns the default fee parameters.
 // Values are placeholders until governance sets real ones.
 func DefaultFeeParams() FeeParams {
 	return FeeParams{
-		GasPrice:         1,
-		MinGas:           100,
-		TransitFee:       10,
-		StorageFee:       1000,
-		DomainFee:        10000,
-		BurnBPS:          0,
-		StorageRefundBPS: 9500,
+		GasPrice:           1,
+		MinGas:             100,
+		TransitFee:         10,
+		StorageFee:         1000,
+		RentalRatePerEpoch: 100,
+		MaxTermEpochs:      defaultMaxTermEpochs,
+		GraceEpochs:        defaultGraceEpochs,
+		ReparentFee:        100,
+		DeleteFee:          100,
+		DomainUpdateFee:    100,
+		DomainTransferFee:  100,
+		DomainDeleteFee:    100,
+		IndexEntryFee:      25,
+		BurnBPS:            0,
+		StorageRefundBPS:   9500,
 	}
 }
 
@@ -85,11 +115,14 @@ type HolderFunc func(objectID [32]byte, replication int) []Hash
 
 // ReplicationRatio computes the proportion of validators that execute the tx.
 // Returns numerator and denominator to avoid floating-point arithmetic.
-// If any mutable is singleton or tx creates objects/domains: ratio = 1/1.
+// If any mutable is singleton or tx creates objects: ratio = 1/1. Domain
+// creation used to force the same (a pod-executed registration needed every
+// node to observe it), but the pod domain write path is retired: domain
+// registration is a declared operation, priced by declaredOpsFee instead of
+// this ratio, so no term for it remains here.
 func ReplicationRatio(
 	mutableRefs []ObjectRef,
 	createdObjectsCount int,
-	maxCreateDomains int,
 	computeHolders HolderFunc,
 	totalValidators int,
 ) (num, denom int) {
@@ -97,8 +130,8 @@ func ReplicationRatio(
 		return 0, 1
 	}
 
-	// Forces all validators: creating objects or domains
-	if createdObjectsCount > 0 || maxCreateDomains > 0 {
+	// Forces all validators: creating objects (holder unknown until after execution).
+	if createdObjectsCount > 0 {
 		return 1, 1
 	}
 
@@ -134,21 +167,33 @@ type ObjectRef struct {
 }
 
 // CalculateFee computes the total fee for a transaction from its header fields.
+// Every term is derivable from the header alone, which is what lets each of the
+// four fee sites — ingress, commit, summary production and summary validation —
+// reach the same number for the same transaction without consulting state.
+// opsOnly marks a transaction that declares operations and carries no pod call:
+// it runs no metered code, so it pays a flat min_gas compute term instead of
+// its declared max_gas, and its operations are priced individually below.
 // All arithmetic uses uint64 with careful ordering to avoid overflow and precision loss.
 func CalculateFee(
 	maxGas uint64,
 	repNum, repDenom int,
 	standardObjectCount int,
 	createdObjectsReplication []uint16,
-	maxCreateDomains int,
+	ops []genesis.DeclaredOp,
+	opsOnly bool,
 	totalValidators int,
 	params FeeParams,
 ) uint64 {
 	var total uint64
 
-	// Compute fee: max_gas * gas_price * replication_ratio
+	// Compute fee: max_gas * gas_price * replication_ratio, or the flat min_gas
+	// floor for a transaction whose only work is its declared operations.
 	// Uses safeMul to prevent overflow (attacker could craft large max_gas * gas_price → wrap to 0)
-	if repDenom > 0 && repNum > 0 {
+	switch {
+	case opsOnly:
+		total = safeAdd(total, safeMul(params.MinGas, params.GasPrice))
+
+	case repDenom > 0 && repNum > 0:
 		compute := safeMul(maxGas, params.GasPrice)
 		compute = safeMul(compute, uint64(repNum)) / uint64(repDenom)
 		total = safeAdd(total, compute)
@@ -157,19 +202,76 @@ func CalculateFee(
 	// Transit fee: nb_standard_objects * transit_fee
 	total = safeAdd(total, safeMul(uint64(standardObjectCount), params.TransitFee))
 
-	// Storage fee: sum(effective_rep(replication_i) / total_validators) * storage_fee
+	// Storage fee: sum(StorageDeposit(replication_i)), delegating to the exact
+	// formula the creation deposit is stamped with (fees.go's StorageDeposit,
+	// mirrored by state.computeStorageDeposit) so the declared fee this loop
+	// totals into the header always covers the deposit calculateTxFeeSplit
+	// later locks against the created objects, index-entry term included.
 	if totalValidators > 0 {
 		for _, rep := range createdObjectsReplication {
-			effRep := effectiveRep(rep, totalValidators)
-			storage := safeMul(uint64(effRep), params.StorageFee) / uint64(totalValidators)
-			total = safeAdd(total, storage)
+			total = safeAdd(total, StorageDeposit(rep, totalValidators, params.StorageFee, params.IndexEntryFee))
 		}
 	}
 
-	// Domain fee: max_create_domains * domain_fee
-	total = safeAdd(total, safeMul(uint64(maxCreateDomains), params.DomainFee))
+	// Declared-operation fees: flat per operation, rent for a lease. Domain
+	// registration used to add a flat max_create_domains * domain_fee term here
+	// (the pod path priced its declared intent to register); that path is
+	// retired, and a domain lease is now priced individually below, by its
+	// declared term, as one of these operation fees.
+	total = safeAdd(total, declaredOpsFee(ops, params))
 
 	return total
+}
+
+// declaredOpsFee prices a transaction's declared operations. They are charged
+// whether or not they apply: the fee is fixed at ingress from the header, long
+// before commit decides whether an operation is valid, exactly as a reverted
+// pod call still pays the gas it declared. Making the charge conditional on the
+// outcome would put the summary out of reach of the nodes that must recompute
+// it, which is the whole reason the fee is header-derived.
+func declaredOpsFee(ops []genesis.DeclaredOp, params FeeParams) uint64 {
+	var total uint64
+
+	for i := range ops {
+		total = safeAdd(total, declaredOpFee(ops[i], params))
+	}
+
+	return total
+}
+
+// declaredOpFee prices one declared operation: rate x the DECLARED term for the
+// two that buy a lease, a flat fee for every other kind. The rent is read from
+// the header's term, never from the expiry the operation would produce, which
+// is why a term past the cap reverts instead of being clamped.
+//
+// No kind is free. A lease pays for the epochs it holds a name, not for the
+// writes performed during it, so repointing, handing over or dropping a name
+// each rewrites a leaf every node re-hashes into the anchored root and carries
+// its own flat fee. Only an unknown kind prices at zero, and commit rejects it
+// outright.
+func declaredOpFee(op genesis.DeclaredOp, params FeeParams) uint64 {
+	switch op.Kind {
+	case reparentOp:
+		return params.ReparentFee
+
+	case deleteOp:
+		return params.DeleteFee
+
+	case domainRegisterOp, domainRenewOp:
+		return safeMul(params.RentalRatePerEpoch, uint64(op.TermEpochs))
+
+	case domainUpdateOp:
+		return params.DomainUpdateFee
+
+	case domainTransferOp:
+		return params.DomainTransferFee
+
+	case domainDeleteOp:
+		return params.DomainDeleteFee
+
+	default:
+		return 0
+	}
 }
 
 // SplitFee breaks a total fee into its two components.
@@ -186,16 +288,21 @@ func SplitFee(total uint64, params FeeParams) FeeSplit {
 	}
 }
 
-// StorageDeposit computes the storage deposit for a newly created object.
-// deposit = storage_fee * effective_rep(replication) / total_validators.
-func StorageDeposit(replication uint16, totalValidators int, storageFee uint64) uint64 {
+// StorageDeposit computes the storage deposit for a newly created object: a
+// storage-fee share proportional to replication, plus the flat index-entry
+// term its hierarchy-index leaf adds. state.computeStorageDeposit mirrors this
+// exact formula so the deposit stamped on a created object always equals the
+// fee CalculateFee (via this same function) debits for it.
+// deposit = storage_fee * effective_rep(replication) / total_validators + index_entry_fee.
+func StorageDeposit(replication uint16, totalValidators int, storageFee, indexEntryFee uint64) uint64 {
 	if totalValidators == 0 {
 		return 0
 	}
 
 	effRep := effectiveRep(replication, totalValidators)
+	storage := safeMul(uint64(effRep), storageFee) / uint64(totalValidators)
 
-	return uint64(effRep) * storageFee / uint64(totalValidators)
+	return safeAdd(storage, indexEntryFee)
 }
 
 // StorageRefund computes the refund amount when an object is deleted.

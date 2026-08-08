@@ -22,7 +22,8 @@ const (
 // traffic loop runs through node 0, confirms the surviving 4 keep
 // committing (including a fresh transaction submitted with the victim down,
 // required on every survivor), restarts the killed node, and confirms it
-// resyncs and rejoins a uniform commit. Segment handling and the
+// resumes from its own committed state and rejoins a uniform commit. Segment
+// handling and the
 // truncated-line exemption (test/harness/node.go) are exercised for real by
 // the SIGKILL.
 //
@@ -63,12 +64,17 @@ func TestScenarioCrash(t *testing.T) {
 	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, true, "")
 
+	restarted := c.Node(crashVictim)
+	newSegment := inSegmentAfter(restarted)
+
 	c.Restart(crashVictim)
 
-	restarted := c.Node(crashVictim)
-	if _, err := restarted.WaitEvent(stepCtx(t), "sync.completed"); err != nil {
+	// The victim comes back on the state it was killed on and catches up
+	// through ordinary gossip, rather than taking a fresh snapshot from a peer:
+	// it owns that history, so there is nothing foreign for it to verify.
+	if resumed := restarted.Journal().Events("node.resumed", newSegment); len(resumed) != 1 {
 		c.Dump(t)
-		t.Fatalf("restarted node %d did not report sync.completed: %v", crashVictim, err)
+		t.Fatalf("restarted node %d recorded %d node.resumed events, want 1", crashVictim, len(resumed))
 	}
 
 	stopTraffic()

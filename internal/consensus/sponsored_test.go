@@ -18,7 +18,7 @@ func sponsoredTestTx(t *testing.T, senderKey, sponsorKey ed25519.PrivateKey, gas
 	t.Helper()
 
 	atxBytes := genesis.BuildSponsoredTx(
-		senderKey, sponsorKey, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin, validUntil, nil, nil,
+		senderKey, sponsorKey, testSystemPod, "create_object", []byte("x"), []uint16{1}, 1000, gasCoin, validUntil, nil, nil,
 	)
 
 	return types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
@@ -55,7 +55,7 @@ func TestVerifyTxAuthenticity_SponsorForged(t *testing.T) {
 	// attacker (who does not hold the victim's key) signs the sponsor slot.
 	senderPub := senderKey.Public().(ed25519.PublicKey)
 	sponsor := genesis.Sponsorship{FeePayer: victimPub, ValidUntil: 9}
-	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], nil, nil, sponsor, nil)
+	body := genesis.BuildUnsignedTxBytesSponsored(senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 1000, gasCoin[:], nil, nil, sponsor, nil, nil)
 
 	hash := blake3.Sum256(body)
 	senderSig := ed25519.Sign(senderKey, hash[:])
@@ -63,7 +63,7 @@ func TestVerifyTxAuthenticity_SponsorForged(t *testing.T) {
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOff := genesis.BuildTxTableSponsored(
-		builder, senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, attackerSig, nil,
+		builder, senderPub, testSystemPod, "create_object", []byte("x"), []uint16{1}, 1000, gasCoin[:], hash, senderSig, nil, nil, sponsor, attackerSig, nil, nil,
 	)
 	builder.Finish(txOff)
 	tx := types.GetRootAsTransaction(builder.FinishedBytes(), 0)
@@ -120,7 +120,7 @@ func TestValidateGasCoin_SponsoredOwnedByFeePayer(t *testing.T) {
 func signedGasCoinTx(t *testing.T, senderKey ed25519.PrivateKey, gasCoin [32]byte) *types.Transaction {
 	t.Helper()
 
-	atxBytes := genesis.BuildAttestedTx(senderKey, testSystemPod, "create_object", []byte("x"), []uint16{1}, 0, 1000, gasCoin[:])
+	atxBytes := genesis.BuildAttestedTx(senderKey, testSystemPod, "create_object", []byte("x"), []uint16{1}, 1000, gasCoin[:])
 
 	return types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
 }

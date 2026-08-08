@@ -18,13 +18,13 @@ func signedTestTx(t *testing.T, priv ed25519.PrivateKey) *types.Transaction {
 	t.Helper()
 
 	pub := priv.Public().(ed25519.PublicKey)
-	atxBytes := genesis.BuildAttestedTx(priv, testSystemPod, "noop", []byte("x"), nil, 0, 0, nil)
+	atxBytes := genesis.BuildAttestedTx(priv, testSystemPod, "noop", []byte("x"), nil, 0, nil)
 
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
 	// Sanity: the builder produced a body that matches its own hash for this pubkey.
-	body := genesis.BuildUnsignedTxBytes(pub, testSystemPod, "noop", []byte("x"), nil, 0, 0, nil)
+	body := genesis.BuildUnsignedTxBytes(pub, testSystemPod, "noop", []byte("x"), nil, 0, nil)
 	want := blake3.Sum256(body)
 	if string(tx.HashBytes()) != string(want[:]) {
 		t.Fatalf("test setup: builder hash does not match recomputed body hash")

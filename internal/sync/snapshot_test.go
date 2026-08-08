@@ -818,6 +818,96 @@ func TestSnapshotReplicationPreserved(t *testing.T) {
 	}
 }
 
+// TestSnapshot_ParentAndChildCountRoundtrip confirms a tracker entry's parent
+// kind, parent reference, and child count survive a CreateSnapshot ->
+// ExtractTrackerEntries round-trip unchanged. Without this, a joined node's
+// tracker would diverge from the founder's the moment any object declares a
+// parent, since the joiner's Import writes whatever the snapshot shipped.
+func TestSnapshot_ParentAndChildCountRoundtrip(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	parentID := consensus.Hash{0xAA}
+	childID := consensus.Hash{0xBB}
+
+	tracker := []consensus.ObjectTrackerEntry{
+		{ID: parentID, Version: 1, ParentKind: 0, Parent: consensus.Hash{}, ChildCount: 2},
+		{ID: childID, Version: 1, ParentKind: 1, Parent: parentID, ChildCount: 0},
+	}
+
+	data, err := CreateSnapshot(db, 10, nil, nil, tracker, nil, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+	entries := ExtractTrackerEntries(snapshot)
+	if len(entries) != 2 {
+		t.Fatalf("extracted %d tracker entries, want 2", len(entries))
+	}
+
+	byID := make(map[consensus.Hash]consensus.ObjectTrackerEntry, len(entries))
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+
+	parent := byID[parentID]
+	if parent.ParentKind != 0 || parent.ChildCount != 2 {
+		t.Errorf("parent entry = %+v, want ParentKind=0 ChildCount=2", parent)
+	}
+
+	child := byID[childID]
+	if child.ParentKind != 1 || child.Parent != parentID || child.ChildCount != 0 {
+		t.Errorf("child entry = %+v, want ParentKind=1 Parent=%x ChildCount=0", child, parentID)
+	}
+
+	db2, cleanup2 := createTestStorage(t)
+	defer cleanup2()
+	if _, err := ApplySnapshot(db2, data); err != nil {
+		t.Fatalf("ApplySnapshot should succeed with valid checksum: %v", err)
+	}
+}
+
+// TestSnapshot_ParentFieldsAffectChecksum confirms the checksum covers the
+// tracker entry's parent kind, parent reference, and child count: a snapshot
+// that differs only in one of these fields must produce a different checksum,
+// otherwise a tampered or divergent parent edge would pass verification.
+func TestSnapshot_ParentFieldsAffectChecksum(t *testing.T) {
+	base := consensus.ObjectTrackerEntry{ID: consensus.Hash{1}, Version: 1, ParentKind: 0, Parent: consensus.Hash{0xAA}, ChildCount: 3}
+
+	cases := []struct {
+		name    string
+		variant consensus.ObjectTrackerEntry
+	}{
+		{"parent_kind", func() consensus.ObjectTrackerEntry { e := base; e.ParentKind = 1; return e }()},
+		{"parent", func() consensus.ObjectTrackerEntry { e := base; e.Parent = consensus.Hash{0xBB}; return e }()},
+		{"child_count", func() consensus.ObjectTrackerEntry { e := base; e.ChildCount = 4; return e }()},
+	}
+
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	baseData, err := CreateSnapshot(db, 0, nil, nil, []consensus.ObjectTrackerEntry{base}, nil, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot base: %v", err)
+	}
+	baseSnap := types.GetRootAsSnapshot(baseData, 0)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			variantData, err := CreateSnapshot(db, 0, nil, nil, []consensus.ObjectTrackerEntry{tc.variant}, nil, 0, 0, 0, nil)
+			if err != nil {
+				t.Fatalf("CreateSnapshot variant: %v", err)
+			}
+			variantSnap := types.GetRootAsSnapshot(variantData, 0)
+
+			if bytes.Equal(baseSnap.ChecksumBytes(), variantSnap.ChecksumBytes()) {
+				t.Errorf("%s: checksum unchanged despite differing tracker entry", tc.name)
+			}
+		})
+	}
+}
+
 func TestSnapshot_WithDomains(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
@@ -883,6 +973,70 @@ func TestSnapshot_DomainsAffectChecksum(t *testing.T) {
 	}
 }
 
+// TestSnapshot_DomainRoundTrip_OwnerExpiry asserts a domain leaf's owner and
+// expiry epoch — not just its name and object — survive a snapshot round
+// trip byte-for-byte.
+func TestSnapshot_DomainRoundTrip_OwnerExpiry(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domains := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x11}, ExpiryEpoch: 42},
+	}
+
+	data, err := CreateSnapshot(db, 50, nil, nil, nil, domains, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+
+	snapshot := types.GetRootAsSnapshot(data, 0)
+	extracted := ExtractDomains(snapshot)
+	if len(extracted) != 1 {
+		t.Fatalf("extracted domains count = %d, want 1", len(extracted))
+	}
+
+	got := extracted[0]
+	if got.Owner != domains[0].Owner {
+		t.Errorf("owner = %x, want %x", got.Owner, domains[0].Owner)
+	}
+	if got.ExpiryEpoch != domains[0].ExpiryEpoch {
+		t.Errorf("expiry_epoch = %d, want %d", got.ExpiryEpoch, domains[0].ExpiryEpoch)
+	}
+}
+
+// TestSnapshot_DomainOwnerAffectsChecksum asserts two domain sets identical
+// in name, object, and expiry but differing in owner produce different
+// checksums: the owner is part of what the snapshot commits to, not a
+// long-along field the checksum ignores.
+func TestSnapshot_DomainOwnerAffectsChecksum(t *testing.T) {
+	db, cleanup := createTestStorage(t)
+	defer cleanup()
+
+	domainsA := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x11}, ExpiryEpoch: 5},
+	}
+	domainsB := []state.DomainEntry{
+		{Name: "alpha.pod", ObjectID: [32]byte{0xAA}, Owner: [32]byte{0x22}, ExpiryEpoch: 5},
+	}
+
+	dataA, err := CreateSnapshot(db, 0, nil, nil, nil, domainsA, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot A: %v", err)
+	}
+
+	dataB, err := CreateSnapshot(db, 0, nil, nil, nil, domainsB, 0, 0, 0, nil)
+	if err != nil {
+		t.Fatalf("CreateSnapshot B: %v", err)
+	}
+
+	snapA := types.GetRootAsSnapshot(dataA, 0)
+	snapB := types.GetRootAsSnapshot(dataB, 0)
+
+	if bytes.Equal(snapA.ChecksumBytes(), snapB.ChecksumBytes()) {
+		t.Error("a one-bit owner difference must change the snapshot checksum")
+	}
+}
+
 func TestSnapshot_DomainKeysExcludedFromObjects(t *testing.T) {
 	db, cleanup := createTestStorage(t)
 	defer cleanup()
@@ -930,5 +1084,38 @@ func TestSnapshot_ValidatorsAffectChecksum(t *testing.T) {
 
 	if bytes.Equal(snap1.ChecksumBytes(), snap2.ChecksumBytes()) {
 		t.Error("different validators should produce different checksums")
+	}
+}
+
+// TestApplySnapshot_RefusesForeignKeys pins the write surface a snapshot is
+// allowed to reach. CreateSnapshot only ever collects keys that are exactly 32
+// bytes and carry no consensus prefix (collectObjects), so an entry outside
+// that shape is either corruption or a source aiming a write at a key it was
+// never allowed to touch: the commit cursor, an epoch holder snapshot, the
+// live validator set, or the marker that tells a restart its state is its own.
+// Applying it is refused outright, and nothing lands.
+func TestApplySnapshot_RefusesForeignKeys(t *testing.T) {
+	hostile := [][]byte{
+		[]byte("m:stateAdopted"),
+		[]byte("m:commitCursor"),
+		append([]byte("v:"), bytes.Repeat([]byte{0xAA}, 30)...),
+		bytes.Repeat([]byte{0x01}, 31),
+		nil,
+	}
+
+	for _, key := range hostile {
+		db, cleanup := createTestStorage(t)
+
+		data := buildSnapshot(9, []objectEntry{{id: key, data: []byte{0x01}}}, nil, nil, nil, nil, nil, 0, 0, 0, nil)
+
+		if _, err := ApplySnapshot(db, data); err == nil {
+			t.Errorf("ApplySnapshot accepted an object keyed %q: a snapshot can write outside the object namespace", key)
+		}
+
+		if got, err := db.Get(key); err == nil && len(got) > 0 {
+			t.Errorf("key %q was written despite the refusal", key)
+		}
+
+		cleanup()
 	}
 }

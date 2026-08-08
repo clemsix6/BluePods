@@ -7,6 +7,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/network"
 	"BluePods/internal/types"
 )
@@ -68,11 +69,20 @@ func (d *Daemon) collectBuildSubmit(ctx context.Context, rawTx []byte, refs []ob
 // BuildATX assembles an AttestedTransaction from the raw transaction, the
 // collected replicated objects, their quorum proofs, and the synced attestation
 // epoch. Singletons are not included.
+//
+// The transaction table is rebuilt via the shared genesis.RebuildTxInBuilder
+// primitive (the same one the node uses to wrap a raw singleton-only
+// transaction into a trivial ATX) rather than a hand-rolled field list, so a
+// canonical-body field added there is never silently dropped here. It matters
+// concretely for declared operations (reparent/delete): a hand-rolled rebuild
+// that omits them changes the re-derived canonical body, so commit's
+// verifyTxAuthenticity computes a different hash than the sender signed and
+// rejects the transaction authenticity_failed on every node.
 func (d *Daemon) BuildATX(rawTx []byte, results []attestationResult) []byte {
 	builder := flatbuffers.NewBuilder(len(rawTx) + 1024)
 
 	tx := types.GetRootAsTransaction(rawTx, 0)
-	txOffset := rebuildTx(builder, tx)
+	txOffset := genesis.RebuildTxInBuilder(builder, tx)
 
 	objOffsets := make([]flatbuffers.UOffsetT, len(results))
 	for i := range results {

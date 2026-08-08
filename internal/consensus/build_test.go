@@ -1,11 +1,15 @@
 package consensus
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"testing"
 
 	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/zeebo/blake3"
 
+	"BluePods/internal/index"
 	"BluePods/internal/types"
 )
 
@@ -128,11 +132,318 @@ func TestBuildVertex_TimestampInHash(t *testing.T) {
 
 	hashAt := func(ts uint64) Hash {
 		builder := flatbuffers.NewBuilder(1024)
-		unsigned := dag.buildUnsignedVertex(builder, 0, nil, nil, ts)
-		return hashVertex(unsigned)
+		unsigned := dag.buildUnsignedVertex(builder, vertexParts{timestamp: ts})
+		identity, _ := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
+		return identity
 	}
 
 	if hashAt(1000) == hashAt(2000) {
 		t.Fatal("vertices differing only in timestamp must hash differently")
 	}
+}
+
+// TestVertexHeader_EndToEnd verifies a produced vertex carries a complete detached
+// header — a 32-byte body hash covering the body it ships — and that its identity
+// is the hash of that header, signed by the producer.
+func TestVertexHeader_EndToEnd(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	data := dag.buildVertex(0, nil, [][]byte{buildTestATX(t, "anchor_fn", nil, nil, 0)})
+	v := types.GetRootAsVertex(data, 0)
+
+	if len(v.BodyHashBytes()) != 32 {
+		t.Fatalf("body_hash size = %d, want 32", len(v.BodyHashBytes()))
+	}
+
+	if err := dag.validateSignature(v); err != nil {
+		t.Fatalf("produced vertex does not verify: %v", err)
+	}
+
+	if got := blake3.Sum256(append([]byte{headerDomainTag}, headerBytes(v)...)); !bytes.Equal(got[:], v.HashBytes()) {
+		t.Fatal("vertex identity is not the hash of its declared header")
+	}
+
+	if n := len(headerBytes(v)); n != headerSize {
+		t.Fatalf("header encoding = %d bytes, want %d", n, headerSize)
+	}
+}
+
+// TestVertexHeader_TamperedTransactionRejected verifies the body hash binds the
+// body to the signed header: flipping one byte inside a committed transaction
+// breaks validation even though the signature bytes are untouched.
+func TestVertexHeader_TamperedTransactionRejected(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	data := dag.buildVertex(0, nil, [][]byte{buildTestATX(t, "anchor_fn", nil, nil, 0)})
+	v := types.GetRootAsVertex(data, 0)
+
+	if err := dag.validateSignature(v); err != nil {
+		t.Fatalf("untampered vertex must verify: %v", err)
+	}
+
+	var atx types.AttestedTransaction
+	if !v.Transactions(&atx, 0) {
+		t.Fatal("produced vertex carries no transaction")
+	}
+
+	if !atx.Transaction(nil).MutateHash(0, 0xFF) {
+		t.Fatal("could not tamper with the transaction")
+	}
+
+	if err := dag.validateSignature(v); err == nil {
+		t.Fatal("a tampered transaction must break validation")
+	} else if !errors.Is(err, errBadSignature) {
+		t.Fatalf("tampering must be a bad_signature rejection, got: %v", err)
+	}
+}
+
+// TestVertexHeader_TamperedIndexRootRejected verifies the anchor is inside the
+// signed header: flipping one byte of index_root breaks validation.
+func TestVertexHeader_TamperedIndexRootRejected(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	data := dag.buildVertex(0, nil, nil)
+	v := types.GetRootAsVertex(data, 0)
+
+	if !v.MutateIndexRoot(0, 0xFF) {
+		t.Fatal("could not tamper with index_root")
+	}
+
+	if err := dag.validateSignature(v); err == nil {
+		t.Fatal("a tampered index_root must break validation")
+	} else if !errors.Is(err, errBadSignature) {
+		t.Fatalf("tampering must be a bad_signature rejection, got: %v", err)
+	}
+}
+
+// TestVertexHeader_LightVerificationWithoutBody verifies the header is detached:
+// {producer, round, epoch, frontier_round, index_root, body_hash, signature} — a
+// couple of hundred bytes carrying no parents, no transactions, no fee summary —
+// is enough to check the producer's signature over the vertex identity.
+func TestVertexHeader_LightVerificationWithoutBody(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	data := dag.buildVertex(0, nil, [][]byte{buildTestATX(t, "anchor_fn", nil, nil, 0)})
+	full := types.GetRootAsVertex(data, 0)
+
+	headerOnly := detachHeader(full)
+	if len(headerOnly) > 256 {
+		t.Fatalf("detached header is %d bytes, expected a couple of hundred", len(headerOnly))
+	}
+
+	light := types.GetRootAsVertex(headerOnly, 0)
+
+	if light.TransactionsLength() != 0 || light.ParentsLength() != 0 {
+		t.Fatal("the detached header must carry no body")
+	}
+
+	if !bytes.Equal(headerBytes(light), headerBytes(full)) {
+		t.Fatal("detached header does not encode to the full vertex's header")
+	}
+
+	identity := blake3.Sum256(append([]byte{headerDomainTag}, headerBytes(light)...))
+	if !bytes.Equal(identity[:], full.HashBytes()) {
+		t.Fatal("header hash does not reproduce the vertex identity")
+	}
+
+	if !ed25519.Verify(light.ProducerBytes(), identity[:], light.SignatureBytes()) {
+		t.Fatal("signature does not verify against the detached header alone")
+	}
+}
+
+// TestVertexHeader_EpochIsTheLiveEpoch verifies production stamps the LIVE epoch
+// the commit path maintains, not the construction-time argument (which is 0 on
+// every node and left every header claiming the genesis epoch).
+func TestVertexHeader_EpochIsTheLiveEpoch(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
+	defer dag.Close()
+
+	// The live epoch and the anchored frontier both come from the commit state,
+	// so an honest producer's pair is consistent: a commit cursor inside epoch 3
+	// is what moved the live epoch to 3.
+	dag.SetIndexer(&anchorIndexer{frontier: 31})
+
+	dag.commitMu.Lock()
+	dag.setCurrentEpoch(3)
+	dag.commitMu.Unlock()
+
+	v := types.GetRootAsVertex(dag.buildVertex(30, nil, nil), 0)
+
+	if v.Epoch() != 3 {
+		t.Fatalf("vertex epoch = %d, want the live epoch 3", v.Epoch())
+	}
+
+	if err := dag.validateEpoch(v); err != nil {
+		t.Fatalf("a vertex stamped with the live epoch must validate: %v", err)
+	}
+}
+
+// TestValidateEpoch_BoundarySkew verifies a vertex produced in epoch N still
+// validates on a receiver that has already transitioned to N+1 (and the other way
+// round), while an epoch the vertex's own anchored frontier cannot have reached is
+// rejected wherever the receiver stands. Producers cross a boundary at different
+// moments; rejecting the in-flight ones would drop every vertex around every
+// boundary, and a receiver-relative rule would make one node's verdict on a vertex
+// disagree with another's.
+func TestValidateEpoch_BoundarySkew(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(4)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil, WithEpochLength(10))
+	defer dag.Close()
+
+	// A frontier at round 25 commits in epoch 2, so the window is 1..3: a
+	// producer that had not transitioned yet, one at the frontier's own epoch,
+	// and one that transitioned at round 30 and re-read its epoch before its
+	// frontier all pass. Epoch 4 is beyond any honest skew.
+	//
+	// Every case is checked from three receiver positions — behind the vertex,
+	// level with it, and well ahead of it — and the verdicts must not move.
+	for _, receiverEpoch := range []uint64{0, 2, 5} {
+		dag.commitMu.Lock()
+		dag.setCurrentEpoch(receiverEpoch)
+		dag.commitMu.Unlock()
+
+		for _, epoch := range []uint64{1, 2, 3} {
+			v := types.GetRootAsVertex(buildTestVertexAnchored(t, validators[1], 25, nil, epoch, 25), 0)
+			if err := dag.validateEpoch(v); err != nil {
+				t.Fatalf("epoch %d at frontier 25 must validate on a receiver in epoch %d: %v",
+					epoch, receiverEpoch, err)
+			}
+		}
+
+		forged := types.GetRootAsVertex(buildTestVertexAnchored(t, validators[1], 25, nil, 4, 25), 0)
+		if err := dag.validateEpoch(forged); !errors.Is(err, errWrongEpoch) {
+			t.Fatalf("an epoch two above the frontier's own epoch must be rejected on a receiver in epoch %d, got: %v",
+				receiverEpoch, err)
+		}
+	}
+}
+
+// TestBuildVertex_AnchorsCommittedFrontier verifies two independently
+// constructed DAGs, each wired to its own index.Manager fed the identical
+// edit stream and SetFrontier round, produce vertices carrying byte-identical
+// (frontier_round, index_root) — the plan's determinism requirement: the
+// anchor must depend on nothing node-local, only on the committed frontier
+// itself. Each manager also applies one more edge AFTER SetFrontier(7) with
+// no follow-up SetFrontier call, so Root() (the live tree) and RootAt(7) (the
+// committed frontier) diverge: an implementation that anchored the live root
+// instead of the cached committed one would still pass the determinism check
+// above (both managers get the same live root too) but fails the two
+// assertions below, which is the point of mutating after the frontier.
+func TestBuildVertex_AnchorsCommittedFrontier(t *testing.T) {
+	buildAt := func(t *testing.T) (*types.Vertex, *index.Manager) {
+		db := newTestStorage(t)
+		validators, vs := newTestValidatorSet(1)
+
+		mgr := index.NewManager()
+		mgr.ApplyEdge([32]byte{0x11}, index.KeyRootKind, [32]byte{0x01})
+		mgr.SetFrontier(7)
+
+		// Mutate the trees again without a follow-up SetFrontier: production
+		// must still anchor the root AT round 7, not whatever Root() returns
+		// now.
+		mgr.ApplyEdge([32]byte{0x22}, index.KeyRootKind, [32]byte{0x02})
+
+		dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+		defer dag.Close()
+		dag.SetIndexer(mgr)
+
+		return types.GetRootAsVertex(dag.buildVertex(8, nil, nil), 0), mgr
+	}
+
+	v1, mgr1 := buildAt(t)
+	v2, _ := buildAt(t)
+
+	if v1.FrontierRound() != 7 {
+		t.Fatalf("frontier_round = %d, want 7", v1.FrontierRound())
+	}
+
+	if v1.FrontierRound() != v2.FrontierRound() {
+		t.Fatalf("frontier_round mismatch: %d != %d", v1.FrontierRound(), v2.FrontierRound())
+	}
+
+	if len(v1.IndexRootBytes()) != 32 || bytes.Equal(v1.IndexRootBytes(), make([]byte, 32)) {
+		t.Fatal("expected a non-zero 32-byte index_root once a frontier is committed")
+	}
+
+	if !bytes.Equal(v1.IndexRootBytes(), v2.IndexRootBytes()) {
+		t.Fatalf("index_root mismatch: %x != %x", v1.IndexRootBytes(), v2.IndexRootBytes())
+	}
+
+	rootAtFrontier, ok := mgr1.RootAt(7)
+	if !ok {
+		t.Fatal("RootAt(7) not retained")
+	}
+	if !bytes.Equal(v1.IndexRootBytes(), rootAtFrontier[:]) {
+		t.Fatalf("index_root %x != RootAt(7) %x: buildVertex must anchor the committed frontier, not the live root", v1.IndexRootBytes(), rootAtFrontier)
+	}
+
+	liveRoot := mgr1.Root()
+	if bytes.Equal(v1.IndexRootBytes(), liveRoot[:]) {
+		t.Fatal("index_root equals Manager.Root() (the live, post-frontier-mutation root) — buildVertex anchored the live tree instead of the committed frontier")
+	}
+}
+
+// TestBuildVertex_ZeroAnchorWhenIndexerUnset verifies a DAG built without
+// SetIndexer (tests, tools, any pre-index construction) anchors the zero
+// frontier and the zero root rather than panicking or leaking a stale value.
+func TestBuildVertex_ZeroAnchorWhenIndexerUnset(t *testing.T) {
+	db := newTestStorage(t)
+	validators, vs := newTestValidatorSet(1)
+
+	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
+	defer dag.Close()
+
+	v := types.GetRootAsVertex(dag.buildVertex(0, nil, nil), 0)
+
+	if v.FrontierRound() != 0 {
+		t.Fatalf("frontier_round = %d, want 0 with no indexer wired", v.FrontierRound())
+	}
+
+	if !bytes.Equal(v.IndexRootBytes(), make([]byte, 32)) {
+		t.Fatalf("index_root = %x, want the zero root with no indexer wired", v.IndexRootBytes())
+	}
+}
+
+// detachHeader re-serializes only the header fields of a vertex: what a serving
+// node puts in an anchor bundle and a light verifier checks.
+func detachHeader(v *types.Vertex) []byte {
+	builder := flatbuffers.NewBuilder(256)
+
+	producerVec := builder.CreateByteVector(v.ProducerBytes())
+	sigVec := builder.CreateByteVector(v.SignatureBytes())
+	indexRootVec := builder.CreateByteVector(v.IndexRootBytes())
+	bodyHashVec := builder.CreateByteVector(v.BodyHashBytes())
+
+	types.VertexStart(builder)
+	types.VertexAddRound(builder, v.Round())
+	types.VertexAddProducer(builder, producerVec)
+	types.VertexAddSignature(builder, sigVec)
+	types.VertexAddEpoch(builder, v.Epoch())
+	types.VertexAddFrontierRound(builder, v.FrontierRound())
+	types.VertexAddIndexRoot(builder, indexRootVec)
+	types.VertexAddBodyHash(builder, bodyHashVec)
+	builder.Finish(types.VertexEnd(builder))
+
+	return builder.FinishedBytes()
 }

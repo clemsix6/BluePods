@@ -32,7 +32,7 @@ func TestCalculateTxFeeSplit_SeparatesStorage(t *testing.T) {
 
 	consumed, storage := dag.calculateTxFeeSplit(tx, atx)
 
-	wantStorage := StorageDeposit(0, dag.validators.Len(), params.StorageFee)
+	wantStorage := StorageDeposit(0, dag.validators.Len(), params.StorageFee, params.IndexEntryFee)
 	if storage != wantStorage {
 		t.Errorf("storage component: got %d, want %d", storage, wantStorage)
 	}
@@ -70,7 +70,7 @@ func TestCalculateTxFeeSplit_StorageTracksLiveCount(t *testing.T) {
 
 	assertStorageMatchesLiveCount := func(label string) {
 		_, storage := dag.calculateTxFeeSplit(tx, atx)
-		want := StorageDeposit(2, dag.validators.Len(), params.StorageFee)
+		want := StorageDeposit(2, dag.validators.Len(), params.StorageFee, params.IndexEntryFee)
 		if storage != want {
 			t.Errorf("%s: storage %d != StorageDeposit at len %d (%d)",
 				label, storage, dag.validators.Len(), want)

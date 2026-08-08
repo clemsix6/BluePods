@@ -111,8 +111,66 @@ func (rcv *ObjectVersion) MutateFees(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(10, n)
 }
 
+func (rcv *ObjectVersion) ParentKind() byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(12))
+	if o != 0 {
+		return rcv._tab.GetByte(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) MutateParentKind(n byte) bool {
+	return rcv._tab.MutateByteSlot(12, n)
+}
+
+func (rcv *ObjectVersion) Parent(j int) byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.GetByte(a + flatbuffers.UOffsetT(j*1))
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) ParentLength() int {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		return rcv._tab.VectorLen(o)
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) ParentBytes() []byte {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		return rcv._tab.ByteVector(o + rcv._tab.Pos)
+	}
+	return nil
+}
+
+func (rcv *ObjectVersion) MutateParent(j int, n byte) bool {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(14))
+	if o != 0 {
+		a := rcv._tab.Vector(o)
+		return rcv._tab.MutateByte(a+flatbuffers.UOffsetT(j*1), n)
+	}
+	return false
+}
+
+func (rcv *ObjectVersion) ChildCount() uint32 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(16))
+	if o != 0 {
+		return rcv._tab.GetUint32(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ObjectVersion) MutateChildCount(n uint32) bool {
+	return rcv._tab.MutateUint32Slot(16, n)
+}
+
 func ObjectVersionStart(builder *flatbuffers.Builder) {
-	builder.StartObject(4)
+	builder.StartObject(7)
 }
 func ObjectVersionAddId(builder *flatbuffers.Builder, id flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(id), 0)
@@ -128,6 +186,18 @@ func ObjectVersionAddReplication(builder *flatbuffers.Builder, replication uint1
 }
 func ObjectVersionAddFees(builder *flatbuffers.Builder, fees uint64) {
 	builder.PrependUint64Slot(3, fees, 0)
+}
+func ObjectVersionAddParentKind(builder *flatbuffers.Builder, parentKind byte) {
+	builder.PrependByteSlot(4, parentKind, 0)
+}
+func ObjectVersionAddParent(builder *flatbuffers.Builder, parent flatbuffers.UOffsetT) {
+	builder.PrependUOffsetTSlot(5, flatbuffers.UOffsetT(parent), 0)
+}
+func ObjectVersionStartParentVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
+	return builder.StartVector(1, numElems, 1)
+}
+func ObjectVersionAddChildCount(builder *flatbuffers.Builder, childCount uint32) {
+	builder.PrependUint32Slot(6, childCount, 0)
 }
 func ObjectVersionEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

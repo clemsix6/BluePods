@@ -35,7 +35,8 @@ const (
 // Daemon is the client-side library that synchronizes the validator set, computes
 // object holders by rendezvous hashing, collects attestations, and submits
 // attested transactions. It imports only the pure shared packages (attest,
-// validators, network codecs) and quic-go, never the node's heavy subsystems.
+// genesis, validators, network codecs) and quic-go, never the node's heavy
+// subsystems.
 type Daemon struct {
 	// nodeAddrs are the QUIC addresses of nodes used for syncing and submission.
 	nodeAddrs []string

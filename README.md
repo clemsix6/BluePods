@@ -20,9 +20,13 @@ Bring up a local cluster across a few terminals, one bootstrap node and as many 
 
 ```bash
 ./node -bootstrap -quic 127.0.0.1:9000 -data ./data1
-./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9001 -data ./data2
-./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9002 -data ./data3
+./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9001 -data ./data2 -insecure-bootstrap
+./node -bootstrap-addr 127.0.0.1:9000 -quic 127.0.0.1:9002 -data ./data3 -insecure-bootstrap
 ```
+
+A node that syncs never goes live on state nobody attested, so it refuses to start without a trust anchor. The anchor is `-trust-checkpoint <epoch>:<validator-root hex>`, the pair every node publishes as `epoch.validators.frozen`, taken out of band from a node you already trust: the joiner rebuilds that epoch's validator set from the snapshot it was served, checks it hashes to the pinned root, and then requires a stake quorum of exactly that set to attest the index root it recomputed for itself. `-insecure-bootstrap` skips all of it, which is what the founders above use while the committee is still forming and there is no stable set to pin.
+
+Only a node holding nothing syncs. Restart one of the commands above over a data directory it has already been running on and it resumes from the committed state it owns, catching up through ordinary gossip: it fetches no snapshot and proves nothing to anyone, because none of that state is foreign to it. Keep passing the same flags either way — the node decides which it is from its data directory, and the anchor is what it needs if that directory turns out to be empty. This is also what lets a cluster come back from being fully stopped, where the first node back has no live quorum to be attested by.
 
 Run on a terminal, a node draws a live dashboard: round, transactions per second, connected peers, committed transactions. Add `--log` if you would rather have plain logs, which is also what you get automatically when the output is not a terminal.
 

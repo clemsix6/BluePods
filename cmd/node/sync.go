@@ -169,6 +169,16 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 		}
 	}
 
+	// The committed frontier the rebuilt state describes, read BEFORE replay
+	// moves it: it is the floor the anchor quorum must attest at or above, so
+	// the proof covers the state that came off the wire and not merely some
+	// later frontier this node reached on its own.
+	if n.idxManager == nil {
+		return fmt.Errorf("no index rebuilt from the snapshot: nothing to verify the join against")
+	}
+
+	rebuiltFrontier, _ := n.idxManager.CommittedFrontier()
+
 	// Switch message handler BEFORE replay to avoid losing vertices.
 	// New vertices go directly to the DAG while we replay the buffer; gossiped
 	// transactions enter the pending set (handleGossipMessage tells them apart).
@@ -191,6 +201,24 @@ func (n *Node) performSync(peer *network.Peer, asValidator bool) error {
 	// Clear buffer
 	if buf := n.syncBuffer.Swap(nil); buf != nil {
 		buf.Clear()
+	}
+
+	// Fail-closed: everything above is the source's claim until a stake quorum
+	// of the checkpointed validator set attests the root this node rebuilt for
+	// itself (see checkpoint.go for the chain). A node that cannot prove its
+	// state never reaches sync.completed, so nothing downstream — the
+	// harness's readiness gate included — ever observes it as live.
+	if err := n.verifySyncedState(rebuiltFrontier); err != nil {
+		return fmt.Errorf("verify synced state:\n%w", err)
+	}
+
+	// Proven, and only now the node's own: a later restart resumes from this
+	// directory instead of asking a peer for the state again (see resume.go).
+	// The mark is written strictly after the gate, so the directory a REFUSED
+	// join leaves behind — the source's snapshot, already applied here — stays
+	// foreign and faces the gate again on the next start.
+	if err := consensus.MarkStateAdopted(n.storage); err != nil {
+		return fmt.Errorf("mark state adopted:\n%w", err)
 	}
 
 	logger.Info("sync complete", "round", n.dag.Round())
@@ -266,6 +294,11 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 		opts = append(opts, consensus.WithEpochLength(n.cfg.EpochLength))
 	}
 
+	// The index rebuilt from the applied snapshot, the domain registry and the
+	// governed fee parameters — installed before New starts a goroutine. See
+	// committedStateOpts for the rebuild and the frontier seed's derivation.
+	opts = append(opts, n.committedStateOpts()...)
+
 	n.dag = consensus.New(
 		n.storage,
 		validators,
@@ -282,6 +315,18 @@ func (n *Node) initConsensusForListener(result *snapshotResult) error {
 	n.dag.SetVertexFetcher(n.newVertexFetcher())
 
 	n.setupValidatorCallback()
+
+	// The same aggregation wiring the validator path gets. A listener produces
+	// nothing, but it COMMITS the same ordered log: it applies the same declared
+	// operations, stamps the same storage deposits, and anchors the same index
+	// root in the snapshots it serves. A listener built without this reverts
+	// every domain operation validators apply (no epoch source for lease
+	// resolution) and stamps zero-fee deposits — a permanent divergence from the
+	// state every validator holds. The path is unreachable-broken upstream today
+	// (requestAndApplySnapshot dereferences a nil n.state in listener mode, which
+	// is out of this task's scope), so the point of wiring it symmetrically is
+	// that fixing that panic cannot silently resurrect a divergent node class.
+	n.initAggregation(validators)
 
 	return nil
 }
@@ -305,6 +350,14 @@ func (n *Node) initConsensusForValidator(result *snapshotResult) error {
 	}
 
 	opts = n.appendEpochOpts(opts)
+
+	// The index rebuilt from the applied snapshot, the domain registry and the
+	// governed fee parameters. A synced validator produces vertices as soon as
+	// it is registered, so an index wired any later is not a silent gap: it
+	// anchors (0, zero root) in every vertex, and stage-1 ingress verification
+	// makes every indexed peer reject them once the vertex round leaves the
+	// genesis epoch. See committedStateOpts for the frontier seed's derivation.
+	opts = append(opts, n.committedStateOpts()...)
 
 	n.dag = consensus.New(
 		n.storage,
@@ -416,15 +469,19 @@ func (n *Node) replayBufferedVertices(lastCommittedRound uint64) error {
 		"producersInBuffer", producers,
 	)
 
-	added := 0
+	// AddVertex's bool is the relay gate, not a storage report (see its doc
+	// comment): a quarantined replay is stored but returns false. Count what is
+	// actually being counted here so this log does not silently under-report
+	// progress relative to what landed in the store.
+	relayed := 0
 	for _, data := range vertices {
 		if n.dag.AddVertex(data) {
-			added++
+			relayed++
 		}
 	}
 
 	logger.Info("replay complete",
-		"added", added,
+		"relayed", relayed,
 		"total", len(vertices),
 		"dagRoundNow", n.dag.Round(),
 	)

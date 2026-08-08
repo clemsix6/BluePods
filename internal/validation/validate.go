@@ -26,6 +26,15 @@ const (
 	// maxObjectRefs is the maximum total number of object references per transaction.
 	// Spec: 8 standard objects + 32 singletons = 40 max refs.
 	maxObjectRefs = 40
+
+	// maxDeclaredOps is the maximum number of declared operations per
+	// transaction. It is deliberately the SAME bound as maxObjectRefs: each
+	// operation is priced, but every one of them also rewrites leaves every
+	// node re-hashes into its anchored roots, so the bound keeps that work
+	// proportionate to the reference-capped baseline the rest of the fee
+	// schedule is sized against. Moving one cap without the other breaks that
+	// proportion.
+	maxDeclaredOps = maxObjectRefs
 )
 
 // ValidateTx validates a raw Transaction's structure before it enters consensus.
@@ -45,6 +54,18 @@ func ValidateTx(data []byte) (retErr error) {
 	tx := types.GetRootAsTransaction(data, 0)
 
 	if err := validateFieldSizes(tx); err != nil {
+		return err
+	}
+
+	// The shape gate is the network-wide rule set, shared verbatim with the
+	// commit path; the empty-intent check below is the ingress's own, a
+	// courtesy to a client that built nothing rather than a rule a node could
+	// be forced to enforce.
+	if err := ValidateShape(tx); err != nil {
+		return err
+	}
+
+	if err := validateIntent(tx); err != nil {
 		return err
 	}
 
@@ -77,10 +98,6 @@ func validateFieldSizes(tx *types.Transaction) error {
 		return fmt.Errorf("invalid pod size: got %d, want %d", len(tx.PodBytes()), podSize)
 	}
 
-	if len(tx.FunctionName()) == 0 {
-		return fmt.Errorf("empty function name")
-	}
-
 	// gas_coin must be 0 (absent) or 32 bytes
 	gasCoinLen := len(tx.GasCoinBytes())
 	if gasCoinLen != 0 && gasCoinLen != 32 {
@@ -88,6 +105,78 @@ func validateFieldSizes(tx *types.Transaction) error {
 	}
 
 	return nil
+}
+
+// ValidateShape enforces the shape rules a declared-operation transaction must
+// satisfy WHEREVER it is seen. It is the single gate two sites run: client
+// ingress, before a submission is wrapped and gossiped, and the commit path,
+// on every node, for every transaction a vertex carries. Ingress alone binds
+// only polite clients — a byzantine producer includes what it likes and a
+// forged submission arrives wrapped in an ATX — so a rule that costs value
+// when broken has to be re-checked where every node agrees.
+//
+// A transaction is either declared operations or a pod call, never both: that
+// is what keeps a transaction's semantics atomic without asking non-holders to
+// observe a pod revert. The exclusivity extends to
+// created_objects_replication, because only a pod call creates objects: the
+// entries an operations transaction declares price a storage deposit that is
+// debited from the gas coin, locked on no object and never pooled. The bound
+// on the list is here for the same reason it cannot live at ingress alone — it
+// caps the leaf-rewriting work one transaction imposes on every node, and that
+// work is done before any fee is charged.
+//
+// A transaction that declares no operations is left alone: it is a pod call,
+// whose replication entries are exactly the objects it creates.
+func ValidateShape(tx *types.Transaction) error {
+	count := tx.OperationsLength()
+	if count == 0 {
+		return nil
+	}
+
+	if txHasPodCall(tx) {
+		return fmt.Errorf("transaction carries both declared operations and a pod call")
+	}
+
+	if tx.CreatedObjectsReplicationLength() > 0 {
+		return fmt.Errorf("transaction carries both declared operations and created-object replication entries")
+	}
+
+	if count > maxDeclaredOps {
+		return fmt.Errorf("too many declared operations: %d (max %d)", count, maxDeclaredOps)
+	}
+
+	return nil
+}
+
+// validateIntent rejects a transaction that asks for nothing: no pod call to
+// run and no operation to apply. Unlike the shape rules it is an ingress-only
+// courtesy — such a transaction pays its fee and changes nothing, so no node
+// has to be protected from it — which is why the commit path does not run it.
+func validateIntent(tx *types.Transaction) error {
+	if len(tx.FunctionName()) == 0 && tx.OperationsLength() == 0 {
+		return fmt.Errorf("transaction has neither a function name nor declared operations")
+	}
+
+	return nil
+}
+
+// txHasPodCall reports whether a transaction carries a pod call: a non-empty
+// function name, or a non-zero pod ID. Mirrors internal/consensus/ops.go's
+// txHasPodCall exactly, so the gate and the commit path's own reading of the
+// exclusivity family agree on the boundary between a pod call and a
+// declared-ops transaction.
+func txHasPodCall(tx *types.Transaction) bool {
+	if len(tx.FunctionName()) > 0 {
+		return true
+	}
+
+	for _, b := range tx.PodBytes() {
+		if b != 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validateObjectRefs checks that object references are well-formed and within limits.
@@ -195,13 +284,13 @@ func rebuildUnsignedTx(tx *types.Transaction) []byte {
 		string(tx.FunctionName()),
 		tx.ArgsBytes(),
 		cor,
-		tx.MaxCreateDomains(),
 		tx.MaxGas(),
 		tx.GasCoinBytes(),
 		mutableRefs,
 		readRefs,
 		genesis.Sponsorship{FeePayer: tx.FeePayerBytes(), ValidUntil: tx.ValidUntil()},
 		tx.DeletedObjectsBytes(),
+		genesis.ExtractOperations(tx),
 	)
 }
 

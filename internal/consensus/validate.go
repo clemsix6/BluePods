@@ -10,23 +10,29 @@ import (
 	"BluePods/internal/types"
 )
 
-// Sentinel errors for the terminal (non-buffer) validateVertex failure paths.
+// Sentinel errors for the non-buffer validateVertex failure paths.
 // classifyRejection maps each to its consensus.vertex.rejected reason code via
 // errors.Is, rather than fragile error-string prefix matching (which is used
 // only for the two BUFFER cases: isMissingParentError/isUnknownProducerError).
+//
+// errIndexRoot is the one sentinel that is NOT a rejection: it carries the
+// quarantine verdict (the vertex is stored, withheld from relay and reference),
+// so it never reaches classifyRejection — isQuarantineVerdict intercepts it at
+// both admission sites first.
 var (
 	errBadSignature = errors.New("bad_signature")
 	errWrongEpoch   = errors.New("wrong_epoch")
 	errParentRound  = errors.New("parent_round")
 	errParentQuorum = errors.New("parent_quorum")
 	errFeeSummary   = errors.New("fee_summary")
+	errIndexRoot    = errors.New("index_root")
 )
 
 // classifyRejection maps a terminal validateVertex error to its
 // consensus.vertex.rejected reason code. It must only be called on an error
 // that is NOT a buffer case (isMissingParentError/isUnknownProducerError were
-// already checked and returned false) — every remaining validateVertex error
-// path wraps exactly one of the sentinels below.
+// already checked and returned false) and NOT the quarantine verdict — every
+// remaining validateVertex error path wraps exactly one of the sentinels below.
 func classifyRejection(err error) string {
 	switch {
 	case errors.Is(err, errBadSignature):
@@ -83,15 +89,106 @@ func (d *DAG) validateVertex(v *types.Vertex, data []byte) error {
 		return err
 	}
 
+	// 7. The anchored index root must match this node's own history, when this
+	// node has the history to check it against (stage 1; unverifiable anchors
+	// pass untouched).
+	//
+	// It runs LAST because its verdict is the only one that does not stop the
+	// vertex from being STORED: a proven liar is quarantined, not dropped. Every
+	// other check that ran must therefore have passed before it is reached, or
+	// the quarantine door would be a way to put structurally invalid vertices
+	// into every honest node's store. That claim is scoped, not absolute: check
+	// 4 (validateParents) is skipped for every vertex, quarantined or not,
+	// inside the transition/buffer window, so a quarantined vertex reached from
+	// there may carry unvalidated parents. That is not exposure quarantine
+	// introduces — any vertex, quarantined or clean, is storable on those same
+	// terms in that window. A vertex that is both wrong-root and malformed
+	// comes back with the malformed verdict and stays terminally rejected.
+	return d.validateIndexAnchor(v)
+}
+
+// validateEpoch checks the epoch a vertex's header claims against a
+// receiver-independent window derived from the vertex's OWN ANCHORED FRONTIER: the
+// epoch that committed round belongs to (commitEpochForRound), plus or minus one.
+//
+// The two fields are read off the SAME state. A producer stamps the live epoch its
+// commit path maintains (productionEpoch, the liveEpoch mirror) and anchors the
+// frontier its commit path recorded (committedFrontier), and both move inside one
+// commitNextRound call: advanceCommitCursor transitions the epoch at a boundary,
+// setIndexFrontier records the round it just decided. An honest header is therefore
+// internally consistent however far the node's commit cursor trails its production
+// round — the property this rule needs, and the one the vertex's ROUND cannot give:
+// the round comes from the PRODUCTION clock, and the gap between the two clocks is
+// unbounded (a partition-healed node produces hundreds of rounds above the cursor
+// it is stuck on, a cold-restarted one resumes production below its cursor, and
+// sustained load lifts the lag past an epoch length with no fault at all). Bounding
+// a commit-clock field by a production-clock window rejected all three network-wide.
+//
+// The window is one epoch either side of the frontier's own.
+//
+//   - Plus one is reached on every boundary: at round R = k*epochLength
+//     transitionEpoch moves the live epoch to k BEFORE setIndexFrontier records R,
+//     and commitEpochForRound maps that boundary round back to k-1 (it is committed
+//     under the outgoing epoch's holders). The same edge covers a producer that
+//     read the lock-free epoch mirror after a transition the frontier seam had not
+//     caught up to yet.
+//   - Minus one is the mirror-image tolerance. Production reads the frontier first
+//     and the epoch second, so today the epoch can only be the fresher of the two;
+//     the low side keeps the rule from depending on that read order, and the field
+//     must be bounded on BOTH sides regardless: from the quorum-bundle work on it
+//     names the validator tree a header's quorum is weighed against, so an
+//     unbounded-below claim is a stale-validator-set attack.
+//
+// The receiver's own currentEpoch is deliberately NOT the reference. It is not
+// network-uniform at any instant: the producer of a vertex in flight across a
+// boundary is one epoch behind a receiver that already transitioned (the boundary
+// window the anchor rule already tolerates in HoldersForEpoch), and a node that
+// crashed, joined, or stalled trails the live epoch by however far its commit
+// cursor trails — while it needs exactly those ahead-of-its-epoch tip vertices to
+// buffer, trigger deep-gap recovery and catch up at all. Comparing against
+// currentEpoch in either direction would reject them and wedge the node.
+//
+// A producer with no indexer wired anchors frontier 0 forever (committedFrontier's
+// zero pair), so its window stays 0..1 however far its live epoch runs. That is not
+// a carve-out this rule owes anything: stage 1 already ends that configuration one
+// epoch earlier, since a zero index root is tolerated only while the vertex's own
+// round is in the genesis epoch (validateIndexAnchor). Every production path wires
+// the index before the DAG produces or verifies a vertex (cmd/node's fresh-chain,
+// restart and sync constructions all pass WithIndexer), so an indexer-less DAG is a
+// test and tooling configuration, and a test that needs a nonzero epoch anchors a
+// frontier that reaches it.
+//
+// With epochs disabled (epochLength 0) no boundary is ever crossed, so the only
+// epoch any header may claim is 0.
+func (d *DAG) validateEpoch(v *types.Vertex) error {
+	if d.epochLength == 0 {
+		if v.Epoch() != 0 {
+			return fmt.Errorf("epoch mismatch: epochs disabled, only epoch 0 is valid, got %d:\n%w",
+				v.Epoch(), errWrongEpoch)
+		}
+
+		return nil
+	}
+
+	low, high := epochWindow(d.commitEpochForRound(v.FrontierRound()))
+
+	if v.Epoch() < low || v.Epoch() > high {
+		return fmt.Errorf("epoch mismatch: frontier %d allows epochs %d..%d, got %d:\n%w",
+			v.FrontierRound(), low, high, v.Epoch(), errWrongEpoch)
+	}
+
 	return nil
 }
 
-// validateEpoch checks the vertex epoch matches current epoch.
-func (d *DAG) validateEpoch(v *types.Vertex) error {
-	if v.Epoch() != d.epoch {
-		return fmt.Errorf("epoch mismatch: expected %d, got %d:\n%w", d.epoch, v.Epoch(), errWrongEpoch)
+// epochWindow returns the inclusive epoch window around the epoch the anchored
+// frontier commits in: one below to one above (see validateEpoch for what each
+// edge is), clamped at 0.
+func epochWindow(frontierEpoch uint64) (low, high uint64) {
+	if frontierEpoch > 0 {
+		low = frontierEpoch - 1
 	}
-	return nil
+
+	return low, frontierEpoch + 1
 }
 
 // validateProducer checks the producer is in the validator set.
@@ -113,7 +210,10 @@ func (d *DAG) validateProducer(v *types.Vertex) error {
 	return nil
 }
 
-// validateSignature verifies the Ed25519 signature.
+// validateSignature verifies the Ed25519 signature over the vertex identity, and
+// first re-derives that identity from the vertex's own content: a valid signature
+// over a hash nothing binds to the body would let a producer sign one vertex and
+// ship another.
 func (d *DAG) validateSignature(v *types.Vertex) error {
 	sig := v.SignatureBytes()
 	if len(sig) != ed25519.SignatureSize {
@@ -130,8 +230,38 @@ func (d *DAG) validateSignature(v *types.Vertex) error {
 		return fmt.Errorf("invalid hash size: %d:\n%w", len(hashBytes), errBadSignature)
 	}
 
+	if err := validateVertexHash(v); err != nil {
+		return err
+	}
+
 	if !ed25519.Verify(pubkey, hashBytes, sig) {
 		return fmt.Errorf("invalid signature:\n%w", errBadSignature)
+	}
+
+	return nil
+}
+
+// validateVertexHash re-derives the vertex identity from the body it carries and
+// the header it declares, and requires both to match what the vertex claims. It is
+// what binds the detached header to the body: the declared body_hash must be the
+// body's real hash (or the header a light verifier is served would describe a
+// different vertex), and the identity must be the hash of the declared header (or
+// the parent links and store keys would point at something else entirely).
+func validateVertexHash(v *types.Vertex) error {
+	identity, bodyHash := vertexIdentity(v)
+
+	if bodyHash == malformedBody {
+		return fmt.Errorf("unreadable vertex body:\n%w", errBadSignature)
+	}
+
+	if declared := hashFrom(v.BodyHashBytes()); declared != bodyHash {
+		return fmt.Errorf("body_hash mismatch: declared %x, computed %x:\n%w",
+			declared[:8], bodyHash[:8], errBadSignature)
+	}
+
+	if declared := hashFrom(v.HashBytes()); declared != identity {
+		return fmt.Errorf("header hash mismatch: declared %x, computed %x:\n%w",
+			declared[:8], identity[:8], errBadSignature)
 	}
 
 	return nil
@@ -252,16 +382,15 @@ func (d *DAG) validateParentsQuorum(v *types.Vertex) error {
 
 // validateFeeSummary verifies the vertex fee_summary by recalculating from tx
 // headers, over the consumed portion only (in lockstep with buildFeeSummary).
-// The storage deposit is locked in the object, not pooled, so it is not summarized.
-// Skipped if fee system is not active (feeParams nil).
+// The storage deposit is locked in the object, not pooled, so it is not
+// summarized. Like buildFeeSummary, it never special-cases an unwired fee
+// system: calculateTxFeeSplit is where mustFeeParams actually fires, so a
+// vertex with no transactions, or none carrying a gas coin, never touches
+// feeParams at all.
 func (d *DAG) validateFeeSummary(v *types.Vertex) error {
-	if d.feeParams == nil {
-		return nil
-	}
-
 	declared := v.FeeSummary(nil)
 	if declared == nil {
-		// No fee summary declared and fees are enabled: only ok if no transactions
+		// No fee summary declared: only ok if no transactions.
 		if v.TransactionsLength() == 0 {
 			return nil
 		}
@@ -285,7 +414,7 @@ func (d *DAG) validateFeeSummary(v *types.Vertex) error {
 		// Summarize the consumed portion only, in lockstep with buildFeeSummary;
 		// the storage deposit is locked in the object and is not pooled.
 		consumed, _ := d.calculateTxFeeSplit(tx, &atx)
-		split := SplitFee(consumed, *d.feeParams)
+		split := SplitFee(consumed, *d.mustFeeParams())
 
 		totalFees += split.Total
 		totalBurned += split.Burned

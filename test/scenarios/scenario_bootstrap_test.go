@@ -140,7 +140,7 @@ func buildMalformedHashTx(systemPod [32]byte) []byte {
 	}
 	pub := priv.Public().(ed25519.PublicKey)
 
-	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "noop", nil, nil, 0, 0, nil, nil, nil)
+	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "noop", nil, nil, 0, nil, nil, nil)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 
@@ -148,7 +148,7 @@ func buildMalformedHashTx(systemPod [32]byte) []byte {
 	bad[0] ^= 0xFF
 
 	builder := flatbuffers.NewBuilder(256)
-	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "noop", nil, nil, 0, 0, nil, bad, sig, nil, nil)
+	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "noop", nil, nil, 0, nil, bad, sig, nil, nil)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes()
@@ -163,13 +163,13 @@ func buildMalformedSigTx(systemPod [32]byte) []byte {
 	}
 	pub := priv.Public().(ed25519.PublicKey)
 
-	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "noop", nil, nil, 0, 0, nil, nil, nil)
+	unsigned := genesis.BuildUnsignedTxBytesWithRefs(pub, systemPod, "noop", nil, nil, 0, nil, nil, nil)
 	hash := blake3.Sum256(unsigned)
 	sig := ed25519.Sign(priv, hash[:])
 	sig[0] ^= 0xFF
 
 	builder := flatbuffers.NewBuilder(256)
-	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "noop", nil, nil, 0, 0, nil, hash, sig, nil, nil)
+	txOff := genesis.BuildTxTableWithRefs(builder, pub, systemPod, "noop", nil, nil, 0, nil, hash, sig, nil, nil)
 	builder.Finish(txOff)
 
 	return builder.FinishedBytes()

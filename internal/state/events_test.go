@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"BluePods/internal/events"
-	"BluePods/internal/types"
 )
 
 // captureEvents swaps the default slog logger for a JSON handler writing into a
@@ -56,7 +55,7 @@ func TestApplyCreatedObjects_EmitsObjectCreatedAndDepositLocked(t *testing.T) {
 	db := newTestStorage(t)
 	s := New(db, nil)
 	s.SetIsHolder(func(objectID [32]byte, replication uint16) bool { return true })
-	s.SetStorageFees(1000, 9500, 100) // storageFee=1000, totalValidators=100
+	s.SetStorageFees(1000, 0, 9500, 100) // storageFee=1000, no index-entry term, totalValidators=100
 
 	buf := captureEvents(t)
 
@@ -182,66 +181,7 @@ func TestApplyUpdatedObjects_EmitsObjectUpdated(t *testing.T) {
 // state.object.deleted) now fire from the commit loop on every node; they are
 // covered by the deletion tests in internal/consensus.
 
-// TestApplyRegisteredDomains_EmitsDomainRegistered verifies the event carries
-// the domain name, its resolved object id, and the tx hash.
-func TestApplyRegisteredDomains_EmitsDomainRegistered(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	buf := captureEvents(t)
-
-	txHash := Hash{0x11, 0x22}
-	domains := []testDomain{{name: "indexed.pod", objectIndex: 2}}
-	output := buildPodOutputWithDomainsRaw(0, 10, domains)
-	out := types.GetRootAsPodExecuteOutput(output, 0)
-
-	s.applyRegisteredDomains(out, txHash)
-
-	recs := eventsNamed(t, buf, events.EvDomainRegistered)
-	if len(recs) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvDomainRegistered, len(recs))
-	}
-
-	expectedID := computeObjectID(txHash, 2)
-	rec := recs[0]
-	if rec["name"] != "indexed.pod" {
-		t.Errorf("name = %v, want indexed.pod", rec["name"])
-	}
-	if rec["object"] != hex.EncodeToString(expectedID[:]) {
-		t.Errorf("object = %v, want %s", rec["object"], hex.EncodeToString(expectedID[:]))
-	}
-	if rec["tx"] != hex.EncodeToString(txHash[:]) {
-		t.Errorf("tx = %v, want %s", rec["tx"], hex.EncodeToString(txHash[:]))
-	}
-}
-
-// TestApplyRegisteredDomains_RebindEmitsDomainUpdated verifies that applying a
-// RegisteredDomain for a name already bound in the domain store emits
-// DomainUpdated instead of DomainRegistered.
-func TestApplyRegisteredDomains_RebindEmitsDomainUpdated(t *testing.T) {
-	db := newTestStorage(t)
-	s := New(db, nil)
-
-	firstTx := Hash{0x11, 0x22}
-	domains := []testDomain{{name: "rebound.pod", objectIndex: 0}}
-	first := buildPodOutputWithDomainsRaw(0, 10, domains)
-	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(first, 0), firstTx)
-
-	buf := captureEvents(t)
-
-	secondTx := Hash{0x33, 0x44}
-	second := buildPodOutputWithDomainsRaw(0, 10, domains)
-	s.applyRegisteredDomains(types.GetRootAsPodExecuteOutput(second, 0), secondTx)
-
-	if recs := eventsNamed(t, buf, events.EvDomainRegistered); len(recs) != 0 {
-		t.Fatalf("rebind must not emit %s, got %d", events.EvDomainRegistered, len(recs))
-	}
-
-	recs := eventsNamed(t, buf, events.EvDomainUpdated)
-	if len(recs) != 1 {
-		t.Fatalf("want 1 %s event, got %d", events.EvDomainUpdated, len(recs))
-	}
-	if recs[0]["name"] != "rebound.pod" {
-		t.Errorf("name = %v, want rebound.pod", recs[0]["name"])
-	}
-}
+// DomainRegistered and DomainUpdated now fire only from the declared-operation
+// path (internal/consensus/domainops.go): the pod output write path
+// (applyRegisteredDomains) that used to emit them here is retired. Coverage
+// moved to internal/consensus/domainops_test.go.

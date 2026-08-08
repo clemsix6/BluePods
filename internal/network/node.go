@@ -26,6 +26,26 @@ const (
 
 	// alpnProtocol is the ALPN protocol identifier.
 	alpnProtocol = "bluepods/1"
+
+	// maxIncomingUniStreams is how many unidirectional streams a peer may have
+	// open on one connection before QUIC stops granting it credit.
+	//
+	// It must be set, not inherited: quic-go's default is 100, sized for a
+	// request/response protocol, and this mesh opens one stream PER GOSSIP
+	// MESSAGE. Every vertex a node receives is relayed to its peers, so a catch-up
+	// burst puts thousands of messages in flight in a second and the default is
+	// exhausted in milliseconds. What that costs is not slower gossip: the sender
+	// blocks in OpenUniStreamSync until credit returns, and vertices the receiver
+	// needs to reach quorum at its round never arrive at all — the mesh stops
+	// committing while every node looks healthy. The budget belongs to the traffic
+	// shape, and this one is the number of messages that can be in flight to one
+	// peer at once.
+	maxIncomingUniStreams = 4096
+
+	// maxIncomingBidiStreams is the concurrent request/response stream budget per
+	// connection: snapshot, vertex-fetch and attestation round trips, which are
+	// far fewer than gossip messages but share the same connection.
+	maxIncomingBidiStreams = 256
 )
 
 // Config holds the configuration for a Node.
@@ -104,9 +124,18 @@ func NewNode(cfg Config) (*Node, error) {
 		NextProtos:         []string{alpnProtocol},
 	}
 
+	// One quic.Config serves both tiers on this listener: mesh validators, sized
+	// for gossip fan-out (maxIncomingUniStreams unidirectional streams) and
+	// request/response traffic (maxIncomingBidiStreams bidirectional streams);
+	// and ephemeral clients, who share that same per-connection stream budget.
+	// The client tier is bounded by other means instead of a tier-specific quic
+	// config: clientGate's per-IP connection and stream admission limits, plus
+	// the clientIdleTimeout read deadline set on every client stream.
 	quicConfig := &quic.Config{
-		MaxIdleTimeout:  30 * time.Second,
-		KeepAlivePeriod: 10 * time.Second,
+		MaxIdleTimeout:        30 * time.Second,
+		KeepAlivePeriod:       10 * time.Second,
+		MaxIncomingUniStreams: maxIncomingUniStreams,
+		MaxIncomingStreams:    maxIncomingBidiStreams,
 	}
 
 	// Create shared UDP socket and QUIC transport.
@@ -210,20 +239,53 @@ func (n *Node) Connect(addr string) (*Peer, error) {
 
 // Broadcast sends a message to all connected peers.
 func (n *Node) Broadcast(data []byte) error {
+	return n.fanOut(n.snapshotPeers(), data)
+}
+
+// snapshotPeers returns the currently connected peers.
+func (n *Node) snapshotPeers() []*Peer {
 	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+
 	peers := make([]*Peer, 0, len(n.peers))
 	for _, p := range n.peers {
 		peers = append(peers, p)
 	}
-	n.peersMu.RUnlock()
 
+	return peers
+}
+
+// fanOut sends data to every peer concurrently and returns the last error, or
+// nil when every send succeeded.
+//
+// Concurrently, because Send is bounded per peer and a serial fan-out adds those
+// bounds up: with several peers not keeping up, the caller pays the timeout once
+// per peer. That sum is what the per-peer bound exists to prevent, and it lands
+// on the client's own request goroutine — handleSubmitTx gossips the transaction
+// inline — where it overran the client's deadline while every individual send was
+// well inside its own. The peers are independent and Send serialises per peer, so
+// there is nothing to order here: the cost is the slowest peer, not their total.
+func (n *Node) fanOut(peers []*Peer, data []byte) error {
+	var mu sync.Mutex
 	var lastErr error
 
+	var wg sync.WaitGroup
 	for _, p := range peers {
-		if err := p.Send(data); err != nil {
-			lastErr = err
-		}
+		wg.Add(1)
+
+		go func(p *Peer) {
+			defer wg.Done()
+
+			if err := p.Send(data); err != nil {
+				logger.Debug("send failed", "peer", p.address, "error", err)
+
+				mu.Lock()
+				lastErr = err
+				mu.Unlock()
+			}
+		}(p)
 	}
+	wg.Wait()
 
 	return lastErr
 }
@@ -231,13 +293,7 @@ func (n *Node) Broadcast(data []byte) error {
 // Gossip sends data to a random subset of connected peers.
 // If fanout >= peer count, sends to all peers (same as Broadcast).
 func (n *Node) Gossip(data []byte, fanout int) error {
-	n.peersMu.RLock()
-	peers := make([]*Peer, 0, len(n.peers))
-	for _, p := range n.peers {
-		peers = append(peers, p)
-	}
-	n.peersMu.RUnlock()
-
+	peers := n.snapshotPeers()
 	if len(peers) == 0 {
 		return nil // No peers to send to
 	}
@@ -246,21 +302,7 @@ func (n *Node) Gossip(data []byte, fanout int) error {
 
 	logger.Debug("gossip sending", "totalPeers", len(peers), "selected", len(selected), "fanout", fanout)
 
-	var lastErr error
-	sent := 0
-	failed := 0
-
-	for _, p := range selected {
-		if err := p.Send(data); err != nil {
-			lastErr = err
-			failed++
-			logger.Debug("gossip send failed", "peer", p.address, "error", err)
-		} else {
-			sent++
-		}
-	}
-
-	return lastErr
+	return n.fanOut(selected, data)
 }
 
 // selectRandomPeers returns up to n random peers from the slice.
@@ -441,6 +483,7 @@ func (n *Node) setupPeer(conn *quic.Conn, addr string) (*Peer, error) {
 		address:   addr,
 		conn:      conn,
 		node:      n,
+		sendSlot:  make(chan struct{}, 1),
 	}
 
 	n.peersMu.Lock()

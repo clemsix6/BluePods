@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,13 @@ func freezeGenesis(dag *DAG) {
 	}
 
 	dag.epochHolders = dag.freezeGenesisHolders()
+
+	// Mirror what refreezeGenesisRegime publishes in production: EpochHolders
+	// and HoldersForEpoch resolve through the atomic mirror, not this field
+	// directly, so a fixture that skipped this would stay unresolved to
+	// every reader — including the anchor-designation path this helper
+	// exists to unblock.
+	dag.publishEpochMirror()
 }
 
 func TestNewDAG(t *testing.T) {
@@ -143,7 +151,7 @@ func TestAddVertex(t *testing.T) {
 	defer dag.Close()
 
 	// Build a valid round 0 vertex
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 
 	if !dag.AddVertex(data) {
 		t.Fatal("AddVertex should return true for new valid vertex")
@@ -158,7 +166,7 @@ func TestAddVertexUnknownProducer(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, unknown, 0, nil, 1)
+	data := buildTestVertex(t, unknown, 0, nil, 0)
 
 	if dag.AddVertex(data) {
 		t.Error("AddVertex should return false for unknown producer")
@@ -172,7 +180,7 @@ func TestAddVertexDuplicate(t *testing.T) {
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	data := buildTestVertex(t, validators[1], 0, nil, 1)
+	data := buildTestVertex(t, validators[1], 0, nil, 0)
 
 	if !dag.AddVertex(data) {
 		t.Fatal("first AddVertex should return true")
@@ -184,14 +192,30 @@ func TestAddVertexDuplicate(t *testing.T) {
 	}
 }
 
-// mockBroadcaster captures vertices for testing.
+// mockBroadcaster captures vertices for testing. Gossip is now called outside
+// roundMu (see Broadcaster's doc comment), reachable from both the
+// livenessLoop goroutine and every SubmitTx caller's own goroutine, so the
+// captured slice needs its own lock rather than the caller's.
 type mockBroadcaster struct {
+	mu       sync.Mutex
 	vertices [][]byte
 }
 
 func (m *mockBroadcaster) Gossip(data []byte, fanout int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.vertices = append(m.vertices, data)
 	return nil
+}
+
+// Vertices returns a copy of the vertices captured so far, safe to call
+// concurrently with Gossip.
+func (m *mockBroadcaster) Vertices() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]byte, len(m.vertices))
+	copy(out, m.vertices)
+	return out
 }
 
 // disableTxAuth turns off commit-time authenticity on a DAG for tests that drive
@@ -219,11 +243,12 @@ func TestProduceVertex(t *testing.T) {
 	// Wait for vertex production
 	time.Sleep(50 * time.Millisecond)
 
-	if len(mock.vertices) == 0 {
+	vertices := mock.Vertices()
+	if len(vertices) == 0 {
 		t.Fatal("no vertex was broadcast")
 	}
 
-	vertex := types.GetRootAsVertex(mock.vertices[0], 0)
+	vertex := types.GetRootAsVertex(vertices[0], 0)
 	if vertex.Round() != 0 {
 		t.Errorf("expected round 0, got %d", vertex.Round())
 	}
@@ -238,7 +263,7 @@ func TestRoundProgression(t *testing.T) {
 
 	// Add round 0 vertices from quorum of validators (not including validator 0)
 	for i := 1; i < 4; i++ {
-		data := buildTestVertex(t, validators[i], 0, nil, 1)
+		data := buildTestVertex(t, validators[i], 0, nil, 0)
 		if !dag.AddVertex(data) {
 			t.Fatalf("AddVertex failed for validator %d", i)
 		}
@@ -283,8 +308,19 @@ func TestHasQuorumFromRound_StakeWeighted(t *testing.T) {
 	}
 }
 
-// buildTestVertex creates a signed vertex for testing.
+// buildTestVertex creates a signed vertex for testing, anchoring frontier round
+// 0 — the pair an indexer-less producer builds.
 func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash, epoch uint64) []byte {
+	t.Helper()
+
+	return buildTestVertexAnchored(t, v, round, parents, epoch, 0)
+}
+
+// buildTestVertexAnchored creates a signed vertex that also anchors a committed
+// frontier round. That field is what validateEpoch derives its window from, so
+// any test that pins an epoch claim must set it: the vertex's own round says
+// nothing about the epoch its producer's commit clock was in.
+func buildTestVertexAnchored(t *testing.T, v testValidator, round uint64, parents []Hash, epoch uint64, frontierRound uint64) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -320,17 +356,19 @@ func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddFrontierRound(builder, frontierRound)
 	vertexOffset := types.VertexEnd(builder)
 	builder.Finish(vertexOffset)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -363,6 +401,8 @@ func buildTestVertex(t *testing.T, v testValidator, round uint64, parents []Hash
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddFrontierRound(builder, frontierRound)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOffset = types.VertexEnd(builder)
 
 	builder.Finish(vertexOffset)

@@ -24,6 +24,19 @@ func ObjectDeleted(object, tx [32]byte, refund uint64) {
 	emit(EvObjectDeleted, hexAttr("object", object), hexAttr("tx", tx), slog.Uint64("refund", refund))
 }
 
+// ObjectReparented marks an object's parent edge changed by a protocol-declared
+// reparent operation (a transfer is a reparent to a KeyRoot). kind selects how
+// to read parent: 0 = KeyRoot (an Ed25519 key), 1 = ObjectParent (another
+// object's ID). version is the object's post-operation version.
+func ObjectReparented(object, tx [32]byte, kind byte, parent [32]byte, version uint64) {
+	emit(EvObjectReparented,
+		hexAttr("object", object),
+		hexAttr("tx", tx),
+		slog.Uint64("kind", uint64(kind)),
+		hexAttr("parent", parent),
+		slog.Uint64("version", version))
+}
+
 // DomainRegistered marks a new domain name bound to object.
 func DomainRegistered(name string, object, tx [32]byte) {
 	emit(EvDomainRegistered, slog.String("name", name), hexAttr("object", object), hexAttr("tx", tx))
@@ -34,10 +47,24 @@ func DomainUpdated(name string, object, tx [32]byte) {
 	emit(EvDomainUpdated, slog.String("name", name), hexAttr("object", object), hexAttr("tx", tx))
 }
 
-// DomainDeleted marks a domain name removed from the registry. Domain
-// deletion is specified in the whitepaper's Domain Name System section as an
-// owner-driven pod operation, but no system pod function exposes it yet, so
-// this constructor has no production caller.
-func DomainDeleted(name string, tx [32]byte) {
-	emit(EvDomainDeleted, slog.String("name", name), hexAttr("tx", tx))
+// DomainRenewed marks a domain lease extended, carrying the epoch the lease
+// now runs to. A renewal changes nothing else: the name keeps its object and
+// its owner.
+func DomainRenewed(name string, expiry uint64, tx [32]byte) {
+	emit(EvDomainRenewed, slog.String("name", name), slog.Uint64("expiry", expiry), hexAttr("tx", tx))
+}
+
+// DomainTransferred marks a domain name handed to a new owner, who inherits
+// the renewal, update, transfer, and deletion rights over it. The name keeps
+// its object and its expiry.
+func DomainTransferred(name string, owner, tx [32]byte) {
+	emit(EvDomainTransferred, slog.String("name", name), hexAttr("owner", owner), hexAttr("tx", tx))
+}
+
+// DomainDeleted marks a domain name removed from the registry: by its
+// owner's declared operation (reason empty, tx the deleting transaction) or
+// by the epoch boundary's expiry sweep (reason "expired", tx the zero hash —
+// a sweep carries no transaction).
+func DomainDeleted(name string, tx [32]byte, reason string) {
+	emit(EvDomainDeleted, slog.String("name", name), hexAttr("tx", tx), slog.String("reason", reason))
 }

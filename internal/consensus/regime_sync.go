@@ -142,7 +142,7 @@ func (d *DAG) applyRegimeState(blob []byte) {
 		return
 	}
 
-	d.currentEpoch = binary.BigEndian.Uint64(blob[0:8])
+	d.setCurrentEpoch(binary.BigEndian.Uint64(blob[0:8]))
 	d.strictLatched = blob[8] != 0
 	d.strictStartRound = binary.BigEndian.Uint64(blob[9:17])
 
@@ -165,6 +165,11 @@ func (d *DAG) applyRegimeState(blob []byte) {
 	// the next boundary. An older, shorter blob leaves rest empty and keeps the zero
 	// accumulators.
 	d.readEpochAccumulators(rest)
+
+	// Publish the synced quad. This runs at construction, in the options loop
+	// (see WithSyncedRegimeState), strictly before the commit loop or any
+	// other goroutine starts, so there is nothing to race.
+	d.publishEpochMirror()
 }
 
 // appendHolderBlob appends a length-prefixed encoded holder snapshot to buf. A nil

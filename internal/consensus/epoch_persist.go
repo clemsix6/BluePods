@@ -96,10 +96,16 @@ func (d *DAG) restoreEpochState() {
 		return
 	}
 
-	d.currentEpoch = epoch
+	d.setCurrentEpoch(epoch)
 	d.epochHolders = d.loadHolderSnapshot(epochHoldersKey)
 	d.prevEpochHolders = d.loadHolderSnapshot(prevEpochHoldersKey)
 	d.nextEpochHolders = d.loadHolderSnapshot(nextEpochHoldersKey)
+
+	// Publish the restored quad. This runs at boot before the commit loop or
+	// any other goroutine exists (see the function doc), so there is nothing
+	// to race; the publish keeps the mirror from staying at its zero value
+	// through a restart that resumed past the genesis epoch.
+	d.publishEpochMirror()
 
 	// Restore the produced set and the frozen eligible sets beside the snapshots
 	// they were frozen with, so designation eligibility survives a restart and the

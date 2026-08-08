@@ -54,8 +54,11 @@ func TestMint_Rejected(t *testing.T) {
 // Transfer Function Tests
 // =============================================================================
 
-// TestTransfer_Success tests transferring ownership of a coin.
-func TestTransfer_Success(t *testing.T) {
+// TestTransfer_Rejected verifies the pod-level transfer entrypoint is gone: the
+// dispatcher has no "transfer" entry, so the call is rejected as an unknown
+// function. A transfer is now the protocol's declared reparent operation (see
+// internal/consensus), applied without ever reaching pod execution.
+func TestTransfer_Rejected(t *testing.T) {
 	pool, wasmID := loadSystemPod(t)
 	defer pool.Close()
 
@@ -71,68 +74,12 @@ func TestTransfer_Success(t *testing.T) {
 	}
 
 	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != 0 {
-		t.Fatalf("expected success (error=0), got error=%d", result.Error())
+	if result.Error() != errUnknownFunction {
+		t.Fatalf("expected ERR_UNKNOWN_FUNCTION (%d), got error=%d", errUnknownFunction, result.Error())
 	}
 
-	// Verify updated object
-	if result.UpdatedObjectsLength() != 1 {
-		t.Fatalf("expected 1 updated object, got %d", result.UpdatedObjectsLength())
-	}
-
-	var updatedObj types.Object
-	result.UpdatedObjects(&updatedObj, 0)
-
-	// Balance should be unchanged
-	balance := decodeCoinBalance(updatedObj.ContentBytes())
-	if balance != coinBalance {
-		t.Errorf("expected balance %d (unchanged), got %d", coinBalance, balance)
-	}
-
-	// Owner should be updated
-	if !bytes.Equal(updatedObj.OwnerBytes(), newOwner[:]) {
-		t.Errorf("expected owner %x, got %x", newOwner[:], updatedObj.OwnerBytes())
-	}
-
-	t.Logf("transfer success: ownership changed from %x to %x", oldOwner[:4], newOwner[:4])
-}
-
-// TestTransfer_MissingCoin tests transfer without providing a coin.
-func TestTransfer_MissingCoin(t *testing.T) {
-	pool, wasmID := loadSystemPod(t)
-	defer pool.Close()
-
-	newOwner := [32]byte{9, 10, 11, 12, 13, 14, 15, 16}
-	input := buildTransferInputNoCoin(newOwner)
-
-	output, _, err := pool.Execute(wasmID, input, 100000)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != errMissingObject {
-		t.Errorf("expected ERR_MISSING_OBJECT (%d), got error=%d", errMissingObject, result.Error())
-	}
-}
-
-// TestTransfer_InvalidArgs tests transfer with malformed arguments.
-func TestTransfer_InvalidArgs(t *testing.T) {
-	pool, wasmID := loadSystemPod(t)
-	defer pool.Close()
-
-	coinBalance := uint64(1000)
-	owner := [32]byte{1, 2, 3, 4, 5, 6, 7, 8}
-	input := buildTransferInputInvalidArgs(coinBalance, owner)
-
-	output, _, err := pool.Execute(wasmID, input, 100000)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	result := types.GetRootAsPodExecuteOutput(output, 0)
-	if result.Error() != errInvalidArgs {
-		t.Errorf("expected ERR_INVALID_ARGS (%d), got error=%d", errInvalidArgs, result.Error())
+	if result.UpdatedObjectsLength() != 0 {
+		t.Fatalf("expected no updated object, got %d", result.UpdatedObjectsLength())
 	}
 }
 
@@ -764,73 +711,6 @@ func buildTransferInput(coinBalance uint64, oldOwner, newOwner [32]byte) []byte 
 	tx := types.TransactionEnd(builder)
 
 	coin := buildCoinObjectWithOwner(builder, coinBalance, oldOwner)
-
-	types.PodExecuteInputStartLocalObjectsVector(builder, 1)
-	builder.PrependUOffsetT(coin)
-	localObjects := builder.EndVector(1)
-
-	sender := builder.CreateByteVector(make([]byte, 32))
-
-	types.PodExecuteInputStart(builder)
-	types.PodExecuteInputAddTransaction(builder, tx)
-	types.PodExecuteInputAddSender(builder, sender)
-	types.PodExecuteInputAddLocalObjects(builder, localObjects)
-	input := types.PodExecuteInputEnd(builder)
-
-	types.FinishPodExecuteInputBuffer(builder, input)
-
-	return builder.FinishedBytes()
-}
-
-// buildTransferInputNoCoin creates transfer input without a coin.
-func buildTransferInputNoCoin(newOwner [32]byte) []byte {
-	builder := flatbuffers.NewBuilder(512)
-
-	txArgs := builder.CreateByteVector(encodeTransferArgs(newOwner))
-	txHash := builder.CreateByteVector(make([]byte, 32))
-	txSender := builder.CreateByteVector(make([]byte, 32))
-	txPod := builder.CreateByteVector(make([]byte, 32))
-	txFuncName := builder.CreateString("transfer")
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, txHash)
-	types.TransactionAddSender(builder, txSender)
-	types.TransactionAddPod(builder, txPod)
-	types.TransactionAddFunctionName(builder, txFuncName)
-	types.TransactionAddArgs(builder, txArgs)
-	tx := types.TransactionEnd(builder)
-
-	sender := builder.CreateByteVector(make([]byte, 32))
-
-	types.PodExecuteInputStart(builder)
-	types.PodExecuteInputAddTransaction(builder, tx)
-	types.PodExecuteInputAddSender(builder, sender)
-	input := types.PodExecuteInputEnd(builder)
-
-	types.FinishPodExecuteInputBuffer(builder, input)
-
-	return builder.FinishedBytes()
-}
-
-// buildTransferInputInvalidArgs creates transfer input with malformed args.
-func buildTransferInputInvalidArgs(coinBalance uint64, owner [32]byte) []byte {
-	builder := flatbuffers.NewBuilder(512)
-
-	txArgs := builder.CreateByteVector([]byte{1, 2, 3, 4})
-	txHash := builder.CreateByteVector(make([]byte, 32))
-	txSender := builder.CreateByteVector(make([]byte, 32))
-	txPod := builder.CreateByteVector(make([]byte, 32))
-	txFuncName := builder.CreateString("transfer")
-
-	types.TransactionStart(builder)
-	types.TransactionAddHash(builder, txHash)
-	types.TransactionAddSender(builder, txSender)
-	types.TransactionAddPod(builder, txPod)
-	types.TransactionAddFunctionName(builder, txFuncName)
-	types.TransactionAddArgs(builder, txArgs)
-	tx := types.TransactionEnd(builder)
-
-	coin := buildCoinObjectWithOwner(builder, coinBalance, owner)
 
 	types.PodExecuteInputStartLocalObjectsVector(builder, 1)
 	builder.PrependUOffsetT(coin)

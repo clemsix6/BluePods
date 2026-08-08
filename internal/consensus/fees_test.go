@@ -34,24 +34,16 @@ func TestEffectiveRep(t *testing.T) {
 
 func TestReplicationRatio_CreatesObjects(t *testing.T) {
 	// Creating objects forces ratio = 1/1
-	num, denom := ReplicationRatio(nil, 1, 0, nil, 100)
+	num, denom := ReplicationRatio(nil, 1, nil, 100)
 	if num != 1 || denom != 1 {
 		t.Errorf("creates objects: got %d/%d, want 1/1", num, denom)
-	}
-}
-
-func TestReplicationRatio_CreatesDomains(t *testing.T) {
-	// Creating domains forces ratio = 1/1
-	num, denom := ReplicationRatio(nil, 0, 1, nil, 100)
-	if num != 1 || denom != 1 {
-		t.Errorf("creates domains: got %d/%d, want 1/1", num, denom)
 	}
 }
 
 func TestReplicationRatio_Singleton(t *testing.T) {
 	// Mutable singleton → ratio = 1/1
 	refs := []ObjectRef{{Replication: 0}}
-	num, denom := ReplicationRatio(refs, 0, 0, nil, 100)
+	num, denom := ReplicationRatio(refs, 0, nil, 100)
 	if num != 1 || denom != 1 {
 		t.Errorf("singleton: got %d/%d, want 1/1", num, denom)
 	}
@@ -81,7 +73,7 @@ func TestReplicationRatio_StandardObjects(t *testing.T) {
 		return holders
 	}
 
-	num, denom := ReplicationRatio(refs, 0, 0, computeHolders, 100)
+	num, denom := ReplicationRatio(refs, 0, computeHolders, 100)
 	// 20 unique holders out of 100
 	if num != 20 || denom != 100 {
 		t.Errorf("standard: got %d/%d, want 20/100", num, denom)
@@ -111,7 +103,7 @@ func TestReplicationRatio_OverlappingHolders(t *testing.T) {
 		return holders
 	}
 
-	num, denom := ReplicationRatio(refs, 0, 0, computeHolders, 100)
+	num, denom := ReplicationRatio(refs, 0, computeHolders, 100)
 	// 15 unique holders (10 + 10 - 5 overlap)
 	if num != 15 || denom != 100 {
 		t.Errorf("overlap: got %d/%d, want 15/100", num, denom)
@@ -120,14 +112,14 @@ func TestReplicationRatio_OverlappingHolders(t *testing.T) {
 
 func TestReplicationRatio_NoMutableRefs(t *testing.T) {
 	// Read-only tx: ratio = 0/1
-	num, denom := ReplicationRatio(nil, 0, 0, nil, 100)
+	num, denom := ReplicationRatio(nil, 0, nil, 100)
 	if num != 0 || denom != 1 {
 		t.Errorf("no mutable: got %d/%d, want 0/1", num, denom)
 	}
 }
 
 func TestReplicationRatio_ZeroValidators(t *testing.T) {
-	num, denom := ReplicationRatio(nil, 0, 0, nil, 0)
+	num, denom := ReplicationRatio(nil, 0, nil, 0)
 	if num != 0 || denom != 1 {
 		t.Errorf("zero validators: got %d/%d, want 0/1", num, denom)
 	}
@@ -140,7 +132,7 @@ func TestReplicationRatio_MixedSingletonStandard(t *testing.T) {
 		{Replication: 0},
 	}
 
-	num, denom := ReplicationRatio(refs, 0, 0, nil, 100)
+	num, denom := ReplicationRatio(refs, 0, nil, 100)
 	if num != 1 || denom != 1 {
 		t.Errorf("mixed: got %d/%d, want 1/1", num, denom)
 	}
@@ -151,19 +143,17 @@ func TestCalculateFee_FullFormula(t *testing.T) {
 		GasPrice:   2,
 		TransitFee: 10,
 		StorageFee: 1000,
-		DomainFee:  10000,
 	}
 
-	// max_gas=500, ratio=20/100, 3 standard objects, 2 created objects (rep=10,rep=0), 1 domain
+	// max_gas=500, ratio=20/100, 3 standard objects, 2 created objects (rep=10,rep=0)
 	// compute = 500 * 2 * 20 / 100 = 200
 	// transit = 3 * 10 = 30
 	// storage[0] = 10 * 1000 / 100 = 100 (rep=10, 100 validators)
 	// storage[1] = 100 * 1000 / 100 = 1000 (rep=0 → effective=100)
-	// domain = 1 * 10000 = 10000
-	// total = 200 + 30 + 100 + 1000 + 10000 = 11330
-	fee := CalculateFee(500, 20, 100, 3, []uint16{10, 0}, 1, 100, params)
-	if fee != 11330 {
-		t.Errorf("full formula: got %d, want 11330", fee)
+	// total = 200 + 30 + 100 + 1000 = 1330
+	fee := CalculateFee(500, 20, 100, 3, []uint16{10, 0}, nil, false, 100, params)
+	if fee != 1330 {
+		t.Errorf("full formula: got %d, want 1330", fee)
 	}
 }
 
@@ -172,16 +162,14 @@ func TestCalculateFee_ZeroMaxGas(t *testing.T) {
 		GasPrice:   2,
 		TransitFee: 10,
 		StorageFee: 1000,
-		DomainFee:  10000,
 	}
 
-	// No gas, but still transit + storage + domain
+	// No gas, but still transit + storage
 	// transit = 2 * 10 = 20
 	// storage = 10 * 1000 / 50 = 200
-	// domain = 1 * 10000 = 10000
-	fee := CalculateFee(0, 1, 1, 2, []uint16{10}, 1, 50, params)
-	if fee != 10220 {
-		t.Errorf("zero gas: got %d, want 10220", fee)
+	fee := CalculateFee(0, 1, 1, 2, []uint16{10}, nil, false, 50, params)
+	if fee != 220 {
+		t.Errorf("zero gas: got %d, want 220", fee)
 	}
 }
 
@@ -192,7 +180,7 @@ func TestCalculateFee_NoStandardObjects(t *testing.T) {
 	}
 
 	// Only compute, no transit
-	fee := CalculateFee(100, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 1, 0, nil, nil, false, 100, params)
 	if fee != 100 {
 		t.Errorf("no standard: got %d, want 100", fee)
 	}
@@ -206,21 +194,9 @@ func TestCalculateFee_NoCreatedObjects(t *testing.T) {
 	}
 
 	// compute + transit, no storage
-	fee := CalculateFee(100, 1, 1, 5, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 1, 5, nil, nil, false, 100, params)
 	if fee != 150 {
 		t.Errorf("no created: got %d, want 150", fee)
-	}
-}
-
-func TestCalculateFee_NoDomains(t *testing.T) {
-	params := FeeParams{
-		GasPrice:  1,
-		DomainFee: 10000,
-	}
-
-	fee := CalculateFee(100, 1, 1, 0, nil, 0, 100, params)
-	if fee != 100 {
-		t.Errorf("no domains: got %d, want 100", fee)
 	}
 }
 
@@ -231,7 +207,7 @@ func TestCalculateFee_ZeroValidators(t *testing.T) {
 	}
 
 	// Zero validators → no storage fees, no panic
-	fee := CalculateFee(100, 0, 1, 0, []uint16{10}, 0, 0, params)
+	fee := CalculateFee(100, 0, 1, 0, []uint16{10}, nil, false, 0, params)
 	if fee != 0 {
 		t.Errorf("zero validators: got %d, want 0", fee)
 	}
@@ -241,7 +217,7 @@ func TestCalculateFee_ZeroRepDenom(t *testing.T) {
 	params := FeeParams{GasPrice: 1}
 
 	// Zero denom → no compute fee, no panic
-	fee := CalculateFee(100, 1, 0, 0, nil, 0, 100, params)
+	fee := CalculateFee(100, 1, 0, 0, nil, nil, false, 100, params)
 	if fee != 0 {
 		t.Errorf("zero denom: got %d, want 0", fee)
 	}
@@ -251,7 +227,7 @@ func TestCalculateFee_LargeValues(t *testing.T) {
 	params := FeeParams{GasPrice: 1}
 
 	// Large max_gas that doesn't overflow: 10^18 * 1 * 1/1 = 10^18
-	fee := CalculateFee(1_000_000_000_000_000_000, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(1_000_000_000_000_000_000, 1, 1, 0, nil, nil, false, 100, params)
 	if fee != 1_000_000_000_000_000_000 {
 		t.Errorf("large: got %d, want 1000000000000000000", fee)
 	}
@@ -341,30 +317,50 @@ func TestSplitFee_One(t *testing.T) {
 }
 
 func TestStorageDeposit(t *testing.T) {
-	// Standard object: rep=10, 100 validators, fee=1000
+	// Standard object: rep=10, 100 validators, fee=1000, no index-entry term
 	// deposit = 10 * 1000 / 100 = 100
-	dep := StorageDeposit(10, 100, 1000)
+	dep := StorageDeposit(10, 100, 1000, 0)
 	if dep != 100 {
 		t.Errorf("standard: got %d, want 100", dep)
 	}
 
 	// Singleton: rep=0, effective=100, 100 validators
 	// deposit = 100 * 1000 / 100 = 1000
-	dep = StorageDeposit(0, 100, 1000)
+	dep = StorageDeposit(0, 100, 1000, 0)
 	if dep != 1000 {
 		t.Errorf("singleton: got %d, want 1000", dep)
 	}
 
 	// 1 validator: rep=10, deposit = 10 * 1000 / 1 = 10000
-	dep = StorageDeposit(10, 1, 1000)
+	dep = StorageDeposit(10, 1, 1000, 0)
 	if dep != 10000 {
 		t.Errorf("1 validator: got %d, want 10000", dep)
 	}
 
-	// 0 validators: no panic, returns 0
-	dep = StorageDeposit(10, 0, 1000)
+	// 0 validators: no panic, returns 0 even with a nonzero index-entry term
+	dep = StorageDeposit(10, 0, 1000, 25)
 	if dep != 0 {
 		t.Errorf("0 validators: got %d, want 0", dep)
+	}
+}
+
+// TestStorageDeposit_IncludesIndexEntryFee confirms the flat index-entry term
+// is added on top of the storage-fee share, for both a standard object and a
+// singleton, matching state.computeStorageDeposit's mirror of this formula.
+func TestStorageDeposit_IncludesIndexEntryFee(t *testing.T) {
+	// Standard object: 10 * 1000 / 100 = 100, plus a 25 index-entry term.
+	if dep := StorageDeposit(10, 100, 1000, 25); dep != 125 {
+		t.Errorf("standard + index entry: got %d, want 125", dep)
+	}
+
+	// Singleton: 100 * 1000 / 100 = 1000, plus a 25 index-entry term.
+	if dep := StorageDeposit(0, 100, 1000, 25); dep != 1025 {
+		t.Errorf("singleton + index entry: got %d, want 1025", dep)
+	}
+
+	// A zero storage fee still charges the flat index-entry term alone.
+	if dep := StorageDeposit(10, 100, 0, 25); dep != 25 {
+		t.Errorf("index entry only: got %d, want 25", dep)
 	}
 }
 
@@ -492,7 +488,7 @@ func TestCalculateFee_OverflowMaxGas(t *testing.T) {
 	params := FeeParams{GasPrice: 2}
 
 	// MaxUint64 * 2 would overflow without safeMul
-	fee := CalculateFee(math.MaxUint64, 1, 1, 0, nil, 0, 100, params)
+	fee := CalculateFee(math.MaxUint64, 1, 1, 0, nil, nil, false, 100, params)
 
 	// Should be capped at MaxUint64, not wrap to 0
 	if fee == 0 {
@@ -507,7 +503,7 @@ func TestCalculateFee_OverflowStorageFee(t *testing.T) {
 	params := FeeParams{StorageFee: math.MaxUint64}
 
 	// Large storage fee with singleton (effRep=100 validators)
-	fee := CalculateFee(0, 0, 1, 0, []uint16{0}, 0, 100, params)
+	fee := CalculateFee(0, 0, 1, 0, []uint16{0}, nil, false, 100, params)
 
 	// effRep=100, storageFee=MaxUint64, 100 validators → MaxUint64*100/100 = MaxUint64
 	// With safeMul, 100 * MaxUint64 → MaxUint64, then / 100 → still huge
@@ -521,11 +517,10 @@ func TestCalculateFee_AllComponentsOverflow(t *testing.T) {
 		GasPrice:   math.MaxUint64,
 		TransitFee: math.MaxUint64,
 		StorageFee: math.MaxUint64,
-		DomainFee:  math.MaxUint64,
 	}
 
 	// All components would overflow individually
-	fee := CalculateFee(math.MaxUint64, 1, 1, 100, []uint16{0}, 100, 100, params)
+	fee := CalculateFee(math.MaxUint64, 1, 1, 100, []uint16{0}, nil, false, 100, params)
 
 	// Should be capped at MaxUint64, not some small wrapped value
 	if fee != math.MaxUint64 {

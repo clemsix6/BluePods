@@ -10,7 +10,12 @@ const (
 	EvNodeStarted = "node.started"
 	// EvNodeReady marks a node's listener coming up.
 	EvNodeReady = "node.ready"
-	// EvNodeStopping marks a node beginning shutdown.
+	// EvNodeResumed marks a node booting from committed state it already owns
+	// rather than syncing it from a peer.
+	EvNodeResumed = "node.resumed"
+	// EvNodeStopping marks a node beginning shutdown. Its reason is a signal
+	// name, a close cause, or "sync_unverified" when a joining node refused to
+	// go live on state no stake quorum attested.
 	EvNodeStopping = "node.stopping"
 
 	// EvIngressTxReceived marks a submission accepted into the mempool path.
@@ -24,6 +29,9 @@ const (
 	EvVertexReceived = "consensus.vertex.received"
 	// EvVertexRejected marks a vertex terminally rejected during validation.
 	EvVertexRejected = "consensus.vertex.rejected"
+	// EvVertexQuarantined marks a vertex stored but withheld from relay and
+	// reference because the receiver disproved its anchored index root.
+	EvVertexQuarantined = "consensus.vertex.quarantined"
 	// EvRoundAdvanced marks the production round observed from the commit loop
 	// (NOT the commit cursor) advancing.
 	EvRoundAdvanced = "consensus.round.advanced"
@@ -31,6 +39,9 @@ const (
 	EvAnchorCommitted = "consensus.anchor.committed"
 	// EvRoundSkipped marks a round decided with no anchor.
 	EvRoundSkipped = "consensus.round.skipped"
+	// EvAnchorFault marks a committed vertex whose anchored index root
+	// contradicts the emitting node's own recomputation at that frontier.
+	EvAnchorFault = "consensus.anchor.fault"
 
 	// EvTxCommitted marks a transaction decided at commit.
 	EvTxCommitted = "tx.committed"
@@ -43,11 +54,20 @@ const (
 	EvObjectUpdated = "state.object.updated"
 	// EvObjectDeleted marks an object removed from state.
 	EvObjectDeleted = "state.object.deleted"
+	// EvObjectReparented marks an object's parent edge changed by a declared
+	// reparent operation (a transfer is a reparent to a KeyRoot).
+	EvObjectReparented = "state.object.reparented"
 	// EvDomainRegistered marks a new domain name bound to an object.
 	EvDomainRegistered = "state.domain.registered"
 	// EvDomainUpdated marks a domain name rebound to a different object.
 	EvDomainUpdated = "state.domain.updated"
-	// EvDomainDeleted marks a domain name removed from the registry.
+	// EvDomainRenewed marks a domain lease extended to a new expiry epoch.
+	EvDomainRenewed = "state.domain.renewed"
+	// EvDomainTransferred marks a domain name handed to a new owner.
+	EvDomainTransferred = "state.domain.transferred"
+	// EvDomainDeleted marks a domain name removed from the registry, by its
+	// owner's declared operation or by the epoch boundary's expiry sweep
+	// (reason "expired").
 	EvDomainDeleted = "state.domain.deleted"
 
 	// EvFeesDeducted marks a fee taken from a coin.
@@ -82,6 +102,9 @@ const (
 	EvValidatorDeregistered = "epoch.validator.deregistered"
 	// EvRewardsDistributed marks an epoch's issuance pool credited.
 	EvRewardsDistributed = "epoch.rewards.distributed"
+	// EvValidatorsFrozen marks the index's validator tree rebuilt from an
+	// epoch's holder snapshot, publishing that epoch's validator-set root.
+	EvValidatorsFrozen = "epoch.validators.frozen"
 
 	// EvSnapshotCreated marks a state snapshot exported.
 	EvSnapshotCreated = "sync.snapshot.created"
@@ -105,6 +128,7 @@ const (
 var Names = []string{
 	EvNodeStarted,
 	EvNodeReady,
+	EvNodeResumed,
 	EvNodeStopping,
 
 	EvIngressTxReceived,
@@ -113,9 +137,11 @@ var Names = []string{
 	EvVertexProduced,
 	EvVertexReceived,
 	EvVertexRejected,
+	EvVertexQuarantined,
 	EvRoundAdvanced,
 	EvAnchorCommitted,
 	EvRoundSkipped,
+	EvAnchorFault,
 
 	EvTxCommitted,
 	EvTxExecuted,
@@ -123,8 +149,11 @@ var Names = []string{
 	EvObjectCreated,
 	EvObjectUpdated,
 	EvObjectDeleted,
+	EvObjectReparented,
 	EvDomainRegistered,
 	EvDomainUpdated,
+	EvDomainRenewed,
+	EvDomainTransferred,
 	EvDomainDeleted,
 
 	EvFeesDeducted,
@@ -144,6 +173,7 @@ var Names = []string{
 	EvValidatorRegistered,
 	EvValidatorDeregistered,
 	EvRewardsDistributed,
+	EvValidatorsFrozen,
 
 	EvSnapshotCreated,
 	EvSnapshotApplied,

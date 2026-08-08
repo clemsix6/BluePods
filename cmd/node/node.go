@@ -16,6 +16,7 @@ import (
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
 	"BluePods/internal/events"
+	"BluePods/internal/index"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/podvm"
@@ -32,6 +33,7 @@ type Node struct {
 	state       *state.State
 	network     *network.Node
 	dag         *consensus.DAG
+	idxManager  *index.Manager
 	snapManager *sync.SnapshotManager
 	syncBuffer  atomic.Pointer[sync.VertexBuffer] // syncBuffer holds vertices during sync
 	systemPod   [32]byte
@@ -41,6 +43,11 @@ type Node struct {
 	txIndex *txStatusIndex // txIndex maps a tx hash to its last-known status
 
 	useTUI bool // useTUI is true when the dashboard should run instead of line logs
+
+	// fees holds the governed fee parameters, allocated once by feeParams() and
+	// shared by consensus (lease pricing, the lease cap, the grace window) and
+	// state (storage deposits), which must read identical values.
+	fees *consensus.FeeParams
 
 	// Aggregation components
 	blsKey     *aggregation.BLSKeyPair                          // blsKey is the BLS key for signing attestations
@@ -55,6 +62,10 @@ type Node struct {
 	// splits so sequential requests carry V, V+1, V+2 in submission order.
 	faucetMu          gosync.Mutex // faucetMu serializes faucet request handling
 	faucetNextVersion uint64       // faucetNextVersion is the reserve coin version the next split will reference
+
+	// anchorCache holds the most recently assembled GetIndexAnchor quorum
+	// bundle, reassembled only when this node's own committed frontier advances.
+	anchorCache indexAnchorCache
 }
 
 // NewNode creates and initializes a new node.
@@ -100,9 +111,11 @@ func NewNode(cfg *Config) (*Node, error) {
 		return nil, err
 	}
 
-	// Skip DAG creation for validators that will sync.
-	// They will create their DAG after receiving the snapshot.
-	if cfg.BootstrapAddr == "" {
+	// Skip DAG creation for validators that will sync: they create theirs after
+	// receiving the snapshot. A node restarting over state it already owns is
+	// not one of them, however much its flags look alike — it builds its DAG
+	// here, from the data directory, and syncs nothing (see resume.go).
+	if cfg.BootstrapAddr == "" || n.resumesFromLocalState() {
 		if err := n.initConsensus(); err != nil {
 			n.Close()
 			return nil, err
@@ -119,6 +132,11 @@ func (n *Node) Run() error {
 		return n.runListener()
 	}
 
+	// Restart over the node's own committed state: boot from it and rejoin.
+	if n.resumesFromLocalState() {
+		return n.runResume()
+	}
+
 	// Validator mode: sync then participate (not bootstrap, has bootstrap-addr)
 	if !n.cfg.Bootstrap && n.cfg.BootstrapAddr != "" {
 		return n.runValidator()
@@ -128,8 +146,25 @@ func (n *Node) Run() error {
 	return n.runBootstrap()
 }
 
-// runBootstrap starts the node in bootstrap mode (genesis validator).
+// runBootstrap starts the node in bootstrap mode. It is not exclusively the
+// genesis path: it is also Run's general fallthrough, reached by any
+// non-genesis node with no upstream — started with neither --bootstrap nor
+// --bootstrap-addr — and no resumable local state (an operator/supervisor
+// mistake — e.g. retrying a refused join without --bootstrap-addr — not a
+// fresh genesis). Only a genuine genesis start (cfg.Bootstrap) originates the
+// state in its data directory and owns it outright, so only that case marks
+// the state adopted below; marking the fallthrough case too would launder a
+// directory the join gate refused (residue: cursor and live validator set,
+// no marker — see
+// internal/consensus/adopted.go) into permanently-adopted state on the
+// strength of one misconfigured start.
 func (n *Node) runBootstrap() error {
+	if n.cfg.Bootstrap {
+		if err := consensus.MarkStateAdopted(n.storage); err != nil {
+			return fmt.Errorf("mark state adopted:\n%w", err)
+		}
+	}
+
 	if err := n.network.Start(); err != nil {
 		return fmt.Errorf("start network:\n%w", err)
 	}

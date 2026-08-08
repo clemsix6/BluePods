@@ -130,8 +130,8 @@ func TestTrackerExportImport(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	obj1, obj2 := Hash{0x01}, Hash{0x02}
-	ot.trackObject(obj1, 5, 10, 0)
-	ot.trackObject(obj2, 10, 20, 0)
+	ot.trackObject(obj1, 5, 10, 0, 0, Hash{})
+	ot.trackObject(obj2, 10, 20, 0, 0, Hash{})
 
 	entries := ot.Export()
 	if len(entries) != 2 {
@@ -165,7 +165,7 @@ func TestTrackerDeleteObject(t *testing.T) {
 	ot := newObjectTracker(db)
 
 	objID := Hash{0x03}
-	ot.trackObject(objID, 5, 10, 0)
+	ot.trackObject(objID, 5, 10, 0, 0, Hash{})
 
 	// Verify it exists
 	if v := ot.getVersion(objID); v != 5 {
@@ -210,7 +210,7 @@ func TestExecuteTxVersionConflict(t *testing.T) {
 	objID := Hash{0x10}
 
 	// Pre-set version to 3
-	dag.tracker.trackObject(objID, 3, 0, 0)
+	dag.tracker.trackObject(objID, 3, 0, 0, 0, Hash{})
 
 	// Build ATX expecting version 0 (stale)
 	atxBytes := buildTestATX(t, "test_func", nil, []objectRef{{id: objID, version: 0}}, 0)
@@ -377,7 +377,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	tx := atx.Transaction(nil)
 
 	// max_create_objects check happens in executeTx, not shouldExecute directly
-	// The check is: if tx.CreatedObjectsReplicationLength() == 0 && tx.MaxCreateDomains() == 0 && !d.shouldExecute(...)
+	// The check is: if tx.CreatedObjectsReplicationLength() == 0 && !d.shouldExecute(...)
 	maxCreate := tx.CreatedObjectsReplicationLength()
 
 	if maxCreate == 0 {
@@ -385,7 +385,7 @@ func TestCreatesObjectsAllValidatorsExecute(t *testing.T) {
 	}
 
 	// With max_create_objects>0, the shouldExecute check is bypassed
-	shouldSkip := maxCreate == 0 && tx.MaxCreateDomains() == 0 && !dag.shouldExecute(atx, tx)
+	shouldSkip := maxCreate == 0 && !dag.shouldExecute(atx, tx)
 	if shouldSkip {
 		t.Fatal("max_create_objects>0 should force execution on all validators")
 	}
@@ -574,8 +574,12 @@ func TestCommittedTxOutput(t *testing.T) {
 	}
 }
 
-// TestMaxCreateDomainsAllValidatorsExecute tests that max_create_domains>0 forces execution.
-func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
+// TestMaxCreateDomainsDeprecated_NoLongerForcesExecution tests that
+// max_create_domains>0 is deprecated: the pod domain write path is retired,
+// so it no longer forces execution on non-holders the way it used to (that
+// role existed only to let every node observe a pod-driven domain
+// registration, which can no longer happen).
+func TestMaxCreateDomainsDeprecated_NoLongerForcesExecution(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(1)
 	mock := &mockBroadcaster{}
@@ -591,7 +595,8 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 
 	objID := Hash{0x10}
 
-	// Build ATX with max_create_domains=1
+	// Build ATX with max_create_domains=1 (a deprecated header value; real
+	// clients always encode zero, but the field stays and must not be trusted).
 	atxBytes := buildTestATXWithDomains(t, "test_func", []objectRef{{id: objID, version: 0}}, 1)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
@@ -601,10 +606,11 @@ func TestMaxCreateDomainsAllValidatorsExecute(t *testing.T) {
 		t.Fatal("max_create_domains should be > 0")
 	}
 
-	// With max_create_domains>0, the shouldExecute check is bypassed
-	shouldSkip := tx.CreatedObjectsReplicationLength() == 0 && maxDomains == 0 && !dag.shouldExecute(atx, tx)
-	if shouldSkip {
-		t.Fatal("max_create_domains>0 should force execution on all validators")
+	// max_create_domains>0 no longer bypasses the shouldExecute check: a
+	// non-holder that creates no objects skips execution regardless.
+	shouldSkip := tx.CreatedObjectsReplicationLength() == 0 && !dag.shouldExecute(atx, tx)
+	if !shouldSkip {
+		t.Fatal("max_create_domains>0 must no longer force execution on non-holders")
 	}
 }
 
@@ -1320,8 +1326,8 @@ func TestFailedExecutionPoolsStorageFee(t *testing.T) {
 	gasCoinID := Hash{0xCC}
 	coinStore.SetObject(buildTestCoinObject(gasCoinID, 1_000_000, sender, 0))
 
-	// One created singleton (replication 0): StorageDeposit(0, 3, 1000) = 1000,
-	// comfortably covered by the coin, so deductFees debits the full fee.
+	// One created singleton (replication 0): StorageDeposit(0, 3, 1000, 25) =
+	// 1025, comfortably covered by the coin, so deductFees debits the full fee.
 	atxBytes := buildFeeTestATX(t, sender, gasCoinID, 500, []uint16{0})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
@@ -1437,15 +1443,14 @@ func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object owned by sender
 	coinStore.SetObject(buildTestCoinObject(objID, 1000, sender, 0))
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1471,16 +1476,15 @@ func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	owner := Hash{0x02}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object owned by different key
 	coinStore.SetObject(buildTestCoinObject(objID, 1000, owner, 0))
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1506,14 +1510,13 @@ func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object NOT in store — but version 0 is default so tracker passes
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1539,9 +1542,10 @@ func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
+	sender := Hash{0x01}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
-	atxBytes := buildOwnershipTestATX(t, Hash{0x01}, nil)
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1567,12 +1571,11 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	other := Hash{0x02}
 	obj1 := Hash{0xAA}
 	obj2 := Hash{0xBB}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// First object owned by sender, second by someone else
 	coinStore.SetObject(buildTestCoinObject(obj1, 1000, sender, 0))
@@ -1583,7 +1586,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 		{id: obj2, version: 0},
 	}
 
-	atxBytes := buildOwnershipTestATX(t, sender, refs)
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, refs)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1728,8 +1731,11 @@ func TestExecuteTx_NilVerifier(t *testing.T) {
 	}
 }
 
-// buildOwnershipTestATX creates a test ATX with a sender and optional mutable refs.
-func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byte {
+// buildOwnershipTestATX creates a test ATX with a sender, optional mutable
+// refs, and a gas coin: mustFeeParams forbids a DAG with no fee parameters
+// wired, so these ownership tests now run against a real fee schedule
+// (wireOwnershipFees) and must carry the gas coin it structurally requires.
+func buildOwnershipTestATX(t *testing.T, sender, gasCoin Hash, maxGas uint64, mutRefs []objectRef) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -1740,12 +1746,15 @@ func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byt
 	senderVec := builder.CreateByteVector(sender[:])
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcNameOff := builder.CreateString("test_func")
+	gasCoinVec := builder.CreateByteVector(gasCoin[:])
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddMaxGas(builder, maxGas)
+	types.TransactionAddGasCoin(builder, gasCoinVec)
 	if mutVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutVec)
 	}
@@ -1766,6 +1775,21 @@ func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byt
 	builder.Finish(atxOff)
 
 	return builder.FinishedBytes()
+}
+
+// wireOwnershipFees wires a real fee system (mustFeeParams forbids a DAG built
+// with none) and funds a gas coin for owner, distinct from whatever objects
+// the test is checking ownership on, so fee deduction never interferes with
+// the ownership verdict under test. Returns the gas coin ID and a max_gas
+// comfortably above DefaultFeeParams' MinGas.
+func wireOwnershipFees(dag *DAG, coinStore *mockCoinStore, owner Hash) (gasCoin Hash, maxGas uint64) {
+	feeParams := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &feeParams, nil)
+
+	gasCoin = Hash{0xFE}
+	coinStore.SetObject(buildTestCoinObject(gasCoin, 1_000_000, owner, 0))
+
+	return gasCoin, 1000
 }
 
 // buildFeeTestATX creates a test ATX with sender, gas_coin, max_gas, and optional created objects.
@@ -2061,10 +2085,10 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	builder.Finish(vertexOff)
 
 	unsigned := builder.FinishedBytes()
-	hash := hashVertex(unsigned)
+	hash, bodyHash := vertexIdentity(types.GetRootAsVertex(unsigned, 0))
 	sig := ed25519.Sign(v.privKey, hash[:])
 
-	// Rebuild with hash and signature
+	// Rebuild with hash, body hash and signature
 	builder.Reset()
 
 	atxOffset = rebuildATXInBuilder(builder, atxBytes)
@@ -2091,6 +2115,7 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	txsVec = builder.EndVector(1)
 
 	hashVec := builder.CreateByteVector(hash[:])
+	bodyHashVec := builder.CreateByteVector(bodyHash[:])
 	sigVec := builder.CreateByteVector(sig)
 	producerVec = builder.CreateByteVector(v.pubKey[:])
 
@@ -2102,6 +2127,7 @@ func buildTestVertexWithTx(t *testing.T, v testValidator, round uint64, parents 
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
 	types.VertexAddEpoch(builder, epoch)
+	types.VertexAddBodyHash(builder, bodyHashVec)
 	vertexOff = types.VertexEnd(builder)
 
 	builder.Finish(vertexOff)

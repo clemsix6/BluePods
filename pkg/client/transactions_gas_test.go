@@ -63,15 +63,17 @@ func TestSplitTxCarriesOperatedCoinAsGas(t *testing.T) {
 	assertGasCoinTx(t, txBytes, coinID)
 }
 
-// TestTransferTxCarriesOperatedCoinAsGas verifies a transfer uses the operated
-// coin as its own gas coin.
+// TestTransferTxCarriesOperatedCoinAsGas verifies a transfer (the protocol's
+// declared reparent operation, not a pod call) uses the operated coin as its
+// own gas coin.
 func TestTransferTxCarriesOperatedCoinAsGas(t *testing.T) {
 	var coinID [32]byte
 	coinID[0] = 0x22
 	w := newGasTestWallet(coinID)
 
 	var recipient [32]byte
-	txBytes, _ := w.buildCoinTx(testPod(), "transfer", encodeTransferArgs(recipient), nil, coinID, 3)
+	op := reparentOpFor(coinID, keyRootKind, recipient[:])
+	txBytes, _ := w.buildOpsTx(buildMutableRef(coinID, 3), coinID, op)
 
 	assertGasCoinTx(t, txBytes, coinID)
 }

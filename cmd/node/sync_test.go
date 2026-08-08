@@ -179,3 +179,70 @@ func TestBuildValidatorSetFromSnapshot_CarriesRewardCoin(t *testing.T) {
 		t.Errorf("RewardCoin dropped rebuilding validator set from snapshot: got %x, want %x", got.RewardCoin, rewardCoin)
 	}
 }
+
+// TestSyncConstructionPaths_WireTheSharedStateSeams pins the symmetry between
+// the two sync-side construction paths on the seams they DO share: the index
+// manager, rendezvous, isHolder, the attestation handler, and the fee system's
+// coin store. A listener produces nothing, but it COMMITS the same ordered
+// log: it applies the same declared operations, prices leases from the same
+// governed parameters, stamps the same storage deposits and anchors the same
+// index root in the snapshots it serves. A path that skipped this wiring
+// would revert every domain operation validators apply and stamp zero-fee
+// deposits — a node class that permanently diverges while looking healthy.
+// The listener path is unreachable-broken upstream today, so this test is
+// what keeps the shared seams from drifting before that is fixed.
+//
+// It does NOT cover the seams the two paths wire asymmetrically by design:
+// the broadcaster (nil for a listener, n.network for a validator — the
+// distinction the two modes exist to make), WithGossipFanout (broadcast-only,
+// so meaningless without a broadcaster), WithMinValidators (validator-only
+// today), and the epoch options (the listener takes WithEpochLength directly,
+// the validator goes through appendEpochOpts) — none of those is a shared
+// state seam the aggregation wiring above depends on, so their asymmetry is
+// out of this test's scope, not a gap in it.
+func TestSyncConstructionPaths_WireTheSharedStateSeams(t *testing.T) {
+	cases := []struct {
+		name string
+		init func(*Node, *snapshotResult) error
+	}{
+		{"validator", (*Node).initConsensusForValidator},
+		{"listener", (*Node).initConsensusForListener},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := syncSnapshotFromLiveNode(t).result
+
+			n := syncedJoiner(t, result)
+
+			// A marker only the fee system's coin store can read back: the DAG
+			// reports 0 when none is wired.
+			n.state.SetTotalSupply(4242)
+
+			if err := tc.init(n, result); err != nil {
+				t.Fatalf("init consensus: %v", err)
+			}
+			defer n.dag.Close()
+
+			if n.idxManager == nil {
+				t.Error("no index manager: this node anchors (0, zero root) in everything it produces or serves")
+			}
+			if n.rendezvous == nil {
+				t.Error("no rendezvous: the fee system's holder computation and the epoch scan are unwired")
+			}
+			if n.isHolder == nil {
+				t.Error("no isHolder: execution and storage sharding are unwired")
+			}
+			if n.attHandler == nil {
+				t.Error("no attestation handler")
+			}
+
+			// The fee system: the coin store fees are debited from, wired in the
+			// same step that gives the state layer its storage-deposit
+			// parameters and the resolver its epoch source.
+			if got := n.dag.TotalSupply(); got != 4242 {
+				t.Errorf("dag.TotalSupply() = %d, want 4242: no coin store wired, so this node debits no fee and stamps zero-fee deposits", got)
+			}
+		})
+	}
+}

@@ -41,6 +41,19 @@ table ObjectVersion {
 
     // fees is the storage deposit for this object.
     fees:uint64;
+
+    // parent_kind is keyRootKind (0, parent is an Ed25519 key) or
+    // objectParentKind (1, parent is another tracked object's ID). Matches
+    // parent_kind in types/object.fbs and internal/consensus/tracker.go.
+    parent_kind:ubyte;
+
+    // parent is the parent reference: a key under KeyRoot, an object ID
+    // under ObjectParent (32 bytes).
+    parent:[ubyte];
+
+    // child_count is the number of ObjectParent children currently tracked
+    // under this object.
+    child_count:uint32;
 }
 
 // ObjectSig carries a holder's eager BLS attestation for an object's current
@@ -56,13 +69,22 @@ table ObjectSig {
     sig:[ubyte];
 }
 
-// SnapshotDomain maps a domain name to an object ID in the snapshot.
+// SnapshotDomain maps a domain name to a leaf in the snapshot: the object it
+// resolves to, the key holding the lease's rights, and the epoch the lease
+// runs to.
 table SnapshotDomain {
     // name is the domain name.
     name:string;
 
     // object_id is the 32-byte ObjectID.
     object_id:[ubyte];
+
+    // owner is the 32-byte key that may renew, update, transfer, or delete
+    // the name.
+    owner:[ubyte];
+
+    // expiry_epoch is the last epoch the lease resolves in.
+    expiry_epoch:uint64;
 }
 
 // Snapshot represents the committed state at a point in time.

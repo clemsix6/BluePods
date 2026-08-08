@@ -3,6 +3,8 @@ package state
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
+	"math/bits"
 	"sync"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -23,16 +25,19 @@ const (
 
 // State manages objects and transaction execution.
 type State struct {
-	db              *storage.Storage                                                      // db is the underlying storage, retained for protocol-counter persistence
-	objects         *objectStore                                                          // objects is the object storage
-	domains         *domainStore                                                          // domains stores domain name → ObjectID mappings
-	pods            *podvm.Pool                                                           // pods is the WASM runtime pool
-	isHolder        func(objectID [32]byte, replication uint16) bool                      // isHolder checks if this node stores an object
-	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64)    // onObjectCreated is called when a new object is created
-	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte) // signObject eagerly attests a held object at the version actually persisted
+	db              *storage.Storage                                                                                     // db is the underlying storage, retained for protocol-counter persistence
+	objects         *objectStore                                                                                         // objects is the object storage
+	domains         *domainStore                                                                                         // domains stores domain name → ObjectID mappings
+	pods            *podvm.Pool                                                                                          // pods is the WASM runtime pool
+	isHolder        func(objectID [32]byte, replication uint16) bool                                                     // isHolder checks if this node stores an object
+	onObjectCreated func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte) // onObjectCreated is called when a new object is created
+	signObject      func(id [32]byte, content []byte, version uint64, replication uint16, owner []byte)                  // signObject eagerly attests a held object at the version actually persisted
+	parentValidator func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool                        // parentValidator asks consensus whether sender controls a created object's declared object-parent
+	epochSource     func() uint64                                                                                        // epochSource reports the epoch domain leases are measured against (nil = epoch 0)
 
 	// Fee system: storage deposits and refunds.
 	storageFee       uint64     // storageFee is the per-object storage fee (0 = disabled)
+	indexEntryFee    uint64     // indexEntryFee is the flat term a created object's hierarchy-index entry adds to its deposit, mirroring consensus's FeeParams.IndexEntryFee
 	storageRefundBPS uint64     // storageRefundBPS is the refund ratio in basis points (9500 = 95%)
 	totalValidators  int        // totalValidators is the fallback validator count when validatorCount is unset
 	validatorCount   func() int // validatorCount returns the live validator count; set to the consensus set so the storage-deposit formula matches consensus
@@ -65,10 +70,61 @@ func New(db *storage.Storage, pods *podvm.Pool) *State {
 	return s
 }
 
-// ResolveDomain resolves a domain name to its ObjectID.
-// Returns the ObjectID and true if found, zero hash and false otherwise.
+// ResolveDomain resolves a domain name to its ObjectID. A name past its expiry
+// epoch does not resolve, even while its leaf is still in the registry awaiting
+// the sweep: the grace window reserves the owner's exclusive right to renew, it
+// never extends resolution. Returns the ObjectID and true when the name
+// resolves, zero hash and false otherwise.
 func (s *State) ResolveDomain(name string) ([32]byte, bool) {
-	return s.domains.get(name)
+	entry, ok := s.domains.get(name)
+	if !ok || entry.ExpiryEpoch < s.currentEpoch() {
+		return [32]byte{}, false
+	}
+
+	return entry.ObjectID, true
+}
+
+// DomainLeaf returns a name's registry leaf exactly as stored, expiry included
+// and unfiltered, so the commit path can apply the operations an expired lease
+// still allows (its owner's renewal). Resolution goes through ResolveDomain.
+func (s *State) DomainLeaf(name string) (objectID, owner [32]byte, expiry uint64, ok bool) {
+	entry, found := s.domains.get(name)
+	if !found {
+		return [32]byte{}, [32]byte{}, 0, false
+	}
+
+	return entry.ObjectID, entry.Owner, entry.ExpiryEpoch, true
+}
+
+// SetDomainLeaf writes a name's registry leaf, the write side of DomainLeaf.
+// The commit path calls it for every declared domain operation that leaves the
+// name registered.
+func (s *State) SetDomainLeaf(name string, objectID, owner [32]byte, expiry uint64) {
+	s.domains.set(DomainEntry{Name: name, ObjectID: objectID, Owner: owner, ExpiryEpoch: expiry})
+}
+
+// DeleteDomainLeaf removes a name from the registry, on an owner's declared
+// deletion or the epoch sweep of an expired lease.
+func (s *State) DeleteDomainLeaf(name string) {
+	s.domains.delete(name)
+}
+
+// SetEpochSource wires the epoch the resolver measures leases against. On the
+// commit path the source is the consensus epoch mirror, which every node reads
+// as the same value while a given round's transactions execute, so expiry never
+// resolves differently on two nodes. Left unwired (0), no lease ever expires,
+// which is the behavior of a chain with epochs disabled.
+func (s *State) SetEpochSource(fn func() uint64) {
+	s.epochSource = fn
+}
+
+// currentEpoch reads the wired epoch source, or 0 when none is set.
+func (s *State) currentEpoch() uint64 {
+	if s.epochSource == nil {
+		return 0
+	}
+
+	return s.epochSource()
 }
 
 // ExportDomains returns all domain entries for snapshot serialization.
@@ -96,8 +152,11 @@ func (s *State) SetIsHolder(fn func(objectID [32]byte, replication uint16) bool)
 }
 
 // SetOnObjectCreated sets a callback that fires when a new object is created.
-// Used by the consensus tracker to register created objects.
-func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64)) {
+// Used by the consensus tracker to register created objects, threading
+// through the object's declared parent (kind + bytes, read from the object
+// body's owner and parent_kind fields) so the tracker can maintain
+// parent/child-count bookkeeping from the moment the object is created.
+func (s *State) SetOnObjectCreated(fn func(id [32]byte, version uint64, replication uint16, fees uint64, parentKind byte, parent [32]byte)) {
 	s.onObjectCreated = fn
 }
 
@@ -111,11 +170,25 @@ func (s *State) SetObjectSigner(fn func(id [32]byte, content []byte, version uin
 	s.signObject = fn
 }
 
+// SetParentValidator wires the consensus cascade walk that decides whether a
+// transaction sender controls a created object's declared object-parent. State
+// resolves the sender's own key and same-transaction parents locally; only the
+// ObjectParent-under-an-existing-object case needs the global parent walk, which
+// this callback answers. Holding only the func keeps state from importing
+// consensus.
+func (s *State) SetParentValidator(fn func(kind byte, parent [32]byte, sender [32]byte, tx *types.Transaction) bool) {
+	s.parentValidator = fn
+}
+
 // SetStorageFees configures protocol-level storage deposits and refunds.
 // When storageFee > 0, created objects get a storage deposit in their fees field.
-// totalValidators is only a fallback; SetValidatorCount supplies the live count.
-func (s *State) SetStorageFees(storageFee uint64, storageRefundBPS uint64, totalValidators int) {
+// indexEntryFee is the flat term added on top, mirroring consensus's
+// FeeParams.IndexEntryFee, so the deposit stamped here always equals the fee
+// debited at commit (fees.go's StorageDeposit). totalValidators is only a
+// fallback; SetValidatorCount supplies the live count.
+func (s *State) SetStorageFees(storageFee, indexEntryFee, storageRefundBPS uint64, totalValidators int) {
 	s.storageFee = storageFee
+	s.indexEntryFee = indexEntryFee
 	s.storageRefundBPS = storageRefundBPS
 	s.totalValidators = totalValidators
 }
@@ -154,7 +227,7 @@ func (s *State) Execute(atxData []byte) error {
 
 	txHash := extractTxHash(tx)
 
-	if err := s.processOutput(output, txHash, tx); err != nil {
+	if err := s.processOutput(output, txHash, tx, objects); err != nil {
 		return fmt.Errorf("process output:\n%w", err)
 	}
 
@@ -251,6 +324,24 @@ func (s *State) DeleteObject(id [32]byte) {
 	s.objects.delete(id)
 }
 
+// ReparentObject rewrites a reparented object's stored body owner bytes,
+// parent kind, and version to the new parent reference and the tracker's
+// already-bumped version, but only for a holder that stores it; a non-holder
+// never held the object, so there is nothing to rewrite. It fires from the
+// consensus commit loop when a declared reparent settles, keeping the held
+// body's owner and version fields — which GetObject serves, pod execution
+// reads, and the daemon's attestation collection re-derives its hash from —
+// consistent with the tracker. The transform is deterministic, so rewriting
+// only on holders keeps attested copies consistent at the next version.
+func (s *State) ReparentObject(id [32]byte, newKind byte, newParent [32]byte, version uint64) {
+	data := s.objects.get(id)
+	if data == nil {
+		return
+	}
+
+	s.objects.set(id, writeObjectOwner(data, newParent, newKind, version))
+}
+
 // serializeInput builds the FlatBuffers PodExecuteInput.
 // Must rebuild nested tables (Transaction, Objects) field by field.
 func (s *State) serializeInput(tx *types.Transaction, objects []*types.Object) ([]byte, error) {
@@ -319,9 +410,13 @@ func rebuildObject(builder *flatbuffers.Builder, obj *types.Object) flatbuffers.
 }
 
 // processOutput validates and applies PodExecuteOutput to the state.
-// Validates creation limits and domain collisions before applying any mutations.
-// If any validation fails, no state changes are made (rollback semantics).
-func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction) error {
+// Validates creation limits, the unconditional domain-registration rejection,
+// the creation-permission rule, parent immutability, and the pod-output
+// deletion carve-out before applying any mutations. The inputs are the
+// attested object copies the pod ran against, used as the local comparison
+// basis for the parent and deletion checks. If any validation fails, no state
+// changes are made (rollback semantics).
+func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Transaction, inputs []*types.Object) error {
 	if len(outputData) == 0 {
 		return nil
 	}
@@ -336,102 +431,15 @@ func (s *State) processOutput(outputData []byte, txHash [32]byte, tx *types.Tran
 		return fmt.Errorf("pod execution error: %d", errCode)
 	}
 
-	if err := s.validateOutput(output, tx); err != nil {
+	if err := s.validateOutput(output, tx, txHash, inputs); err != nil {
 		return fmt.Errorf("output validation failed:\n%w", err)
 	}
 
 	s.applyUpdatedObjects(output, txHash)
 	s.applyCreatedObjects(output, txHash, txLocksDeposits(tx))
 	s.applyDeletedObjects(tx)
-	s.applyRegisteredDomains(output, txHash)
 
 	return nil
-}
-
-// validateOutput checks creation limits and domain collisions.
-// Returns error if any limit is exceeded or a domain already exists.
-func (s *State) validateOutput(output *types.PodExecuteOutput, tx *types.Transaction) error {
-	createdCount := output.CreatedObjectsLength()
-	maxCreate := tx.CreatedObjectsReplicationLength()
-	if createdCount > maxCreate {
-		return fmt.Errorf("created %d objects, max allowed %d", createdCount, maxCreate)
-	}
-
-	domainCount := output.RegisteredDomainsLength()
-	if domainCount > int(tx.MaxCreateDomains()) {
-		return fmt.Errorf("registered %d domains, max allowed %d", domainCount, tx.MaxCreateDomains())
-	}
-
-	seen := make(map[string]bool, domainCount)
-	var dom types.RegisteredDomain
-
-	for i := 0; i < domainCount; i++ {
-		if !output.RegisteredDomains(&dom, i) {
-			continue
-		}
-
-		name := string(dom.Name())
-
-		if len(name) == 0 {
-			return fmt.Errorf("empty domain name at index %d", i)
-		}
-
-		if len(name) > 253 {
-			return fmt.Errorf("domain name too long: %d bytes (max 253)", len(name))
-		}
-
-		if seen[name] {
-			return fmt.Errorf("duplicate domain name in output: %q", name)
-		}
-		seen[name] = true
-
-		if s.domains.exists(name) {
-			return fmt.Errorf("domain collision: %q already registered", name)
-		}
-	}
-
-	return nil
-}
-
-// applyRegisteredDomains stores domain name → ObjectID mappings from pod output.
-// Each RegisteredDomain references either an object_index (into created objects) or a direct object_id.
-// Emits DomainUpdated when the name was already bound (rebound to a possibly
-// different object) and DomainRegistered for a first-time binding, so the event
-// stream reports which case actually happened.
-func (s *State) applyRegisteredDomains(output *types.PodExecuteOutput, txHash [32]byte) {
-	var dom types.RegisteredDomain
-
-	for i := 0; i < output.RegisteredDomainsLength(); i++ {
-		if !output.RegisteredDomains(&dom, i) {
-			continue
-		}
-
-		name := string(dom.Name())
-		objectID := s.resolveDomainObjectID(&dom, txHash)
-		existed := s.domains.exists(name)
-
-		s.domains.set(name, objectID)
-
-		if existed {
-			events.DomainUpdated(name, objectID, txHash)
-		} else {
-			events.DomainRegistered(name, objectID, txHash)
-		}
-	}
-}
-
-// resolveDomainObjectID determines the ObjectID for a RegisteredDomain entry.
-// Prefers direct object_id if present (32 bytes), falls back to object_index.
-// object_id is checked first because FlatBuffers defaults object_index to 0,
-// which would silently use the first created object instead of the direct ID.
-func (s *State) resolveDomainObjectID(dom *types.RegisteredDomain, txHash [32]byte) Hash {
-	if idBytes := dom.ObjectIdBytes(); len(idBytes) == 32 {
-		var id Hash
-		copy(id[:], idBytes)
-		return id
-	}
-
-	return computeObjectID(txHash, uint32(dom.ObjectIndex()))
 }
 
 // applyUpdatedObjects stores updated objects with incremented versions.
@@ -521,19 +529,23 @@ func (s *State) applyCreatedObjects(output *types.PodExecuteOutput, txHash [32]b
 			fees = s.computeStorageDeposit(obj.Replication())
 		}
 
+		// owner doubles as the parent reference (parent_kind selects how to read
+		// it: an Ed25519 key under KeyRoot, another object's ID under
+		// ObjectParent).
+		var owner Hash
+		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
+			copy(owner[:], ownerBytes)
+		}
+
 		// Notify tracker (all validators track all objects regardless of holding)
 		if s.onObjectCreated != nil {
-			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees)
+			s.onObjectCreated(id, obj.Version(), obj.Replication(), fees, obj.ParentKind(), owner)
 		}
 
 		// state.object.created and fees.deposit.locked describe the tracker-level
 		// mutation and protocol deposit, not the local storage write below, so they
 		// fire for every created object regardless of whether this node holds it
 		// (all validators track all objects).
-		var owner Hash
-		if ownerBytes := obj.OwnerBytes(); len(ownerBytes) == 32 {
-			copy(owner[:], ownerBytes)
-		}
 		events.ObjectCreated(id, txHash, obj.Version(), obj.Replication(), owner)
 		if fees > 0 {
 			events.DepositLocked(id, fees)
@@ -592,6 +604,37 @@ func rebuildObjectWithIDAndFees(id Hash, obj *types.Object, fees uint64) []byte 
 	types.ObjectAddReplication(builder, obj.Replication())
 	types.ObjectAddContent(builder, contentVec)
 	types.ObjectAddFees(builder, fees)
+
+	offset := types.ObjectEnd(builder)
+	builder.Finish(offset)
+
+	return builder.FinishedBytes()
+}
+
+// writeObjectOwner rebuilds an object with a new owner (its parent bytes), a
+// new parent kind, and the tracker's already-bumped version, preserving every
+// other field (ID, replication, content, fees). A reparent rewrites the held
+// body's owner to mirror the tracker's new parent reference; the version is
+// stamped from the caller (the tracker's post-checkAndUpdate version) so the
+// held copy never falls behind the version-conflict check a follow-up
+// mutation is validated against — GetObject, pod execution, and the daemon's
+// attestation collection all read this field as the object's current version.
+func writeObjectOwner(data []byte, newOwner [32]byte, newParentKind byte, newVersion uint64) []byte {
+	obj := types.GetRootAsObject(data, 0)
+	builder := flatbuffers.NewBuilder(512)
+
+	idVec := builder.CreateByteVector(obj.IdBytes())
+	ownerVec := builder.CreateByteVector(newOwner[:])
+	contentVec := builder.CreateByteVector(obj.ContentBytes())
+
+	types.ObjectStart(builder)
+	types.ObjectAddId(builder, idVec)
+	types.ObjectAddVersion(builder, newVersion)
+	types.ObjectAddOwner(builder, ownerVec)
+	types.ObjectAddReplication(builder, obj.Replication())
+	types.ObjectAddContent(builder, contentVec)
+	types.ObjectAddFees(builder, obj.Fees())
+	types.ObjectAddParentKind(builder, newParentKind)
 
 	offset := types.ObjectEnd(builder)
 	builder.Finish(offset)
@@ -663,16 +706,50 @@ func extractSender(tx *types.Transaction) Hash {
 	return sender
 }
 
-// computeStorageDeposit calculates the storage deposit for a new object.
-// It reads the live validator count (so the deposit matches the storage fee
-// debited at commit), falling back to the init-time count if none is wired.
+// safeMul returns a * b, capping at math.MaxUint64 on overflow. Mirrors
+// consensus/fees.go's helper of the same name exactly: computeStorageDeposit
+// duplicates it here rather than importing it, since internal/consensus
+// already imports internal/state and an import the other way would cycle.
+func safeMul(a, b uint64) uint64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+
+	hi, _ := bits.Mul64(a, b)
+	if hi > 0 {
+		return math.MaxUint64
+	}
+
+	return a * b
+}
+
+// safeAdd returns a + b, capping at math.MaxUint64 on overflow. Mirrors
+// consensus/fees.go's helper of the same name; see safeMul for why it is
+// duplicated rather than imported.
+func safeAdd(a, b uint64) uint64 {
+	sum := a + b
+	if sum < a {
+		return math.MaxUint64
+	}
+
+	return sum
+}
+
+// computeStorageDeposit calculates the storage deposit for a new object: a
+// storage-fee share proportional to replication, plus the flat index-entry
+// term, mirroring fees.go's StorageDeposit exactly — saturating arithmetic
+// included — so the deposit stamped here always equals the fee consensus
+// debits for it, even under a governed StorageFee large enough to overflow
+// raw multiplication. It reads the live validator count (so the deposit
+// matches the storage fee debited at commit), falling back to the init-time
+// count if none is wired.
 func (s *State) computeStorageDeposit(replication uint16) uint64 {
 	total := s.totalValidators
 	if s.validatorCount != nil {
 		total = s.validatorCount()
 	}
 
-	if s.storageFee == 0 || total == 0 {
+	if total == 0 {
 		return 0
 	}
 
@@ -681,7 +758,9 @@ func (s *State) computeStorageDeposit(replication uint16) uint64 {
 		effRep = total
 	}
 
-	return uint64(effRep) * s.storageFee / uint64(total)
+	storage := safeMul(uint64(effRep), s.storageFee) / uint64(total)
+
+	return safeAdd(storage, s.indexEntryFee)
 }
 
 // ensureMutableVersions guarantees that all objects declared in MutableObjects
