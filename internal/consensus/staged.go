@@ -46,6 +46,10 @@ func newStagedView(ot *objectTracker, ds DomainStore, epoch, maxTerm uint64) *st
 // validate checks and stages one operation against the view, returning false for
 // any invalid or unknown-kind operation.
 func (s *stagedView) validate(sender Hash, op genesis.DeclaredOp, refs map[Hash]bool) bool {
+	if op.Kind > lastDeclaredOpKind {
+		return false
+	}
+
 	switch op.Kind {
 	case reparentOp:
 		return s.validateReparent(sender, op, refs)

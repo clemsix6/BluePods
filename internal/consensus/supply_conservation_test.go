@@ -58,7 +58,9 @@ func TestPartialFeeCoveragePooled(t *testing.T) {
 // gas coin loses — the compute floor, the flat operation fee and the rent —
 // enters the epoch pool, and nothing is withheld as a deposit. Rent is a
 // consumed fee, so a domain lease must never leave a locked balance behind that
-// no object accounts for.
+// no object accounts for. The exit that returns the split is checked too: it is
+// the one exit of the commit path that used to drop a withheld deposit instead
+// of pooling it.
 func TestDeclaredOpFeesConserveSupply(t *testing.T) {
 	env := newOpsFeeEnv(t)
 	defer env.dag.Close()
@@ -101,6 +103,28 @@ func TestDeclaredOpFeesConserveSupply(t *testing.T) {
 	want := env.params.MinGas*env.params.GasPrice + 10*env.params.RentalRatePerEpoch + env.params.DeleteFee
 	if debited != want {
 		t.Errorf("debited %d, want %d (floor + 7+3 epochs of rent + delete fee)", debited, want)
+	}
+
+	requireOpsExitAccountsWithheldStorage(t, env, tx, split)
+}
+
+// requireOpsExitAccountsWithheldStorage drives the operations exit with a
+// deposit deducted but withheld from the pool, and requires it to come back
+// accounted. The shape gate makes the only transaction that can withhold one
+// here — declared operations alongside replication entries — unreachable on
+// this path, which is exactly why the exit is checked directly: it is the
+// fail-safe for a shape a later change lets through, mirroring what the
+// failed-execution exit does with the deposit no created object locked.
+func requireOpsExitAccountsWithheldStorage(t *testing.T, env *opsFeeEnv, tx *types.Transaction, split FeeSplit) {
+	t.Helper()
+
+	const withheld = 1_234
+
+	out := env.dag.commitDeclaredOps(tx, Hash{}, Hash{}, 0, split, withheld)
+
+	if out.Total != split.Total+withheld || out.Epoch != split.Epoch+withheld {
+		t.Errorf("the operations exit returned (total %d, epoch %d) for a withheld deposit of %d, want (%d, %d): a debited deposit no exit pools leaves the supply",
+			out.Total, out.Epoch, withheld, split.Total+withheld, split.Epoch+withheld)
 	}
 }
 

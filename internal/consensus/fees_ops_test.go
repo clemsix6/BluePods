@@ -80,10 +80,6 @@ func TestDeclaredOpFees_AgreeAcrossSites(t *testing.T) {
 				t.Error("a summary one unit short must be rejected")
 			}
 
-			if tc.opFee == 0 {
-				t.Fatal("no operation kind is free: every leaf write is priced")
-			}
-
 			if err := env.validate(t, SplitFee(base, env.params), atxBytes); err == nil {
 				t.Error("a summary omitting the op fee must be rejected")
 			}
@@ -96,29 +92,39 @@ func TestDeclaredOpFees_AgreeAcrossSites(t *testing.T) {
 // rewrites or removes a leaf every node re-hashes into the anchored root, so
 // each carries a flat fee. A kind priced at zero lets one min_gas transaction
 // drive unbounded SMT work across the network.
+//
+// The kinds are walked, never listed: a list is a second place to remember a
+// new kind in, and the one that gets forgotten is this one. The walk covers the
+// whole kind space the commit path applies, and stops where that space does —
+// past its edge a kind is refused, so pricing one there is the drift this
+// reports.
 func TestEveryDeclaredOpIsPriced(t *testing.T) {
 	params := DefaultFeeParams()
 
-	obj := Hash{0x11}
-	target := Hash{0x22}
-
-	cases := []struct {
-		name string
-		op   genesis.DeclaredOp
-	}{
-		{"reparent", genesis.DeclaredOp{Kind: reparentOp, ObjectID: obj[:], Target: target[:]}},
-		{"delete", genesis.DeclaredOp{Kind: deleteOp, ObjectID: obj[:]}},
-		{"domain_register", registerOp("alpha", obj, 1)},
-		{"domain_renew", renewOp("alpha", 1)},
-		{"domain_update", updateOp("alpha", obj)},
-		{"domain_transfer", transferOp("alpha", target)},
-		{"domain_delete", deleteDomainOp("alpha")},
+	for kind := reparentOp; kind <= lastDeclaredOpKind; kind++ {
+		if fee := declaredOpFee(pricingProbe(kind), params); fee == 0 {
+			t.Errorf("declared operation kind %d is free: every leaf write is priced", kind)
+		}
 	}
 
-	for _, tc := range cases {
-		if fee := declaredOpFee(tc.op, params); fee == 0 {
-			t.Errorf("%s is free: every leaf write is priced", tc.name)
-		}
+	if fee := declaredOpFee(pricingProbe(lastDeclaredOpKind+1), params); fee != 0 {
+		t.Errorf("kind %d prices at %d but sits past the kind space commit applies", lastDeclaredOpKind+1, fee)
+	}
+}
+
+// pricingProbe returns an operation of the given kind carrying every field the
+// fee side can read — a term for the kinds that buy a lease, and nothing else
+// for the flat ones — so one shape prices every kind and the walk above needs
+// no per-kind table beside it.
+func pricingProbe(kind byte) genesis.DeclaredOp {
+	obj := Hash{0x11}
+
+	return genesis.DeclaredOp{
+		Kind:       kind,
+		Name:       "alpha",
+		ObjectID:   obj[:],
+		Target:     obj[:],
+		TermEpochs: 1,
 	}
 }
 
@@ -281,13 +287,14 @@ func TestDomainRentOverflow_Saturates(t *testing.T) {
 // funcName makes it a pod call, which is what separates an operations
 // transaction from a mixed one.
 type opsFeeTx struct {
-	sender   Hash                 // sender is the paying key (defaults to a fixed test key)
-	gasCoin  Hash                 // gasCoin is the fee source (defaults to a fixed test coin)
-	maxGas   uint64               // maxGas is the declared gas bound
-	funcName string               // funcName is the pod entrypoint, empty for an operations transaction
-	mutRefs  []objectRef          // mutRefs are the declared mutable references
-	ops      []genesis.DeclaredOp // ops are the declared operations
-	hash     Hash                 // hash is the transaction hash
+	sender      Hash                 // sender is the paying key (defaults to a fixed test key)
+	gasCoin     Hash                 // gasCoin is the fee source (defaults to a fixed test coin)
+	maxGas      uint64               // maxGas is the declared gas bound
+	funcName    string               // funcName is the pod entrypoint, empty for an operations transaction
+	mutRefs     []objectRef          // mutRefs are the declared mutable references
+	ops         []genesis.DeclaredOp // ops are the declared operations
+	replication []uint16             // replication is created_objects_replication, which prices a storage deposit
+	hash        Hash                 // hash is the transaction hash
 }
 
 // opsFeeEnv is a DAG with the fee system wired, used to exercise the four fee
@@ -361,6 +368,7 @@ func buildOpsFeeATX(t *testing.T, spec opsFeeTx) []byte {
 
 	mutVec := buildObjectRefVector(builder, spec.mutRefs, true)
 	opsVec := buildDeclaredOpsVector(builder, spec.ops)
+	repVec := buildReplicationVector(builder, spec.replication)
 	hashVec := builder.CreateByteVector(spec.hash[:])
 	senderVec := builder.CreateByteVector(spec.sender[:])
 	podVec := builder.CreateByteVector(make([]byte, 32))
@@ -384,6 +392,9 @@ func buildOpsFeeATX(t *testing.T, spec opsFeeTx) []byte {
 		types.TransactionAddMutableRefs(builder, mutVec)
 	}
 	types.TransactionAddOperations(builder, opsVec)
+	if repVec != 0 {
+		types.TransactionAddCreatedObjectsReplication(builder, repVec)
+	}
 	txOff := types.TransactionEnd(builder)
 
 	types.AttestedTransactionStartObjectsVector(builder, 0)
@@ -400,4 +411,19 @@ func buildOpsFeeATX(t *testing.T, spec opsFeeTx) []byte {
 	builder.Finish(atxOff)
 
 	return builder.FinishedBytes()
+}
+
+// buildReplicationVector builds a created_objects_replication vector, or
+// returns 0 when the shape declares none.
+func buildReplicationVector(builder *flatbuffers.Builder, reps []uint16) flatbuffers.UOffsetT {
+	if len(reps) == 0 {
+		return 0
+	}
+
+	types.TransactionStartCreatedObjectsReplicationVector(builder, len(reps))
+	for i := len(reps) - 1; i >= 0; i-- {
+		builder.PrependUint16(reps[i])
+	}
+
+	return builder.EndVector(len(reps))
 }

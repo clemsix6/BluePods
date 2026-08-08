@@ -16,16 +16,28 @@ const (
 )
 
 // commitDeclaredOps applies a transaction's declared operations and emits the
-// commit verdict, returning the fee split unchanged so the caller keeps the fee
-// the sender already paid regardless of the outcome. A transaction carries
-// EITHER declared operations OR a pod call; a mix is rejected here rather than
+// commit verdict, returning the fee split so the caller keeps the fee the
+// sender already paid regardless of the outcome. A transaction carries EITHER
+// declared operations OR a pod call, and an operations transaction replicates
+// no created object; a shape breaking either rule is rejected here rather than
 // half-applied.
-func (d *DAG) commitDeclaredOps(tx *types.Transaction, txHash, vertexHash Hash, commitRound uint64, feeSplit FeeSplit) FeeSplit {
+//
+// withheldStorage is the deposit deductFees debited but held back from the
+// pool. A declared-operation transaction creates no object, so nothing here can
+// ever lock it: it is folded into the pool exactly as the failed-execution exit
+// folds the deposit a reverted pod call never locked. The shape gate upstream
+// makes the only transaction that can arrive here holding one unreachable,
+// which is what leaves this the fail-safe rather than the rule — no exit of the
+// commit path may drop a debited deposit, whatever shape a later change lets
+// through.
+func (d *DAG) commitDeclaredOps(tx *types.Transaction, txHash, vertexHash Hash, commitRound uint64, feeSplit FeeSplit, withheldStorage uint64) FeeSplit {
 	// The epoch domain leases are measured against is the one the COMMIT ROUND
 	// belongs to, the same deterministic mapping ATX proof verification and
 	// epoch fee bucketing use. Reading the live epoch counter instead would
 	// date a lease by when a node happened to reach the round.
-	success := !txHasPodCall(tx) && d.handleDeclaredOps(tx, d.commitEpochForRound(commitRound))
+	success := !txHasPodCall(tx) &&
+		tx.CreatedObjectsReplicationLength() == 0 &&
+		d.handleDeclaredOps(tx, d.commitEpochForRound(commitRound))
 
 	reason := FailNone
 	commitReason := ""
@@ -37,7 +49,7 @@ func (d *DAG) commitDeclaredOps(tx *types.Transaction, txHash, vertexHash Hash, 
 	d.emitTransaction(tx, success, reason)
 	events.TxCommitted(txHash, vertexHash, commitRound, success, commitReason)
 
-	return feeSplit
+	return poolUnlockedStorage(feeSplit, withheldStorage)
 }
 
 // handleDeclaredOps validates a transaction's declared operations as one
@@ -156,7 +168,13 @@ func (d *DAG) applyDelete(txHash, gasCoinID Hash, hasGasCoin bool, op genesis.De
 
 // txHasPodCall reports whether a transaction carries a pod call — a non-empty
 // function name or a non-zero pod target. A declared-operation transaction
-// carries neither: operations and pod execution are mutually exclusive.
+// carries neither: operations and pod execution are mutually exclusive, and so
+// are operations and the replication entries commitDeclaredOps checks beside
+// this one — two clauses of one family. validation.ValidateShape is the gate
+// that enforces the family, at ingress and again on this path; the checks here
+// are the commit side's own reading of the same rule, kept in step with it
+// (validation's txHasPodCall mirrors this predicate byte for byte) so a shape
+// slipping past the gate is still refused rather than half-applied.
 func txHasPodCall(tx *types.Transaction) bool {
 	if len(tx.FunctionName()) > 0 {
 		return true

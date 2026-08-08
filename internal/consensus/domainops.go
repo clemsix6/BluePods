@@ -27,6 +27,14 @@ const (
 	// domainDeleteOp removes a name from the registry. Matches
 	// DeclaredOp.kind=6.
 	domainDeleteOp byte = 6
+
+	// lastDeclaredOpKind is the upper edge of the declared-operation kind
+	// space, which is contiguous from reparentOp. The staged view refuses
+	// anything past it, and the pricing coverage walks up to it: a kind added
+	// to the family that leaves this behind is dead at commit, which is what
+	// keeps the walk from silently stopping short of a kind that rewrites
+	// leaves for free.
+	lastDeclaredOpKind = domainDeleteOp
 )
 
 const (

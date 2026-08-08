@@ -231,7 +231,9 @@ func TestHandleDeclaredOps_SequentialReparentSucceeds(t *testing.T) {
 }
 
 // TestExecuteTx_OpsWithPodCallRejected rejects a transaction that carries both
-// declared operations and a pod call.
+// declared operations and a pod call. The refusal is now the shape gate's,
+// which runs before anything is charged or touched, so the verdict names the
+// shape rather than the operation list the commit path never reached.
 func TestExecuteTx_OpsWithPodCallRejected(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
@@ -253,7 +255,7 @@ func TestExecuteTx_OpsWithPodCallRejected(t *testing.T) {
 	buf := captureEvents(t)
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{0xE7})
 
-	assertSingleTxCommitted(t, buf, 1, false, "declared_ops", Hash{0xE7})
+	assertSingleTxCommitted(t, buf, 1, false, "malformed_shape", Hash{0xE7})
 	if k, p, _ := dag.tracker.getParent(obj); k != keyRootKind || p != sender {
 		t.Errorf("object reparented despite the ops+pod mix being rejected: (kind=%d, %x)", k, p[:4])
 	}

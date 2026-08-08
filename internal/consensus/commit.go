@@ -10,6 +10,7 @@ import (
 	"BluePods/internal/genesis"
 	"BluePods/internal/logger"
 	"BluePods/internal/types"
+	"BluePods/internal/validation"
 )
 
 const (
@@ -651,6 +652,27 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return FeeSplit{}
 	}
 
+	// Shape gate: the rules a declared-operation transaction must satisfy are
+	// re-checked here, on every node, through the very function client ingress
+	// runs. Ingress binds polite clients only — a byzantine producer includes
+	// what it likes, and a forged submission arrives wrapped in an ATX — so the
+	// exclusivity clauses and the operation bound have to hold where every node
+	// agrees or they hold nowhere. It runs per transaction and never at vertex
+	// level: producers include gossiped transactions without validating them, so
+	// rejecting a whole vertex over one malformed body would hand any client a
+	// lever to get honest vertices dropped.
+	//
+	// Nothing is charged. No honest node would have accepted this shape, so it
+	// buys neither block space nor a version bump, and the sender's coin is not
+	// touched. The gate sits after the proof verdict so the round's batch cursor
+	// stays aligned, and before every state touch below.
+	if err := validation.ValidateShape(tx); err != nil {
+		logger.Warn("tx shape rejected", "func", funcName, "error", err)
+		d.emitTransaction(tx, false, FailOps)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, "malformed_shape")
+		return FeeSplit{}
+	}
+
 	// Sponsored-transaction expiry: a sponsor bounds its exposure to a stale signed
 	// artifact with valid_until (in epochs). This runs before fee deduction so an
 	// expired sponsorship never charges the sponsor's coin. A non-sponsored tx is
@@ -703,7 +725,7 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 	// to the cascade control model (controls/wouldCycle over parent metadata),
 	// not to the direct owner field validateMutableRefOwnership reads.
 	if tx.OperationsLength() > 0 {
-		return d.commitDeclaredOps(tx, txHash, vertexHash, commitRound, feeSplit)
+		return d.commitDeclaredOps(tx, txHash, vertexHash, commitRound, feeSplit, storageDeposit)
 	}
 
 	// Ownership check: sender must own all mutable_ref objects

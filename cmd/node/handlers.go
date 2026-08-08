@@ -9,6 +9,7 @@ import (
 
 	"BluePods/internal/aggregation"
 	"BluePods/internal/consensus"
+	"BluePods/internal/events"
 	"BluePods/internal/logger"
 	"BluePods/internal/network"
 	"BluePods/internal/sync"
@@ -43,8 +44,19 @@ func (n *Node) handleGossipMessage(peer *network.Peer, data []byte) {
 // The original tagged bytes are re-gossiped so the transaction reaches producers
 // that this peer does not connect to directly. The network layer's dedup filter
 // stops the forward from looping.
+//
+// A gossiped body passed through no ingress of this node's, so it runs the same
+// shape gate a submission does: queuing a shape this node would refuse from a
+// client makes it the carrier that includes it in a vertex and hands it to the
+// rest of the mesh. A refused body is neither queued nor forwarded.
 func (n *Node) ingestGossipedTx(body, tagged []byte) {
 	if n.dag == nil {
+		return
+	}
+
+	if _, err := innerTx(body); err != nil {
+		logger.Warn("gossiped tx refused", "error", err)
+		events.IngressTxRejected("malformed_shape", err.Error())
 		return
 	}
 

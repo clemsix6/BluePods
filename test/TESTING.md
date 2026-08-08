@@ -327,7 +327,14 @@ must be called out in the commit that does it.
 success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
 `duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
-`delete_has_children`.
+`delete_has_children`, `malformed_shape`.
+
+`malformed_shape` is the verdict on a transaction whose shape no node may
+carry: declared operations alongside a pod call or alongside
+`created_objects_replication`, or an operation list past its bound. Client
+ingress refuses the same shape through the same gate, so a transaction reaching
+commit with it was never offered to an honest node: it is rejected before fee
+deduction and its sender is charged nothing.
 
 `node.resumed` marks a start that booted from the committed state already in
 its data directory instead of taking state from a peer: no snapshot was

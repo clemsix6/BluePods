@@ -141,26 +141,46 @@ func (n *Node) ingestRawTx(body []byte) (atx []byte, hash []byte, err error) {
 
 // ingestATX validates the structure of a full ATX and returns it unchanged. The
 // quorum proofs are reverified by the epoch-aware verifier at commit time, so
-// ingress only checks that the nested transaction is structurally sound.
+// ingress only checks that the nested transaction is structurally sound and
+// that its shape is one a node may carry: the wrapper is otherwise a way to
+// submit the very shape the raw path refuses, and an accepted submission is
+// included in this node's own vertex and gossiped onward.
 func ingestATX(body []byte) (atx []byte, hash []byte, err error) {
+	tx, err := innerTx(body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return body, copyHash(tx.HashBytes()), nil
+}
+
+// innerTx returns an ATX body's nested transaction once it is structurally
+// sound and its shape passes the network-wide gate. It recovers from the panic
+// FlatBuffers raises on malformed bytes, so every path handing it untrusted
+// bytes — a client submission, a gossiped body — is covered.
+func innerTx(body []byte) (tx *types.Transaction, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("malformed attested transaction")
+			tx, err = nil, fmt.Errorf("malformed attested transaction")
 		}
 	}()
 
 	parsed := types.GetRootAsAttestedTransaction(body, 0)
 
-	tx := parsed.Transaction(nil)
+	tx = parsed.Transaction(nil)
 	if tx == nil {
-		return nil, nil, fmt.Errorf("attested transaction missing transaction")
+		return nil, fmt.Errorf("attested transaction missing transaction")
 	}
 
 	if len(tx.HashBytes()) != 32 {
-		return nil, nil, fmt.Errorf("attested transaction has invalid hash")
+		return nil, fmt.Errorf("attested transaction has invalid hash")
 	}
 
-	return body, copyHash(tx.HashBytes()), nil
+	if err := validation.ValidateShape(tx); err != nil {
+		return nil, fmt.Errorf("attested transaction shape rejected:\n%w", err)
+	}
+
+	return tx, nil
 }
 
 // referencesOnlySingletons reports an error if the transaction references any

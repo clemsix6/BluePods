@@ -284,37 +284,89 @@ func TestValidateTx_OpsWithNonZeroPodRejected(t *testing.T) {
 // state. The exclusivity is the same rule that forbids operations alongside a
 // pod call, extended to the field that prices creation.
 func TestValidateTx_OpsWithReplicationEntriesRejected(t *testing.T) {
+	txData := buildShapeTx(t, "", []genesis.DeclaredOp{shapeTestOp()}, []uint16{0})
+
+	if err := ValidateTx(txData); err == nil {
+		t.Fatal("expected error for transaction carrying both operations and replication entries")
+	}
+}
+
+// TestValidateShape_BindsBeyondThisIngress exercises the gate directly, as the
+// commit path runs it: internal/consensus re-checks these exact rules on every
+// transaction a vertex carries, because a rule enforced only where a polite
+// client enters binds nobody else — a byzantine producer includes what it
+// likes, and a forged submission arrives wrapped in an ATX. The negative case
+// is the one that must never be swept up with them: a pod call IS the
+// transaction that creates the objects its replication entries describe.
+func TestValidateShape_BindsBeyondThisIngress(t *testing.T) {
+	op := shapeTestOp()
+
+	cases := []struct {
+		name    string
+		data    []byte
+		wantErr bool
+	}{
+		{"ops_with_a_pod_call", buildShapeTx(t, "run", []genesis.DeclaredOp{op}, nil), true},
+		{"ops_with_replication_entries", buildShapeTx(t, "", []genesis.DeclaredOp{op}, []uint16{0}), true},
+		{"ops_past_the_bound", buildOpsTxWithNOperations(t, maxObjectRefs+1), true},
+		{"ops_at_the_bound", buildOpsTxWithNOperations(t, maxObjectRefs), false},
+		{"pod_call_with_replication_entries", buildShapeTx(t, "create", nil, []uint16{0, 0}), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateShape(types.GetRootAsTransaction(tc.data, 0))
+
+			if tc.wantErr && err == nil {
+				t.Fatal("the shape must be rejected")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("the shape must be accepted, got: %v", err)
+			}
+		})
+	}
+}
+
+// shapeTestOp returns a well-formed reparent operation, the filler a shape test
+// uses when what it exercises is the presence of operations, not their content.
+func shapeTestOp() genesis.DeclaredOp {
+	var newParent [32]byte
+	newParent[0] = 0x33
+
+	return genesis.DeclaredOp{
+		Kind:       0,
+		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
+		TargetKind: 0,
+		Target:     newParent[:],
+	}
+}
+
+// buildShapeTx builds a signed transaction combining the three fields the shape
+// gate reads: the function name, the declared operations, and the
+// created_objects_replication entries.
+func buildShapeTx(t *testing.T, funcName string, ops []genesis.DeclaredOp, reps []uint16) []byte {
+	t.Helper()
+
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	var zeroPod, newParent [32]byte
-	newParent[0] = 0x33
-
-	ops := []genesis.DeclaredOp{{
-		Kind:       0,
-		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
-		TargetKind: 0,
-		Target:     newParent[:],
-	}}
-	reps := []uint16{0}
+	var zeroPod [32]byte
 
 	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
-		pub, zeroPod, "", nil, reps, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+		pub, zeroPod, funcName, nil, reps, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
 	)
 	hash := blake3.Sum256(unsignedBytes)
 	sig := ed25519.Sign(priv, hash[:])
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableSponsored(
-		builder, pub, zeroPod, "", nil, reps, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+		builder, pub, zeroPod, funcName, nil, reps, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
 	)
 	builder.Finish(txOffset)
 
-	if err := ValidateTx(builder.FinishedBytes()); err == nil {
-		t.Fatal("expected error for transaction carrying both operations and replication entries")
-	}
+	return builder.FinishedBytes()
 }
 
 // TestValidateTx_TooManyOperations confirms the declared-operation list is

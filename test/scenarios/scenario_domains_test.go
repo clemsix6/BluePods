@@ -37,12 +37,12 @@ const (
 
 // TestScenarioDomains drives a 5-node cluster through the domain-name
 // lifecycle: registration and resolution from a different node, first-come-
-// first-served rejection of a duplicate registration, renewal moving a
-// lease's expiry forward, transfer handing renewal rights to a new owner
-// (proven functionally: the old owner loses renewal rights, the new owner
-// gains them), and the epoch boundary's expiry sweep removing a lease past
-// its grace window — asserted on every node, with the name no longer
-// resolving anywhere afterward.
+// first-served rejection of a duplicate registration, refusal of a name
+// outside the protocol's alphabet, renewal moving a lease's expiry forward,
+// transfer handing renewal rights to a new owner (proven functionally: the
+// old owner loses renewal rights, the new owner gains them), and the epoch
+// boundary's expiry sweep removing a lease past its grace window — asserted
+// on every node, with the name no longer resolving anywhere afterward.
 //
 // The name this scenario lets expire is registered FIRST, before any other
 // subtest, so its ~10-epoch clock (1 registered term + 8 grace epochs + 1
@@ -67,6 +67,10 @@ func TestScenarioDomains(t *testing.T) {
 
 	t.Run("register_resolve_duplicate", func(t *testing.T) {
 		testRegisterResolveDuplicate(t, c, cli, w, gasCoin, target)
+	})
+
+	t.Run("non_conforming_name_refused", func(t *testing.T) {
+		testNonConformingNameRefused(t, c, cli, w, gasCoin, target)
 	})
 
 	t.Run("resolve_proved_from_a_different_node", func(t *testing.T) {
@@ -148,6 +152,30 @@ func testRegisterResolveDuplicate(t *testing.T, c *harness.Cluster, cli *client.
 	hash, err := rival.DomainRegister(cli, name, rivalTarget, domainsLongTerm, rivalGas)
 	requireNoErr(t, err)
 	requireVerdictAll(stepCtx(t), t, c, hash, false, "declared_ops")
+}
+
+// testNonConformingNameRefused submits a registration for a name outside the
+// protocol's alphabet (an uppercase label) and asserts the refusal is
+// observable in the cluster, not merely in a client-side check: every node
+// records the same rejected verdict, and the name resolves nowhere afterward.
+// A name one node minted a leaf for while another refused it would be a fork
+// of the registry every index root is anchored against.
+func testNonConformingNameRefused(t *testing.T, c *harness.Cluster, cli *client.Client, w *client.Wallet, gasCoin, target [32]byte) {
+	t.Helper()
+
+	const name = "Bank"
+
+	hash, err := w.DomainRegister(cli, name, target, domainsLongTerm, gasCoin)
+	requireNoErr(t, err)
+	requireVerdictAll(stepCtx(t), t, c, hash, false, "declared_ops")
+
+	for _, n := range c.Alive() {
+		_, found, err := client.NewQUICTransport(n.QUICAddr).DomainResolve(name)
+		requireNoErr(t, err)
+		if found {
+			t.Fatalf("node %d: %q resolves after a refused registration", n.Index, name)
+		}
+	}
 }
 
 // testResolveProvedFromADifferentNode registers "demo.config", then resolves
