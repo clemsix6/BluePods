@@ -26,6 +26,14 @@ const (
 	// maxObjectRefs is the maximum total number of object references per transaction.
 	// Spec: 8 standard objects + 32 singletons = 40 max refs.
 	maxObjectRefs = 40
+
+	// maxDeclaredOps is the maximum number of declared operations per
+	// transaction. It is deliberately the SAME bound as maxObjectRefs: each
+	// operation is priced, but every one of them also rewrites tracker and
+	// index leaves on every node, so the bound keeps that work proportionate to
+	// the reference-capped baseline the rest of the fee schedule is sized
+	// against. Moving one cap without the other breaks that proportion.
+	maxDeclaredOps = maxObjectRefs
 )
 
 // ValidateTx validates a raw Transaction's structure before it enters consensus.
@@ -49,6 +57,10 @@ func ValidateTx(data []byte) (retErr error) {
 	}
 
 	if err := validateObjectRefs(tx); err != nil {
+		return err
+	}
+
+	if err := validateOperations(tx); err != nil {
 		return err
 	}
 
@@ -143,6 +155,16 @@ func txHasPodCall(tx *types.Transaction) bool {
 	}
 
 	return false
+}
+
+// validateOperations checks that the declared-operation list stays within its
+// bound.
+func validateOperations(tx *types.Transaction) error {
+	if count := tx.OperationsLength(); count > maxDeclaredOps {
+		return fmt.Errorf("too many declared operations: %d (max %d)", count, maxDeclaredOps)
+	}
+
+	return nil
 }
 
 // validateObjectRefs checks that object references are well-formed and within limits.

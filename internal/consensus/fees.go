@@ -19,6 +19,9 @@ type FeeParams struct {
 	GraceEpochs        uint64 // GraceEpochs is how many epochs past expiry a lease stays in the registry, reserving its owner's renewal right until the boundary sweep removes it
 	ReparentFee        uint64 // ReparentFee is the flat fee a declared reparent pays for the tracker edge every node rewrites
 	DeleteFee          uint64 // DeleteFee is the flat fee a declared delete pays for the tracker and index entries every node removes
+	DomainUpdateFee    uint64 // DomainUpdateFee is the flat fee a domain repoint pays for the name leaf every node rewrites; the lease it runs under bought epochs, not writes
+	DomainTransferFee  uint64 // DomainTransferFee is the flat fee a domain handover pays for the name leaf every node rewrites
+	DomainDeleteFee    uint64 // DomainDeleteFee is the flat fee a domain removal pays for the name leaf every node drops
 	IndexEntryFee      uint64 // IndexEntryFee is the flat term an object's hierarchy-index entry adds to its creation deposit
 	BurnBPS            uint64 // BurnBPS is the scarcity burn share in basis points (0 = no burn; against the stability goal)
 	StorageRefundBPS   uint64 // StorageRefundBPS is the refund ratio on deletion in basis points (9500 = 95%)
@@ -56,6 +59,9 @@ func DefaultFeeParams() FeeParams {
 		GraceEpochs:        defaultGraceEpochs,
 		ReparentFee:        100,
 		DeleteFee:          100,
+		DomainUpdateFee:    100,
+		DomainTransferFee:  100,
+		DomainDeleteFee:    100,
 		IndexEntryFee:      25,
 		BurnBPS:            0,
 		StorageRefundBPS:   9500,
@@ -233,13 +239,16 @@ func declaredOpsFee(ops []genesis.DeclaredOp, params FeeParams) uint64 {
 	return total
 }
 
-// declaredOpFee prices one declared operation: a flat fee for the two that grow
-// global state by a fixed amount, rate x the DECLARED term for the two that buy
-// a lease. The rent is read from the header's term, never from the expiry the
-// operation would produce, which is why a term past the cap reverts instead of
-// being clamped. The remaining domain kinds rewrite or shrink a leaf that
-// already exists and pay the transaction's min_gas floor only, as does an
-// unknown kind, which commit rejects outright.
+// declaredOpFee prices one declared operation: rate x the DECLARED term for the
+// two that buy a lease, a flat fee for every other kind. The rent is read from
+// the header's term, never from the expiry the operation would produce, which
+// is why a term past the cap reverts instead of being clamped.
+//
+// No kind is free. A lease pays for the epochs it holds a name, not for the
+// writes performed during it, so repointing, handing over or dropping a name
+// each rewrites a leaf every node re-hashes into the anchored root and carries
+// its own flat fee. Only an unknown kind prices at zero, and commit rejects it
+// outright.
 func declaredOpFee(op genesis.DeclaredOp, params FeeParams) uint64 {
 	switch op.Kind {
 	case reparentOp:
@@ -250,6 +259,15 @@ func declaredOpFee(op genesis.DeclaredOp, params FeeParams) uint64 {
 
 	case domainRegisterOp, domainRenewOp:
 		return safeMul(params.RentalRatePerEpoch, uint64(op.TermEpochs))
+
+	case domainUpdateOp:
+		return params.DomainUpdateFee
+
+	case domainTransferOp:
+		return params.DomainTransferFee
+
+	case domainDeleteOp:
+		return params.DomainDeleteFee
 
 	default:
 		return 0

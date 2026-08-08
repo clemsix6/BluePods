@@ -41,9 +41,9 @@ func TestDeclaredOpFees_AgreeAcrossSites(t *testing.T) {
 		{"delete", genesis.DeclaredOp{Kind: deleteOp, ObjectID: obj[:]}, env.params.DeleteFee},
 		{"domain_register", registerOp("alpha", obj, 10), env.params.RentalRatePerEpoch * 10},
 		{"domain_renew", renewOp("alpha", 3), env.params.RentalRatePerEpoch * 3},
-		{"domain_update", updateOp("alpha", obj), 0},
-		{"domain_transfer", transferOp("alpha", target), 0},
-		{"domain_delete", deleteDomainOp("alpha"), 0},
+		{"domain_update", updateOp("alpha", obj), env.params.DomainUpdateFee},
+		{"domain_transfer", transferOp("alpha", target), env.params.DomainTransferFee},
+		{"domain_delete", deleteDomainOp("alpha"), env.params.DomainDeleteFee},
 	}
 
 	for _, tc := range cases {
@@ -81,13 +81,44 @@ func TestDeclaredOpFees_AgreeAcrossSites(t *testing.T) {
 			}
 
 			if tc.opFee == 0 {
-				return
+				t.Fatal("no operation kind is free: every leaf write is priced")
 			}
 
 			if err := env.validate(t, SplitFee(base, env.params), atxBytes); err == nil {
 				t.Error("a summary omitting the op fee must be rejected")
 			}
 		})
+	}
+}
+
+// TestEveryDeclaredOpIsPriced asserts no operation kind rewrites protocol state
+// for free. Register and renew buy their leaf with rent; every other kind
+// rewrites or removes a leaf every node re-hashes into the anchored root, so
+// each carries a flat fee. A kind priced at zero lets one min_gas transaction
+// drive unbounded SMT work across the network.
+func TestEveryDeclaredOpIsPriced(t *testing.T) {
+	params := DefaultFeeParams()
+
+	obj := Hash{0x11}
+	target := Hash{0x22}
+
+	cases := []struct {
+		name string
+		op   genesis.DeclaredOp
+	}{
+		{"reparent", genesis.DeclaredOp{Kind: reparentOp, ObjectID: obj[:], Target: target[:]}},
+		{"delete", genesis.DeclaredOp{Kind: deleteOp, ObjectID: obj[:]}},
+		{"domain_register", registerOp("alpha", obj, 1)},
+		{"domain_renew", renewOp("alpha", 1)},
+		{"domain_update", updateOp("alpha", obj)},
+		{"domain_transfer", transferOp("alpha", target)},
+		{"domain_delete", deleteDomainOp("alpha")},
+	}
+
+	for _, tc := range cases {
+		if fee := declaredOpFee(tc.op, params); fee == 0 {
+			t.Errorf("%s is free: every leaf write is priced", tc.name)
+		}
 	}
 }
 

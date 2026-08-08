@@ -317,6 +317,24 @@ func TestValidateTx_OpsWithReplicationEntriesRejected(t *testing.T) {
 	}
 }
 
+// TestValidateTx_TooManyOperations confirms the declared-operation list is
+// bounded by the same cap as the reference list: each operation rewrites SMT
+// leaves on every node, so an unbounded list lets one transaction impose work
+// far past the reference-capped baseline the fee schedule is calibrated
+// against. A list at the cap is accepted; one operation past it is rejected.
+func TestValidateTx_TooManyOperations(t *testing.T) {
+	// Expressed against the reference cap on purpose: the rule is that the two
+	// bounds are the same number, so a change to one that leaves the other
+	// behind fails here.
+	if err := ValidateTx(buildOpsTxWithNOperations(t, maxObjectRefs)); err != nil {
+		t.Fatalf("a list at the cap must be accepted, got error: %v", err)
+	}
+
+	if err := ValidateTx(buildOpsTxWithNOperations(t, maxObjectRefs+1)); err == nil {
+		t.Fatal("expected error for a declared-operation list past the cap")
+	}
+}
+
 func TestValidateTx_MaxObjectRefs(t *testing.T) {
 	txData := buildTestRawTx(t, func(o *txOptions) {
 		o.mutableRefs = makeUniqueRefsFrom(8, 1)
@@ -679,6 +697,42 @@ func buildTxWithDomainRefs(t *testing.T, mutableDomains, readDomains []string) [
 
 	builder := flatbuffers.NewBuilder(1024)
 	txOffset := genesis.BuildTxTableWithRefs(builder, pub, pod, "test", nil, nil, 0, nil, hash, sig, mutableRefs, readRefs)
+	builder.Finish(txOffset)
+
+	return builder.FinishedBytes()
+}
+
+// buildOpsTxWithNOperations creates a signed declared-operations Transaction
+// carrying n reparent operations, each on its own object.
+func buildOpsTxWithNOperations(t *testing.T, n int) []byte {
+	t.Helper()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var zeroPod, newParent [32]byte
+	newParent[0] = 0x33
+
+	ops := make([]genesis.DeclaredOp, n)
+	for i := range ops {
+		objectID := make([]byte, 32)
+		binary.LittleEndian.PutUint32(objectID, uint32(i+1))
+
+		ops[i] = genesis.DeclaredOp{Kind: 0, ObjectID: objectID, TargetKind: 0, Target: newParent[:]}
+	}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
+		pub, zeroPod, "", nil, nil, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableSponsored(
+		builder, pub, zeroPod, "", nil, nil, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+	)
 	builder.Finish(txOffset)
 
 	return builder.FinishedBytes()
