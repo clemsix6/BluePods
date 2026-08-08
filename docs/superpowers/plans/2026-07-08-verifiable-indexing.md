@@ -552,3 +552,24 @@ table DeclaredOp {
 - **Re-integration deltas (2026-07-18), after the test-environment and bug-fix-campaign merges:** batch 0 removed (landed; see the record above — the relaxed-skip determinism follow-up formerly tracked here was fixed by the campaign's view-independence rule). Client tags renumbered from 0x1D (0x15-0x1C taken). Deletion accounting discovered already network-uniform (`tx.deleted_objects` + `settleDeclaredDeletions`): Task 1.5 reuses it instead of rebuilding it, and the DeclaredOp/`deleted_objects` split is stated (protocol delete vs pod carve-out). Snapshot AND fingerprint coverage move into the batches that change state (1.3, 4.3) because the harness's teardown convergence check would otherwise redden every join scenario mid-chantier. All validation converted from the retired `TestSim*` suite to named scenarios with per-run bounds; two scenarios added to the corpus (`TestScenarioHierarchy`, `TestScenarioDomains`); every new mutation emits a cataloged event (`state.object.reparented`, `consensus.anchor.fault`, `state.domain.renewed`, `state.domain.transferred`, first callers for `state.domain.deleted`), mirrored in `test/TESTING.md`.
 - **Historical record:** the first implementation attempt (reverted 2026-07-13) and its lessons (C1-C3, I1-I8) shaped the landed batch 0 and are preserved in `main`'s git history and the batch-0 PR; they are no longer restated here.
 - **Known deferred items (out of scope, from the spec):** committed-tx-hash pruning, `SyncBufferSec` scaling rules, slashing consumption of the batch-3 fault evidence.
+
+---
+
+# Decision wave — supervisor rulings (after the final review)
+
+The final review's pending decisions were ruled: the supervisor settled the deposit-drop (reject the shape) and the domain-op pricing (add fees) explicitly and delegated the rest. Spec amendments: 7fe99bf (rulings), plus the shape-gate site correction after wave A's review. This wave runs outside the batch numbering; the PR stays ready throughout.
+
+**Wave A — consensus (landed 69addf3 + f74d866 + 4853098, reviewed):**
+
+- Shape rule: ops+`created_objects_replication` rejected; as-built `validateShape` clause beside the ops+pod-call rejection.
+- Pricing: `FeeParams` gains `DomainUpdateFee`/`DomainTransferFee`/`DomainDeleteFee` (defaults match `ReparentFee`/`DeleteFee`); `declaredOpFee` serves kinds 4-6; the four-site matrix fatals on a zero-priced kind.
+- Bound: `maxDeclaredOps = maxObjectRefs` (defined as the ref cap, tests tied to the constant).
+- Alphabet: `validDomainLabel`, byte-wise `[a-z0-9-]`, dot-separated; single gate in `validateDomainRegister`; kinds 3-6 cannot mint a new-name leaf.
+
+**Wave A' — the review's prescription (the shape rules must bind network-wide):**
+
+- `internal/validation` runs only at client ingress and `ValidateTx` is a discriminator there, not a gate: the ATX submission path and the gossip path deliver unvalidated bodies, and no shape rule is re-checked on the commit path. Measured consequence: the hybrid shape debits a deposit the ops exit then drops (2050 of 2250 units left supply in the review's reproduction).
+- Fix: export the shared gate (`validation.ValidateShape`), call it per-transaction in `executeTx` before `deductFees` (vertex-level rejection would be a censorship lever), verdict `FailOps` with a new `tx.committed` reason `malformed_shape` (TESTING.md reason table updated); pool any deposit withheld from a rejected ops list (mirror of the failed-execution exit) as the fail-safe; run the gate on `ingestATX`'s inner transaction and refuse malformed gossiped bodies; extend the documented `ops.go` mirror with the replication clause.
+- Scenario obligation discharged proportionately: Domains gains a refused non-conforming registration leg; exact fee values stay out of scenarios (placeholders; the teardown supply invariant and the four-site matrix carry conservation).
+
+**Delegated rulings, remaining waves:** B — unlocked-epoch atomic mirror; stale-root re-read wraps `ErrUnanchored` (same retry contract, no new API); nil-`feeParams` unified on the fail-loud accessor. C — bpctl trust checkpoint, persisted with the wallet, proved reads when present. D — `vertex_generated.rs` removed (same byte-identical proof), `Cargo.lock` regenerated, whitepaper restyled to sentence-case headings. Deferred as design work, not cleanup: pod calls on nested objects (spec §3 gap, documented as-built), SDK `parent_kind`, podvm debug-wasm test lookup.
