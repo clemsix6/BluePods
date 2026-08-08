@@ -262,9 +262,11 @@ func domainExpiry(current, epoch uint64, term uint32, maxTerm uint64) (uint64, b
 	return expiry, true
 }
 
-// validDomainName reports whether a name may be registered: non-empty, within
-// the length bound, made of non-empty dot-separated labels, and outside the
-// reserved system namespace.
+// validDomainName reports whether a name may be registered: within the length
+// bound, made of dot-separated labels drawn from the registrable alphabet, and
+// outside the reserved system namespace. It is the single structural gate on a
+// name entering the registry; the other kinds operate on names already
+// registered, so they inherit it.
 func validDomainName(name string) bool {
 	if len(name) == 0 || len(name) > maxDomainNameLen {
 		return false
@@ -275,7 +277,39 @@ func validDomainName(name string) bool {
 	}
 
 	for _, label := range strings.Split(name, ".") {
-		if label == "" {
+		if !validDomainLabel(label) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// validDomainLabel reports whether one dot-separated label is registrable: a
+// non-empty run of lowercase ASCII letters, digits and hyphens.
+//
+// Anything else is REJECTED rather than folded onto a conforming spelling.
+// Names match byte-exact and are claimed first come, first served, so an
+// unrestricted alphabet leaves a confusable surface (case pairs, lookalike
+// scripts) around every registered name. The alternative, normalizing before
+// matching, puts a folding function inside consensus: it would have to produce
+// the identical answer on every node forever, across whatever Unicode table it
+// was built from. A rejection rule cannot drift that way. Scanning bytes rather
+// than runes is what makes it exact — every byte of a multi-byte encoding falls
+// outside the allowed set.
+func validDomainLabel(label string) bool {
+	if label == "" {
+		return false
+	}
+
+	for i := 0; i < len(label); i++ {
+		c := label[i]
+
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-':
+		default:
 			return false
 		}
 	}

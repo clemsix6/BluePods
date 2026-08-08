@@ -102,6 +102,44 @@ func TestDomainRegister_ReservedAndMalformedNames(t *testing.T) {
 	}
 }
 
+// TestDomainRegister_NameAlphabet pins the registrable alphabet: dot-separated
+// labels, each a non-empty run of lowercase ASCII letters, digits and hyphens.
+// A name outside it is REJECTED, never folded onto a conforming spelling —
+// matching stays byte-exact, and a rejection rule cannot drift between nodes
+// the way a normalization rule can. Restricting the alphabet is what closes the
+// confusable surface byte-exact matching leaves open: no case pairs, no
+// lookalike scripts.
+func TestDomainRegister_NameAlphabet(t *testing.T) {
+	env := newDomainEnv(t)
+	defer env.dag.Close()
+
+	obj := env.object(domainAlice, Hash{0x11})
+
+	for _, name := range []string{"Bank", "systém", ".x", "x_y", "café", "a b"} {
+		if env.apply(domainAlice, 0, registerOp(name, obj, 5)) {
+			t.Errorf("registering %q must be rejected: outside the name alphabet", name)
+		}
+	}
+
+	for _, name := range []string{"bank", "a-b9", "config"} {
+		if !env.apply(domainAlice, 0, registerOp(name, obj, 5)) {
+			t.Errorf("registering %q must be accepted", name)
+		}
+	}
+
+	// A dotted name of conforming labels registers under the namespace the loop
+	// above took.
+	if !env.apply(domainAlice, 0, registerOp("demo.config", obj, 5)) {
+		t.Error(`registering "demo.config" must be accepted`)
+	}
+
+	// Rejection, not folding: the rejected spellings left no leaf behind, under
+	// their own bytes or anyone else's.
+	if len(env.domains.leaves) != 4 {
+		t.Errorf("registry holds %d leaves, want 4 (only the conforming names): %v", len(env.domains.leaves), env.domains.leaves)
+	}
+}
+
 // TestDomainRegister_RequiresControlOfPointedObject rejects naming an object
 // the sender does not control, which would otherwise alias a victim's object
 // into the domain-reference ownership exemption.
