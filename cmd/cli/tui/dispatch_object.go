@@ -11,7 +11,7 @@ import (
 )
 
 // dispatchObject routes object sub-commands.
-func dispatchObject(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
+func dispatchObject(c *client.Client, w *client.Wallet, lc *client.LightClient, cmd command) (string, [32]byte, error) {
 	if len(cmd.args) == 0 {
 		return "", [32]byte{}, fmt.Errorf("usage: object <create|set|transfer|reparent|delete|parent|show|holders>")
 	}
@@ -31,7 +31,7 @@ func dispatchObject(c *client.Client, w *client.Wallet, cmd command) (string, [3
 	case "delete":
 		return dispatchObjectDelete(c, w, rest)
 	case "parent":
-		return dispatchObjectParent(c, rest)
+		return dispatchObjectParent(c, lc, rest)
 	case "show":
 		return dispatchObjectShow(c, rest)
 	case "holders":
@@ -72,18 +72,28 @@ func dispatchObjectCreate(c *client.Client, w *client.Wallet, cmd command) (stri
 // dispatchObjects handles: objects. It reconciles the wallet's tracked object
 // set against the index first — spec §10's recovery rule, ListChildren
 // (pubkey) plus recursion into object-parented subtrees, MERGED into what is
-// already tracked rather than replacing it — reading the node's unproven
-// word (the console holds no trusted checkpoint; see pkg/client/
-// indexreads.go). A recovery failure (including the transport's single-frame
-// ceiling for a large wallet — spec §10, 6.1's as-built) does not hide the
-// verb's whole output: it falls back to whatever the wallet already tracks
-// locally, with a warning line, since a stale-but-present list is more useful
-// than none. It then lists each object with its full hex ID and current
-// version/owner, so the full ID can be copied for object show/set/transfer.
-func dispatchObjects(c *client.Client, w *client.Wallet) (string, [32]byte, error) {
+// already tracked rather than replacing it. With a session LightClient (the
+// wallet holds a trust checkpoint) this recovery goes through the
+// verification library and is proved; otherwise it reads the node's unproven
+// word (see pkg/client/indexreads.go). A recovery failure (a genuine
+// verification failure included, never silently retried against the
+// unproven path — including the transport's single-frame ceiling for a
+// large wallet, spec §10, 6.1's as-built) does not hide the verb's whole
+// output: it falls back to whatever the wallet already tracks locally, with
+// a warning line, since a stale-but-present list is more useful than none.
+// It then lists each object with its full hex ID and current version/owner,
+// so the full ID can be copied for object show/set/transfer.
+func dispatchObjects(c *client.Client, w *client.Wallet, lc *client.LightClient) (string, [32]byte, error) {
+	var recoverErr error
+	if lc != nil {
+		_, recoverErr = w.RecoverObjects(lc)
+	} else {
+		_, recoverErr = w.RecoverObjects(c)
+	}
+
 	var warning string
-	if _, err := w.RecoverObjects(c); err != nil {
-		warning = fmt.Sprintf("warning: recover objects from index failed, showing the locally tracked set:\n  %v\n", err)
+	if recoverErr != nil {
+		warning = fmt.Sprintf("warning: recover objects from index failed, showing the locally tracked set:\n  %v\n", recoverErr)
 	}
 
 	ids := w.ObjectIDs()
@@ -93,7 +103,7 @@ func dispatchObjects(c *client.Client, w *client.Wallet) (string, [32]byte, erro
 
 	var b strings.Builder
 	b.WriteString(warning)
-	fmt.Fprintf(&b, "objects (%d):", len(ids))
+	fmt.Fprintf(&b, "objects %s (%d):", readLabel(lc != nil), len(ids))
 
 	for _, id := range ids {
 		obj, err := c.GetObject(id)
@@ -218,21 +228,25 @@ func dispatchObjectDelete(c *client.Client, w *client.Wallet, cmd command) (stri
 	return fmt.Sprintf("object %s deleted", hex.EncodeToString(objectID[:4])), txHash, nil
 }
 
-// dispatchObjectParent handles: object parent <id>. It reads the node's
-// unproven word (the console holds no trusted checkpoint).
-func dispatchObjectParent(c *client.Client, cmd command) (string, [32]byte, error) {
+// dispatchObjectParent handles: object parent <id>. With a session
+// LightClient (the wallet holds a trust checkpoint) it reads through the
+// verification library and the edge is proved; otherwise it reads the
+// node's unproven word.
+func dispatchObjectParent(c *client.Client, lc *client.LightClient, cmd command) (string, [32]byte, error) {
 	objectID, err := parseHexID(arg(cmd, 0))
 	if err != nil {
 		return "", [32]byte{}, fmt.Errorf("usage: object parent <id-hex>")
 	}
 
-	kind, parent, hasParent, err := c.Parent(objectID)
+	kind, parent, hasParent, err := objectParent(c, lc, objectID)
 	if err != nil {
 		return "", [32]byte{}, err
 	}
 
+	proved := lc != nil
+
 	if !hasParent {
-		return fmt.Sprintf("object %s has no parent edge", hex.EncodeToString(objectID[:4])), [32]byte{}, nil
+		return fmt.Sprintf("object %s has no parent edge %s", hex.EncodeToString(objectID[:4]), readLabel(proved)), [32]byte{}, nil
 	}
 
 	kindName := "key"
@@ -240,8 +254,25 @@ func dispatchObjectParent(c *client.Client, cmd command) (string, [32]byte, erro
 		kindName = "object"
 	}
 
-	return fmt.Sprintf("object %s parent (%s): %s",
-		hex.EncodeToString(objectID[:4]), kindName, hex.EncodeToString(parent[:4])), [32]byte{}, nil
+	return fmt.Sprintf("object %s parent (%s): %s %s",
+		hex.EncodeToString(objectID[:4]), kindName, hex.EncodeToString(parent[:4]), readLabel(proved)), [32]byte{}, nil
+}
+
+// objectParent reads objectID's immediate parent edge through lc when it is
+// non-nil (the wallet holds a trust checkpoint), or through the plain client
+// otherwise. LightClient exposes only the full ancestry walk (Ancestors), so
+// the immediate edge this command reports is that walk's first hop.
+func objectParent(c *client.Client, lc *client.LightClient, objectID [32]byte) (kind byte, parent [32]byte, hasParent bool, err error) {
+	if lc == nil {
+		return c.Parent(objectID)
+	}
+
+	chain, err := lc.Ancestors(objectID)
+	if err != nil || len(chain) == 0 {
+		return 0, [32]byte{}, false, err
+	}
+
+	return chain[0].ParentKind, chain[0].Parent, true, nil
 }
 
 // dispatchObjectShow handles: object show <id>

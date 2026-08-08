@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"BluePods/internal/index"
+	"BluePods/pkg/client"
 )
 
 // cmdObject dispatches the object subcommands.
@@ -266,9 +267,10 @@ func cmdObjectDelete(e *env, args []string) error {
 }
 
 // cmdObjectParent shows an object's immediate parent edge: an owner key
-// (KeyRoot) or another object (ObjectParent). It reads the node's unproven
-// word (pkg/client/indexreads.go's Client.Parent) — bpctl acquires no
-// trusted checkpoint to verify a proof against.
+// (KeyRoot) or another object (ObjectParent). With a trust checkpoint it
+// reads through the verification library and the edge is proved; otherwise
+// it reads the node's unproven word (pkg/client/indexreads.go's
+// Client.Parent). Either way the printed line says which.
 func cmdObjectParent(e *env, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: object parent <id-hex>")
@@ -284,13 +286,18 @@ func cmdObjectParent(e *env, args []string) error {
 		return err
 	}
 
-	kind, parent, hasParent, err := cli.Parent(id)
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	kind, parent, hasParent, proved, err := objectParent(e, cli, w, id)
 	if err != nil {
 		return fmt.Errorf("get parent:\n%w", err)
 	}
 
 	if !hasParent {
-		fmt.Printf("%s: no parent edge\n", hex.EncodeToString(id[:8]))
+		fmt.Printf("%s: no parent edge %s\n", hex.EncodeToString(id[:8]), readLabel(proved))
 		return nil
 	}
 
@@ -299,7 +306,34 @@ func cmdObjectParent(e *env, args []string) error {
 		kindName = "object"
 	}
 
-	fmt.Printf("%s parent (%s): %s\n", hex.EncodeToString(id[:8]), kindName, hex.EncodeToString(parent[:]))
+	fmt.Printf("%s parent (%s): %s %s\n", hex.EncodeToString(id[:8]), kindName, hex.EncodeToString(parent[:]), readLabel(proved))
 
 	return nil
+}
+
+// objectParent reads objectID's immediate parent edge through the light
+// client when w holds a trust checkpoint, re-persisting whatever epoch walk
+// that read performed before returning — a verification failure is returned
+// as-is, never silently retried against the unproven path. LightClient
+// exposes only the full ancestry walk (Ancestors), so the immediate edge
+// this command reports is that walk's first hop.
+func objectParent(e *env, cli *client.Client, w *client.Wallet, objectID [32]byte) (kind byte, parent [32]byte, hasParent, proved bool, err error) {
+	cp, ok := w.Checkpoint()
+	if !ok {
+		kind, parent, hasParent, err = cli.Parent(objectID)
+		return kind, parent, hasParent, false, err
+	}
+
+	lc := client.NewLightClient(cli, cp)
+	chain, err := lc.Ancestors(objectID)
+
+	if syncErr := syncCheckpoint(e, w, lc); syncErr != nil && err == nil {
+		err = syncErr
+	}
+
+	if err != nil || len(chain) == 0 {
+		return 0, [32]byte{}, false, true, err
+	}
+
+	return chain[0].ParentKind, chain[0].Parent, true, true, nil
 }

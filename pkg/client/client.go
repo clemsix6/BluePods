@@ -28,6 +28,12 @@ type Wallet struct {
 	pubKey  ed25519.PublicKey      // pubKey is the Ed25519 public key
 	coins   map[[32]byte]*CoinInfo // coins tracks owned coins by ID
 	objects map[[32]byte]bool      // objects tracks IDs of created objects
+
+	// checkpoint is the wallet's trust anchor for proved index reads (spec
+	// §10's "bpctl accepts a trust checkpoint, persisted alongside the
+	// wallet"). nil means the wallet holds none: its owner reads the index
+	// through the unproven path, same as before this field existed.
+	checkpoint *Checkpoint
 }
 
 // CoinInfo holds metadata about a coin.
@@ -115,6 +121,26 @@ func (w *Wallet) Pubkey() [32]byte {
 // GetCoin returns coin info by ID, or nil if not tracked.
 func (w *Wallet) GetCoin(id [32]byte) *CoinInfo {
 	return w.coins[id]
+}
+
+// Checkpoint returns the wallet's trust checkpoint and whether it holds one
+// at all. A wallet with none is the ordinary case (see SetCheckpoint) and its
+// caller reads the index unproven; ok is what a caller checks before
+// deciding to verify.
+func (w *Wallet) Checkpoint() (Checkpoint, bool) {
+	if w.checkpoint == nil {
+		return Checkpoint{}, false
+	}
+
+	return *w.checkpoint, true
+}
+
+// SetCheckpoint pins or replaces the wallet's trust checkpoint. A caller
+// re-pins it after every epoch walk a LightClient built from the previous
+// value performs (LightClient.Checkpoint), so the trust anchor a Save
+// persists is never older than the reads it already served.
+func (w *Wallet) SetCheckpoint(cp Checkpoint) {
+	w.checkpoint = &cp
 }
 
 // Faucet requests tokens from the node's faucet over QUIC.

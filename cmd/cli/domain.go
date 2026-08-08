@@ -272,9 +272,11 @@ func cmdDomainDelete(e *env, args []string) error {
 	return nil
 }
 
-// cmdDomainResolve handles: domain resolve <name>. It reads the node's
-// unproven word — bpctl acquires no trusted checkpoint, so there is nothing
-// to verify a proof against (see pkg/client/indexreads.go).
+// cmdDomainResolve handles: domain resolve <name>. When this invocation
+// holds a trust checkpoint (--checkpoint, or one persisted from an earlier
+// run) it resolves through the verification library and the answer is
+// proved; otherwise it reads the node's unproven word (see
+// pkg/client/indexreads.go). Either way the printed line says which.
 func cmdDomainResolve(e *env, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: domain resolve <name>")
@@ -285,17 +287,45 @@ func cmdDomainResolve(e *env, args []string) error {
 		return err
 	}
 
-	objectID, found, err := cli.DomainResolve(args[0])
+	w, err := wallet(e)
+	if err != nil {
+		return err
+	}
+
+	objectID, found, proved, err := resolveDomain(e, cli, w, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve domain:\n%w", err)
 	}
 
 	if !found {
-		fmt.Printf("%s: not registered\n", args[0])
+		fmt.Printf("%s: not registered %s\n", args[0], readLabel(proved))
 		return nil
 	}
 
-	fmt.Printf("%s -> %s\n", args[0], hex.EncodeToString(objectID[:]))
+	fmt.Printf("%s -> %s %s\n", args[0], hex.EncodeToString(objectID[:]), readLabel(proved))
 
 	return nil
+}
+
+// resolveDomain resolves name through the light client when w holds a trust
+// checkpoint, re-persisting whatever epoch walk that read performed before
+// returning — a verification failure (including client.ErrCheckpointBehind's
+// actionable "obtain a fresh checkpoint" message) is returned as-is, never
+// silently retried against the unproven path, which would defeat the reason
+// a checkpoint was pinned in the first place.
+func resolveDomain(e *env, cli *client.Client, w *client.Wallet, name string) (objectID [32]byte, found, proved bool, err error) {
+	cp, ok := w.Checkpoint()
+	if !ok {
+		objectID, found, err = cli.DomainResolve(name)
+		return objectID, found, false, err
+	}
+
+	lc := client.NewLightClient(cli, cp)
+	leaf, found, err := lc.ResolveDomain(name)
+
+	if syncErr := syncCheckpoint(e, w, lc); syncErr != nil && err == nil {
+		err = syncErr
+	}
+
+	return leaf.ObjectID, found, true, err
 }

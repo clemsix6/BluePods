@@ -33,14 +33,22 @@ type pollMsg struct{}
 
 // consoleModel is the thin Bubble Tea wrapper for the interactive console.
 type consoleModel struct {
-	client  *client.Client    // client is the SDK connection
-	wallet  *client.Wallet    // wallet holds the key and known coins
-	state   consoleState      // state is the rendered view
-	input   textinput.Model   // input is the footer command line
-	tracked map[[32]byte]bool // tracked is the set of in-flight tx hashes
+	client  *client.Client      // client is the SDK connection
+	wallet  *client.Wallet      // wallet holds the key and known coins
+	lc      *client.LightClient // lc reads the index verified, when the wallet holds a trust checkpoint; nil otherwise
+	state   consoleState        // state is the rendered view
+	input   textinput.Model     // input is the footer command line
+	tracked map[[32]byte]bool   // tracked is the set of in-flight tx hashes
 }
 
-// NewConsole creates a console model bound to a client and wallet.
+// NewConsole creates a console model bound to a client and wallet. When w
+// already carries a trust checkpoint — from --checkpoint or a previous
+// session's persisted pin, both resolved before RunConsole is called — every
+// command that reads the index runs through a LightClient built from it for
+// the whole session, rather than one built fresh per command: the walk it
+// performs opportunistically advances the SAME checkpoint read after read
+// (LightClient is documented not safe for concurrent use for exactly this
+// reason).
 func NewConsole(c *client.Client, w *client.Wallet, nodeAddr string) consoleModel {
 	in := textinput.New()
 	in.Placeholder = "type a command (help, quit)"
@@ -48,9 +56,15 @@ func NewConsole(c *client.Client, w *client.Wallet, nodeAddr string) consoleMode
 
 	pk := w.Pubkey()
 
+	var lc *client.LightClient
+	if cp, ok := w.Checkpoint(); ok {
+		lc = client.NewLightClient(c, cp)
+	}
+
 	return consoleModel{
 		client:  c,
 		wallet:  w,
+		lc:      lc,
 		state:   consoleState{NodeAddr: nodeAddr, Pubkey: hex.EncodeToString(pk[:])},
 		input:   in,
 		tracked: make(map[[32]byte]bool),
@@ -119,7 +133,17 @@ func (m consoleModel) submit() (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return tea.Quit() }
 	}
 
-	result, track, derr := dispatch(m.client, m.wallet, parsed)
+	result, track, derr := dispatch(m.client, m.wallet, m.lc, parsed)
+
+	// Re-pin the wallet's checkpoint to wherever the light client's epoch
+	// walk left it, proved read or not — RunConsole's own exit persists it
+	// (spec §10's "persisted alongside the wallet"), and the harmless no-op
+	// case (no read touched the index this command) just re-sets the same
+	// value.
+	if m.lc != nil {
+		m.wallet.SetCheckpoint(m.lc.Checkpoint())
+	}
+
 	if derr != nil {
 		m.appendActivity("error: " + derr.Error())
 		return m, nil

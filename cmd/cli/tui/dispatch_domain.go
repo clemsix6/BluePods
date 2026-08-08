@@ -10,7 +10,7 @@ import (
 
 // dispatchDomain routes domain sub-commands: register, renew, update,
 // transfer, delete, resolve.
-func dispatchDomain(c *client.Client, w *client.Wallet, cmd command) (string, [32]byte, error) {
+func dispatchDomain(c *client.Client, w *client.Wallet, lc *client.LightClient, cmd command) (string, [32]byte, error) {
 	if len(cmd.args) == 0 {
 		return "", [32]byte{}, fmt.Errorf("usage: domain <register|renew|update|transfer|delete|resolve>")
 	}
@@ -30,7 +30,7 @@ func dispatchDomain(c *client.Client, w *client.Wallet, cmd command) (string, [3
 	case "delete":
 		return dispatchDomainDelete(c, w, rest)
 	case "resolve":
-		return dispatchDomainResolve(c, rest)
+		return dispatchDomainResolve(c, lc, rest)
 	default:
 		return "", [32]byte{}, fmt.Errorf("unknown domain subcommand: %s", sub)
 	}
@@ -174,23 +174,41 @@ func dispatchDomainDelete(c *client.Client, w *client.Wallet, cmd command) (stri
 	return fmt.Sprintf("domain %s deleted", name), txHash, nil
 }
 
-// dispatchDomainResolve handles: domain resolve <name>. It reads the node's
-// unproven word — the console holds no trusted checkpoint to verify a proof
-// against (see pkg/client/indexreads.go).
-func dispatchDomainResolve(c *client.Client, cmd command) (string, [32]byte, error) {
+// dispatchDomainResolve handles: domain resolve <name>. With a session
+// LightClient (the wallet holds a trust checkpoint) it resolves through the
+// verification library and the answer is proved; otherwise it reads the
+// node's unproven word (see pkg/client/indexreads.go). Either way the
+// returned line says which.
+func dispatchDomainResolve(c *client.Client, lc *client.LightClient, cmd command) (string, [32]byte, error) {
 	name := arg(cmd, 0)
 	if name == "" {
 		return "", [32]byte{}, fmt.Errorf("usage: domain resolve <name>")
 	}
 
-	objectID, found, err := c.DomainResolve(name)
+	objectID, found, proved, err := resolveDomain(c, lc, name)
 	if err != nil {
 		return "", [32]byte{}, err
 	}
 
 	if !found {
-		return fmt.Sprintf("domain %s: not registered", name), [32]byte{}, nil
+		return fmt.Sprintf("domain %s: not registered %s", name, readLabel(proved)), [32]byte{}, nil
 	}
 
-	return fmt.Sprintf("domain %s -> %s", name, hex.EncodeToString(objectID[:4])), [32]byte{}, nil
+	return fmt.Sprintf("domain %s -> %s %s", name, hex.EncodeToString(objectID[:4]), readLabel(proved)), [32]byte{}, nil
+}
+
+// resolveDomain reads through lc when it is non-nil (the wallet holds a
+// trust checkpoint), or through the plain client otherwise. A verification
+// failure — including client.ErrCheckpointBehind's actionable "obtain a
+// fresh checkpoint" message — is returned as-is, never silently retried
+// against the unproven path.
+func resolveDomain(c *client.Client, lc *client.LightClient, name string) (objectID [32]byte, found, proved bool, err error) {
+	if lc == nil {
+		objectID, found, err = c.DomainResolve(name)
+		return objectID, found, false, err
+	}
+
+	leaf, found, err := lc.ResolveDomain(name)
+
+	return leaf.ObjectID, found, true, err
 }

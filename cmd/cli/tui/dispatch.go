@@ -12,13 +12,16 @@ import (
 // dispatch executes a parsed command against the client and wallet and returns a
 // one-line activity result plus, when a transaction was submitted, its hash to
 // track. An empty hash means nothing to track. This is the console's adapter over
-// the typed pkg/client action surface; it adds no protocol logic.
+// the typed pkg/client action surface; it adds no protocol logic. lc is the
+// session's LightClient when the wallet holds a trust checkpoint, nil
+// otherwise; only the index-reading verbs (object parent, domain resolve,
+// objects) consume it.
 //
 // Hash tracking: faucet, transfer, split, object create/set/transfer/reparent/
 // delete and domain register/renew/update/transfer/delete all return a
 // non-zero txHash that flows into the console's tracked map for live status
 // polling.
-func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, track [32]byte, err error) {
+func dispatch(c *client.Client, w *client.Wallet, lc *client.LightClient, cmd command) (line string, track [32]byte, err error) {
 	switch cmd.verb {
 	case "faucet":
 		return dispatchFaucet(c, w, cmd)
@@ -29,9 +32,9 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 	case "split":
 		return dispatchSplit(c, w, cmd)
 	case "object":
-		return dispatchObject(c, w, cmd)
+		return dispatchObject(c, w, lc, cmd)
 	case "domain":
-		return dispatchDomain(c, w, cmd)
+		return dispatchDomain(c, w, lc, cmd)
 	case "validators":
 		return dispatchValidators(c)
 	case "balance":
@@ -39,7 +42,7 @@ func dispatch(c *client.Client, w *client.Wallet, cmd command) (line string, tra
 	case "coins":
 		return dispatchCoins(c, w)
 	case "objects":
-		return dispatchObjects(c, w)
+		return dispatchObjects(c, w, lc)
 	case "pubkey":
 		return dispatchPubkey(w)
 	case "help":
@@ -218,6 +221,16 @@ commands:
                                           this wallet's key (merged with tracked)
   pubkey                                 show this wallet's public key
   quit                                   exit the console`)
+}
+
+// readLabel discreetly tags a printed index answer with the guarantee it
+// carries, so a user cannot mistake one for the other.
+func readLabel(proved bool) string {
+	if proved {
+		return "(proved)"
+	}
+
+	return "(unproven)"
 }
 
 // arg returns the i-th argument or an empty string.
