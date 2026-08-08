@@ -113,6 +113,12 @@ func (d *DAG) transitionEpoch(round uint64) {
 
 	d.setCurrentEpoch(d.currentEpoch + 1)
 
+	// Publish the finished quad (epoch, current, previous, next-ahead holders)
+	// as one atomic snapshot, now that every field above has reached its final
+	// value for the epoch this boundary opens — and before the callback below,
+	// which reads EpochHolders itself.
+	d.publishEpochMirror()
+
 	logger.Info("epoch transition",
 		"round", round,
 		"epoch", d.currentEpoch,
@@ -616,6 +622,35 @@ func (d *DAG) setCurrentEpoch(epoch uint64) {
 	d.liveEpoch.Store(epoch)
 }
 
+// epochSnapshot is the atomically-published, immutable counterpart of
+// currentEpoch/epochHolders/prevEpochHolders/nextEpochHolders: the four
+// fields the commit path mutates under commitMu across several steps of a
+// transition, read together as one consistent quad by EpochHolders and
+// HoldersForEpoch. Publishing them as one struct behind one atomic.Pointer
+// (see publishEpochMirror) is what stops a lock-free reader from ever pairing
+// one epoch's counter with another epoch's holder snapshot.
+type epochSnapshot struct {
+	epoch   uint64        // epoch mirrors currentEpoch at publish time
+	holders *ValidatorSet // holders mirrors epochHolders at publish time
+	prev    *ValidatorSet // prev mirrors prevEpochHolders at publish time
+	next    *ValidatorSet // next mirrors nextEpochHolders at publish time
+}
+
+// publishEpochMirror snapshots currentEpoch and the three holder sets into
+// the lock-free mirror EpochHolders and HoldersForEpoch read from. The caller
+// holds commitMu (or runs before any goroutine can race it, at construction)
+// and must call this only once every field it captures has reached its final
+// value for the change being published — never mid-transition, or a reader
+// could observe a quad that never existed as a whole on the commit path.
+func (d *DAG) publishEpochMirror() {
+	d.epochMirror.Store(&epochSnapshot{
+		epoch:   d.currentEpoch,
+		holders: d.epochHolders,
+		prev:    d.prevEpochHolders,
+		next:    d.nextEpochHolders,
+	})
+}
+
 // commitEpochForRound returns the epoch whose holder snapshot an ATX committed
 // at the given round must be verified against. The boundary round R = k*epochLength
 // is committed (and its ATXs verified) BEFORE transitionEpoch increments
@@ -650,16 +685,29 @@ func (d *DAG) CommitEpochForRound(round uint64) uint64 {
 // the genesis epoch the current snapshot is the frozen genesis holder set (frozen
 // from committed registrations at the strict latch, refrozen as the committed set
 // grows before it); until it is frozen, epoch 0 is unresolved and the loop waits.
+//
+// It reads the atomic epochMirror rather than currentEpoch/epochHolders/
+// prevEpochHolders/nextEpochHolders directly: the commit path is not its only
+// caller (the anchor bundle a client polls, and a joiner's trusted-checkpoint
+// judge, both call it off any lock), and selecting against the four raw
+// fields individually could pair an epoch just advanced with a holder
+// snapshot not yet updated to match, or the reverse. One atomic load returns
+// a quad that was genuinely published together.
 func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
-	if epoch == d.currentEpoch {
-		if d.epochHolders != nil {
-			return d.epochHolders, true
+	snap := d.epochMirror.Load()
+	if snap == nil {
+		return nil, false
+	}
+
+	if epoch == snap.epoch {
+		if snap.holders != nil {
+			return snap.holders, true
 		}
 		return nil, false
 	}
 
-	if d.currentEpoch > 0 && epoch == d.currentEpoch-1 && d.prevEpochHolders != nil {
-		return d.prevEpochHolders, true
+	if snap.epoch > 0 && epoch == snap.epoch-1 && snap.prev != nil {
+		return snap.prev, true
 	}
 
 	// One epoch ahead: resolve to the frozen forward proxy so the anchor rule can
@@ -668,12 +716,12 @@ func (d *DAG) HoldersForEpoch(epoch uint64) (*validators.ValidatorSet, bool) {
 	// tail fall in epoch 1, so resolve them to the frozen GENESIS committee (not the
 	// live set). Without this the first epoch boundary is undecidable and the commit
 	// loop wedges on it before any transition can freeze a proxy.
-	if epoch == d.currentEpoch+1 {
-		if d.nextEpochHolders != nil {
-			return d.nextEpochHolders, true
+	if epoch == snap.epoch+1 {
+		if snap.next != nil {
+			return snap.next, true
 		}
-		if d.currentEpoch == 0 && d.epochHolders != nil {
-			return d.epochHolders, true
+		if snap.epoch == 0 && snap.holders != nil {
+			return snap.holders, true
 		}
 	}
 

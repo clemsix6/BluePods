@@ -134,16 +134,17 @@ type DAG struct {
 	nextEligibleHolders map[Hash]bool // nextEligibleHolders is the eligible subset frozen with nextEpochHolders
 
 	// Epoch: frozen validator set for Rendezvous hashing.
-	epochLength       uint64             // epochLength is the number of rounds per epoch (0 = disabled)
-	currentEpoch      uint64             // currentEpoch is the current epoch number, guarded by commitMu
-	liveEpoch         atomic.Uint64      // liveEpoch mirrors currentEpoch for readers that must not take commitMu (see setCurrentEpoch)
-	epochHolders      *ValidatorSet      // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
-	prevEpochHolders  *ValidatorSet      // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
-	nextEpochHolders  *ValidatorSet      // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
-	pendingRemovals   map[Hash]bool      // pendingRemovals are validators to remove at next epoch
-	epochAdditions    []Hash             // epochAdditions are validators added this epoch
-	maxChurnPerEpoch  int                // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
-	onEpochTransition func(epoch uint64) // onEpochTransition is called when an epoch boundary is reached
+	epochLength       uint64                        // epochLength is the number of rounds per epoch (0 = disabled)
+	currentEpoch      uint64                        // currentEpoch is the current epoch number, guarded by commitMu
+	liveEpoch         atomic.Uint64                 // liveEpoch mirrors currentEpoch for readers that must not take commitMu (see setCurrentEpoch)
+	epochHolders      *ValidatorSet                 // epochHolders is the frozen ValidatorSet for Rendezvous (current epoch)
+	prevEpochHolders  *ValidatorSet                 // prevEpochHolders is the previous epoch's snapshot, kept for the grace window
+	nextEpochHolders  *ValidatorSet                 // nextEpochHolders is a one-epoch-ahead snapshot so the anchor rule's forward scan can cross an epoch boundary without wedging
+	epochMirror       atomic.Pointer[epochSnapshot] // epochMirror is the atomic counterpart of currentEpoch/epochHolders/prevEpochHolders/nextEpochHolders, published together (see publishEpochMirror) for readers that must not take commitMu
+	pendingRemovals   map[Hash]bool                 // pendingRemovals are validators to remove at next epoch
+	epochAdditions    []Hash                        // epochAdditions are validators added this epoch
+	maxChurnPerEpoch  int                           // maxChurnPerEpoch caps changes per epoch (0 = unlimited)
+	onEpochTransition func(epoch uint64)            // onEpochTransition is called when an epoch boundary is reached
 
 	// Sharding: isHolder determines if this node stores/executes a given object.
 	isHolder func(objectID [32]byte, replication uint16) bool
@@ -899,17 +900,26 @@ func (d *DAG) ValidatorSet() *ValidatorSet {
 }
 
 // EpochHolders returns the frozen validator set used for Rendezvous.
-// Returns the current validators if epochs are not initialized yet.
+// Returns the current validators if epochs are not initialized yet. It reads
+// the atomic epochMirror (see publishEpochMirror), not epochHolders directly:
+// callers outside the commit loop (a status handler, the onEpochTransition
+// callback) never take commitMu, and this keeps the value they see
+// consistent with whatever HoldersForEpoch would resolve at the same instant.
 func (d *DAG) EpochHolders() *ValidatorSet {
-	if d.epochHolders != nil {
-		return d.epochHolders
+	if snap := d.epochMirror.Load(); snap != nil && snap.holders != nil {
+		return snap.holders
 	}
 	return d.validators
 }
 
-// Epoch returns the current epoch number.
+// Epoch returns the current epoch number, from the same lock-free mirror
+// LiveEpoch reads. Every external caller of Epoch (status and checkpoint
+// handlers, none holding commitMu) needs the race-free value; the commit
+// path itself is never sensitive to the instant between a raw currentEpoch
+// write and its mirror publish, since setCurrentEpoch performs both
+// synchronously, in the same commitMu-held step.
 func (d *DAG) Epoch() uint64 {
-	return d.currentEpoch
+	return d.LiveEpoch()
 }
 
 // LiveEpoch returns the current epoch from the lock-free mirror the commit path
@@ -929,11 +939,7 @@ func (d *DAG) EpochLength() uint64 {
 // EpochHoldersCount returns the number of validators in the frozen epoch set.
 // Falls back to the active validator count if epochs are not initialized.
 func (d *DAG) EpochHoldersCount() int {
-	if d.epochHolders != nil {
-		return d.epochHolders.Len()
-	}
-
-	return d.validators.Len()
+	return d.EpochHolders().Len()
 }
 
 // OnEpochTransition sets a callback that fires on epoch boundaries.

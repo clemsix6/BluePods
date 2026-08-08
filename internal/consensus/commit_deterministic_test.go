@@ -536,6 +536,7 @@ func TestCheckCommits_DecidedEpochTailNotReDerivedAfterChurn(t *testing.T) {
 	dag.setCurrentEpoch(1)
 	dag.epochHolders = snapshotOf(dag.validators)
 	dag.nextEpochHolders = snapshotOf(dag.validators)
+	dag.publishEpochMirror() // HoldersForEpoch resolves through the mirror, not these fields directly
 
 	// Round 8 is the epoch-1 tail (2*epochLength); it is undecided directly and
 	// resolves through a round-9 (epoch 2) certified anchor weighed via the proxy.

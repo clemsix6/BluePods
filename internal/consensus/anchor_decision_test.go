@@ -570,6 +570,7 @@ func TestAnchorStatusEpochTailResolves(t *testing.T) {
 	dag.setCurrentEpoch(1)
 	dag.epochHolders = snapshotOf(dag.validators)
 	dag.nextEpochHolders = snapshotOf(dag.validators)
+	dag.publishEpochMirror() // HoldersForEpoch resolves through the mirror, not these fields directly
 
 	const round = 8 // last round of epoch 1 (2*epochLength); round+1 = 9 is epoch 2
 	v, anchor := buildSplitRound(t, dag, vals, round, true)
@@ -579,12 +580,14 @@ func TestAnchorStatusEpochTailResolves(t *testing.T) {
 	// so the tail can only WAIT.
 	saved := dag.nextEpochHolders
 	dag.nextEpochHolders = nil
+	dag.publishEpochMirror()
 	if dec := dag.anchorStatus(round); dec.kind != anchorWait {
 		t.Fatalf("expected wait when the next-epoch snapshot is absent, got kind=%d", dec.kind)
 	}
 
 	// With it frozen, the split resolves across the boundary via the next-epoch anchor.
 	dag.nextEpochHolders = saved
+	dag.publishEpochMirror()
 	dec := dag.anchorStatus(round)
 	if dec.kind != anchorCommit || dec.anchor != v {
 		t.Fatalf("expected epoch-tail commit(%x) via a next-epoch anchor, got kind=%d anchor=%x", v[:4], dec.kind, dec.anchor[:4])

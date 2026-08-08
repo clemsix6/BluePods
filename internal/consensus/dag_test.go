@@ -87,6 +87,13 @@ func freezeGenesis(dag *DAG) {
 	}
 
 	dag.epochHolders = dag.freezeGenesisHolders()
+
+	// Mirror what refreezeGenesisRegime publishes in production: EpochHolders
+	// and HoldersForEpoch resolve through the atomic mirror, not this field
+	// directly, so a fixture that skipped this would stay unresolved to
+	// every reader — including the anchor-designation path this helper
+	// exists to unblock.
+	dag.publishEpochMirror()
 }
 
 func TestNewDAG(t *testing.T) {

@@ -165,6 +165,11 @@ func (d *DAG) applyRegimeState(blob []byte) {
 	// the next boundary. An older, shorter blob leaves rest empty and keeps the zero
 	// accumulators.
 	d.readEpochAccumulators(rest)
+
+	// Publish the synced quad. This runs at construction, in the options loop
+	// (see WithSyncedRegimeState), strictly before the commit loop or any
+	// other goroutine starts, so there is nothing to race.
+	d.publishEpochMirror()
 }
 
 // appendHolderBlob appends a length-prefixed encoded holder snapshot to buf. A nil
