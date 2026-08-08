@@ -98,6 +98,12 @@ func validateFieldSizes(tx *types.Transaction) error {
 // here too, mirroring internal/consensus/ops.go's txHasPodCall/
 // commitDeclaredOps mutual-exclusion rule so a mixed submission fails at
 // ingress instead of paying a fee only to fail deterministically at commit.
+//
+// The exclusivity extends to created_objects_replication: only a pod call
+// creates objects, so an operations transaction declaring replication entries
+// prices a storage deposit that is debited from the gas coin, locked on no
+// object and never pooled. Rejecting the shape here is what keeps that value
+// inside accounted supply.
 func validateShape(tx *types.Transaction) error {
 	hasFunc := len(tx.FunctionName()) > 0
 	hasOps := tx.OperationsLength() > 0
@@ -106,8 +112,16 @@ func validateShape(tx *types.Transaction) error {
 		return fmt.Errorf("transaction has neither a function name nor declared operations")
 	}
 
-	if hasOps && txHasPodCall(tx) {
+	if !hasOps {
+		return nil
+	}
+
+	if txHasPodCall(tx) {
 		return fmt.Errorf("transaction carries both declared operations and a pod call")
+	}
+
+	if tx.CreatedObjectsReplicationLength() > 0 {
+		return fmt.Errorf("transaction carries both declared operations and created-object replication entries")
 	}
 
 	return nil

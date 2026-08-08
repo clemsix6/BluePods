@@ -275,6 +275,48 @@ func TestValidateTx_OpsWithNonZeroPodRejected(t *testing.T) {
 	}
 }
 
+// TestValidateTx_OpsWithReplicationEntriesRejected confirms a transaction
+// carrying declared operations and created_objects_replication entries is
+// rejected at ingress. Only a pod-creating transaction has objects to
+// replicate: a declared-operation transaction creates none, so every entry it
+// declares prices a storage deposit that the commit path debits from the gas
+// coin, locks on no object, and never pools — coin supply leaving accounted
+// state. The exclusivity is the same rule that forbids operations alongside a
+// pod call, extended to the field that prices creation.
+func TestValidateTx_OpsWithReplicationEntriesRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var zeroPod, newParent [32]byte
+	newParent[0] = 0x33
+
+	ops := []genesis.DeclaredOp{{
+		Kind:       0,
+		ObjectID:   bytes.Repeat([]byte{0xA1}, 32),
+		TargetKind: 0,
+		Target:     newParent[:],
+	}}
+	reps := []uint16{0}
+
+	unsignedBytes := genesis.BuildUnsignedTxBytesSponsored(
+		pub, zeroPod, "", nil, reps, 1000, nil, nil, nil, genesis.Sponsorship{}, nil, ops,
+	)
+	hash := blake3.Sum256(unsignedBytes)
+	sig := ed25519.Sign(priv, hash[:])
+
+	builder := flatbuffers.NewBuilder(1024)
+	txOffset := genesis.BuildTxTableSponsored(
+		builder, pub, zeroPod, "", nil, reps, 1000, nil, hash, sig, nil, nil, genesis.Sponsorship{}, nil, nil, ops,
+	)
+	builder.Finish(txOffset)
+
+	if err := ValidateTx(builder.FinishedBytes()); err == nil {
+		t.Fatal("expected error for transaction carrying both operations and replication entries")
+	}
+}
+
 func TestValidateTx_MaxObjectRefs(t *testing.T) {
 	txData := buildTestRawTx(t, func(o *txOptions) {
 		o.mutableRefs = makeUniqueRefsFrom(8, 1)
