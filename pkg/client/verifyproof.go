@@ -18,7 +18,7 @@ import (
 // again during the wait). Both name the same retry contract, so LightClient
 // wraps rather than minting a second sentinel for the stale case. Every
 // LightClient method that reads a proved answer can return it.
-var ErrUnanchored = errors.New("answer is not anchored: the node's index sits ahead of its last committed frontier")
+var ErrUnanchored = errors.New("answer not attested by the node's current anchor: retry")
 
 // Component names which tree a per-key proof folds to. A proof authenticates
 // a key against ONE component root; the combination of all four index trees

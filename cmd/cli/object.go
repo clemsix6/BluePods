@@ -291,9 +291,12 @@ func cmdObjectParent(e *env, args []string) error {
 		return err
 	}
 
-	kind, parent, hasParent, proved, err := objectParent(e, cli, w, id)
+	kind, parent, hasParent, proved, persistErr, err := objectParent(e, cli, w, id)
 	if err != nil {
 		return fmt.Errorf("get parent:\n%w", err)
+	}
+	if persistErr != nil {
+		fmt.Printf("warning: could not persist the advanced checkpoint, it will re-sync on the next invocation:\n  %v\n", persistErr)
 	}
 
 	if !hasParent {
@@ -312,28 +315,32 @@ func cmdObjectParent(e *env, args []string) error {
 }
 
 // objectParent reads objectID's immediate parent edge through the light
-// client when w holds a trust checkpoint, re-persisting whatever epoch walk
-// that read performed before returning — a verification failure is returned
-// as-is, never silently retried against the unproven path. LightClient
-// exposes only the full ancestry walk (Ancestors), so the immediate edge
-// this command reports is that walk's first hop.
-func objectParent(e *env, cli *client.Client, w *client.Wallet, objectID [32]byte) (kind byte, parent [32]byte, hasParent, proved bool, err error) {
+// client when w holds a trust checkpoint, or through the plain client
+// otherwise — a verification failure is returned as-is, never silently
+// retried against the unproven path. LightClient exposes only the full
+// ancestry walk (Ancestors), so the immediate edge this command reports is
+// that walk's first hop. persistErr is orthogonal: a failure to save the
+// checkpoint a successful verified walk advanced does not retract that
+// verification, so it is reported separately and never withholds a proved
+// answer from the caller.
+func objectParent(e *env, cli *client.Client, w *client.Wallet, objectID [32]byte) (kind byte, parent [32]byte, hasParent, proved bool, persistErr, err error) {
 	cp, ok := w.Checkpoint()
 	if !ok {
 		kind, parent, hasParent, err = cli.Parent(objectID)
-		return kind, parent, hasParent, false, err
+		return kind, parent, hasParent, false, nil, err
 	}
 
 	lc := client.NewLightClient(cli, cp)
 	chain, err := lc.Ancestors(objectID)
-
-	if syncErr := syncCheckpoint(e, w, lc); syncErr != nil && err == nil {
-		err = syncErr
+	if err != nil {
+		return 0, [32]byte{}, false, false, nil, err
 	}
 
-	if err != nil || len(chain) == 0 {
-		return 0, [32]byte{}, false, true, err
+	persistErr = syncCheckpoint(e, w, lc)
+
+	if len(chain) == 0 {
+		return 0, [32]byte{}, false, true, persistErr, nil
 	}
 
-	return chain[0].ParentKind, chain[0].Parent, true, true, nil
+	return chain[0].ParentKind, chain[0].Parent, true, true, persistErr, nil
 }

@@ -292,9 +292,12 @@ func cmdDomainResolve(e *env, args []string) error {
 		return err
 	}
 
-	objectID, found, proved, err := resolveDomain(e, cli, w, args[0])
+	objectID, found, proved, persistErr, err := resolveDomain(e, cli, w, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve domain:\n%w", err)
+	}
+	if persistErr != nil {
+		fmt.Printf("warning: could not persist the advanced checkpoint, it will re-sync on the next invocation:\n  %v\n", persistErr)
 	}
 
 	if !found {
@@ -308,24 +311,26 @@ func cmdDomainResolve(e *env, args []string) error {
 }
 
 // resolveDomain resolves name through the light client when w holds a trust
-// checkpoint, re-persisting whatever epoch walk that read performed before
-// returning — a verification failure (including client.ErrCheckpointBehind's
-// actionable "obtain a fresh checkpoint" message) is returned as-is, never
-// silently retried against the unproven path, which would defeat the reason
-// a checkpoint was pinned in the first place.
-func resolveDomain(e *env, cli *client.Client, w *client.Wallet, name string) (objectID [32]byte, found, proved bool, err error) {
+// checkpoint, or through the plain client otherwise. A verification failure
+// (including client.ErrCheckpointBehind's actionable "obtain a fresh
+// checkpoint" message) is returned as-is, never silently retried against the
+// unproven path, which would defeat the reason a checkpoint was pinned in
+// the first place. persistErr is orthogonal: a failure to save the
+// checkpoint a successful verified resolve advanced does not retract that
+// verification, so it is reported separately and never withholds a proved
+// answer from the caller.
+func resolveDomain(e *env, cli *client.Client, w *client.Wallet, name string) (objectID [32]byte, found, proved bool, persistErr, err error) {
 	cp, ok := w.Checkpoint()
 	if !ok {
 		objectID, found, err = cli.DomainResolve(name)
-		return objectID, found, false, err
+		return objectID, found, false, nil, err
 	}
 
 	lc := client.NewLightClient(cli, cp)
 	leaf, found, err := lc.ResolveDomain(name)
-
-	if syncErr := syncCheckpoint(e, w, lc); syncErr != nil && err == nil {
-		err = syncErr
+	if err != nil {
+		return [32]byte{}, found, false, nil, err
 	}
 
-	return leaf.ObjectID, found, true, err
+	return leaf.ObjectID, found, true, syncCheckpoint(e, w, lc), nil
 }

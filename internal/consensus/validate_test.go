@@ -496,21 +496,24 @@ func TestValidateFeeSummary_NoSummaryWithTxs(t *testing.T) {
 	}
 }
 
-// TestValidateFeeSummary_FeesDisabled verifies fees disabled skips validation.
-func TestValidateFeeSummary_FeesDisabled(t *testing.T) {
+// TestValidateFeeSummary_EmptyVertex verifies a vertex with no transactions
+// and no declared fee_summary passes validation trivially — and, since
+// SetFeeSystem is never called here and feeParams stays nil, that this
+// vacuous case never reaches mustFeeParams: calculateTxFeeSplit is the sole
+// enforcement point, and a vertex with nothing to summarize never calls it.
+func TestValidateFeeSummary_EmptyVertex(t *testing.T) {
 	db := newTestStorage(t)
 	validators, vs := newTestValidatorSet(3)
 
 	dag := New(db, vs, nil, testSystemPod, 1, validators[0].privKey, nil)
 	defer dag.Close()
 
-	// feeParams=nil → fees disabled
 	data := buildTestVertex(t, validators[0], 0, nil, 1)
 	vertex := types.GetRootAsVertex(data, 0)
 
 	err := dag.validateFeeSummary(vertex)
 	if err != nil {
-		t.Fatalf("expected nil error when fees disabled, got: %v", err)
+		t.Fatalf("expected nil error for an empty vertex, got: %v", err)
 	}
 }
 

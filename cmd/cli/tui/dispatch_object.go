@@ -74,15 +74,17 @@ func dispatchObjectCreate(c *client.Client, w *client.Wallet, cmd command) (stri
 // (pubkey) plus recursion into object-parented subtrees, MERGED into what is
 // already tracked rather than replacing it. With a session LightClient (the
 // wallet holds a trust checkpoint) this recovery goes through the
-// verification library and is proved; otherwise it reads the node's unproven
-// word (see pkg/client/indexreads.go). A recovery failure (a genuine
+// verification library; otherwise it reads the node's unproven word (see
+// pkg/client/indexreads.go). The printed list is labeled "proved" only when
+// the checkpointed walk actually verified — a recovery failure (a genuine
 // verification failure included, never silently retried against the
 // unproven path — including the transport's single-frame ceiling for a
 // large wallet, spec §10, 6.1's as-built) does not hide the verb's whole
 // output: it falls back to whatever the wallet already tracks locally, with
-// a warning line, since a stale-but-present list is more useful than none.
-// It then lists each object with its full hex ID and current version/owner,
-// so the full ID can be copied for object show/set/transfer.
+// a warning line and the unproven label, since a stale-but-present list is
+// more useful than none. It then lists each object with its full hex ID and
+// current version/owner, so the full ID can be copied for object
+// show/set/transfer.
 func dispatchObjects(c *client.Client, w *client.Wallet, lc *client.LightClient) (string, [32]byte, error) {
 	var recoverErr error
 	if lc != nil {
@@ -101,9 +103,15 @@ func dispatchObjects(c *client.Client, w *client.Wallet, lc *client.LightClient)
 		return warning + "no objects yet (use object create)", [32]byte{}, nil
 	}
 
+	// proved requires both a checkpointed path AND that the walk actually
+	// verified: a recovery failure — a forged or unreachable proof included —
+	// must never print the proved label over the stale, unverified local
+	// fallback list.
+	proved := lc != nil && recoverErr == nil
+
 	var b strings.Builder
 	b.WriteString(warning)
-	fmt.Fprintf(&b, "objects %s (%d):", readLabel(lc != nil), len(ids))
+	fmt.Fprintf(&b, "objects %s (%d):", readLabel(proved), len(ids))
 
 	for _, id := range ids {
 		obj, err := c.GetObject(id)

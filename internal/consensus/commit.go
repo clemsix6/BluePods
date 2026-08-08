@@ -594,7 +594,8 @@ func (d *DAG) processTransactions(v *types.Vertex, h Hash, commitRound uint64, v
 }
 
 // executeTx checks version conflicts, deducts fees, and executes a transaction.
-// Returns the fee split for this transaction (zero if fees disabled).
+// Returns the fee split for this transaction (zero for a transaction rejected
+// before fees are deducted — a nil, unverifiable, or shape-rejected one).
 //
 // verdicts carries the round's parallel proof-verification result; it is nil
 // only when executeTx is driven outside the round commit loop (such as direct

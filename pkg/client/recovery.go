@@ -79,12 +79,15 @@ func walkChildren(src childrenSource, root [32]byte, depth int) ([][32]byte, err
 	return all, nil
 }
 
-// EnumerateSubtree walks ListChildren from root and recurses into every
+// EnumerateSubtree walks src.ListChildren from root and recurses into every
 // discovered child's own children, bounded the same way RecoverObjects is —
 // but without touching any wallet's tracked set, for enumerating a root that
 // need not be the caller's own key (bpctl's `objects <owner-or-parent-id>`).
-func (c *Client) EnumerateSubtree(root [32]byte) ([][32]byte, error) {
-	return walkChildren(c, root, recoveryDepthLimit)
+// src is whichever childrenSource the caller wants the walk verified against:
+// *Client for the node's unproven word, *LightClient for a proved walk
+// against a trust checkpoint.
+func EnumerateSubtree(src childrenSource, root [32]byte) ([][32]byte, error) {
+	return walkChildren(src, root, recoveryDepthLimit)
 }
 
 // The two data sources recovery is meant to be wired with — checked here so a

@@ -197,7 +197,7 @@ type DAG struct {
 
 	// Fee system: protocol-level fee deduction and credits.
 	coinStore      CoinStore            // coinStore provides access to coin objects for fee operations
-	feeParams      *FeeParams           // feeParams holds fee constants (nil = fees disabled)
+	feeParams      *FeeParams           // feeParams holds fee constants; nil only before WithFeeParams/SetFeeSystem wires it, and reading it that way is a programming error (see mustFeeParams)
 	computeHolders HolderFunc           // computeHolders computes holders for replication ratio
 	delegations    DelegationEnumerator // delegations enumerates a validator's stake positions for the reward split
 
@@ -786,8 +786,9 @@ func (d *DAG) SetATXProofBatchVerifier(fn func(atxs []*types.AttestedTransaction
 	d.verifyATXProofsBatch = fn
 }
 
-// SetFeeSystem configures protocol-level fee deduction.
-// When feeParams is non-nil, fees are deducted from gas_coin before execution.
+// SetFeeSystem configures protocol-level fee deduction: fees are deducted
+// from gas_coin before execution. params must be non-nil — see mustFeeParams,
+// the sole point a nil schedule fails loud through.
 func (d *DAG) SetFeeSystem(store CoinStore, params *FeeParams, holders HolderFunc) {
 	d.coinStore = store
 	d.feeParams = params
