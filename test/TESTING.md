@@ -336,6 +336,14 @@ ingress refuses the same shape through the same gate, so a transaction reaching
 commit with it was never offered to an honest node: it is rejected before fee
 deduction and its sender is charged nothing.
 
+`ingress.tx.rejected`'s `reason` attribute is one of a fixed set, applied the
+same way at both ingress seams (a client submission and a gossiped body this
+node did not itself receive from a client): `invalid_submission` for a
+structural failure (an unparseable body, a missing nested transaction, a
+malformed hash) and `malformed_shape` for the same shape-gate refusal
+`tx.committed`'s `malformed_shape` names above, caught before the body ever
+reaches consensus.
+
 `node.resumed` marks a start that booted from the committed state already in
 its data directory instead of taking state from a peer: no snapshot was
 fetched and no join was verified, because nothing about that state was

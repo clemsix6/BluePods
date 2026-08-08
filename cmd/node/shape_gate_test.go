@@ -11,6 +11,7 @@ import (
 	"BluePods/internal/events"
 	"BluePods/internal/genesis"
 	"BluePods/internal/network"
+	"BluePods/internal/types"
 )
 
 // TestSubmitATX_MalformedShapeRefused closes the seam a malformed transaction
@@ -62,6 +63,52 @@ func TestGossipedTx_MalformedShapeRefused(t *testing.T) {
 	if recs[0]["reason"] != "malformed_shape" {
 		t.Errorf("reason = %v, want malformed_shape", recs[0]["reason"])
 	}
+}
+
+// TestGossipedTx_StructurallyInvalidRefused holds the sibling case: a
+// gossiped body that fails structurally (no nested transaction) is refused
+// with the "invalid_submission" reason — the vocabulary a structural failure
+// gets on the submission seam too — never "malformed_shape", which names
+// specifically a ValidateShape refusal.
+func TestGossipedTx_StructurallyInvalidRefused(t *testing.T) {
+	n := submitTestNode(t)
+
+	body := buildATXWithoutTx(t)
+
+	buf := captureEvents(t)
+	n.ingestGossipedTx(body, network.EncodeGossipTx(body))
+
+	recs := eventsNamed(t, buf, events.EvIngressTxRejected)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 %s event, got %d: %v", events.EvIngressTxRejected, len(recs), recs)
+	}
+	if recs[0]["reason"] != "invalid_submission" {
+		t.Errorf("reason = %v, want invalid_submission", recs[0]["reason"])
+	}
+}
+
+// buildATXWithoutTx builds a well-formed AttestedTransaction FlatBuffer table
+// carrying no nested Transaction: structurally parseable bytes, but missing
+// the one field innerTx requires before it even looks at shape.
+func buildATXWithoutTx(t *testing.T) []byte {
+	t.Helper()
+
+	builder := flatbuffers.NewBuilder(256)
+
+	types.AttestedTransactionStartObjectsVector(builder, 0)
+	objectsVec := builder.EndVector(0)
+
+	types.AttestedTransactionStartProofsVector(builder, 0)
+	proofsVec := builder.EndVector(0)
+
+	types.AttestedTransactionStart(builder)
+	types.AttestedTransactionAddObjects(builder, objectsVec)
+	types.AttestedTransactionAddProofs(builder, proofsVec)
+	atxOffset := types.AttestedTransactionEnd(builder)
+
+	builder.Finish(atxOffset)
+
+	return builder.FinishedBytes()
 }
 
 // buildHybridShapeTx builds a signed transaction carrying BOTH declared

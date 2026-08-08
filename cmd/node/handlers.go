@@ -48,15 +48,18 @@ func (n *Node) handleGossipMessage(peer *network.Peer, data []byte) {
 // A gossiped body passed through no ingress of this node's, so it runs the same
 // shape gate a submission does: queuing a shape this node would refuse from a
 // client makes it the carrier that includes it in a vertex and hands it to the
-// rest of the mesh. A refused body is neither queued nor forwarded.
+// rest of the mesh. A refused body is neither queued nor forwarded. The
+// rejection reason follows innerTx's classification, the same vocabulary the
+// submission seam uses: "invalid_submission" for a structural failure,
+// "malformed_shape" for a shape-gate refusal.
 func (n *Node) ingestGossipedTx(body, tagged []byte) {
 	if n.dag == nil {
 		return
 	}
 
-	if _, err := innerTx(body); err != nil {
+	if _, reason, err := innerTx(body); err != nil {
 		logger.Warn("gossiped tx refused", "error", err)
-		events.IngressTxRejected("malformed_shape", err.Error())
+		events.IngressTxRejected(reason, err.Error())
 		return
 	}
 

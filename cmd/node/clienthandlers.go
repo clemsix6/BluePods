@@ -90,9 +90,9 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 		return submitErr("consensus not available"), nil
 	}
 
-	atx, hash, kind, err := n.ingestSubmission(req.Body)
+	atx, hash, kind, reason, err := n.ingestSubmission(req.Body)
 	if err != nil {
-		events.IngressTxRejected("invalid_submission", err.Error())
+		events.IngressTxRejected(reason, err.Error())
 		return submitErr(err.Error()), nil
 	}
 
@@ -115,15 +115,16 @@ func (n *Node) handleSubmitTx(data []byte) ([]byte, error) {
 // validates as a raw Transaction (hash and signature check out) is a raw
 // singleton-only intent and is wrapped; otherwise it is treated as a full ATX.
 // kind reports which path was taken ("raw" or "attested"), for the ingress
-// event the caller emits.
-func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, kind string, err error) {
+// event the caller emits. reason is the ingress.tx.rejected reason to use when
+// err is non-nil; it is meaningless on success.
+func (n *Node) ingestSubmission(body []byte) (atx []byte, hash []byte, kind, reason string, err error) {
 	if validation.ValidateTx(body) == nil {
 		atx, hash, err = n.ingestRawTx(body)
-		return atx, hash, "raw", err
+		return atx, hash, "raw", "invalid_submission", err
 	}
 
-	atx, hash, err = ingestATX(body)
-	return atx, hash, "attested", err
+	atx, hash, reason, err = ingestATX(body)
+	return atx, hash, "attested", reason, err
 }
 
 // ingestRawTx wraps a validated raw transaction into a trivial ATX after
@@ -144,24 +145,30 @@ func (n *Node) ingestRawTx(body []byte) (atx []byte, hash []byte, err error) {
 // ingress only checks that the nested transaction is structurally sound and
 // that its shape is one a node may carry: the wrapper is otherwise a way to
 // submit the very shape the raw path refuses, and an accepted submission is
-// included in this node's own vertex and gossiped onward.
-func ingestATX(body []byte) (atx []byte, hash []byte, err error) {
-	tx, err := innerTx(body)
+// included in this node's own vertex and gossiped onward. reason mirrors
+// innerTx's: "invalid_submission" for a structural failure, "malformed_shape"
+// for a shape-gate refusal.
+func ingestATX(body []byte) (atx []byte, hash []byte, reason string, err error) {
+	tx, reason, err := innerTx(body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, reason, err
 	}
 
-	return body, copyHash(tx.HashBytes()), nil
+	return body, copyHash(tx.HashBytes()), "", nil
 }
 
 // innerTx returns an ATX body's nested transaction once it is structurally
 // sound and its shape passes the network-wide gate. It recovers from the panic
 // FlatBuffers raises on malformed bytes, so every path handing it untrusted
-// bytes — a client submission, a gossiped body — is covered.
-func innerTx(body []byte) (tx *types.Transaction, err error) {
+// bytes — a client submission, a gossiped body — is covered. reason names
+// which class of ingress.tx.rejected failure occurred when err is non-nil:
+// "invalid_submission" for a structural failure (parse/presence/hash, the same
+// vocabulary the raw-transaction path uses) or "malformed_shape" for a
+// ValidateShape refusal — so every seam calling innerTx labels the same way.
+func innerTx(body []byte) (tx *types.Transaction, reason string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			tx, err = nil, fmt.Errorf("malformed attested transaction")
+			tx, reason, err = nil, "invalid_submission", fmt.Errorf("malformed attested transaction")
 		}
 	}()
 
@@ -169,18 +176,18 @@ func innerTx(body []byte) (tx *types.Transaction, err error) {
 
 	tx = parsed.Transaction(nil)
 	if tx == nil {
-		return nil, fmt.Errorf("attested transaction missing transaction")
+		return nil, "invalid_submission", fmt.Errorf("attested transaction missing transaction")
 	}
 
 	if len(tx.HashBytes()) != 32 {
-		return nil, fmt.Errorf("attested transaction has invalid hash")
+		return nil, "invalid_submission", fmt.Errorf("attested transaction has invalid hash")
 	}
 
 	if err := validation.ValidateShape(tx); err != nil {
-		return nil, fmt.Errorf("attested transaction shape rejected:\n%w", err)
+		return nil, "malformed_shape", fmt.Errorf("attested transaction shape rejected:\n%w", err)
 	}
 
-	return tx, nil
+	return tx, "", nil
 }
 
 // referencesOnlySingletons reports an error if the transaction references any
