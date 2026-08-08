@@ -232,7 +232,9 @@ func (lc *LightClient) Ancestors(object [32]byte) ([]index.ParentLeaf, error) {
 // Roots are matched, never rounds (see this file's freshness note). When the
 // newest attested root is not the answer's, the index moved between the two
 // reads and this waits for a bundle at or past the answer's own frontier; if
-// the roots still differ, the answer is stale and the caller re-reads.
+// the roots still differ, the answer is stale and the caller re-reads — the
+// same retry contract as ErrUnanchored (the live-unproven-read case above),
+// so this wraps it too rather than returning a distinct sentinel.
 func (lc *LightClient) attest(anchor network.ProvedIndexAnchor) (VerifiedAnchor, error) {
 	if !anchor.Anchored {
 		return VerifiedAnchor{}, ErrUnanchored
@@ -253,8 +255,8 @@ func (lc *LightClient) attest(anchor network.ProvedIndexAnchor) (VerifiedAnchor,
 	}
 
 	if attested.IndexRoot != anchor.IndexRoot {
-		return VerifiedAnchor{}, fmt.Errorf("the index moved under the read: answer at root %x, attested root %x",
-			anchor.IndexRoot[:8], attested.IndexRoot[:8])
+		return VerifiedAnchor{}, fmt.Errorf("the index moved under the read: answer at root %x, attested root %x: %w",
+			anchor.IndexRoot[:8], attested.IndexRoot[:8], ErrUnanchored)
 	}
 
 	return attested, nil

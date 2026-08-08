@@ -8,10 +8,15 @@ import (
 	"BluePods/internal/network"
 )
 
-// ErrUnanchored reports an answer taken against tree state no committed
-// frontier has recorded yet: the serving node sits between a mutation and the
-// commit that closes its batch, so no bundle for that root can exist. It is
-// the spec §5 live unproven read, and the caller's move is to retry. Every
+// ErrUnanchored reports an answer the caller's move is to retry. It covers two
+// cases under the same contract: the live-unproven-read case, an answer taken
+// against tree state no committed frontier has recorded yet (the serving node
+// sits between a mutation and the commit that closes its batch, so no bundle
+// for that root can exist — the spec §5 live unproven read); and the
+// stale-answer case, an answer whose root the newest attested bundle still
+// does not match after waiting for a frontier at or past it (the index moved
+// again during the wait). Both name the same retry contract, so LightClient
+// wraps rather than minting a second sentinel for the stale case. Every
 // LightClient method that reads a proved answer can return it.
 var ErrUnanchored = errors.New("answer is not anchored: the node's index sits ahead of its last committed frontier")
 
