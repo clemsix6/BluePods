@@ -1,4 +1,4 @@
-# BluePods: A Sharded Object-Oriented Blockchain with DAG Consensus
+# BluePods: a sharded object-oriented blockchain with DAG consensus
 
 ## Abstract
 
@@ -10,7 +10,7 @@ This document describes the architecture, the reasoning behind key design decisi
 
 ---
 
-## 1. Design Principles
+## 1. Design principles
 
 These are the assumptions that drive every design decision in BluePods. Some are obvious in retrospect, others were only clear after trying the alternatives.
 
@@ -26,7 +26,7 @@ These are the assumptions that drive every design decision in BluePods. Some are
 
 ---
 
-## 2. Data Model
+## 2. Data model
 
 ### Objects
 
@@ -43,7 +43,7 @@ This model is conceptually similar to Sui's object model but diverges in how rep
 
 Why 4 KB? Because almost everything fits. A wallet with metadata is a few hundred bytes, a small record with its attributes is 1-2 KB, a DeFi position is under 1 KB. The limit also means objects can be included directly in transactions without blowing up message sizes. For larger payloads, an off-chain storage layer with erasure coding is planned, where only metadata and availability certificates would live on-chain.
 
-### Hierarchy and Cascade Control
+### Hierarchy and cascade control
 
 Objects form a forest. Every object hangs off a parent, and following the parent chain upward always ends at a key, because only a `KeyRoot` edge terminates a walk. That terminal key is the object's **controller**, and controlling it means controlling everything beneath it: if you control an object, you control its children, recursively. This is the Sui object-owns-object model, and it is what makes "my objects" a structure rather than a list a client has to keep for itself.
 
@@ -55,7 +55,7 @@ The edge set is authenticated. Both directions of it, child-to-parent and parent
 
 Moving an object to another parent and destroying it are not application logic. They are declared operations carried in the transaction and applied by every node without pod execution (Section 7); a pod may choose a created object's parent, but never change an existing object's.
 
-### Standard Objects and Singletons
+### Standard objects and singletons
 
 Objects come in two flavors, determined by their replication factor:
 
@@ -65,7 +65,7 @@ Objects come in two flavors, determined by their replication factor:
 
 Singletons benefit from a key optimization: since every validator already has them locally, they are excluded from the transaction body and do not require attestation. Only their ID and expected version appear in the transaction header. This saves bandwidth and eliminates an entire collection round for singleton-only transactions.
 
-### Versioning and Conflict Detection
+### Versioning and conflict detection
 
 Every time an object appears in the MutableRefs list of a successful transaction, its version increments by 1, regardless of whether the pod actually changed its content. This ensures that version tracking is deterministic and deducible from the transaction header alone, without executing the pod.
 
@@ -73,7 +73,7 @@ Conflict detection is straightforward: a transaction declares the expected versi
 
 In practice, this means two transactions modifying the same object will conflict if submitted concurrently: the first to commit wins, the second gets a version mismatch and the client retries. Sui does the same thing. It is not ideal (eventually some form of batching or sequencing would be better), but for an MVP it works.
 
-### Object References in Transactions
+### Object references in transactions
 
 A transaction declares its object dependencies through two lists:
 
@@ -84,7 +84,7 @@ A transaction may reference up to 40 objects total across both lists. References
 
 ---
 
-## 3. Domain Name System
+## 3. Domain name system
 
 The network provides a protocol-level naming system that maps human-readable identifiers to object IDs. Instead of referencing `0x7a3f8b2c...`, developers and users can use names like `system.validators` or `myapp.config`.
 
@@ -94,7 +94,7 @@ The registry is derived state: every node computes it from the same committed tr
 
 A leaf holds the name, the object it resolves to, the owner, and the lease's expiry epoch. The name rides inside the leaf rather than only in the tree position, so a proof is self-describing: a verifier who knows only the claimed name checks it against the leaf it decoded instead of trusting the server's framing. Resolution is a point lookup, answerable with an inclusion proof when the name exists and an absence proof when it does not. The registry is included in state snapshots for new validator synchronization.
 
-### Namespaces and Registration
+### Namespaces and registration
 
 Names are dotted, and the namespace of a dotted name is its **suffix**: the parent of `x.y` is `y`. Registering `x.y` therefore requires holding a current lease on `y`, which recursively makes the first-come-first-served rule real. Bare roots are first come, first served. The `system` namespace is reserved and closed in both directions: the bare root `system` is unregistrable, which under the suffix rule leaves every `*.system` name permanently unclaimable because no key can ever own the parent that would authorize one, and names beginning with the literal label `system.` are rejected outright. An expired namespace mints no sub-names: grace reserves the right to renew, never continued authority.
 
@@ -102,7 +102,7 @@ Registration and every later change to a name are declared operations carried in
 
 The leaf's owner is the registrant, or whoever a transfer handed the name to. Renewal, repointing, transfer, and deletion require the sender to be that owner. Naming a just-created object takes two transactions, since a transaction carries either declared operations or a pod call; the client library orchestrates the pair.
 
-### Leases and Expiry
+### Leases and expiry
 
 A name is leased, not owned. Registration and renewal pay a rental rate multiplied by the declared term in epochs, consumed immediately into the epoch reward pool. A refundable deposit was the alternative and deters squatting not at all, since the squatter gets it back. Escrowing the rent and recognizing it epoch by epoch was the other alternative, and it would touch every leaf every epoch, rewriting the tree wholesale.
 
@@ -112,9 +112,9 @@ A name stops resolving the moment it is past its expiry epoch, in execution and 
 
 ---
 
-## 4. Storage Distribution
+## 4. Storage distribution
 
-### Rendezvous Hashing
+### Rendezvous hashing
 
 For standard objects, holders are determined by Rendezvous Hashing (also known as Highest Random Weight hashing). For each object, every validator's score is computed as `BLAKE3(objectID || validatorPubkey)`. Validators are sorted by score in descending order, and the top N become the holders, where N is the object's replication factor.
 
@@ -122,7 +122,7 @@ This approach has a critical property: **minimal disruption on validator changes
 
 Any participant can independently compute the holder list for any object using only the object ID, its replication factor, and the current validator set. The computation is purely deterministic and requires no network communication.
 
-### Replication Factor Tradeoffs
+### Replication factor tradeoffs
 
 The replication factor creates a direct tradeoff between availability and cost:
 
@@ -139,7 +139,7 @@ Applications choose the appropriate factor based on their availability requireme
 
 ## 5. Consensus
 
-### The DAG Structure
+### The DAG structure
 
 BluePods uses a leaderless DAG-based consensus inspired by Mysticeti. The fundamental unit is a **vertex**, a data structure produced by a single validator, split into a compact signed header and a body:
 
@@ -149,7 +149,7 @@ BluePods uses a leaderless DAG-based consensus inspired by Mysticeti. The fundam
 
 Unlike traditional blockchains where a single leader proposes a block, every validator produces vertices in parallel. This eliminates the leader bottleneck and allows the network to utilize the aggregate bandwidth of all validators simultaneously.
 
-### Rounds and Quorum
+### Rounds and quorum
 
 The DAG progresses through sequential rounds. A vertex at round N must include parent links to vertices from round N-1, and the round advances only once its producers carry a BFT supermajority. Quorum is stake-weighted, not a head count: the protocol sums the capped effective stake of the round's producers, taken from the epoch holder snapshot, and applies the exact integer test `3 × capped_sum >= 2 × total`. Commit weighs against that snapshot, and production weighs against the same one, so they cannot diverge across an epoch boundary. (Production's quorum check falls back to the live validator set only when no snapshot resolves for the round; that is a local gate on whether this node produces, never a decision on the committed log, so it cannot fork it. Commit stays the sole authority.) This requirement prevents the DAG from fragmenting: a validator cannot advance without acknowledging a supermajority-by-stake of the previous round's output. (A receiving node still requires at least one known-validator parent during convergence; the authoritative stake quorum is enforced where every node agrees, at production and commit.)
 
@@ -157,7 +157,7 @@ Voting weight is capped per validator at a fraction of the total stake, with an 
 
 Each validator produces at most one vertex per round. A liveness timer (500ms) triggers vertex production when the network is idle, ensuring continuous progress even without incoming transactions.
 
-### Commit Rule and Finality
+### Commit rule and finality
 
 Each round has a designated anchor producer, chosen deterministically by hashing the round number over the epoch holder snapshot. Designation rotates over the committed members that held at least one vertex in committed history as observed at the snapshot's freeze, so eligibility is frozen with the holder snapshot rather than evaluated live: a validator that registered but had not produced by the freeze stays ineligible for the whole epoch that snapshot serves, and becomes designatable only at the next freeze that observes its first committed vertex. While no member has produced, at genesis, the full snapshot is eligible. The anchor is not a production leader: every validator still produces every round, and the anchor is only the pivot the commit rule keys on.
 
@@ -167,13 +167,13 @@ Committing an anchor applies its entire not-yet-committed causal history, across
 
 The commit check runs every 50ms. Rounds are decided sequentially: the protocol stops at the first undecided round and waits for the evidence to arrive rather than skipping ahead, because every validator must process commits in the same order.
 
-### Conflict Resolution Through Ordering
+### Conflict resolution through ordering
 
 When two transactions declare the same object in their MutableRefs with the same expected version, the DAG determines which one succeeds. The committed ordering is deterministic: if the conflicting transactions are in different vertices, commit order decides priority. If they are in the same vertex, lexicographic ordering of transaction hashes provides a deterministic tiebreaker.
 
 The key insight is that **conflict detection requires no execution**. Every validator can compute the current version of any object by scanning the committed DAG history: for each committed transaction, objects in its MutableRefs have their version incremented by 1. This tracking is lightweight: an entry is 55 bytes in persistent storage, holding the version, the replication, the locked deposit, the parent reference with its kind tag, and the count of nested children. Everything the protocol must decide without execution, version conflicts and cascade control alike, is decided from those bytes.
 
-### The Detached Vertex Header
+### The detached vertex header
 
 Anchoring a root in every vertex is worth nothing if verifying the anchor means downloading the vertex. The header is therefore detached from the body, and it is what the producer signs.
 
@@ -183,7 +183,7 @@ The layout is normative rather than incidental. It carries no lengths and no sep
 
 The epoch field carries the producer's own epoch, which tells a verifier which validator set the header belongs to. It is the producer's own word, so it is not taken at face value: ingress accepts it only within one epoch either side of the epoch the anchored frontier itself commits under, and a serving node assembling a bundle derives the epoch from that frontier rather than reading it off a header, since a producer must not be able to misname the tree its own quorum is weighed by.
 
-### Anchoring the Index Root
+### Anchoring the index root
 
 Each producer embeds in its header the root of the verifiable index at its own committed frontier, together with that frontier's round. Four Merkle trees stand behind that one value: the domain registry keyed by name, the parent edge of every object keyed by child, a two-level map of each parent's children, and the epoch's validator set with its capped stakes. Each is a sparse Merkle tree over BLAKE3 key positions with empty-subtree compression, so its root is a pure function of its key-value set with no insertion order to agree on and no rebalancing, inclusion and absence cost the same, and a client reading one node's answer verifies it against the root instead of trusting the node. The four sub-roots fold into one combined root in a fixed order, which leaves room for further indexes behind the same anchor.
 
@@ -195,7 +195,7 @@ The marginal cost is 32 bytes per vertex plus that rehash, and one honest cost b
 
 The whole index is derived state. No node is trusted to compute it honestly, because no node is asked to: it is a deterministic function of the committed transaction stream, which is exactly why anchoring it in consensus requires no new signing step and no new trust assumption.
 
-### Enforcing the Anchor
+### Enforcing the anchor
 
 A producer that lies about the root would fork the index. Three stages make the lie worthless, following the same doctrine as the rest of the protocol: ingress validates what a receiver can reliably check at that moment, and convergence-sensitive checks are enforced where every node agrees, at production and at commit.
 
@@ -207,7 +207,7 @@ A producer that lies about the root would fork the index. Three stages make the 
 
 There is consequently no index-specific slashing to build. A lie is never referenced by a node able to check it, it cannot fool a client who requires a stake quorum a minority cannot forge, and if it reaches committed history it convicts its author with his own signature everywhere. Root history retention is a bounded window of recent rounds plus one checkpoint per epoch boundary, enough to judge lagging producers and to serve clients. Quarantine marks and fault records are node-local by construction and deliberately outside every convergence-checked structure: whether a node could disprove an anchor depends on how far its own commit had advanced, so two honest nodes legitimately hold different sets and must still agree on state.
 
-### Verified Reads
+### Verified reads
 
 A client reads the index from one node and verifies the answer itself. It asks that node to resolve a name, list a parent's children, or walk an ancestry; it gets the value, a Merkle proof, and an anchor bundle, which is a set of producer-signed headers all reporting the same committed round and index root and together carrying a stake quorum. It then checks locally that the headers are signed by validators of the right epoch, that they reach the quorum, and that the proof folds to the root they attest. The serving node assembles the bundle once per frontier from vertices it holds anyway and caches it, so one bundle serves every query at that frontier.
 
@@ -219,7 +219,7 @@ Freshness is the client's explicit choice. The anchored root covers committed st
 
 A proved read and an anchor bundle rarely name the same round, since the bundle serves the highest frontier a quorum has been observed for and a query answers at the serving node's own. What has to match is the root, not the round: most committed rounds change no index entry, so the two roots are usually the same 32 bytes, and the client waits only when the index has genuinely moved.
 
-### Bootstrap and Convergence
+### Bootstrap and convergence
 
 When the network starts or new validators join, a grace period relaxes the quorum requirements:
 
@@ -230,13 +230,13 @@ When the network starts or new validators join, a grace period relaxes the quoru
 
 ---
 
-## 6. Attestation and Aggregation
+## 6. Attestation and aggregation
 
-### The Problem with Broadcast Voting
+### The problem with broadcast voting
 
 In traditional BFT consensus, validators broadcast their votes to the entire network. With N validators, each vote generates N messages, and each round generates N² total messages. At 200 validators this is manageable (40,000 messages). At 2,000 validators it becomes untenable (4 million messages per round).
 
-### Direct Collection, off-chain
+### Direct collection, off-chain
 
 BluePods replaces broadcast voting with **direct collection**, and the collection runs off-chain in a client daemon rather than on a validator. The daemon contacts only the holders of the referenced objects, not the entire network, over QUIC. With a typical replication factor of 50, this means 50 direct messages instead of thousands of broadcasts.
 
@@ -256,13 +256,13 @@ The per-object attestation quorum threshold is **(replication × 67 + 99) / 100*
 
 The daemon implements fail-fast: as soon as enough negative responses accumulate to make the quorum mathematically impossible, it abandons the collection immediately. For example, with 50 holders and a quorum of 34, receiving 17 negatives means only 33 positives are possible, so the collection is abandoned without waiting for the rest.
 
-### Singleton Optimization
+### Singleton optimization
 
 Transactions involving only singletons skip the entire attestation phase. Since every validator already stores every singleton, there is nothing to collect or attest. The transaction is included directly in a vertex and propagated via gossip. This optimization benefits system transactions (staking, parameter updates, validator registration) which primarily interact with singletons.
 
 ---
 
-## 7. Transaction Lifecycle
+## 7. Transaction lifecycle
 
 A complete transaction follows these stages from submission to finality:
 
@@ -272,15 +272,15 @@ A transaction that touches only singletons is submitted raw to any validator ove
 
 The transaction header declares: sender public key, pod ID, function name, Borsh-serialized arguments, ReadRefs, MutableRefs, created object replications, max gas budget, gas coin ID, declared operations, and an Ed25519 signature. A sponsored transaction additionally carries a `fee_payer`, a `sponsor_signature`, and a `valid_until` epoch (see Section 9). These three fields are absent-when-empty: a non-sponsored transaction omits them and serializes byte-identically to one built before sponsorship existed, so its single-sender hash and signature verify unchanged. Declared operations follow the same rule.
 
-### Object Collection
+### Object collection
 
 The daemon refreshes the live epoch and holder set before collecting, so the attested transaction it builds carries the current attestation epoch rather than a stale one cached at startup. It then identifies holders for each standard object via Rendezvous Hashing and contacts them in parallel over QUIC. Singletons are skipped, since every validator has them locally and they are never attested. Upon reaching quorum for all replicated objects, the daemon assembles the attested transaction (ATX) with the collected objects, aggregated BLS signatures, signer bitmaps, and the epoch the attestation was collected in, and submits it to any validator.
 
-### Vertex Production and Gossip
+### Vertex production and gossip
 
 The receiving validator reverifies the ATX, adds it to its pending set, and forwards it to mesh peers over the one-way gossip stream. The forwarded transaction is tagged so a peer tells it apart from a vertex (both are FlatBuffers on the same stream) and adds it to its own pending set rather than misparsing it; without the tag the transaction would be read as a malformed vertex and dropped, stranding any submission that did not land directly on a producer. The validator then includes the pending transaction in its next vertex. The vertex is gossipped with a production fanout of 40 peers. Relaying validators forward with a reduced fanout of 10 to prevent amplification. With these parameters, a vertex reaches the entire network in approximately 3 hops: first hop reaches 40 validators, second hop reaches ~400, third hop covers the rest.
 
-### Consensus and Commit
+### Consensus and commit
 
 The vertex enters the DAG. When referenced by vertices two rounds later by a two-thirds-of-stake quorum, it is committed. All transactions in the vertex become final.
 
@@ -288,15 +288,15 @@ Before a committed transaction takes effect, each node re-verifies its authentic
 
 Because forwarding places a transaction in several validators' pending sets, the same transaction can appear in more than one committed vertex. The commit path is therefore idempotent per transaction: each validator records the hashes it has already processed and skips any repeat, so object creation, fee deduction, and validator-set changes apply exactly once. The hash covers the mutable references and their versions, so a genuine retry against a newer version is a distinct transaction and is not mistaken for a duplicate. Replay of a sponsored transaction is prevented by the same duplicate guard, now keyed on a commit-verified hash, bounded further by `valid_until`.
 
-### Attestation Epoch Validity
+### Attestation epoch validity
 
 Holders change at epoch boundaries, so an attested transaction carries the epoch its attestations were collected in. At commit, each validator recomputes the quorum against the holder snapshot of that epoch, but only after validating the epoch against the round the transaction commits at. The deterministic commit epoch is always accepted; the immediately preceding epoch is accepted only when the commit round still falls within a fixed grace window after the boundary, so an attestation collected late in an epoch and committed shortly into the next still verifies. An attestation that lands outside this window is rejected, and the client recollects against the current epoch and resubmits. The grace window is sized so that, at production epoch lengths, an attestation always commits well within it; only artificially short epochs make the window tight.
 
-### Fee Deduction
+### Fee deduction
 
 After commit, the protocol computes fees from the transaction header and deducts them from the sender's gas coin. This deduction is implicit: it does not increment the gas coin's version, allowing multiple in-flight transactions from the same sender without version conflicts on the gas coin. Fees are always deducted, even if the transaction subsequently fails.
 
-### Version Check and Ownership Validation
+### Version check and ownership validation
 
 Each validator checks that the declared versions match the versions computed from the DAG history. If any version mismatches, the transaction is marked as failed without execution.
 
@@ -304,7 +304,7 @@ A transaction carrying declared operations is routed out here, before the owners
 
 For a pod call the protocol verifies that the sender owns every object in MutableRefs, comparing the sender against the object's parent bytes, which reach it from the source every node reads identically: a replicated object's from the attested copy carried in the transaction, whose BLS quorum proof binds it, a singleton's from local content every node holds. A pod call therefore reaches only objects rooted directly at the sender's key; a nested object is mutated by first reparenting it out, which is a declared operation. Domain references, identified by name rather than ID, are exempt from the check, enabling shared-access patterns through the naming system.
 
-### Declared Operations
+### Declared operations
 
 Some effects must be seen by every node without execution, and pod output cannot carry them: only holders run a pod, so most of the network would never observe them. Reassigning an object, destroying it, and the whole domain lifecycle are therefore **declared operations**, listed in the transaction itself and applied here, in place of execution.
 
@@ -324,7 +324,7 @@ If versions and ownership are valid, each holder of at least one MutableRef obje
 
 The output is bounded by what only holders can see. A pod may set the parent of an object it creates, subject to the creation rule of Section 2, since creating objects forces every validator to execute the transaction anyway; it may never change the parent of an existing object, and an updated object whose parent bytes differ from the attested input's is rejected on a purely local compare. Deletion survives in pod output only where execution is global, meaning the transaction creates objects or all its mutable references are singletons, so every node observes the deletion. That is what keeps the system pod's `merge` working. A sharded object is deleted only through the declared operation.
 
-### Post-Execution
+### Post-execution
 
 Object versions in MutableRefs are incremented. Created objects receive deterministic IDs computed as `BLAKE3(tx_hash || index_u32_LE)` and are stored by their respective holders (computed via Rendezvous Hashing). This eliminates the need for a separate object creation transaction, so finality is achieved in 2 rounds instead of 4. A deletion, declared or from the pod-output carve-out, settles the same way: the storage deposit is released, 95% refunded to the gas coin of the deleting transaction and 5% burned, and the object leaves the tracker and both hierarchy trees.
 
@@ -332,15 +332,15 @@ When a validator becomes a new holder of an existing object (due to an epoch cha
 
 ---
 
-## 8. Execution Model: Pods
+## 8. Execution model: pods
 
-### WASM Runtime
+### WASM runtime
 
 Smart contracts in BluePods are called **pods**. Each pod is a WebAssembly module executed via the **wazero** runtime (a pure-Go, zero-dependency WASM implementation). Modules are compiled once and cached in a pool. Each execution creates an isolated instance with fresh memory, ensuring no state leaks between transactions.
 
 Pods are singletons: their code is replicated on every validator, ensuring any validator can execute any transaction without fetching code from peers.
 
-### Host Interface
+### Host interface
 
 The WASM sandbox exposes four host functions:
 
@@ -353,7 +353,7 @@ The WASM sandbox exposes four host functions:
 
 Four functions. That is the entire attack surface. The pod cannot touch the filesystem, the network, or the system clock. It reads input, runs logic, writes output. Nothing else.
 
-### Input and Output
+### Input and output
 
 The input is a `PodExecuteInput` serialized in FlatBuffers, containing the sender's public key, function name, Borsh-serialized arguments, and all referenced objects (both mutable and read-only, resolved by the protocol before execution).
 
@@ -367,7 +367,7 @@ The output is a `PodExecuteOutput` containing:
 
 There is no domain output. Binding a name is a declared operation, so a pod output that declares one reverts the transaction.
 
-### SDK and Developer Experience
+### SDK and developer experience
 
 A Rust SDK (`pod-sdk`) provides abstractions over the raw host interface:
 
@@ -377,13 +377,13 @@ A Rust SDK (`pod-sdk`) provides abstractions over the raw host interface:
 
 If you have written Solidity or Move, the model will feel familiar: a function receives inputs, performs logic, and returns state changes. The difference is that objects are explicit parameters: you declare what you are going to touch upfront, rather than reaching into a global state tree.
 
-### Gas Metering
+### Gas metering
 
 Gas metering is implemented through WASM instrumentation: a separate tool (`wasm-gas`) injects calls to the `gas()` host function into the pod's bytecode before deployment. This ensures metering is transparent to the developer and cannot be bypassed.
 
 The default gas budget is 10,000,000 units per transaction. If execution exceeds this budget, it is immediately aborted and the transaction reverts. Fees are deducted regardless. Otherwise, an attacker could spam intentionally-failing transactions and consume validator resources for free.
 
-### System Pod
+### System pod
 
 The system pod is the foundational smart contract of the network. It exposes functions covering basic financial operations, object management, staking, and validator management:
 
@@ -408,9 +408,9 @@ Coins follow a minimal structure: a single `balance` field of type uint64, seria
 
 ---
 
-## 9. Fee System
+## 9. Fee system
 
-### Design Rationale
+### Design rationale
 
 The fee system looks simple on the surface, but two decisions behind it took a while to get right:
 
@@ -418,7 +418,7 @@ The fee system looks simple on the surface, but two decisions behind it took a w
 
 **Fees are based on declared max_gas, not actual gas_used.** The gas coin is a singleton. All validators store it and must agree on the amount deducted. But only holders of the mutable objects execute the transaction, and non-holders do not know the actual gas consumed. If fees depended on gas_used, either all validators would have to execute (killing sharding) or non-holders could not update the gas coin correctly. Using the declared max_gas makes the fee deterministic from the header alone. Pods that consume less gas simply declare a lower max_gas and pay less.
 
-### Fee Components
+### Fee components
 
 Each transaction pays four types of fees:
 
@@ -440,7 +440,7 @@ Where:
 
 Every term is derivable from the header alone, which is what lets ingress, commit, summary production, and summary validation all reach the same number without consulting state. Operation fees are consequently charged whether or not the operation applies: the fee is fixed at ingress, long before commit decides validity, exactly as a reverted pod call still pays the gas it declared. Rent is read from the declared term, never from the expiry the operation would produce, which is why a term past the cap reverts instead of being clamped.
 
-### Current Constants
+### Current constants
 
 | Constant | Value | Description |
 |---|---|---|
@@ -471,13 +471,13 @@ The burn once carried a second, anti-gaming role: making it harder for validator
 
 Aggregation moved off-chain to the client, so there is no aggregator role and no aggregator share; the work that used to earn it is no longer done by a validator. Integer rounding remainders go to the epoch pool.
 
-### Fee Summary Verification
+### Fee summary verification
 
 Each vertex contains a pre-computed `FeeSummary` with fields `total_fees`, `total_burned`, and `total_epoch`. Every receiving validator recalculates this summary from the transaction headers and rejects the vertex if it does not match. The summary is computed over the consumed portion only; the storage deposit is locked in the object, not summarized. This summary serves as a cache for epoch reward distribution: instead of re-scanning all transactions at epoch boundary, validators sum the `total_epoch` fields across committed vertices.
 
 Since the scarcity burn was removed, `total_burned` is always zero. The field is vestigial and soft-deprecated: it is kept in the schema so non-sponsored transactions and existing vertices serialize byte-identically, but it carries no value.
 
-### Storage Deposits and Refunds
+### Storage deposits and refunds
 
 Every created object locks a storage deposit in its `fees` field, computed as `storage_fee × effective_rep(replication) / total_validators + index_entry_fee`. The deposit is debited from the gas coin at creation but is never pooled: it stays locked in the object as a deposit, not a fee. The debit at creation and the amount stamped on the object go through the same shared function reading the same live validator count, so the debited storage equals the stamped deposit and total supply is unchanged at creation.
 
@@ -489,13 +489,13 @@ A deposit is also locked only when the object is actually created. A created-obj
 
 On deletion, 95% of the deposit is refunded and 5% is burned, index term included. The burn prevents spam through rapid creation/deletion cycles, and it applies to index entries for exactly the same reason it applies to bodies, since a creation and deletion cycle churns the trees too; the burned remainder leaves total supply (Section 10). The refund follows the gas coin of the delete transaction: a self-paid delete refunds the owner, and a sponsored delete refunds that delete's sponsor. The 5% deletion burn is the only burn in the protocol.
 
-### Gas Coin Mechanics
+### Gas coin mechanics
 
 The gas coin is a Coin singleton (replication=0) owned by whoever pays the fee. It is referenced in a dedicated `gas_coin` field in the transaction header, separate from the business-logic inputs. This separation ensures that fee deduction does not interfere with the transaction's object references. At commit the protocol checks that the gas coin's owner is the sender, or the `fee_payer` for a sponsored transaction.
 
 Gas coin modifications are **implicit protocol operations**: they change the balance but do not increment the version. This is critical: it allows a sender to have multiple transactions in flight simultaneously without version conflicts on their gas coin. Fee deductions are applied sequentially in DAG-committed order.
 
-### Sponsored Transactions
+### Sponsored transactions
 
 A zero-balance new user cannot make a first transaction, because every value-bearing transaction needs a funded gas coin owned by the payer. The fix is native sponsored transactions, done the protocol-level way (a fee payer baked into the transaction) rather than layered on top in a separate account-abstraction contract.
 
@@ -503,7 +503,7 @@ A sponsored transaction carries a `fee_payer` (the sponsor's public key), a `spo
 
 ---
 
-## 10. Validator Management
+## 10. Validator management
 
 ### Epochs
 
@@ -513,7 +513,7 @@ Genesis is initial state, not transactions. The initial coin allocation, the fou
 
 The genesis epoch is the exception: it holds no frozen snapshot. Its set is still forming as the founding validators register, so freezing it at process startup would capture a partial, per-node-divergent membership, and attestation verification would then recompute holders against a set the client daemon never collected from. The genesis epoch therefore tracks the live validator set, which converges to the same set the daemon syncs. The first frozen snapshot is taken at the first epoch boundary, where the set is already stable.
 
-### Epoch Transitions
+### Epoch transitions
 
 At each epoch boundary, the protocol executes the following steps in order:
 
@@ -523,7 +523,7 @@ At each epoch boundary, the protocol executes the following steps in order:
 4. **Counter reset**: epoch fees, round production counters, and pending additions are cleared.
 5. **Epoch increment**: the epoch counter advances.
 
-### Registration and Deregistration
+### Registration and deregistration
 
 Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, and BLS public key (48 bytes). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
 
@@ -531,11 +531,11 @@ Validators join by submitting a `register_validator` transaction containing thei
 
 Deregistration is a two-phase process: a `deregister_validator` transaction places the validator in a pending removal list, but the validator remains active until the next epoch boundary. This ensures no disruption mid-epoch.
 
-### Churn Limiting
+### Churn limiting
 
 To maintain network stability, the number of validators added or removed per epoch is capped. When pending removals exceed the limit, they are sorted by public key (for deterministic ordering across all validators) and only the first N are processed. Excess removals are deferred to the following epoch. The same logic applies to additions.
 
-### Staking and Bonding
+### Staking and bonding
 
 Stake is the network's only Sybil defense: it gives a validator its voting weight in consensus and its weight in the reward, and (once slashing lands) it is the slashable collateral. Stake is a field on the validator's record, not a flag on coins. Bonding debits a coin the validator owns and credits its self-stake; unbonding reverses it. A validator's `effective_stake` is its self-stake plus the stake delegated to it.
 
@@ -552,7 +552,7 @@ Most of the supply on an adopted cloud is user working capital, not validator st
 - **Unbonding.** Undelegating destroys the position and returns principal plus accrued reward (subject to the future unbonding delay, as for self-stake).
 - **Jailing.** A jailed validator's effective stake stops counting toward the quorum and its delegators stop accruing reward, without anyone needing to act; delegators can redelegate. The jail mechanism (zeroing weight, stopping accrual) ships now. The automatic fault trigger that decides when to jail (liveness faults, equivocation) is part of the dispute and fault-proof system that is deferred together with slashing, so at launch the live weight-removal path is deregistration. Jailing is not presented as an active automatic defense yet.
 
-### Reward Distribution
+### Reward distribution
 
 At each epoch boundary, the reward pool (accumulated consumed fees plus any issuance) is distributed to validators by a weighted formula:
 
@@ -577,7 +577,7 @@ Per-object attestation stays equal-weight: one holder, one vote, with holders as
 
 Stake-weighting is kept even though slashing is deferred, because equal weight is Sybil-able and strictly worse. An attacker buying two-thirds of the stake pays an enormous capital cost and destroys its own holdings by attacking; the cap bounds concentration; reward-withholding and removal handle misbehavior. This is the same posture as Sui, Aptos, and Solana. Economic punishment (slashing) is added later (Section 14).
 
-### Monetary Policy: Adaptive Issuance
+### Monetary policy: adaptive issuance
 
 Issuance is governed by an adaptive control loop, a thermostat, evaluated at each epoch boundary and denominated in epoch events rather than time, so it depends on no clock. Money never reads a clock: tying issuance to wall-clock time would invite a collective bias to over-state elapsed time that a median of timestamps cannot stop from a majority.
 
@@ -585,7 +585,7 @@ The thermostat targets a band around the staking ratio (`total_bonded / total_su
 
 The thermostat is the implemented mechanism but it is opt-in: a node leaves it off unless it is enabled by configuration, so issuance is not active by default. It is meant to be turned on together with reward crediting, so that every minted token is always backed by a credit and the supply invariant holds. Issuance is the bootstrap incentive that pays and attracts validators from genesis, which is why the mechanism ships now while the congestion-sensitive dynamic fee, which only matters under traffic a pre-launch network cannot exhibit, does not.
 
-### Supply Accounting
+### Supply accounting
 
 `total_supply` is a maintained protocol counter, not a derived sum. It is set at genesis, increased only by protocol issuance, and decreased only by the 5% deletion burn (and future slashing). There is no user-callable mint; the only ways tokens come into existence are genesis seeding and issuance. The counter is maintained in the commit path, persisted, and carried in state snapshots under the snapshot checksum. It feeds the thermostat's denominator.
 
@@ -599,15 +599,15 @@ sum(coin balances) + total_bonded + sum(locked storage deposits) + fees_in_fligh
 
 ---
 
-## 11. Network Architecture
+## 11. Network architecture
 
-### QUIC Mesh
+### QUIC mesh
 
 Every validator maintains a persistent QUIC connection to every other validator. With 5,000 validators, this represents roughly 5,000 connections per node. QUIC provides stream multiplexing (parallel requests without head-of-line blocking), persistent connections (no repeated handshakes), and integrated TLS 1.3 encryption.
 
 On machines with 64 GB of RAM, the memory overhead of 5,000 connections (approximately 250 MB) is negligible. This is not a "run a validator on your laptop" design. It targets machines with serious hardware and good network connectivity.
 
-### Gossip Protocol
+### Gossip protocol
 
 Vertices are propagated through gossip rather than direct broadcast to avoid the O(n²) message complexity of full broadcast. The gossip parameters are:
 
@@ -616,7 +616,7 @@ Vertices are propagated through gossip rather than direct broadcast to avoid the
 
 With a production fanout of 40, a vertex reaches the entire network in approximately 3 hops: 40 → 400 → 4,000+. A deduplication cache with TTL prevents message amplification loops.
 
-### QUIC Client Surface
+### QUIC client surface
 
 There is no HTTP. Clients interact with the network over the same QUIC transport the validators use among themselves, through a small set of length-prefixed messages on the node's single listener:
 
@@ -638,7 +638,7 @@ The index messages are what makes a single node's answer worth anything: a prove
 
 A connection that presents a validator certificate joins the trusted mesh; every other connection is served in an ephemeral, rate-limited client tier with per-IP caps and a QUIC Retry source-address check, separate from the mesh. Object retrieval includes transparent routing: if the queried validator is not a holder, it forwards the request to a computed holder over the QUIC mesh via Rendezvous Hashing. A local-only flag disables routing to prevent cascading queries. The operational messages replace the former REST API; HTTP liveness probes and metrics scraping are covered by a small CLI built on the client library, which also builds the declared-operation transactions for object and name management directly, with no pod involved.
 
-### Snapshot and Synchronization
+### Snapshot and synchronization
 
 New validators synchronize through state snapshots:
 
@@ -659,29 +659,29 @@ A restart is not a join. A node that already owns the committed history in its d
 
 ---
 
-## 12. Security Analysis
+## 12. Security analysis
 
-### Object Attestation Security
+### Object attestation security
 
 Can a minority of malicious holders corrupt an attested object? No. Each holder computes the object hash independently from its local copy. A holder sending a falsified object or hash produces an attestation that does not match the honest majority. It is effectively isolated from the quorum.
 
 With a replication factor of 50, an attacker would need to control 34 holders of a specific object to forge a quorum, a targeted attack that becomes exponentially harder as the replication factor increases. The attacker cannot choose which objects they hold: holder assignment is determined by Rendezvous Hashing using the validator's permanent public key.
 
-### Double-Spend Prevention
+### Double-spend prevention
 
 Double-spending is prevented by version tracking. If a user submits two transactions spending the same coin, both declare the same version. The first transaction to be committed increments the version; the second encounters a version mismatch and is rejected. This holds even if the transactions are collected by different clients and included in different vertices. The DAG's deterministic ordering ensures consistent conflict resolution.
 
-### Client Daemon Trust Model
+### Client daemon trust model
 
 The client daemon that collects attestations has no trust requirements at all: the validator reverifies every attested transaction on receipt and trusts nothing the daemon sends. The daemon cannot forge holder signatures (it lacks their private keys), cannot exclude valid attestations (any validator recomputes the quorum independently), and cannot alter transaction content (the user's Ed25519 signature covers the transaction hash). Because the attestation binds only the object hash, a daemon could in principle staple valid attestations to a different transaction touching the same objects at the same versions; the lifecycle layer (the owner and version checks) is what rejects that, which is why it runs in full on every attested transaction and is not optional.
 
 A misbehaving daemon can only cause a liveness failure for its own submission, which the client resolves by recollecting and resubmitting. The system remains safe regardless of what the daemon does.
 
-### Transaction Authenticity at Commit
+### Transaction authenticity at commit
 
 A transaction's authenticity, its sender signature, its sponsor signature when sponsored, and its hash, is verified in the commit path on every node, not only at the ingress of the node that first received it. A transaction can reach commit inside a gossiped, producer-signed vertex without ever passing the local ingress check of the node that commits it. If authenticity were checked only at ingress, a relaying node could embed a forged transaction in an otherwise valid vertex and have it commit. The commit-path check recomputes the canonical body hash from the same shared primitive the builder and ingress use (so the three sites cannot drift), checks it against the declared hash, and verifies the sender's signature; for a sponsored transaction it also verifies the sponsor's signature against `fee_payer`. Because the sponsor signs the same body hash, a forged sponsor signature naming a victim as fee payer cannot drain that victim's coin, and neither signature can be swapped after the other is made.
 
-### Ownership Enforcement
+### Ownership enforcement
 
 Ownership is enforced at the protocol level, not inside pods, so a buggy or malicious pod cannot bypass it. Two checks do it, and both read data every node holds identically.
 
@@ -691,19 +691,19 @@ For a declared operation, control is resolved by walking the object's parent cha
 
 Domain references are exempt from the mutable-ref check, enabling controlled shared-access patterns. That exemption is exactly why binding a name requires controlling the object it points at: without the rule, a name could alias a victim's object and reach it mutably through the exemption.
 
-### Malicious Vote Detection
+### Malicious vote detection
 
 If a holder signs a hash H but provides data D where `BLAKE3(D) ≠ H`, this constitutes provable on-chain misbehavior. The signed hash and the incompatible data serve as a fraud proof, leading to stake slashing.
 
 If the inconsistency is due to network corruption rather than malice, the client simply requests the data from another holder that signed the same hash. No fraud proof is generated, and no penalty is applied.
 
-### Fee Deduction Safety
+### Fee deduction safety
 
 Fees are always deducted, even on failed transactions. This prevents griefing attacks where an attacker submits transactions designed to fail after consuming validator resources. The `min_gas` requirement (currently 100 units) prevents dust transactions that would cost nearly nothing to submit but still consume processing resources.
 
 As a safety note: arithmetic overflow in fee computation is handled through `safeMul` and `safeAdd` functions that cap at `MaxUint64` instead of silently wrapping around.
 
-### Attestation Flood Defense
+### Attestation flood defense
 
 Moving collection to the client opens one new surface: any client can ask an object's holders for attestations without ever submitting a paid transaction. The primary defense is structural. An attestation signature is deterministic, so a holder computes it once, eagerly, at execution time and stores it next to the object; an attestation request is then a pure read of stored bytes, not fresh signing work. The current-version signature always exists by the time anyone could request it, because a version only becomes current after a holder has executed the transaction that produced it, so there is no cold window an attacker can exploit by enumerating object IDs. Negative and non-current requests are answered with a static error and never a signature, and that rejection sits before the read. A bounded fallback covers a crash or a holder-set reshuffle: on a store miss a holder signs and stores only for an object it actually holds at its current version, so the work stays bounded by the real, paid rate of state change.
 
@@ -711,19 +711,19 @@ What remains is a generic network flood, handled by standard ingress hardening l
 
 ---
 
-## 13. Scaling Characteristics
+## 13. Scaling characteristics
 
 Fair warning: nothing in this section is benchmarked. These are back-of-the-envelope estimates based on the protocol design. Real performance will depend on network conditions, hardware, geography, and workload. Proper benchmarking on a distributed testnet is future work. For now, this is just reasoning about what the architecture should allow.
 
-### Latency Factors
+### Latency factors
 
 Finality latency is determined by the critical path: one round-trip to collect attestations from holders, gossip propagation across ~3 hops, and 2 DAG rounds for the commit rule. Each of these steps depends on inter-validator latency, which varies with network topology and geographic distribution. BLS aggregation itself is negligible (sub-millisecond). The architecture is designed to minimize the number of sequential network round-trips, but actual finality time is an open question until measured on a real distributed deployment.
 
-### Bandwidth Scaling
+### Bandwidth scaling
 
 Network load scales linearly with throughput because each transaction is a fixed-size message propagated through gossip. With an average transaction size of ~1.5 KB for common operations (transfers, splits), the bandwidth cost per validator is roughly proportional to the total TPS. The gossip mechanism (fanout 40 for production, 10 for relay) adds a constant multiplier. The exact bandwidth requirements at scale depend on vertex batching behavior and the proportion of singleton-only transactions (which skip the attestation phase entirely).
 
-### Storage Costs
+### Storage costs
 
 Storage costs are deterministic from the protocol parameters:
 
@@ -735,7 +735,7 @@ Object storage depends on holder assignments. A validator's share of stored obje
 
 ---
 
-## 14. Open Problems
+## 14. Open problems
 
 These are the problems I know about and have not solved yet:
 
