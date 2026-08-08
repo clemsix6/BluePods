@@ -313,14 +313,13 @@ func TestExecuteTx_EmitsTxCommitted_Ownership(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	owner := Hash{0x02}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 	coinStore.SetObject(buildTestCoinObject(objID, 1000, owner, 0))
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	vertexHash := Hash{0xA7}
 

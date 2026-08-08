@@ -924,17 +924,19 @@ func (d *DAG) settleDeletion(objID, gasCoinID Hash, hasGasCoin bool) uint64 {
 		d.indexer.RemoveObject(objID)
 	}
 
-	if deposit == 0 || d.feeParams == nil {
+	if deposit == 0 {
 		return 0
 	}
 
-	if !hasGasCoin || d.feeParams.StorageRefundBPS == 0 {
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
+
+	if !hasGasCoin || params.StorageRefundBPS == 0 {
 		d.coinStore.SubSupply(deposit) // no recipient: burn the full locked deposit
 		events.SupplyBurned(deposit, "deletion")
 		return 0
 	}
 
-	refund := deposit * d.feeParams.StorageRefundBPS / bpsMax
+	refund := deposit * params.StorageRefundBPS / bpsMax
 	burned := deposit - refund
 
 	// creditCoin also raises coins_total; gate the burn on it landing so a missing
@@ -1024,13 +1026,15 @@ func (d *DAG) proofVerdict(atx *types.AttestedTransaction, commitRound uint64, v
 // only on the fully-covered created-object path, where it is normally locked
 // against the object the pod creates; the caller pools it instead when execution
 // creates no object, so the debited fee never leaks from the supply identity.
-// proceed=true means fees were successfully handled (or fees are disabled).
+// proceed=true means fees were successfully handled (or no coin store is wired).
 // proceed=false means tx must be rejected (missing/invalid gas_coin, min_gas,
 // insufficient funds).
 func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, producer Hash) (FeeSplit, uint64, bool) {
-	if d.feeParams == nil || d.coinStore == nil {
+	if d.coinStore == nil {
 		return FeeSplit{}, 0, true
 	}
+
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
 
 	// No gas coin: reject, unless this is a validator-set-management action.
 	// Genesis is seeded state and protocol actions (issuance, reward crediting,
@@ -1051,8 +1055,8 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 	copy(gasCoinID[:], gasCoinBytes)
 
 	// min_gas anti-spam check
-	if tx.MaxGas() < d.feeParams.MinGas {
-		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", d.feeParams.MinGas)
+	if tx.MaxGas() < params.MinGas {
+		logger.Warn("max_gas below minimum", "max_gas", tx.MaxGas(), "min_gas", params.MinGas)
 		return FeeSplit{}, 0, false
 	}
 
@@ -1091,7 +1095,7 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 
 	// Pool only the consumed portion; the storage deposit stays withheld, locked
 	// against the created object on success or pooled by the caller on failure.
-	return SplitFee(consumed, *d.feeParams), storage, true
+	return SplitFee(consumed, *params), storage, true
 }
 
 // calculateTxFeeSplit splits a transaction's fee into the consumed portion (fed
@@ -1103,13 +1107,11 @@ func (d *DAG) deductFees(tx *types.Transaction, atx *types.AttestedTransaction, 
 // validator count state.computeStorageDeposit reads, so the debited storage
 // equals the stamped deposit and total_supply is unchanged at create time.
 func (d *DAG) calculateTxFeeSplit(tx *types.Transaction, atx *types.AttestedTransaction) (consumed, storage uint64) {
-	if d.feeParams == nil {
-		return 0, 0
-	}
+	params := d.mustFeeParams() // fail loud: see mustFeeParams
 
 	totalValidators := d.validators.Len()
 	for _, rep := range extractCreatedObjectsReplication(tx) {
-		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, d.feeParams.StorageFee, d.feeParams.IndexEntryFee))
+		storage = safeAdd(storage, StorageDeposit(rep, totalValidators, params.StorageFee, params.IndexEntryFee))
 	}
 
 	full := d.calculateTxFee(tx, atx)

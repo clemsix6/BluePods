@@ -224,23 +224,30 @@ func (d *DAG) graceEpochs() uint64 {
 }
 
 // mustFeeParams returns the governed fee parameters and panics when a DAG
-// reaches a consensus decision that depends on them with none wired.
+// reaches a consensus decision that depends on them with none wired. It is
+// the ONLY accessor: every site that reads feeParams — declared-op pricing
+// and the domain lease cap/grace window, deductFees, the fee summary
+// build/validate pair, deletion settlement's refund split, and epoch reward
+// distribution — goes through it rather than checking feeParams for nil and
+// quietly skipping.
 //
 // The rule it enforces is a construction rule: every path builds the DAG with
 // WithFeeParams (package tests use SetFeeSystem), so reaching this panic means
 // a construction path forgot the parameters — and a node that applies domain
-// leases against parameters no other node uses is not degraded, it is forked.
-// The accessors used to fall back to the defaults instead, which is exactly
-// how the listener path stayed silently broken: built with no fee system, it
-// capped lease terms from a package constant while validators capped them from
-// the governed value, so the day MaxTermEpochs moves it reverts operations
-// every validator applies and anchors a domain tree no one else computes.
+// leases, fees, or rewards against parameters no other node uses is not
+// degraded, it is forked. Quietly skipping used to be exactly how the listener
+// path stayed silently broken: built with no fee system, it capped lease terms
+// from a package constant while validators capped them from the governed
+// value, so the day MaxTermEpochs moves it reverts operations every validator
+// applies and anchors a domain tree no one else computes; deductFees and the
+// fee summary had the identical shape (one skipped charging a transaction
+// entirely, another built a fee summary of zero for real transactions).
 // Rejecting the operation instead of panicking would fork just as permanently,
 // only more quietly. Stopping is the only outcome that cannot corrupt the
 // committed log.
 func (d *DAG) mustFeeParams() *FeeParams {
 	if d.feeParams == nil {
-		panic("consensus: domain lease parameters read from a DAG built with no fee parameters (WithFeeParams, or SetFeeSystem in tests)")
+		panic("consensus: fee parameters read from a DAG built with none wired (WithFeeParams, or SetFeeSystem in tests)")
 	}
 
 	return d.feeParams

@@ -147,17 +147,18 @@ func (d *DAG) buildSignedVertex(builder *flatbuffers.Builder, parts vertexParts)
 }
 
 // buildFeeSummary computes and builds the FeeSummary for a set of transactions.
-// Returns the FlatBuffers offset. If fees are disabled, returns an empty summary.
+// Returns the FlatBuffers offset. computeTxFeeSplit (via calculateTxFeeSplit)
+// is where mustFeeParams actually fires: an empty batch, or one whose
+// transactions all lack a gas coin, never touches feeParams at all, matching
+// what a real fee computation would need it for.
 func (d *DAG) buildFeeSummary(builder *flatbuffers.Builder, txs [][]byte) flatbuffers.UOffsetT {
 	var totalFees, totalBurned, totalEpoch uint64
 
-	if d.feeParams != nil {
-		for _, txBytes := range txs {
-			split := d.computeTxFeeSplit(txBytes)
-			totalFees += split.Total
-			totalBurned += split.Burned
-			totalEpoch += split.Epoch
-		}
+	for _, txBytes := range txs {
+		split := d.computeTxFeeSplit(txBytes)
+		totalFees += split.Total
+		totalBurned += split.Burned
+		totalEpoch += split.Epoch
 	}
 
 	types.FeeSummaryStart(builder)
@@ -188,9 +189,12 @@ func (d *DAG) computeTxFeeSplit(txBytes []byte) FeeSplit {
 		return FeeSplit{}
 	}
 
+	// calculateTxFeeSplit calls mustFeeParams itself, so a gas-coin-bearing tx
+	// still fails loud on an unwired DAG; by the time it returns, feeParams is
+	// guaranteed non-nil.
 	consumed, _ := d.calculateTxFeeSplit(tx, atx)
 
-	return SplitFee(consumed, *d.feeParams)
+	return SplitFee(consumed, *d.mustFeeParams())
 }
 
 // buildParentsVector creates the parents vector for a vertex.

@@ -201,7 +201,7 @@ func (d *DAG) distributeEpochRewards(epoch, issuance uint64) (leftover uint64) {
 	produced := d.epochRoundsProduced[epoch]
 	pool := safeAdd(d.epochFees[epoch], issuance)
 
-	if d.feeParams == nil || d.coinStore == nil {
+	if d.coinStore == nil {
 		return pool // nowhere to credit it: carry the whole pool forward
 	}
 
@@ -209,6 +209,8 @@ func (d *DAG) distributeEpochRewards(epoch, issuance uint64) (leftover uint64) {
 	if pool == 0 || totalWeight == 0 {
 		return pool // no reward weight: carry the whole pool forward (harmless if 0)
 	}
+
+	d.mustFeeParams() // fail loud: see mustFeeParams; nothing is actually credited below without a governed schedule backing it
 
 	vals := d.validators.All()
 	weightOf := func(v *ValidatorInfo) uint64 { return d.rewardWeight(v, produced) }

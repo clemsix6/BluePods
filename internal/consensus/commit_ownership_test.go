@@ -23,13 +23,15 @@ func TestExecuteTx_ReplicatedMutationVerdictUniformAcrossHoldership(t *testing.T
 
 	sender := Hash{0x11}
 	objID := Hash{0x77}
+	gasCoin := Hash{0xFE}
+	const maxGas = 1000
 
 	// The single committed artifact both nodes replay. The attested object in
 	// the ATX is owned by the sender, so the transfer is legitimate.
-	atxBytes := buildReplicatedTransferATX(t, sender, objID, sender, 3)
+	atxBytes := buildReplicatedTransferATX(t, sender, objID, sender, 3, gasCoin, maxGas)
 
-	holderSuccess, holderReason := replayReplicatedMutationVerdict(t, buf, atxBytes, objID, sender, true)
-	nonHolderSuccess, nonHolderReason := replayReplicatedMutationVerdict(t, buf, atxBytes, objID, sender, false)
+	holderSuccess, holderReason := replayReplicatedMutationVerdict(t, buf, atxBytes, objID, sender, gasCoin, true)
+	nonHolderSuccess, nonHolderReason := replayReplicatedMutationVerdict(t, buf, atxBytes, objID, sender, gasCoin, false)
 
 	if holderSuccess != nonHolderSuccess || holderReason != nonHolderReason {
 		t.Fatalf("commit verdict diverges by holdership: holder=(success=%v reason=%q) non-holder=(success=%v reason=%q)",
@@ -42,7 +44,7 @@ func TestExecuteTx_ReplicatedMutationVerdictUniformAcrossHoldership(t *testing.T
 // replicated object locally: a holder has it in its coin store and executes,
 // a non-holder has neither the content nor holdership. buf accumulates the
 // captured event stream and is reset before the replay.
-func replayReplicatedMutationVerdict(t *testing.T, buf *bytes.Buffer, atxBytes []byte, objID, objOwner Hash, hasContent bool) (bool, string) {
+func replayReplicatedMutationVerdict(t *testing.T, buf *bytes.Buffer, atxBytes []byte, objID, objOwner, gasCoin Hash, hasContent bool) (bool, string) {
 	t.Helper()
 
 	buf.Reset()
@@ -53,13 +55,18 @@ func replayReplicatedMutationVerdict(t *testing.T, buf *bytes.Buffer, atxBytes [
 	t.Cleanup(dag.Close)
 	disableTxAuth(dag)
 
-	// The ownership check needs a coin store; feeParams stays nil so fee
-	// deduction is a no-op and the ownership check is exercised in isolation.
+	// The ownership check needs a coin store; mustFeeParams forbids leaving
+	// feeParams nil once a real gas-coin-bearing tx reaches deductFees, so a
+	// real schedule is wired and a funded gas coin (owned by the sender,
+	// distinct from the object under test) keeps the ownership check the
+	// only discriminating factor.
 	coinStore := newMockCoinStore()
 	if hasContent {
 		coinStore.SetObject(buildTestCoinObject(objID, 0, objOwner, 3))
 	}
-	dag.coinStore = coinStore
+	feeParams := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &feeParams, func([32]byte, int) []Hash { return nil })
+	coinStore.SetObject(buildTestCoinObject(gasCoin, 1_000_000, objOwner, 0))
 
 	dag.SetIsHolder(func(id [32]byte, replication uint16) bool {
 		return replication == 0 || hasContent
@@ -83,7 +90,7 @@ func replayReplicatedMutationVerdict(t *testing.T, buf *bytes.Buffer, atxBytes [
 // objID, with the attested replicated object (owner objOwner, given replication)
 // carried in the ATX Objects vector. It carries no proofs, so the proof gate is
 // skipped and the transaction reaches the ownership check.
-func buildReplicatedTransferATX(t *testing.T, sender, objID, objOwner Hash, replication uint16) []byte {
+func buildReplicatedTransferATX(t *testing.T, sender, objID, objOwner Hash, replication uint16, gasCoin Hash, maxGas uint64) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -94,12 +101,15 @@ func buildReplicatedTransferATX(t *testing.T, sender, objID, objOwner Hash, repl
 	senderVec := builder.CreateByteVector(sender[:])
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcNameOff := builder.CreateString("transfer")
+	gasCoinVec := builder.CreateByteVector(gasCoin[:])
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddMaxGas(builder, maxGas)
+	types.TransactionAddGasCoin(builder, gasCoinVec)
 	types.TransactionAddMutableRefs(builder, mutVec)
 	txOff := types.TransactionEnd(builder)
 

@@ -1443,15 +1443,14 @@ func TestMutableRefOwnership_SenderIsOwner(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object owned by sender
 	coinStore.SetObject(buildTestCoinObject(objID, 1000, sender, 0))
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1477,16 +1476,15 @@ func TestMutableRefOwnership_NonOwnerRejected(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	owner := Hash{0x02}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object owned by different key
 	coinStore.SetObject(buildTestCoinObject(objID, 1000, owner, 0))
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1512,14 +1510,13 @@ func TestMutableRefOwnership_ObjectNotFound(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	objID := Hash{0xAA}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// Object NOT in store — but version 0 is default so tracker passes
 
-	atxBytes := buildOwnershipTestATX(t, sender, []objectRef{{id: objID, version: 0}})
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, []objectRef{{id: objID, version: 0}})
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1545,9 +1542,10 @@ func TestMutableRefOwnership_NoMutableRefs(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
+	sender := Hash{0x01}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
-	atxBytes := buildOwnershipTestATX(t, Hash{0x01}, nil)
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, nil)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1573,12 +1571,11 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 	disableTxAuth(dag)
 
 	coinStore := newMockCoinStore()
-	dag.SetFeeSystem(coinStore, nil, nil)
-
 	sender := Hash{0x01}
 	other := Hash{0x02}
 	obj1 := Hash{0xAA}
 	obj2 := Hash{0xBB}
+	gasCoin, maxGas := wireOwnershipFees(dag, coinStore, sender)
 
 	// First object owned by sender, second by someone else
 	coinStore.SetObject(buildTestCoinObject(obj1, 1000, sender, 0))
@@ -1589,7 +1586,7 @@ func TestMutableRefOwnership_MultipleRefs(t *testing.T) {
 		{id: obj2, version: 0},
 	}
 
-	atxBytes := buildOwnershipTestATX(t, sender, refs)
+	atxBytes := buildOwnershipTestATX(t, sender, gasCoin, maxGas, refs)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 1, validators[0].pubKey, nil, Hash{})
@@ -1734,8 +1731,11 @@ func TestExecuteTx_NilVerifier(t *testing.T) {
 	}
 }
 
-// buildOwnershipTestATX creates a test ATX with a sender and optional mutable refs.
-func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byte {
+// buildOwnershipTestATX creates a test ATX with a sender, optional mutable
+// refs, and a gas coin: mustFeeParams forbids a DAG with no fee parameters
+// wired, so these ownership tests now run against a real fee schedule
+// (wireOwnershipFees) and must carry the gas coin it structurally requires.
+func buildOwnershipTestATX(t *testing.T, sender, gasCoin Hash, maxGas uint64, mutRefs []objectRef) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
@@ -1746,12 +1746,15 @@ func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byt
 	senderVec := builder.CreateByteVector(sender[:])
 	podVec := builder.CreateByteVector(make([]byte, 32))
 	funcNameOff := builder.CreateString("test_func")
+	gasCoinVec := builder.CreateByteVector(gasCoin[:])
 
 	types.TransactionStart(builder)
 	types.TransactionAddHash(builder, hashVec)
 	types.TransactionAddSender(builder, senderVec)
 	types.TransactionAddPod(builder, podVec)
 	types.TransactionAddFunctionName(builder, funcNameOff)
+	types.TransactionAddMaxGas(builder, maxGas)
+	types.TransactionAddGasCoin(builder, gasCoinVec)
 	if mutVec != 0 {
 		types.TransactionAddMutableRefs(builder, mutVec)
 	}
@@ -1772,6 +1775,21 @@ func buildOwnershipTestATX(t *testing.T, sender Hash, mutRefs []objectRef) []byt
 	builder.Finish(atxOff)
 
 	return builder.FinishedBytes()
+}
+
+// wireOwnershipFees wires a real fee system (mustFeeParams forbids a DAG built
+// with none) and funds a gas coin for owner, distinct from whatever objects
+// the test is checking ownership on, so fee deduction never interferes with
+// the ownership verdict under test. Returns the gas coin ID and a max_gas
+// comfortably above DefaultFeeParams' MinGas.
+func wireOwnershipFees(dag *DAG, coinStore *mockCoinStore, owner Hash) (gasCoin Hash, maxGas uint64) {
+	feeParams := DefaultFeeParams()
+	dag.SetFeeSystem(coinStore, &feeParams, nil)
+
+	gasCoin = Hash{0xFE}
+	coinStore.SetObject(buildTestCoinObject(gasCoin, 1_000_000, owner, 0))
+
+	return gasCoin, 1000
 }
 
 // buildFeeTestATX creates a test ATX with sender, gas_coin, max_gas, and optional created objects.

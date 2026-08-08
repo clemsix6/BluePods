@@ -150,6 +150,18 @@ func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentR
 	builder.PrependUOffsetT(atxOff)
 	txsVec := builder.EndVector(1)
 
+	// The tagged transaction carries no gas_coin (this harness tests delivery-order
+	// determinism, not fee mechanics), so a real fee system would summarize it at
+	// zero (computeTxFeeSplit/validateFeeSummary both skip a gas-coin-less tx).
+	// mustFeeParams now requires the observer DAG to have fee params wired
+	// regardless, so the declared summary must be present to satisfy
+	// validateFeeSummary's "missing fee_summary with N transactions" check.
+	types.FeeSummaryStart(builder)
+	types.FeeSummaryAddTotalFees(builder, 0)
+	types.FeeSummaryAddTotalBurned(builder, 0)
+	types.FeeSummaryAddTotalEpoch(builder, 0)
+	feeSummaryOff := types.FeeSummaryEnd(builder)
+
 	producerVec := builder.CreateByteVector(v.pubKey[:])
 	var hashVec, bodyHashVec, sigVec flatbuffers.UOffsetT
 	if sig != nil {
@@ -168,6 +180,7 @@ func buildObjVertex(sig []byte, v testValidator, round uint64, parents []parentR
 	types.VertexAddProducer(builder, producerVec)
 	types.VertexAddParents(builder, parentsVec)
 	types.VertexAddTransactions(builder, txsVec)
+	types.VertexAddFeeSummary(builder, feeSummaryOff)
 	types.VertexAddEpoch(builder, 0)
 	builder.Finish(types.VertexEnd(builder))
 
@@ -244,7 +257,16 @@ func newUnfrozenObserver(t *testing.T, vals []testValidator, opts ...Option) *DA
 	t.Helper()
 
 	observer := newTestValidator()
-	dag := New(newTestStorage(t), NewValidatorSet(keysOf(vals)), nil, testSystemPod, 0, observer.privKey, nil, opts...)
+
+	// mustFeeParams forbids a DAG built with none: this harness carries no gas
+	// coins (buildObjVertex's tagged transactions summarize at zero), but
+	// validateFeeSummary still requires feeParams wired to reach that zero
+	// rather than panic. Prepended so a caller's own WithFeeParams (none today)
+	// would still win.
+	feeParams := DefaultFeeParams()
+	wiredOpts := append([]Option{WithFeeParams(&feeParams)}, opts...)
+
+	dag := New(newTestStorage(t), NewValidatorSet(keysOf(vals)), nil, testSystemPod, 0, observer.privKey, nil, wiredOpts...)
 	t.Cleanup(func() { dag.Close() })
 
 	for _, v := range vals {
