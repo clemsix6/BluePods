@@ -254,7 +254,7 @@ func (w *Wallet) Bond(c *Client, coinID [32]byte, coinVersion uint64, amount uin
 func (w *Wallet) RegisterValidator(c *Client, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) error {
 	txBytes, err := w.buildRegisterValidatorTx(c.systemPod, quicAddr, blsPubkey, rewardCoin)
 	if err != nil {
-		return err
+		return fmt.Errorf("build register_validator tx:\n%w", err)
 	}
 
 	if err := c.submit(txBytes); err != nil {
