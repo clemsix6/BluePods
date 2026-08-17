@@ -17,7 +17,8 @@ func buildRegisterTxWithGasCoin(t *testing.T, sender Hash, gasCoin Hash) *types.
 
 	builder := flatbuffers.NewBuilder(512)
 
-	args := encodeRegisterValidatorArgsBorsh([]byte("quic://join:1"), make([]byte, 48))
+	key := testRegistrationBLSKey(t, sender)
+	args := encodeRegisterValidatorArgsBorsh([]byte("quic://join:1"), key.PublicKeyBytes(), key.ProveKeyPossession(sender))
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(sender[:])

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
@@ -63,7 +64,10 @@ func TestRegisterValidatorTxCarriesRewardCoinAndNoGas(t *testing.T) {
 	var rewardCoin [32]byte
 	rewardCoin[0] = 0x55
 
-	txBytes := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", make([]byte, 48), rewardCoin)
+	txBytes, err := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", walletBLSKey(t, w), rewardCoin)
+	if err != nil {
+		t.Fatalf("build register_validator tx: %v", err)
+	}
 
 	tx := types.GetRootAsTransaction(txBytes, 0)
 
@@ -94,11 +98,82 @@ func TestRegisterValidatorTxWithoutRewardCoin(t *testing.T) {
 	}
 	w := &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
 
-	txBytes := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", make([]byte, 48), [32]byte{})
+	txBytes, err := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", walletBLSKey(t, w), [32]byte{})
+	if err != nil {
+		t.Fatalf("build register_validator tx: %v", err)
+	}
 
 	tx := types.GetRootAsTransaction(txBytes, 0)
 
 	if _, ok := genesis.DecodeRegisterValidatorRewardCoin(tx.ArgsBytes()); ok {
 		t.Error("expected no reward coin designation for a zero rewardCoin")
 	}
+}
+
+// TestRegisterValidatorTxProvesBLSKeyPossession verifies that the registration a
+// wallet submits carries a proof of possession of the BLS key it claims, bound to
+// the wallet's own Ed25519 identity. Without it the commit path refuses the
+// registration, because an unproven key can be chosen to forge an aggregate
+// attestation on its own.
+func TestRegisterValidatorTxProvesBLSKeyPossession(t *testing.T) {
+	w := newRegisteringTestWallet(t)
+	blsPubkey := walletBLSKey(t, w)
+
+	txBytes, err := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", blsPubkey, [32]byte{})
+	if err != nil {
+		t.Fatalf("build register_validator tx: %v", err)
+	}
+
+	tx := types.GetRootAsTransaction(txBytes, 0)
+	_, gotKey, gotPoP := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
+
+	if string(gotKey) != string(blsPubkey) {
+		t.Fatalf("claimed key = %x, want %x", gotKey, blsPubkey)
+	}
+
+	if !attest.VerifyKeyPossession(gotPoP, w.Pubkey(), gotKey) {
+		t.Error("the registration must carry a valid proof of possession of the claimed key")
+	}
+}
+
+// TestRegisterValidatorTxRefusesForeignBLSKey verifies a wallet refuses to claim a
+// BLS key it cannot prove, instead of submitting a registration every node will
+// reject at commit.
+func TestRegisterValidatorTxRefusesForeignBLSKey(t *testing.T) {
+	w := newRegisteringTestWallet(t)
+
+	foreign, err := attest.GenerateBLSKey()
+	if err != nil {
+		t.Fatalf("generate foreign key: %v", err)
+	}
+
+	if _, err := w.buildRegisterValidatorTx(testPod(), "127.0.0.1:9000", foreign.PublicKeyBytes(), [32]byte{}); err == nil {
+		t.Error("claiming a foreign BLS key must be refused")
+	}
+}
+
+// newRegisteringTestWallet builds a wallet on a fresh Ed25519 key, the identity a
+// registration's proof of possession is bound to.
+func newRegisteringTestWallet(t *testing.T) *Wallet {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	return &Wallet{privKey: priv, pubKey: priv.Public().(ed25519.PublicKey), coins: make(map[[32]byte]*CoinInfo)}
+}
+
+// walletBLSKey returns the BLS public key the wallet's Ed25519 key derives, the
+// only key it can prove possession of.
+func walletBLSKey(t *testing.T, w *Wallet) []byte {
+	t.Helper()
+
+	key, err := attest.DeriveFromED25519(w.privKey)
+	if err != nil {
+		t.Fatalf("derive BLS key: %v", err)
+	}
+
+	return key.PublicKeyBytes()
 }

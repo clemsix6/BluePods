@@ -86,12 +86,15 @@ func finishAttestedTx(builder *flatbuffers.Builder, txOffset flatbuffers.UOffset
 
 // BuildRegisterValidatorRawTx creates a signed register_validator as a raw Transaction.
 // Used by validators joining the network — the receiving node wraps it in ATX.
+// blsPoP proves possession of blsPubkey (attest.ProveKeyPossession, bound to the
+// sender's Ed25519 key): the commit path refuses a registration that claims a key
+// without it, so a registration meant to carry attestation weight must supply both.
 // rewardCoin optionally designates the coin the validator's liquid epoch reward
 // is credited to; a zero value encodes no designation (setRewardCoinFromArgs
 // then falls back to the transaction's declared gas coin, if any, else leaves it
 // zero — never a live coin-store read).
-func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) []byte {
-	args := EncodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey, rewardCoin)
+func BuildRegisterValidatorRawTx(privKey ed25519.PrivateKey, systemPod [32]byte, quicAddr string, blsPubkey, blsPoP []byte, rewardCoin [32]byte) []byte {
+	args := EncodeRegisterValidatorArgs([]byte(quicAddr), blsPubkey, blsPoP, rewardCoin)
 	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	unsignedBytes := BuildUnsignedTxBytes(pubKey, systemPod, "register_validator", args, []uint16{0}, 0, nil)

@@ -195,7 +195,9 @@ func (n *Node) bootstrapConsensusOpts() []consensus.Option {
 
 // genesisConfig builds the genesis configuration for the bootstrap node.
 // GenesisStake defaults to a tenth of the mint (with a small floor) so the
-// founding validator has non-zero stake-weighted quorum weight.
+// founding validator has non-zero stake-weighted quorum weight. The founder's BLS
+// key is not passed: BuildInitialState derives it from the private key here, so
+// genesis can only ever seed a key the founder holds.
 func (n *Node) genesisConfig() genesis.Config {
 	stake := n.cfg.InitialMint / 10
 	if stake == 0 {
@@ -208,7 +210,6 @@ func (n *Node) genesisConfig() genesis.Config {
 		GenesisStake: stake,
 		QUICAddress:  n.cfg.QUICAddress,
 		SystemPodID:  n.systemPod,
-		BLSPubkey:    n.blsKey.PublicKeyBytes(),
 	}
 }
 

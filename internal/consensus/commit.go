@@ -737,8 +737,19 @@ func (d *DAG) executeTx(atx *types.AttestedTransaction, commitRound uint64, prod
 		return feeSplit
 	}
 
-	// Handle system transactions
-	d.handleRegisterValidator(tx, commitRound)
+	// Handle system transactions. A registration claiming a BLS public key it
+	// cannot prove possession of fails the whole transaction here, before any
+	// state is touched: the claim is the only thing the transaction does, and
+	// admitting an unproven key is what makes an aggregated attestation forgeable
+	// (verifiedRegistrationBLSKey). The verdict comes from committed bytes alone,
+	// so every node reaches it identically.
+	if !d.handleRegisterValidator(tx, commitRound) {
+		logger.Warn("registration rejected: BLS key without a valid proof of possession", "func", funcName)
+		d.emitTransaction(tx, false, FailAuth)
+		events.TxCommitted(txHash, vertexHash, commitRound, false, reasonBLSPoPInvalid)
+		return feeSplit
+	}
+
 	d.handleDeregisterValidator(tx, commitRound)
 	if d.handleBond(tx) {
 		// A committed bond may complete the bootstrap stake — the last committed member
@@ -1509,25 +1520,31 @@ func buildReplicationMap(atx *types.AttestedTransaction) map[[32]byte]uint16 {
 // handleRegisterValidator checks if TX is register_validator and adds the validator.
 // The validator pubkey is taken from tx.Sender (matching the Rust pod behavior).
 // Network addresses are parsed from tx.Args.
-func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64) {
+//
+// It returns false only for a registration the whole transaction must be failed
+// for: one claiming a BLS public key it does not prove possession of
+// (verifiedRegistrationBLSKey). Every other outcome, including "this is not a
+// registration at all", returns true and leaves the transaction's fate to the
+// rest of the commit path.
+func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64) bool {
 	if !d.isRegisterValidatorTx(tx) {
-		return
+		return true
 	}
 
 	sender := tx.SenderBytes()
 	if len(sender) != 32 {
-		return
+		return true
 	}
 
 	var pubkey Hash
 	copy(pubkey[:], sender)
 
-	// Parse network address and BLS pubkey from transaction args
-	quicAddr, blsPubkeyBytes := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
+	// Parse network address, BLS pubkey and its proof of possession from the args
+	quicAddr, blsPubkeyBytes, blsPoP := genesis.DecodeRegisterValidatorArgs(tx.ArgsBytes())
 
-	var blsPubkey [48]byte
-	if len(blsPubkeyBytes) == 48 {
-		copy(blsPubkey[:], blsPubkeyBytes)
+	blsPubkey, proven := verifiedRegistrationBLSKey(pubkey, blsPubkeyBytes, blsPoP)
+	if !proven {
+		return false
 	}
 
 	// Read committed membership BEFORE recordCommittedMember below admits pubkey
@@ -1578,6 +1595,8 @@ func (d *DAG) handleRegisterValidator(tx *types.Transaction, commitRound uint64)
 	if d.minValidators > 0 && d.validators.Len() >= d.minValidators {
 		d.enterTransition(commitRound)
 	}
+
+	return true
 }
 
 // setRewardCoinFromArgs designates the validator's reward coin from committed,

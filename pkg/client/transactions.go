@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/zeebo/blake3"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/genesis"
 )
 
@@ -245,8 +247,15 @@ func (w *Wallet) Bond(c *Client, coinID [32]byte, coinVersion uint64, amount uin
 
 // RegisterValidator (re-)registers this wallet's key as a validator, optionally
 // designating a reward coin (zero value = no designation). Raw, gas-free tx.
+// blsPubkey must be this wallet's own BLS public key or empty: the registration
+// carries a proof of possession of the claimed key, which only its holder can
+// produce. Empty claims no key, the shape of a re-registration that exists only
+// to designate a reward coin.
 func (w *Wallet) RegisterValidator(c *Client, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) error {
-	txBytes := w.buildRegisterValidatorTx(c.systemPod, quicAddr, blsPubkey, rewardCoin)
+	txBytes, err := w.buildRegisterValidatorTx(c.systemPod, quicAddr, blsPubkey, rewardCoin)
+	if err != nil {
+		return err
+	}
 
 	if err := c.submit(txBytes); err != nil {
 		return fmt.Errorf("submit register_validator tx:\n%w", err)
@@ -257,8 +266,34 @@ func (w *Wallet) RegisterValidator(c *Client, quicAddr string, blsPubkey []byte,
 
 // buildRegisterValidatorTx builds this wallet's signed register_validator
 // transaction, optionally designating a reward coin.
-func (w *Wallet) buildRegisterValidatorTx(pod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) []byte {
-	return genesis.BuildRegisterValidatorRawTx(w.privKey, pod, quicAddr, blsPubkey, rewardCoin)
+func (w *Wallet) buildRegisterValidatorTx(pod [32]byte, quicAddr string, blsPubkey []byte, rewardCoin [32]byte) ([]byte, error) {
+	blsPoP, err := w.proveBLSKey(blsPubkey)
+	if err != nil {
+		return nil, err
+	}
+
+	return genesis.BuildRegisterValidatorRawTx(w.privKey, pod, quicAddr, blsPubkey, blsPoP, rewardCoin), nil
+}
+
+// proveBLSKey returns the proof of possession for the BLS public key a
+// registration claims, or nil when it claims none. The wallet's BLS key is
+// derived from its Ed25519 key, so that is the only key it can prove: any other
+// key is refused here rather than rejected later at commit.
+func (w *Wallet) proveBLSKey(blsPubkey []byte) ([]byte, error) {
+	if len(blsPubkey) == 0 {
+		return nil, nil
+	}
+
+	key, err := attest.DeriveFromED25519(w.privKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive BLS key:\n%w", err)
+	}
+
+	if !bytes.Equal(blsPubkey, key.PublicKeyBytes()) {
+		return nil, fmt.Errorf("cannot prove possession of a BLS key this wallet does not derive")
+	}
+
+	return key.ProveKeyPossession(w.Pubkey()), nil
 }
 
 // buildMutableRef creates a single-element ObjectRefData slice for a mutable object.

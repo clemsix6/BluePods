@@ -525,7 +525,7 @@ At each epoch boundary, the protocol executes the following steps in order:
 
 ### Registration and deregistration
 
-Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, and BLS public key (48 bytes). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
+Validators join by submitting a `register_validator` transaction containing their Ed25519 public key, QUIC address, BLS public key (48 bytes), and a proof of possession of that BLS key (96 bytes). The proof is a BLS signature over the Ed25519 public key followed by the BLS public key, made under the proof-of-possession domain tag of the ciphersuite, which is distinct from the tag attestation signatures use so neither can be replayed as the other. It is verified in the commit path on every node: a registration claiming a BLS key without a valid proof fails there and joins nothing (Section 12). A validator publishes only a QUIC address; there is no on-chain HTTP address. They are added to the active set and tracked in the epoch's additions for churn limiting.
 
 `register_validator` and `deregister_validator` are the one narrow exception to the rule that every value-bearing transaction needs a funded gas coin. They move no value and carry zero quorum weight until the validator bonds, and a node joining at genesis holds no coin yet, so requiring gas would be a chicken-and-egg. They are still authenticated (signed by the sender, verified at commit). The exemption is revisited once bonding lands: a registrant that must bond already needs a funded coin.
 
@@ -666,6 +666,8 @@ A restart is not a join. A node that already owns the committed history in its d
 Can a minority of malicious holders corrupt an attested object? No. Each holder computes the object hash independently from its local copy. A holder sending a falsified object or hash produces an attestation that does not match the honest majority. It is effectively isolated from the quorum.
 
 With a replication factor of 50, an attacker would need to control 34 holders of a specific object to forge a quorum, a targeted attack that becomes exponentially harder as the replication factor increases. The attacker cannot choose which objects they hold: holder assignment is determined by Rendezvous Hashing using the validator's permanent public key.
+
+Can one validator forge a quorum by choosing its BLS key? No, because a key must be proven before it counts. Holder signatures are verified as one aggregated signature over one message, against the aggregated public keys of the declared signers. That is the setting a rogue key exploits: a registrant free to pick any 48 bytes could register `pk_attacker - sum(pk_honest)`, which cancels the honest holders' keys inside the aggregate and leaves a signature it alone can produce verifying as though the whole quorum had signed. Registration therefore carries a proof of possession of the BLS key (Section 10), which only the holder of the matching secret can produce; a key derived from other members' keys has no known secret and cannot be registered at all. Genesis carries no transaction and so no proof: it derives the founding validator's BLS key from that validator's own private key instead, which gives the same guarantee by construction.
 
 ### Double-spend prevention
 

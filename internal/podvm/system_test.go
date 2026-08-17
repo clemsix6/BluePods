@@ -436,8 +436,9 @@ func TestRegisterValidator_Success(t *testing.T) {
 		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 	quicAddr := []byte("192.168.1.1:9000")
 	blsPubkey := make([]byte, 48)
+	blsPoP := make([]byte, 96)
 
-	input := buildRegisterValidatorInput(senderPubkey, quicAddr, blsPubkey)
+	input := buildRegisterValidatorInput(senderPubkey, quicAddr, blsPubkey, blsPoP)
 
 	output, _, err := pool.Execute(wasmID, input, 100000)
 	if err != nil {
@@ -635,21 +636,18 @@ func encodeMergeArgs() []byte {
 }
 
 // encodeRegisterValidatorArgs encodes RegisterValidator args in borsh format.
-// Format: u32 len + quic_address bytes + u32 len + bls_pubkey bytes
-// (pubkey is taken from sender, not args)
-func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
-	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey))
-
-	// quic_address (Vec<u8>: u32 length + bytes)
+// Format: u32 len + quic_address bytes + u32 len + bls_pubkey bytes + u32 len +
+// bls_pop bytes (pubkey is taken from sender, not args)
+func encodeRegisterValidatorArgs(quicAddr, blsPubkey, blsPoP []byte) []byte {
+	buf := make([]byte, 0, 12+len(quicAddr)+len(blsPubkey)+len(blsPoP))
 	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, quicAddr...)
 
-	// bls_pubkey (Vec<u8>: u32 length + bytes)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(blsPubkey)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, blsPubkey...)
+	// Each field is a Vec<u8>: u32 length + bytes.
+	for _, field := range [][]byte{quicAddr, blsPubkey, blsPoP} {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(field)))
+		buf = append(buf, lenBuf...)
+		buf = append(buf, field...)
+	}
 
 	return buf
 }
@@ -935,10 +933,10 @@ func buildMergeInputInvalidArgs(balances []uint64, owner [32]byte) []byte {
 
 // buildRegisterValidatorInput creates input for register_validator function.
 // senderPubkey is used as both the tx sender and the validator pubkey.
-func buildRegisterValidatorInput(senderPubkey [32]byte, quicAddr, blsPubkey []byte) []byte {
+func buildRegisterValidatorInput(senderPubkey [32]byte, quicAddr, blsPubkey, blsPoP []byte) []byte {
 	builder := flatbuffers.NewBuilder(512)
 
-	txArgs := builder.CreateByteVector(encodeRegisterValidatorArgs(quicAddr, blsPubkey))
+	txArgs := builder.CreateByteVector(encodeRegisterValidatorArgs(quicAddr, blsPubkey, blsPoP))
 	txHash := builder.CreateByteVector(make([]byte, 32))
 	txSender := builder.CreateByteVector(senderPubkey[:])
 	txPod := builder.CreateByteVector(make([]byte, 32))

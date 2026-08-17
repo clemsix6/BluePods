@@ -36,7 +36,7 @@ func TestHandleRegisterValidator_EpochAdditionsUniformAcrossSelfAdd(t *testing.T
 
 	// The identical committed register_validator transaction reaches every
 	// node, dagSelf included, through the normal commit path.
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", [48]byte{0xAA})
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090")
 	tx := types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
 
 	dagSelf.handleRegisterValidator(tx, 5)
