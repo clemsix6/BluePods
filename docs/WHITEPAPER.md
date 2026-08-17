@@ -4,7 +4,7 @@
 
 BluePods is a Layer 1 blockchain designed around three core ideas: an object-oriented state model where data is split into independent, versioned objects rather than stored in global account trees; a leaderless DAG-based consensus that achieves finality in two rounds without requiring a designated block proposer; and horizontal execution sharding where each transaction is processed only by the validators that hold the objects it touches.
 
-Together, these properties allow the network to scale throughput with the number of validators rather than being bottlenecked by a single leader or global state, while keeping the programming model simple: a transaction declares its inputs, calls a function, and produces outputs, much like a function call with explicit parameters.
+Together, these properties spread storage and execution across the validator set, so adding validators spreads that work rather than duplicating it on every node. Every transaction still passes through one global order, so throughput is bounded by what a single node can ingest and validate, not by the size of the validator set. The programming model stays simple: a transaction declares its inputs, calls a function, and produces outputs, much like a function call with explicit parameters.
 
 This document describes the architecture, the reasoning behind key design decisions, and the tradeoffs involved.
 
@@ -22,7 +22,7 @@ These are the assumptions that drive every design decision in BluePods. Some are
 
 **Protocol-level simplicity, pod-level flexibility.** Core operations like fee deduction, version tracking, and ownership checks are handled at the protocol level, outside the smart contract runtime. Smart contracts (called pods) focus on business logic. This separation keeps the protocol predictable and auditable while allowing arbitrary logic in the execution layer.
 
-**Dual security: honest majority per object for attestation, honest two-thirds of stake for ordering.** Security in BluePods is scoped along two axes. Each object's attestation is safe under an honest majority of its holders, counted by head: for a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the network. The global DAG order is secured separately, by stake: it is safe under an honest two-thirds of the total stake, because voting weight in consensus is proportional to a validator's bonded stake (Section 10). The two compose: count-weighting secures per-object attestation, stake-weighting secures ordering. In a network with thousands of validators, scoping attestation to an object's holders matters a lot.
+**Dual security: honest two-thirds of holders for attestation, honest two-thirds of stake for ordering.** Security in BluePods is scoped along two axes. Each object's attestation is safe under a two-thirds-of-its-holders (by count) honest majority: for a replication factor of 50, an attacker needs to corrupt 34 holders of that specific object, not 34% of the network. The global DAG order is secured separately, by stake: it is safe under a two-thirds-of-stake honest majority, because voting weight in consensus is proportional to a validator's bonded stake (Section 10). The two compose: count-weighting secures per-object attestation, stake-weighting secures ordering. In a network with thousands of validators, scoping attestation to an object's holders matters a lot.
 
 ---
 
@@ -753,7 +753,7 @@ These are the problems I know about and have not solved yet:
 
 ## 15. Conclusion
 
-BluePods is built on a simple bet: that horizontal scaling of a Layer 1 blockchain is possible if you stop requiring every validator to do everything. Split the state into independent objects, let a leaderless DAG handle ordering, and route execution to the validators that hold the data. Adding validators should spread the work, not duplicate it.
+BluePods is built on a simple bet: that a Layer 1 blockchain does not need every validator to do everything. Split the state into independent objects, let a leaderless DAG handle ordering, and route execution to the validators that hold the data. Adding validators spreads the storage and execution work across the set; it does not raise the throughput ceiling of the global order, which stays bounded by what a single node can ingest and validate.
 
 Does it actually work at scale? The prototype says yes for the core protocol: consensus, attestation, execution, fee deduction, storage sharding, domain naming, and validator management all function. But there is a long list of things not built yet (Section 14), and real performance numbers only come from a distributed testnet that does not exist yet.
 

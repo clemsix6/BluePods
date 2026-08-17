@@ -6,15 +6,15 @@ const peers = [
   },
   {
     name: 'Sui',
-    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui keeps a fast path for objects with a single owner that settles a plain transfer in a few hundred milliseconds without waiting for the commit rule to order it, so the guarantee is not uniform across operations, and it sends large data to Walrus, a separate network. BluePods folds storage and execution into one protocol, under one order.',
+    note: 'The closest cousin. The object model, version-based conflict detection, and the DAG lineage all come from this family. Sui finalizes single-owner transactions on a distinct, faster path, so the guarantee is not uniform across operations, and it sends large data to a separate network with its own token (Walrus). BluePods keeps storage and execution inside one protocol and one order, with no separate network or token.',
   },
   {
     name: 'Solana',
-    note: 'The same bandwidth bet, a different answer. Solana scales the node: Firedancer raises what one machine can push, asynchronous execution takes replay off the critical path, and the work on concurrent leaders is dismantling the single-proposer bottleneck. Through all of it, every validator still holds and executes the whole state. BluePods scales the set of machines a transaction needs instead, and asks the ten that hold its objects.',
+    note: 'The same bandwidth bet, a different answer. Solana is leader-based, and every validator holds and executes the whole state. BluePods is leaderless and scales the set of machines a transaction needs instead, asking only the ten to fifty validators that hold its objects.',
   },
   {
     name: 'Ethereum',
-    note: 'An account model over one global state commitment. Ethereum is scaling the base layer as well as rolling up onto layer 2, with parallel execution and clients that verify a block by reading its results instead of replaying it. Underneath, the state stays a single object every validator checks against one root, so capacity is still what one node can carry. BluePods decouples unrelated state into objects with holders of their own, and pays for it in composability: the per-transaction reference cap bounds how many objects one step can touch, so the deep multi-contract compositions Ethereum allows are harder here.',
+    note: 'An account model over one global state commitment. Every validator processes every transaction, and capacity beyond that lives in an ecosystem of separate layer 2 execution domains; composing across them is asynchronous and non-atomic, the same failure mode as the subnets above. BluePods decouples unrelated state into objects with holders of their own, and pays for it in composability: the per-transaction reference cap bounds how many objects one step can touch, so the deep multi-contract compositions Ethereum allows are harder here.',
   },
 ];
 ---
