@@ -163,10 +163,11 @@ func (c *Cluster) bondValidator(i int, stake uint64) {
 
 	c.refreshCoinWithRetry(i, cli, w, coinID)
 
-	// blsPubkey is nil: the validator already carries its real BLS key from
-	// its own self-registration at startup, and validators.Add only fills an
+	// blsPubkey is nil: the validator already carries its real BLS key, proven
+	// by its own self-registration at startup, and validators.Add only fills an
 	// empty field, never overwrites one — this re-registration exists purely
-	// to designate the reward coin.
+	// to designate the reward coin, so it claims no key and needs no proof of
+	// possession.
 	if err := w.RegisterValidator(cli, n.QUICAddr, nil, coinID); err != nil {
 		c.t.Fatalf("register validator for node %d: %v", i, err)
 	}

@@ -639,8 +639,7 @@ func TestHandleRegisterValidator_EmitsValidatorRegistered(t *testing.T) {
 	defer dag.Close()
 
 	newVal := newTestValidator()
-	blsKey := [48]byte{0xAA}
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", blsKey)
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090")
 	tx := types.GetRootAsAttestedTransaction(atxBytes, 0).Transaction(nil)
 
 	buf := captureEvents(t)

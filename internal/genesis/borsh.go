@@ -13,21 +13,21 @@ func EncodeSplitArgs(amount uint64, newOwner [32]byte) []byte {
 }
 
 // encodeRegisterValidatorArgs encodes register_validator arguments in Borsh format.
-// Format: u32 len + quic_address bytes + u32 len + bls_pubkey bytes
+// Format: u32 len + quic_address bytes + u32 len + bls_pubkey bytes + u32 len +
+// bls_pop bytes. bls_pop proves possession of bls_pubkey (see
+// attest.ProveKeyPossession); the commit path refuses a registration that claims
+// a key without it.
 // Note: ed25519 pubkey is taken from tx.sender, not from args.
-func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
-	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey))
-
-	// quic_address (Vec<u8>: u32 length prefix + bytes)
+func encodeRegisterValidatorArgs(quicAddr, blsPubkey, blsPoP []byte) []byte {
+	buf := make([]byte, 0, 12+len(quicAddr)+len(blsPubkey)+len(blsPoP))
 	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, quicAddr...)
 
-	// bls_pubkey (Vec<u8>: u32 length prefix + bytes)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(blsPubkey)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, blsPubkey...)
+	// Each field is a Borsh Vec<u8>: u32 length prefix + bytes.
+	for _, field := range [][]byte{quicAddr, blsPubkey, blsPoP} {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(field)))
+		buf = append(buf, lenBuf...)
+		buf = append(buf, field...)
+	}
 
 	return buf
 }
@@ -35,10 +35,9 @@ func encodeRegisterValidatorArgs(quicAddr, blsPubkey []byte) []byte {
 // EncodeRegisterValidatorArgs encodes register_validator arguments in Borsh
 // format, optionally designating a reward coin. A zero rewardCoin omits the
 // trailing field entirely, mirroring DecodeRegisterValidatorRewardCoin's
-// ok=false absence case, so a caller with no designation produces the same
-// bytes as the older two-field encoding.
-func EncodeRegisterValidatorArgs(quicAddr, blsPubkey []byte, rewardCoin [32]byte) []byte {
-	buf := encodeRegisterValidatorArgs(quicAddr, blsPubkey)
+// ok=false absence case.
+func EncodeRegisterValidatorArgs(quicAddr, blsPubkey, blsPoP []byte, rewardCoin [32]byte) []byte {
+	buf := encodeRegisterValidatorArgs(quicAddr, blsPubkey, blsPoP)
 	if rewardCoin == ([32]byte{}) {
 		return buf
 	}
@@ -51,21 +50,22 @@ func EncodeRegisterValidatorArgs(quicAddr, blsPubkey []byte, rewardCoin [32]byte
 	return buf
 }
 
-// DecodeRegisterValidatorArgs decodes register_validator arguments from Borsh format.
-// Returns quicAddr and blsPubkey.
-// Returns empty/nil values if data is malformed.
-// The blsPubkey is optional for backward compatibility (returns nil if absent).
-func DecodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey []byte) {
-	quicAddr, blsPubkey, _ = decodeRegisterValidatorArgs(data)
-	return quicAddr, blsPubkey
+// DecodeRegisterValidatorArgs decodes register_validator arguments from Borsh
+// format. Returns the QUIC address, the claimed BLS public key, and the proof of
+// possession behind it. Returns empty/nil values if data is malformed; a field
+// absent from the args decodes as nil, and a nil proof is what makes a claimed
+// key unverifiable, hence refused at commit.
+func DecodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey, blsPoP []byte) {
+	quicAddr, blsPubkey, blsPoP, _ = decodeRegisterValidatorArgs(data)
+	return quicAddr, blsPubkey, blsPoP
 }
 
 // DecodeRegisterValidatorRewardCoin decodes the optional reward-coin designation
-// that trails a register_validator's args (a Borsh Vec<u8> after the BLS key). It
-// returns ok=false when no 32-byte reward coin is present, so an absent
-// designation is distinguishable from a zero one.
+// that trails a register_validator's args (a Borsh Vec<u8> after the proof of
+// possession). It returns ok=false when no 32-byte reward coin is present, so an
+// absent designation is distinguishable from a zero one.
 func DecodeRegisterValidatorRewardCoin(data []byte) (rewardCoin [32]byte, ok bool) {
-	_, _, raw := decodeRegisterValidatorArgs(data)
+	_, _, _, raw := decodeRegisterValidatorArgs(data)
 	if len(raw) != 32 {
 		return rewardCoin, false
 	}
@@ -74,29 +74,34 @@ func DecodeRegisterValidatorRewardCoin(data []byte) (rewardCoin [32]byte, ok boo
 	return rewardCoin, true
 }
 
-// decodeRegisterValidatorArgs parses the quic address, the optional BLS key, and
-// the optional reward-coin bytes from register_validator args. Each trailing
-// field is an independent Borsh Vec<u8> (u32 length prefix + bytes); a missing
-// field yields a nil slice so older two-field args decode unchanged.
-func decodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey, rewardCoin []byte) {
+// decodeRegisterValidatorArgs parses the quic address, the claimed BLS key, its
+// proof of possession, and the optional reward-coin bytes from
+// register_validator args. Each field after the address is an independent Borsh
+// Vec<u8> (u32 length prefix + bytes); a missing field yields a nil slice.
+func decodeRegisterValidatorArgs(data []byte) (quicAddr string, blsPubkey, blsPoP, rewardCoin []byte) {
 	if len(data) < 4 {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 
 	quicLen := binary.LittleEndian.Uint32(data[0:4])
 	if len(data) < int(4+quicLen) {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	quicAddr = string(data[4 : 4+quicLen])
 
 	offset := 4 + quicLen
 	blsPubkey, offset, ok := readBorshVec(data, offset)
 	if !ok {
-		return quicAddr, nil, nil
+		return quicAddr, nil, nil, nil
+	}
+
+	blsPoP, offset, ok = readBorshVec(data, offset)
+	if !ok {
+		return quicAddr, blsPubkey, nil, nil
 	}
 
 	rewardCoin, _, _ = readBorshVec(data, offset)
-	return quicAddr, blsPubkey, rewardCoin
+	return quicAddr, blsPubkey, blsPoP, rewardCoin
 }
 
 // readBorshVec reads a Borsh Vec<u8> (u32 little-endian length + bytes) at offset.

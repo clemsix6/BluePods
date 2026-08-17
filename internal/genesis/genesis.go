@@ -20,7 +20,4 @@ type Config struct {
 
 	// SystemPodID is the blake3 hash of the system pod WASM.
 	SystemPodID [32]byte
-
-	// BLSPubkey is the validator's BLS public key for attestation signing.
-	BLSPubkey []byte
 }

@@ -1,11 +1,16 @@
 package scenarios
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"strings"
 	"testing"
 
+	"BluePods/internal/genesis"
 	"BluePods/internal/network"
 	"BluePods/pkg/client"
 	"BluePods/test/harness"
@@ -42,6 +47,15 @@ const (
 	// deregWithDelegatorsEpochLength makes boundaries land often enough that the
 	// scenario crosses the one that would apply the queued removal within budget.
 	deregWithDelegatorsEpochLength = 50
+
+	// rogueBLSKeySize is the BLS public key length a registration claims
+	// (attest.BLSPublicKeySize), the length the rogue-key check needs to reach the
+	// proof-of-possession verification rather than the "claims no key" path.
+	rogueBLSKeySize = 48
+
+	// rogueQUICAddr is the address the refused registrant declares. Nothing ever
+	// dials it: the registration is rejected at commit.
+	rogueQUICAddr = "127.0.0.1:65000"
 )
 
 // stakeDelta captures one stake operation's fingerprint terms immediately
@@ -118,6 +132,57 @@ func TestScenarioStake(t *testing.T) {
 	t.Run("supply_delta_conserved", func(t *testing.T) {
 		requireDeltasConserved(t, deltas)
 	})
+
+	t.Run("rogue_bls_registration_rejected", func(t *testing.T) {
+		testRogueBLSRegistrationRejected(stepCtx(t), t, c, cli, node0)
+	})
+}
+
+// testRogueBLSRegistrationRejected submits a real register_validator transaction
+// that claims a BLS public key with no proof of possession behind it. That is the
+// shape a rogue-key attacker needs: attestations are verified as one aggregated
+// signature over one message, so a key chosen as pk_attacker - sum(pk_honest)
+// cancels the honest holders' keys inside the aggregate and lets its registrant
+// forge, single-handedly, a signature that verifies as if a quorum had attested.
+// Such a key has no known secret and therefore no proof, so the registration must
+// commit as a failed transaction and never place its sender in the validator set.
+func testRogueBLSRegistrationRejected(ctx context.Context, t *testing.T, c *harness.Cluster, cli *client.Client, node *harness.Node) {
+	t.Helper()
+
+	_, attackerKey, err := ed25519.GenerateKey(rand.Reader)
+	requireNoErr(t, err)
+
+	rogueBLSKey := make([]byte, rogueBLSKeySize)
+	rogueBLSKey[0] = 0xAB
+
+	tx := genesis.BuildRegisterValidatorRawTx(attackerKey, c.SystemPod(), rogueQUICAddr, rogueBLSKey, nil, [32]byte{})
+
+	hash, err := client.NewQUICTransport(node.QUICAddr).SubmitTx(tx)
+	requireNoErr(t, err)
+
+	if _, err := node.WaitEvent(ctx, "tx.committed",
+		harness.Attr("tx", hex.EncodeToString(hash)),
+		harness.Attr("success", false),
+		harness.Attr("reason", "bls_pop_invalid"),
+	); err != nil {
+		t.Fatalf("a registration claiming an unproven BLS key must be rejected at commit: %v", err)
+	}
+
+	requireNotValidator(t, cli, attackerKey.Public().(ed25519.PublicKey))
+}
+
+// requireNotValidator fails the test if pubkey is in the node's validator set.
+func requireNotValidator(t *testing.T, cli *client.Client, pubkey ed25519.PublicKey) {
+	t.Helper()
+
+	validators, err := cli.Validators()
+	requireNoErr(t, err)
+
+	for _, v := range validators {
+		if bytes.Equal(v.Pubkey[:], pubkey) {
+			t.Fatalf("refused registrant %x is in the validator set", pubkey[:8])
+		}
+	}
 }
 
 // TestScenarioDeregisterWithDelegators drives the deregistration path for a

@@ -327,7 +327,13 @@ must be called out in the commit that does it.
 success, and one of a fixed set when `success` is false: `version_conflict`,
 `fee_rejected`, `ownership`, `proof_failed`, `authenticity_failed`,
 `duplicate`, `expired_sponsorship`, `execution_error`, `declared_ops`,
-`delete_has_children`, `malformed_shape`.
+`delete_has_children`, `malformed_shape`, `bls_pop_invalid`.
+
+`bls_pop_invalid` is the verdict on a `register_validator` transaction that
+claims a BLS public key without a valid proof of possession of it. The claim is
+all such a transaction does, so it is failed whole, before any state is touched
+and without joining the validator set: an unproven key admitted into the
+attestation aggregate is forgeable by whoever chose it.
 
 `malformed_shape` is the verdict on a transaction whose shape no node may
 carry: declared operations alongside a pod call or alongside

@@ -1,10 +1,12 @@
 package genesis
 
 import (
+	"crypto/ed25519"
 	"encoding/binary"
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/types"
 )
 
@@ -14,7 +16,7 @@ type InitialState struct {
 	CoinID    [32]byte // CoinID is its deterministic object ID.
 	Pubkey    [32]byte // Pubkey is the founding validator's Ed25519 key.
 	QUIC      string   // QUIC is the founding validator's QUIC address.
-	BLS       []byte   // BLS is the founding validator's 48-byte BLS key.
+	BLS       []byte   // BLS is the founding validator's 48-byte BLS key, derived from its own private key.
 	SelfStake uint64   // SelfStake is the founder's bonded stake, locked from the mint.
 	Supply    uint64   // Supply is the initial total supply (== InitialMint).
 }
@@ -36,10 +38,35 @@ func BuildInitialState(cfg Config, owner [32]byte) InitialState {
 		CoinID:    coinID,
 		Pubkey:    owner,
 		QUIC:      cfg.QUICAddress,
-		BLS:       cfg.BLSPubkey,
+		BLS:       foundingBLSKey(cfg.PrivateKey),
 		SelfStake: stake,
 		Supply:    cfg.InitialMint,
 	}
+}
+
+// foundingBLSKey returns the founding validator's BLS public key, derived from the
+// founder's own private key rather than taken on trust from the configuration.
+//
+// Genesis is seeded state, not a transaction, so no proof of possession travels
+// with it. Deriving the key here gives the same guarantee by construction: the
+// only key genesis can seed is the one the founder holds the secret for, never a
+// key chosen to cancel other members' keys inside an attestation aggregate (the
+// property verifiedRegistrationBLSKey enforces for every registration that
+// arrives as a transaction).
+//
+// A config with no usable private key seeds no BLS key: the founder then carries
+// no attestation weight until a registration claims one with a proof.
+func foundingBLSKey(privKey ed25519.PrivateKey) []byte {
+	if len(privKey) != ed25519.PrivateKeySize {
+		return nil
+	}
+
+	key, err := attest.DeriveFromED25519(privKey)
+	if err != nil {
+		return nil
+	}
+
+	return key.PublicKeyBytes()
 }
 
 // buildGenesisCoin serializes a singleton Coin object owned by owner with the

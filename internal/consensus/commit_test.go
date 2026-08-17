@@ -9,6 +9,7 @@ import (
 
 	flatbuffers "github.com/google/flatbuffers/go"
 
+	"BluePods/internal/attest"
 	"BluePods/internal/genesis"
 	"BluePods/internal/types"
 )
@@ -707,9 +708,8 @@ func TestHandleRegisterValidator_ViaExecuteTx(t *testing.T) {
 
 	// Create a new validator to register
 	newVal := newTestValidator()
-	blsKey := [48]byte{0xAA, 0xBB}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", blsKey)
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	// Verify new validator is NOT in the set yet
@@ -747,7 +747,7 @@ func TestHandleRegisterValidator_RewardCoinFromArgs(t *testing.T) {
 	newVal := newTestValidator()
 	rewardCoin := Hash{0x11, 0x22, 0x33}
 
-	atxBytes := buildRegisterATXWithReward(t, newVal.pubKey, testSystemPod, "quic://r:1", [48]byte{0xAA}, rewardCoin)
+	atxBytes := buildRegisterATXWithReward(t, newVal.pubKey, testSystemPod, "quic://r:1", rewardCoin)
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
@@ -774,7 +774,7 @@ func TestHandleRegisterValidator_NoRewardCoinLeavesZero(t *testing.T) {
 	disableTxAuth(dag)
 
 	newVal := newTestValidator()
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2", [48]byte{0xAA})
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://r:2")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
@@ -800,7 +800,7 @@ func TestHandleRegisterValidator_WrongPod(t *testing.T) {
 	newVal := newTestValidator()
 	wrongPod := Hash{0xFF, 0xFE, 0xFD}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, wrongPod, "quic://x:2", [48]byte{})
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, wrongPod, "quic://x:2")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	initialCount := dag.validators.Len()
@@ -867,16 +867,15 @@ func TestHandleRegisterValidator_DuplicateRegister(t *testing.T) {
 	disableTxAuth(dag)
 
 	newVal := newTestValidator()
-	blsKey := [48]byte{0xCC}
 
 	// Register once
-	atx1 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
+	atx1 := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2")
 	dag.executeTx(types.GetRootAsAttestedTransaction(atx1, 0), 5, Hash{}, nil, Hash{})
 
 	countAfterFirst := dag.validators.Len()
 
 	// Register again with same pubkey
-	atx2 := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
+	atx2 := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2")
 	dag.executeTx(types.GetRootAsAttestedTransaction(atx2, 0), 6, Hash{}, nil, Hash{})
 
 	if dag.validators.Len() != countAfterFirst {
@@ -898,9 +897,8 @@ func TestHandleRegisterValidator_EpochAdditionsTracked(t *testing.T) {
 	disableTxAuth(dag)
 
 	newVal := newTestValidator()
-	blsKey := [48]byte{0xDD}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 5, Hash{}, nil, Hash{})
@@ -934,9 +932,8 @@ func TestHandleRegisterValidator_TriggersTransition(t *testing.T) {
 
 	// Register a third validator to hit minValidators=3
 	newVal := newTestValidator()
-	blsKey := [48]byte{0xEE}
 
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2", blsKey)
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://x:2")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 
 	dag.executeTx(atx, 10, Hash{}, nil, Hash{})
@@ -1396,7 +1393,7 @@ func TestDeductFees_RegisterValidatorExempt(t *testing.T) {
 	dag.SetFeeSystem(coinStore, &params, nil)
 
 	newVal := newTestValidator()
-	atxBytes := buildRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090", [48]byte{0xAA})
+	atxBytes := buildValidRegisterATX(t, newVal.pubKey, testSystemPod, "quic://new:9090")
 	atx := types.GetRootAsAttestedTransaction(atxBytes, 0)
 	tx := atx.Transaction(nil)
 
@@ -2246,14 +2243,42 @@ func buildSystemPodATX(t *testing.T, sender Hash, pod Hash, funcName string) []b
 	return builder.FinishedBytes()
 }
 
-// buildRegisterATX creates a register_validator ATX with a QUIC address and BLS key.
-func buildRegisterATX(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey [48]byte) []byte {
+// testRegistrationBLSKey returns the BLS key pair a test registration from sender
+// proves possession of. It is derived from the sender bytes so the same sender
+// always claims the same key, mirroring a real validator whose BLS key comes from
+// its Ed25519 seed.
+func testRegistrationBLSKey(t *testing.T, sender Hash) *attest.BLSKeyPair {
+	t.Helper()
+
+	key, err := attest.GenerateBLSKeyFromSeed(sender[:])
+	if err != nil {
+		t.Fatalf("derive registration BLS key: %v", err)
+	}
+
+	return key
+}
+
+// buildValidRegisterATX creates the register_validator ATX an honest validator
+// submits: a BLS key accompanied by a valid proof of possession bound to the
+// sender.
+func buildValidRegisterATX(t *testing.T, sender Hash, pod Hash, quicAddr string) []byte {
+	t.Helper()
+
+	key := testRegistrationBLSKey(t, sender)
+
+	return buildRegisterATX(t, sender, pod, quicAddr, key.PublicKeyBytes(), key.ProveKeyPossession(sender))
+}
+
+// buildRegisterATX creates a register_validator ATX with a QUIC address, a BLS
+// key and its proof of possession, both exactly as given so a test can build a
+// registration that fails to prove what it claims.
+func buildRegisterATX(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey, pop []byte) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
 
 	// Encode args in Borsh format (same as genesis.encodeRegisterValidatorArgs)
-	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey[:])
+	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey, pop)
 
 	hashVec := builder.CreateByteVector(make([]byte, 32))
 	senderVec := builder.CreateByteVector(sender[:])
@@ -2287,30 +2312,30 @@ func buildRegisterATX(t *testing.T, sender Hash, pod Hash, quicAddr string, blsP
 }
 
 // encodeRegisterValidatorArgsBorsh encodes register_validator args in Borsh format.
-// Format: u32 len + quic bytes + u32 len + bls bytes
-func encodeRegisterValidatorArgsBorsh(quicAddr, blsPubkey []byte) []byte {
-	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey))
+// Format: u32 len + quic bytes + u32 len + bls bytes + u32 len + pop bytes
+func encodeRegisterValidatorArgsBorsh(quicAddr, blsPubkey, pop []byte) []byte {
+	buf := make([]byte, 0, 4+len(quicAddr)+4+len(blsPubkey)+4+len(pop))
 	lenBuf := make([]byte, 4)
 
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(quicAddr)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, quicAddr...)
-
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(blsPubkey)))
-	buf = append(buf, lenBuf...)
-	buf = append(buf, blsPubkey...)
+	for _, field := range [][]byte{quicAddr, blsPubkey, pop} {
+		binary.LittleEndian.PutUint32(lenBuf, uint32(len(field)))
+		buf = append(buf, lenBuf...)
+		buf = append(buf, field...)
+	}
 
 	return buf
 }
 
 // buildRegisterATXWithReward creates a register_validator ATX that also carries
-// an explicit reward-coin arg (a trailing Borsh Vec<u8> after the BLS key).
-func buildRegisterATXWithReward(t *testing.T, sender Hash, pod Hash, quicAddr string, blsPubkey [48]byte, rewardCoin Hash) []byte {
+// an explicit reward-coin arg (a trailing Borsh Vec<u8> after the proof of
+// possession).
+func buildRegisterATXWithReward(t *testing.T, sender Hash, pod Hash, quicAddr string, rewardCoin Hash) []byte {
 	t.Helper()
 
 	builder := flatbuffers.NewBuilder(1024)
 
-	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), blsPubkey[:])
+	key := testRegistrationBLSKey(t, sender)
+	args := encodeRegisterValidatorArgsBorsh([]byte(quicAddr), key.PublicKeyBytes(), key.ProveKeyPossession(sender))
 	lenBuf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(rewardCoin)))
 	args = append(args, lenBuf...)

@@ -37,10 +37,7 @@ const (
 // registerAsValidator submits a register_validator raw transaction over QUIC to
 // the registration target. The receiving validator wraps it into a trivial ATX.
 func (n *Node) registerAsValidator() error {
-	var blsPubkeyBytes []byte
-	if n.blsKey != nil {
-		blsPubkeyBytes = n.blsKey.PublicKeyBytes()
-	}
+	blsPubkeyBytes, blsPoP := n.registrationBLSClaim()
 
 	// A joining validator has no coin yet at registration time, so it designates no
 	// reward coin and declares no gas coin here. setRewardCoinFromArgs then leaves
@@ -51,6 +48,7 @@ func (n *Node) registerAsValidator() error {
 		n.systemPod,
 		n.cfg.QUICAddress,
 		blsPubkeyBytes,
+		blsPoP,
 		[32]byte{},
 	)
 
@@ -68,6 +66,22 @@ func (n *Node) registerAsValidator() error {
 
 	logger.Info("registration submitted, self-added to validator set")
 	return nil
+}
+
+// registrationBLSClaim returns the BLS public key this node registers and the
+// proof of possession binding it to this node's Ed25519 identity, both nil when
+// no BLS key was derived. The two travel together: the commit path refuses a
+// registration that claims a key without a valid proof, since an unproven key
+// admitted into the attestation aggregate is forgeable by whoever chose it.
+func (n *Node) registrationBLSClaim() (blsPubkey, blsPoP []byte) {
+	if n.blsKey == nil {
+		return nil, nil
+	}
+
+	var identity [32]byte
+	copy(identity[:], n.cfg.PrivateKey.Public().(ed25519.PublicKey))
+
+	return n.blsKey.PublicKeyBytes(), n.blsKey.ProveKeyPossession(identity)
 }
 
 // selfAddToValidatorSet adds this node to the local validator set immediately.
